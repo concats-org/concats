@@ -100,16 +100,23 @@ fn main() -> miette::Result<()> {
         workspace_root: workspace_root.clone(),
         env: agent_config.env.clone(),
         fork_from: None,
+        auto_push: config.sync.auto_push,
+        push_remote: config.sync.remote.clone(),
     };
 
     // Start the session (spawns a dedicated thread).
     let session = start_session(session_config).map_err(|e| miette::miette!("{e}"))?;
+
+    let auto_push = config.sync.auto_push;
+    let push_remote = config.sync.remote.clone();
 
     rt.block_on(run_tui(
         session,
         workspace_root,
         agent_config.clone(),
         resolved_id,
+        auto_push,
+        push_remote,
     ))?;
     Ok(())
 }
@@ -168,6 +175,8 @@ async fn run_tui(
     workspace_root: PathBuf,
     agent_config: catena_config::AgentConfig,
     resolved_agent_id: String,
+    auto_push: bool,
+    push_remote: String,
 ) -> miette::Result<()> {
     // Set up terminal.
     enable_raw_mode().map_err(|e| miette::miette!("failed to enable raw mode: {e}"))?;
@@ -191,6 +200,8 @@ async fn run_tui(
     } else {
         resolved_agent_id
     };
+    app.auto_push = auto_push;
+    app.push_remote = push_remote;
 
     let result = event_loop(&mut terminal, &mut app).await;
 
@@ -452,6 +463,8 @@ async fn handle_fork(app: &mut app::App<'_>) {
         workspace_root: app.workspace_root.clone(),
         env: app.agent_env.clone(),
         fork_from: Some(fork_request.commit_oid),
+        auto_push: app.auto_push,
+        push_remote: app.push_remote.clone(),
     };
 
     match start_session(session_config) {

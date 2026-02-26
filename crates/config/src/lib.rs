@@ -8,7 +8,7 @@ use figment::providers::{Env, Format, Serialized, Toml};
 
 use crate::provider::CliArgs;
 
-pub use model::{AgentConfig, Config};
+pub use model::{AgentConfig, Config, SyncConfig};
 pub use provider::CliArgs as ConfigCliArgs;
 
 /// Load configuration with figment layering:

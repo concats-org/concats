@@ -32,6 +32,10 @@ pub struct SessionConfig {
     pub env: HashMap<String, String>,
     /// When set, the new session forks from this commit OID instead of HEAD.
     pub fork_from: Option<git2::Oid>,
+    /// When true, automatically push the session ref to the remote after each checkpoint.
+    pub auto_push: bool,
+    /// Git remote name to push to (e.g. "origin").
+    pub push_remote: String,
 }
 
 /// Events emitted by a running session.
@@ -50,6 +54,11 @@ pub enum SessionEvent {
     },
     /// A line of stderr output from the agent process.
     Stderr(String),
+    /// A push to the remote failed (non-fatal).
+    PushFailed {
+        ref_name: String,
+        error: String,
+    },
     /// An error occurred.
     Error(Error),
 }
@@ -241,16 +250,44 @@ async fn session_loop_inner(
                 // Finalize checkpoint with the accumulated response text.
                 let stop_reason_str = format!("{:?}", response.stop_reason);
                 let summary = response_text.borrow().clone();
-                let commit_oid = match checkpoint.borrow_mut().as_mut().map(|store| {
-                    store.finalize_checkpoint(&prompt_text, &summary, &stop_reason_str)
-                }) {
-                    Some(Ok(oid)) => Some(oid),
-                    Some(Err(e)) => {
-                        tracing::warn!("checkpoint finalize failed: {e}");
-                        None
+                let (commit_oid, finalized_ref_name) =
+                    match checkpoint.borrow_mut().as_mut().map(|store| {
+                        let ref_name = store.ref_name().to_owned();
+                        store
+                            .finalize_checkpoint(&prompt_text, &summary, &stop_reason_str)
+                            .map(|oid| (oid, ref_name))
+                    }) {
+                        Some(Ok((oid, ref_name))) => (Some(oid), Some(ref_name)),
+                        Some(Err(e)) => {
+                            tracing::warn!("checkpoint finalize failed: {e}");
+                            (None, None)
+                        }
+                        None => (None, None),
+                    };
+
+                // Auto-push the session ref in a background thread if enabled.
+                if config.auto_push {
+                    if let Some(ref_name) = finalized_ref_name {
+                        let repo_path = config.workspace_root.clone();
+                        let remote = config.push_remote.clone();
+                        let push_event_tx = event_tx.clone();
+                        std::thread::Builder::new()
+                            .name("push-ref".into())
+                            .spawn(move || {
+                                if let Err(e) =
+                                    crate::git::push_ref(&repo_path, &remote, &ref_name)
+                                {
+                                    tracing::warn!("auto-push failed for {ref_name}: {e}");
+                                    let _ =
+                                        push_event_tx.send(SessionEvent::PushFailed {
+                                            ref_name,
+                                            error: e.to_string(),
+                                        });
+                                }
+                            })
+                            .ok();
                     }
-                    None => None,
-                };
+                }
 
                 let _ = event_tx.send(SessionEvent::TurnComplete {
                     stop_reason: response.stop_reason,

@@ -66,6 +66,10 @@ pub struct App<'a> {
     pub current_mode: Option<String>,
     /// One-shot fork context appended to the next submitted prompt.
     pub pending_fork_message: Option<String>,
+    /// Whether to auto-push session refs after each checkpoint.
+    pub auto_push: bool,
+    /// Git remote name for auto-push.
+    pub push_remote: String,
 }
 
 impl<'a> App<'a> {
@@ -101,6 +105,8 @@ impl<'a> App<'a> {
             current_model: None,
             current_mode: None,
             pending_fork_message: None,
+            auto_push: false,
+            push_remote: String::from("origin"),
         }
     }
 
@@ -208,6 +214,11 @@ impl<'a> App<'a> {
                     self.messages
                         .push(Message::System(format!("Checkpoint: {}", oid.short())));
                 }
+            }
+            SessionEvent::PushFailed { ref_name, error } => {
+                self.messages.push(Message::System(format!(
+                    "Warning: failed to push {ref_name}: {error}"
+                )));
             }
             SessionEvent::Stderr(line) => {
                 self.stderr_lines.push(line);

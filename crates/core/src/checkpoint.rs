@@ -50,6 +50,11 @@ impl CheckpointStore {
         &self.session_id
     }
 
+    /// Return the full ref name (e.g. `refs/agent/sessions/<session-id>`).
+    pub fn ref_name(&self) -> &str {
+        &self.ref_name
+    }
+
     /// Create the initial checkpoint commit for a new turn.
     ///
     /// Captures the full working directory state into a tree and writes a
