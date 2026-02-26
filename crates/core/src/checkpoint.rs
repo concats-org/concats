@@ -31,6 +31,21 @@ impl CheckpointStore {
         }
     }
 
+    /// Create a checkpoint store with a specific turn count.
+    ///
+    /// Used by hook handlers to reconstruct state from a persisted turn count
+    /// across separate process invocations.
+    pub fn new_with_turn_count(repo_path: PathBuf, session_id: String, turn_count: u32) -> Self {
+        let ref_name = format!("refs/agent/sessions/{session_id}");
+        Self {
+            repo_path,
+            session_id,
+            ref_name,
+            turn_count,
+            fork_parent: None,
+        }
+    }
+
     /// Create a checkpoint store that forks from an existing commit.
     ///
     /// The first checkpoint will be parented from `fork_from_oid` instead of HEAD.

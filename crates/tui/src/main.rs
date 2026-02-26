@@ -7,7 +7,7 @@ mod ui;
 use std::io;
 use std::path::PathBuf;
 
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use crossterm::ExecutableCommand;
 use crossterm::event::{
     DisableMouseCapture, EnableMouseCapture, Event, EventStream, KeyCode, KeyModifiers,
@@ -29,15 +29,45 @@ use crate::input::InputAction;
 use crate::tabs::Tab;
 
 #[derive(Parser)]
-#[command(about = "TUI for interacting with an ACP-compatible coding agent")]
+#[command(about = "Catena – git-native session history for coding agents")]
 struct Cli {
-    /// Agent to use (name from config or ACP registry).
-    /// If the agent is not in your config, it will be fetched from the registry.
-    agent: Option<String>,
+    #[command(subcommand)]
+    command: Option<Commands>,
+}
 
-    /// Workspace root directory (defaults to current directory).
-    #[arg(short, long)]
-    workspace: Option<PathBuf>,
+#[derive(Subcommand)]
+enum Commands {
+    /// Launch the TUI for interacting with an ACP-compatible coding agent.
+    Run {
+        /// Agent to use (name from config or ACP registry).
+        agent: Option<String>,
+
+        /// Workspace root directory (defaults to current directory).
+        #[arg(short, long)]
+        workspace: Option<PathBuf>,
+    },
+
+    /// Handle a Claude Code hook event (reads JSON from stdin).
+    Hook {
+        /// The hook event name (UserPromptSubmit, PostToolUse, Stop).
+        event: String,
+    },
+
+    /// Manage Claude Code hook integration.
+    Hooks {
+        #[command(subcommand)]
+        action: HooksAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum HooksAction {
+    /// Install concats hooks into .claude/settings.json.
+    Install {
+        /// Project root directory (defaults to current directory).
+        #[arg(short, long)]
+        path: Option<PathBuf>,
+    },
 }
 
 fn main() -> miette::Result<()> {
@@ -52,9 +82,75 @@ fn main() -> miette::Result<()> {
 
     let cli = Cli::parse();
 
+    match cli.command {
+        Some(Commands::Hook { event }) => run_hook_command(&event),
+        Some(Commands::Hooks { action }) => run_hooks_action(action),
+        Some(Commands::Run { agent, workspace }) => run_tui_command(agent, workspace),
+        // Default to `run` when no subcommand is given (backwards compat).
+        None => run_tui_command(None, None),
+    }
+}
+
+// ── Hook command ────────────────────────────────────────────────────
+
+fn run_hook_command(event: &str) -> miette::Result<()> {
+    let stdin = io::read_to_string(io::stdin())
+        .map_err(|e| miette::miette!("failed to read stdin: {e}"))?;
+
+    match event {
+        "UserPromptSubmit" => {
+            let payload: concats_core::hook::UserPromptSubmitPayload =
+                serde_json::from_str(&stdin)
+                    .map_err(|e| miette::miette!("invalid UserPromptSubmit payload: {e}"))?;
+            concats_core::hook::handle_user_prompt_submit(&payload)
+                .map_err(|e| miette::miette!("{e}"))?;
+        }
+        "PostToolUse" => {
+            let payload: concats_core::hook::PostToolUsePayload = serde_json::from_str(&stdin)
+                .map_err(|e| miette::miette!("invalid PostToolUse payload: {e}"))?;
+            concats_core::hook::handle_post_tool_use(&payload)
+                .map_err(|e| miette::miette!("{e}"))?;
+        }
+        "Stop" => {
+            let payload: concats_core::hook::StopPayload = serde_json::from_str(&stdin)
+                .map_err(|e| miette::miette!("invalid Stop payload: {e}"))?;
+            concats_core::hook::handle_stop(&payload).map_err(|e| miette::miette!("{e}"))?;
+        }
+        _ => {
+            return Err(miette::miette!(
+                "unknown hook event: {event}. Expected one of: UserPromptSubmit, PostToolUse, Stop"
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+// ── Hooks management ────────────────────────────────────────────────
+
+fn run_hooks_action(action: HooksAction) -> miette::Result<()> {
+    match action {
+        HooksAction::Install { path } => {
+            let project_root =
+                path.unwrap_or_else(|| std::env::current_dir().expect("cannot determine cwd"));
+            let binary_name = std::env::current_exe()
+                .ok()
+                .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+                .unwrap_or_else(|| "concats".into());
+            concats_core::hook::install_hooks(&project_root, &binary_name)
+                .map_err(|e| miette::miette!("{e}"))?;
+            eprintln!("hooks installed in {}", project_root.join(".claude/settings.json").display());
+            Ok(())
+        }
+    }
+}
+
+// ── TUI command (original main logic) ───────────────────────────────
+
+fn run_tui_command(agent: Option<String>, workspace: Option<PathBuf>) -> miette::Result<()> {
     let cli_args = ConfigCliArgs {
-        default_agent: cli.agent.clone(),
-        workspace: cli.workspace.clone(),
+        default_agent: agent.clone(),
+        workspace: workspace.clone(),
     };
 
     let mut config = load_config(&cli_args)?;
@@ -66,10 +162,9 @@ fn main() -> miette::Result<()> {
         .map_err(|e| miette::miette!("failed to build runtime: {e}"))?;
 
     // Resolve which agent to use.
-    let agent_id = cli
-        .agent
+    let agent_id = agent
         .or(config.default_agent.clone())
-        .ok_or_else(|| miette::miette!("no agent specified. Usage: tui <agent-name>"))?;
+        .ok_or_else(|| miette::miette!("no agent specified. Usage: concats run <agent-name>"))?;
 
     // Look up the agent in config; if missing, try to install from registry.
     if resolve_agent_id(&agent_id, &config).is_none() {

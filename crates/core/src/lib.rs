@@ -4,6 +4,7 @@ pub mod client;
 pub mod error;
 pub mod fs;
 pub mod git;
+pub mod hook;
 pub mod notification;
 pub mod permission;
 pub mod session;
