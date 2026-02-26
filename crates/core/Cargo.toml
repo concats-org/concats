@@ -1,0 +1,27 @@
+[package]
+name = "core"
+publish.workspace = true
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[lib]
+name = "concats_core"
+path = "src/lib.rs"
+
+[dependencies]
+agent-client-protocol = "0.9.4"
+async-trait = { workspace = true }
+futures-util = { workspace = true }
+git2 = { workspace = true }
+miette = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+mockall = { workspace = true }
+proptest = { workspace = true }
+tempfile = { workspace = true }

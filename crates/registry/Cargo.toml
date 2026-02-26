@@ -1,0 +1,17 @@
+[package]
+name = "registry"
+publish.workspace = true
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[lib]
+name = "concats_registry"
+path = "src/lib.rs"
+
+[dependencies]
+concats_config = { package = "config", path = "../config" }
+miette = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+tracing = { workspace = true }
