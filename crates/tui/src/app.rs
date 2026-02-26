@@ -313,3 +313,84 @@ fn current_select_label(option: &SessionConfigOption) -> Option<String> {
         _ => Some(select.current_value.to_string()),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use agent_client_protocol::{SessionNotification, StopReason};
+    use catena_core::session::SessionEvent;
+    use pretty_assertions::assert_eq;
+    use serde_json::json;
+    use std::path::PathBuf;
+    use tokio::sync::mpsc;
+
+    fn create_test_session() -> SessionHandle {
+        let (prompt_tx, _) = mpsc::channel(1);
+        let (_, event_rx) = mpsc::unbounded_channel();
+        let (cancel_tx, _) = mpsc::channel(1);
+        SessionHandle {
+            prompt_tx,
+            event_rx,
+            cancel_tx,
+        }
+    }
+
+    #[test]
+    fn test_app_initial_state() {
+        let session = create_test_session();
+        let workspace = PathBuf::from("/tmp");
+        let app = App::new(session, workspace);
+
+        assert_eq!(app.status, "connected");
+        assert_eq!(app.waiting, false);
+        assert_eq!(app.messages.len(), 1);
+        match &app.messages[0] {
+            Message::System(s) => assert!(s.contains("Session started")),
+            _ => panic!("Expected system message"),
+        }
+        assert_eq!(app.active_tab, Tab::Agent);
+    }
+
+    #[test]
+    fn test_app_switch_tab() {
+        let session = create_test_session();
+        let workspace = PathBuf::from("/tmp");
+        let mut app = App::new(session, workspace);
+
+        app.switch_tab(Tab::Sessions);
+        assert_eq!(app.active_tab, Tab::Sessions);
+
+        app.switch_tab(Tab::Agent);
+        assert_eq!(app.active_tab, Tab::Agent);
+    }
+
+    #[test]
+    fn test_handle_turn_complete() {
+        let session = create_test_session();
+        let mut app = App::new(session, PathBuf::from("/tmp"));
+        app.waiting = true;
+
+        let event = SessionEvent::TurnComplete {
+            stop_reason: StopReason::EndTurn,
+            commit_oid: None,
+        };
+
+        app.handle_session_event(event);
+
+        assert_eq!(app.waiting, false);
+        assert!(app.status.contains("done"));
+    }
+
+    #[test]
+    fn test_handle_stderr() {
+        let session = create_test_session();
+        let mut app = App::new(session, PathBuf::from("/tmp"));
+        assert_eq!(app.show_stderr, false);
+
+        app.handle_session_event(SessionEvent::Stderr("debug log".into()));
+
+        assert_eq!(app.stderr_lines.len(), 1);
+        assert_eq!(app.stderr_lines[0], "debug log");
+        assert_eq!(app.show_stderr, true);
+    }
+}

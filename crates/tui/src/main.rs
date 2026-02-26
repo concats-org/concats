@@ -1,9 +1,3 @@
-mod app;
-mod input;
-mod sessions_ui;
-mod tabs;
-mod ui;
-
 use std::io;
 use std::path::PathBuf;
 
@@ -25,8 +19,9 @@ use concats_config::{ConfigCliArgs, load_config, save_config};
 use concats_core::session::{SessionConfig, start_session};
 use concats_registry::{fetch_registry, install_agents};
 
-use crate::input::InputAction;
-use crate::tabs::Tab;
+use tui::input::InputAction;
+use tui::tabs::Tab;
+use tui::{app, input, tabs, ui};
 
 #[derive(Parser)]
 #[command(about = "Catena – git-native session history for coding agents")]

@@ -57,3 +57,55 @@ pub struct AgentConfig {
     #[serde(default)]
     pub env: HashMap<String, String>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pretty_assertions::assert_eq;
+
+    #[test]
+    fn test_config_serialization() {
+        let mut agents = HashMap::new();
+        agents.insert(
+            "claude".to_string(),
+            AgentConfig {
+                name: "Claude".to_string(),
+                command: "claude-acp".to_string(),
+                args: vec!["--debug".to_string()],
+                env: {
+                    let mut m = HashMap::new();
+                    m.insert("API_KEY".to_string(), "sk-123".to_string());
+                    m
+                },
+            },
+        );
+
+        let config = Config {
+            default_agent: Some("claude".to_string()),
+            agents,
+            workspace: Some(PathBuf::from("/work")),
+            sync: SyncConfig::default(),
+        };
+
+        let toml_str = toml::to_string_pretty(&config).unwrap();
+        let decoded: Config = toml::from_str(&toml_str).unwrap();
+
+        assert_eq!(config.default_agent, decoded.default_agent);
+        assert_eq!(config.workspace, decoded.workspace);
+        assert_eq!(config.agents.len(), decoded.agents.len());
+        assert_eq!(
+            config.agents["claude"].command,
+            decoded.agents["claude"].command
+        );
+    }
+
+    #[test]
+    fn test_config_defaults() {
+        let toml_str = "";
+        let decoded: Config = toml::from_str(toml_str).unwrap();
+
+        assert_eq!(decoded.default_agent, None);
+        assert_eq!(decoded.workspace, None);
+        assert!(decoded.agents.is_empty());
+    }
+}
