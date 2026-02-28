@@ -176,13 +176,50 @@ impl CheckpointStore {
 
     /// Build a tree object from the working directory state.
     ///
-    /// Loads the repo's index into memory, runs `add_all` to capture the
-    /// current workdir, then writes the tree to the ODB via `write_tree()`.
-    /// Crucially, we never call `index.write()`, so the on-disk index file
-    /// (the user's staged changes) is left untouched.
+    /// Walk the working directory, respecting `.gitignore`, `.git/info/exclude`,
+    /// and global gitignore rules. Dotfiles are included so that configs
+    /// like `.eslintrc`, `.prettierrc`, `.editorconfig` are captured.
+    /// NOTE: `.claude/worktrees/` is explicitly filtered out as it may contain nested
+    /// git state and may be modified by other agents which leads to trouble.
+    ///
+    /// NOTE: Never call `index.write()`, so the on-disk index (the user's staged
+    /// changes) is left untouched.
     fn build_tree_from_workdir(&self, repo: &git2::Repository) -> Result<git2::Oid> {
         let mut index = repo.index()?;
-        index.add_all(["*"], git2::IndexAddOption::DEFAULT, None)?;
+        index.clear()?;
+
+        let workdir = repo
+            .workdir()
+            .ok_or_else(|| crate::error::Error::session("bare repository not supported"))?;
+
+        let walker = ignore::WalkBuilder::new(workdir)
+            .hidden(false)
+            .git_ignore(true)
+            .git_exclude(true)
+            .git_global(true)
+            .filter_entry(|entry| {
+                !entry
+                    .path()
+                    .ancestors()
+                    .any(|a| a.ends_with(".claude/worktrees"))
+            })
+            .build();
+
+        for result in walker {
+            let entry = match result {
+                Ok(e) => e,
+                Err(_) => continue, // vanished mid-walk, skip
+            };
+            // Skip directories — only add files
+            if entry.file_type().map_or(true, |ft| !ft.is_file()) {
+                continue;
+            }
+            if let Ok(rel) = entry.path().strip_prefix(workdir) {
+                // Silently skip individual failures (e.g. file vanished)
+                let _ = index.add_path(rel);
+            }
+        }
+
         let oid = index.write_tree()?;
         Ok(oid)
     }
@@ -498,5 +535,126 @@ mod tests {
         let repo = git2::Repository::open(dir.path()).unwrap();
         assert!(repo.find_reference("refs/agent/sessions/session-a").is_ok());
         assert!(repo.find_reference("refs/agent/sessions/session-b").is_ok());
+    }
+
+    #[test]
+    fn gitignored_files_excluded_from_tree() {
+        let dir = tempfile::tempdir().unwrap();
+        init_repo_with_commit(dir.path());
+
+        // Create a .gitignore that excludes target/ and *.log
+        fs::write(dir.path().join(".gitignore"), "target/\n*.log\n").unwrap();
+        fs::create_dir_all(dir.path().join("target/debug")).unwrap();
+        fs::write(dir.path().join("target/debug/binary"), "ELF").unwrap();
+        fs::write(dir.path().join("build.log"), "some log output").unwrap();
+
+        // Also add a normal file that should be included.
+        fs::write(dir.path().join("src.rs"), "fn main() {}").unwrap();
+
+        let store = CheckpointStore::new(dir.path().to_path_buf(), "ignore-test".into());
+        store.create_checkpoint("test gitignore exclusion").unwrap();
+
+        let repo = git2::Repository::open(dir.path()).unwrap();
+        let tip = repo
+            .find_reference("refs/agent/sessions/ignore-test")
+            .unwrap()
+            .peel_to_commit()
+            .unwrap();
+        let tree = tip.tree().unwrap();
+
+        // src.rs should be present
+        assert!(
+            tree.get_name("src.rs").is_some(),
+            "src.rs should be in the tree"
+        );
+
+        // .gitignore itself is a dotfile but should be captured
+        assert!(
+            tree.get_name(".gitignore").is_some(),
+            ".gitignore should be in the tree"
+        );
+
+        // target/ and *.log should be excluded by .gitignore
+        assert!(
+            tree.get_name("target").is_none(),
+            "target/ should be excluded by .gitignore"
+        );
+        assert!(
+            tree.get_name("build.log").is_none(),
+            "build.log should be excluded by .gitignore"
+        );
+    }
+
+    #[test]
+    fn dotfiles_included_in_tree() {
+        let dir = tempfile::tempdir().unwrap();
+        init_repo_with_commit(dir.path());
+
+        // Create dotfiles that are typically tracked
+        fs::write(dir.path().join(".eslintrc"), "{}").unwrap();
+        fs::write(dir.path().join(".prettierrc"), "{}").unwrap();
+
+        let store = CheckpointStore::new(dir.path().to_path_buf(), "dotfile-test".into());
+        store.create_checkpoint("test dotfile inclusion").unwrap();
+
+        let repo = git2::Repository::open(dir.path()).unwrap();
+        let tip = repo
+            .find_reference("refs/agent/sessions/dotfile-test")
+            .unwrap()
+            .peel_to_commit()
+            .unwrap();
+        let tree = tip.tree().unwrap();
+
+        assert!(
+            tree.get_name(".eslintrc").is_some(),
+            ".eslintrc should be in the tree"
+        );
+        assert!(
+            tree.get_name(".prettierrc").is_some(),
+            ".prettierrc should be in the tree"
+        );
+    }
+
+    #[test]
+    fn worktree_paths_excluded_from_tree() {
+        let dir = tempfile::tempdir().unwrap();
+        init_repo_with_commit(dir.path());
+
+        // Simulate a Claude Code worktree with a nested .git file.
+        let wt_dir = dir.path().join(".claude/worktrees/some-worktree");
+        fs::create_dir_all(&wt_dir).unwrap();
+        fs::write(wt_dir.join(".git"), "gitdir: /tmp/fake").unwrap();
+        fs::write(wt_dir.join("file.txt"), "worktree file").unwrap();
+
+        // Also add a normal file that should be included.
+        fs::write(dir.path().join("real.txt"), "real content").unwrap();
+
+        let store = CheckpointStore::new(dir.path().to_path_buf(), "wt-test".into());
+        store.create_checkpoint("test worktree exclusion").unwrap();
+
+        // Verify the tree: real.txt should be present, worktree files should not.
+        let repo = git2::Repository::open(dir.path()).unwrap();
+        let tip = repo
+            .find_reference("refs/agent/sessions/wt-test")
+            .unwrap()
+            .peel_to_commit()
+            .unwrap();
+        let tree = tip.tree().unwrap();
+
+        assert!(
+            tree.get_name("real.txt").is_some(),
+            "real.txt should be in the tree"
+        );
+        // Walk the full tree to ensure no worktree paths leaked in.
+        let mut found_worktree = false;
+        tree.walk(git2::TreeWalkMode::PreOrder, |root, _entry| {
+            if root.contains("worktrees") {
+                found_worktree = true;
+                return git2::TreeWalkResult::Abort;
+            }
+            git2::TreeWalkResult::Ok
+        })
+        .unwrap();
+        assert!(!found_worktree, ".claude/worktrees/ should be excluded");
     }
 }
