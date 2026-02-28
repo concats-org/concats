@@ -9,6 +9,18 @@ use crate::error::Result;
 // ── Claude Code hook payloads (deserialized from stdin JSON) ─────────
 
 #[derive(Debug, Deserialize)]
+pub struct SessionStartPayload {
+    pub session_id: String,
+    #[serde(default)]
+    pub cwd: Option<String>,
+    #[serde(default)]
+    pub transcript_path: Option<String>,
+    /// How the session was initiated: "startup", "resume", "clear", "compact".
+    #[serde(default)]
+    pub source: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
 pub struct UserPromptSubmitPayload {
     pub session_id: String,
     pub prompt: String,
@@ -83,6 +95,19 @@ pub fn save_state(repo_path: &Path, state: &HookSessionState) -> Result<()> {
 
 // ── Event handlers ──────────────────────────────────────────────────
 
+/// Handle the `SessionStart` hook event.
+///
+/// Ensures session state exists so that subsequent `PostToolUse` and `Stop`
+/// events always find an initialized session. Fires on startup, resume,
+/// `/clear`, and compaction — covering every path that could reset state.
+pub fn handle_session_start(payload: &SessionStartPayload) -> Result<()> {
+    let repo_path = find_repo_root(payload.cwd.as_deref())?;
+    if load_state(&repo_path, &payload.session_id)?.is_none() {
+        init_session_state(&repo_path, &payload.session_id)?;
+    }
+    Ok(())
+}
+
 /// Handle the `UserPromptSubmit` hook event.
 ///
 /// Creates or loads session state, then creates an initial checkpoint commit.
@@ -113,10 +138,24 @@ pub fn handle_user_prompt_submit(payload: &UserPromptSubmitPayload) -> Result<()
 /// Handle the `PostToolUse` hook event (Write/Edit tools).
 ///
 /// Amends the current checkpoint to capture file changes.
+/// If no session state exists yet (e.g. `UserPromptSubmit` was never fired),
+/// lazily initializes the session with a checkpoint so later events work.
 pub fn handle_post_tool_use(payload: &PostToolUsePayload) -> Result<()> {
     let repo_path = find_repo_root(payload.cwd.as_deref())?;
-    let state = load_state(&repo_path, &payload.session_id)?
-        .ok_or_else(|| crate::error::Error::session("no hook state found for session"))?;
+    let state = match load_state(&repo_path, &payload.session_id)? {
+        Some(s) => s,
+        None => {
+            let state = init_session_state(&repo_path, &payload.session_id)?;
+            // After init, amend captures the current workdir into the new checkpoint.
+            let store = CheckpointStore::new_with_turn_count(
+                repo_path,
+                state.session_id.clone(),
+                state.turn_count,
+            );
+            store.amend_checkpoint()?;
+            return Ok(());
+        }
+    };
 
     let store = CheckpointStore::new_with_turn_count(
         repo_path,
@@ -132,10 +171,14 @@ pub fn handle_post_tool_use(payload: &PostToolUsePayload) -> Result<()> {
 ///
 /// Finalizes the checkpoint with the prompt, response summary, and stop reason,
 /// then increments the turn count.
+/// If no session state exists yet, lazily initializes the session so we still
+/// record the stop event.
 pub fn handle_stop(payload: &StopPayload) -> Result<()> {
     let repo_path = find_repo_root(payload.cwd.as_deref())?;
-    let state = load_state(&repo_path, &payload.session_id)?
-        .ok_or_else(|| crate::error::Error::session("no hook state found for session"))?;
+    let state = match load_state(&repo_path, &payload.session_id)? {
+        Some(s) => s,
+        None => init_session_state(&repo_path, &payload.session_id)?,
+    };
 
     let mut store = CheckpointStore::new_with_turn_count(
         PathBuf::from(&state.repo_path),
@@ -166,6 +209,29 @@ pub fn handle_stop(payload: &StopPayload) -> Result<()> {
     save_state(&PathBuf::from(&updated.repo_path), &updated)?;
 
     Ok(())
+}
+
+/// Lazily initialize session state and create an initial checkpoint.
+///
+/// Called when `PostToolUse` or `Stop` fires but no prior `UserPromptSubmit`
+/// created the state (e.g. after `/clear` or when the session was started
+/// externally).
+fn init_session_state(repo_path: &Path, session_id: &str) -> Result<HookSessionState> {
+    let store = CheckpointStore::new_with_turn_count(
+        repo_path.to_path_buf(),
+        session_id.to_string(),
+        0,
+    );
+    store.create_checkpoint("(session joined mid-flight)")?;
+
+    let state = HookSessionState {
+        session_id: session_id.to_string(),
+        turn_count: 0,
+        current_prompt: String::new(),
+        repo_path: repo_path.to_string_lossy().into_owned(),
+    };
+    save_state(repo_path, &state)?;
+    Ok(state)
 }
 
 // ── Transcript parsing ──────────────────────────────────────────────
@@ -232,6 +298,22 @@ pub fn install_hooks(project_root: &Path, binary_name: &str) -> Result<()> {
     let hooks_obj = hooks
         .as_object_mut()
         .ok_or_else(|| crate::error::Error::session("hooks is not an object"))?;
+
+    // SessionStart (fires on startup, resume, /clear, compact)
+    hooks_obj.insert(
+        "SessionStart".into(),
+        serde_json::json!([
+            {
+                "matcher": "",
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": format!("{binary_name} hook SessionStart")
+                    }
+                ]
+            }
+        ]),
+    );
 
     // UserPromptSubmit
     hooks_obj.insert(
@@ -326,6 +408,77 @@ mod tests {
                 .unwrap();
         }
         repo
+    }
+
+    #[test]
+    fn session_start_initializes_state() {
+        let dir = tempfile::tempdir().unwrap();
+        init_repo_with_commit(dir.path());
+        let repo_path = dir.path().to_path_buf();
+        let session_id = "session-start-test";
+
+        // SessionStart should create state even without a prompt.
+        handle_session_start(&SessionStartPayload {
+            session_id: session_id.into(),
+            cwd: Some(dir.path().to_string_lossy().into_owned()),
+            transcript_path: None,
+            source: Some("startup".into()),
+        })
+        .unwrap();
+
+        // State file should exist.
+        let state = load_state(&repo_path, session_id).unwrap().unwrap();
+        assert_eq!(state.turn_count, 0);
+
+        // Session ref should exist.
+        let repo = git2::Repository::open(dir.path()).unwrap();
+        let ref_name = format!("refs/agent/sessions/{session_id}");
+        assert!(repo.find_reference(&ref_name).is_ok());
+    }
+
+    #[test]
+    fn session_start_is_idempotent() {
+        let dir = tempfile::tempdir().unwrap();
+        init_repo_with_commit(dir.path());
+        let repo_path = dir.path().to_path_buf();
+        let session_id = "idempotent-test";
+        let cwd = Some(dir.path().to_string_lossy().into_owned());
+
+        // Run a full turn first.
+        handle_session_start(&SessionStartPayload {
+            session_id: session_id.into(),
+            cwd: cwd.clone(),
+            transcript_path: None,
+            source: Some("startup".into()),
+        })
+        .unwrap();
+        handle_user_prompt_submit(&UserPromptSubmitPayload {
+            session_id: session_id.into(),
+            prompt: "do something".into(),
+            cwd: cwd.clone(),
+            transcript_path: None,
+        })
+        .unwrap();
+        handle_stop(&StopPayload {
+            session_id: session_id.into(),
+            stop_reason: Some("end_turn".into()),
+            transcript_path: None,
+            cwd: cwd.clone(),
+            last_assistant_message: Some("done".into()),
+        })
+        .unwrap();
+
+        // SessionStart again (e.g. after /clear) should NOT reset turn_count.
+        handle_session_start(&SessionStartPayload {
+            session_id: session_id.into(),
+            cwd: cwd.clone(),
+            transcript_path: None,
+            source: Some("clear".into()),
+        })
+        .unwrap();
+
+        let state = load_state(&repo_path, session_id).unwrap().unwrap();
+        assert_eq!(state.turn_count, 1, "turn_count should be preserved");
     }
 
     #[test]
@@ -464,6 +617,7 @@ mod tests {
         let data = fs::read_to_string(&settings_path).unwrap();
         let settings: serde_json::Value = serde_json::from_str(&data).unwrap();
 
+        assert!(settings["hooks"]["SessionStart"].is_array());
         assert!(settings["hooks"]["UserPromptSubmit"].is_array());
         assert!(settings["hooks"]["PostToolUse"].is_array());
         assert!(settings["hooks"]["Stop"].is_array());
@@ -545,6 +699,60 @@ mod tests {
         assert_eq!(turns[0].response_summary, "first response");
         assert_eq!(turns[1].turn_number, 1);
         assert_eq!(turns[1].prompt, "second prompt");
+    }
+
+    #[test]
+    fn stop_without_prior_submit_initializes_session() {
+        let dir = tempfile::tempdir().unwrap();
+        init_repo_with_commit(dir.path());
+        let repo_path = dir.path().to_path_buf();
+        let session_id = "orphan-stop";
+
+        // Stop fires without any prior UserPromptSubmit — should not error.
+        handle_stop(&StopPayload {
+            session_id: session_id.into(),
+            stop_reason: Some("end_turn".into()),
+            transcript_path: None,
+            cwd: Some(dir.path().to_string_lossy().into_owned()),
+            last_assistant_message: Some("response without prompt".into()),
+        })
+        .unwrap();
+
+        // State file should have been created with turn_count incremented to 1.
+        let state = load_state(&repo_path, session_id).unwrap().unwrap();
+        assert_eq!(state.turn_count, 1);
+
+        // Session ref should exist.
+        let repo = git2::Repository::open(dir.path()).unwrap();
+        let ref_name = format!("refs/agent/sessions/{session_id}");
+        assert!(repo.find_reference(&ref_name).is_ok());
+    }
+
+    #[test]
+    fn post_tool_use_without_prior_submit_initializes_session() {
+        let dir = tempfile::tempdir().unwrap();
+        init_repo_with_commit(dir.path());
+        let repo_path = dir.path().to_path_buf();
+        let session_id = "orphan-tool-use";
+
+        // Write a file, then fire PostToolUse without prior UserPromptSubmit.
+        fs::write(dir.path().join("new.txt"), "content").unwrap();
+        handle_post_tool_use(&PostToolUsePayload {
+            session_id: session_id.into(),
+            tool_name: "Write".into(),
+            cwd: Some(dir.path().to_string_lossy().into_owned()),
+            transcript_path: None,
+        })
+        .unwrap();
+
+        // State file should have been created.
+        let state = load_state(&repo_path, session_id).unwrap().unwrap();
+        assert_eq!(state.turn_count, 0);
+
+        // Session ref should exist.
+        let repo = git2::Repository::open(dir.path()).unwrap();
+        let ref_name = format!("refs/agent/sessions/{session_id}");
+        assert!(repo.find_reference(&ref_name).is_ok());
     }
 
     #[test]

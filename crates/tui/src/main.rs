@@ -44,7 +44,7 @@ enum Commands {
 
     /// Handle a Claude Code hook event (reads JSON from stdin).
     Hook {
-        /// The hook event name (UserPromptSubmit, PostToolUse, Stop).
+        /// The hook event name (SessionStart, UserPromptSubmit, PostToolUse, Stop).
         event: String,
     },
 
@@ -93,10 +93,15 @@ fn run_hook_command(event: &str) -> miette::Result<()> {
         .map_err(|e| miette::miette!("failed to read stdin: {e}"))?;
 
     match event {
+        "SessionStart" => {
+            let payload: concats_core::hook::SessionStartPayload = serde_json::from_str(&stdin)
+                .map_err(|e| miette::miette!("invalid SessionStart payload: {e}"))?;
+            concats_core::hook::handle_session_start(&payload)
+                .map_err(|e| miette::miette!("{e}"))?;
+        }
         "UserPromptSubmit" => {
-            let payload: concats_core::hook::UserPromptSubmitPayload =
-                serde_json::from_str(&stdin)
-                    .map_err(|e| miette::miette!("invalid UserPromptSubmit payload: {e}"))?;
+            let payload: concats_core::hook::UserPromptSubmitPayload = serde_json::from_str(&stdin)
+                .map_err(|e| miette::miette!("invalid UserPromptSubmit payload: {e}"))?;
             concats_core::hook::handle_user_prompt_submit(&payload)
                 .map_err(|e| miette::miette!("{e}"))?;
         }
@@ -113,7 +118,7 @@ fn run_hook_command(event: &str) -> miette::Result<()> {
         }
         _ => {
             return Err(miette::miette!(
-                "unknown hook event: {event}. Expected one of: UserPromptSubmit, PostToolUse, Stop"
+                "unknown hook event: {event}. Expected one of: SessionStart, UserPromptSubmit, PostToolUse, Stop"
             ));
         }
     }
@@ -134,7 +139,10 @@ fn run_hooks_action(action: HooksAction) -> miette::Result<()> {
                 .unwrap_or_else(|| "concats".into());
             concats_core::hook::install_hooks(&project_root, &binary_name)
                 .map_err(|e| miette::miette!("{e}"))?;
-            eprintln!("hooks installed in {}", project_root.join(".claude/settings.json").display());
+            eprintln!(
+                "hooks installed in {}",
+                project_root.join(".claude/settings.json").display()
+            );
             Ok(())
         }
     }
