@@ -19,12 +19,13 @@ use concats_config::{ConfigCliArgs, load_config, save_config};
 use concats_core::session::{SessionConfig, start_session};
 use concats_registry::{fetch_registry, install_agents};
 
-use tui::input::InputAction;
-use tui::tabs::Tab;
-use tui::{app, input, tabs, ui};
+use tui::app::{self, AgentPickerState};
+use tui::input::{self, InputAction};
+use tui::tabs::{ActiveTab, ClickTarget};
+use tui::ui;
 
 #[derive(Parser)]
-#[command(about = "Catena – git-native session history for coding agents")]
+#[command(about = "Concats \u{2013} git-native session history for coding agents")]
 struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
@@ -86,7 +87,7 @@ fn main() -> miette::Result<()> {
     }
 }
 
-// ── Hook command ────────────────────────────────────────────────────
+// -- Hook command ────────────────────────────────────────────────────
 
 fn run_hook_command(event: &str) -> miette::Result<()> {
     let stdin = io::read_to_string(io::stdin())
@@ -126,7 +127,7 @@ fn run_hook_command(event: &str) -> miette::Result<()> {
     Ok(())
 }
 
-// ── Hooks management ────────────────────────────────────────────────
+// -- Hooks management ────────────────────────────────────────────────
 
 fn run_hooks_action(action: HooksAction) -> miette::Result<()> {
     match action {
@@ -148,7 +149,7 @@ fn run_hooks_action(action: HooksAction) -> miette::Result<()> {
     }
 }
 
-// ── TUI command (original main logic) ───────────────────────────────
+// -- TUI command (original main logic) ───────────────────────────────
 
 fn run_tui_command(agent: Option<String>, workspace: Option<PathBuf>) -> miette::Result<()> {
     let cli_args = ConfigCliArgs {
@@ -185,12 +186,23 @@ fn run_tui_command(agent: Option<String>, workspace: Option<PathBuf>) -> miette:
         )
     })?;
 
-    let agent_config = &config.agents[&resolved_id];
+    let agent_config = config.agents[&resolved_id].clone();
 
     let workspace_root = config
         .workspace
         .clone()
         .unwrap_or_else(|| std::env::current_dir().expect("could not determine current directory"));
+
+    // Build the list of available agents for the picker.
+    let mut available_agents: Vec<(String, concats_config::AgentConfig)> = config
+        .agents
+        .iter()
+        .map(|(id, cfg)| (id.clone(), cfg.clone()))
+        .collect();
+    available_agents.sort_by(|a, b| a.0.cmp(&b.0));
+
+    let auto_push = config.sync.auto_push;
+    let push_remote = config.sync.remote.clone();
 
     let session_config = SessionConfig {
         agent_command: agent_config.command.clone(),
@@ -198,21 +210,19 @@ fn run_tui_command(agent: Option<String>, workspace: Option<PathBuf>) -> miette:
         workspace_root: workspace_root.clone(),
         env: agent_config.env.clone(),
         fork_from: None,
-        auto_push: config.sync.auto_push,
-        push_remote: config.sync.remote.clone(),
+        auto_push,
+        push_remote: push_remote.clone(),
     };
 
-    // Start the session (spawns a dedicated thread).
+    // Start the initial session (spawns a dedicated thread).
     let session = start_session(session_config).map_err(|e| miette::miette!("{e}"))?;
-
-    let auto_push = config.sync.auto_push;
-    let push_remote = config.sync.remote.clone();
 
     rt.block_on(run_tui(
         session,
         workspace_root,
-        agent_config.clone(),
+        agent_config,
         resolved_id,
+        available_agents,
         auto_push,
         push_remote,
     ))?;
@@ -269,10 +279,11 @@ async fn sync_registry(config: &mut concats_config::model::Config) -> miette::Re
 }
 
 async fn run_tui(
-    session: catena_core::session::SessionHandle,
+    initial_session: concats_core::session::SessionHandle,
     workspace_root: PathBuf,
-    agent_config: catena_config::AgentConfig,
+    initial_agent_config: concats_config::AgentConfig,
     resolved_agent_id: String,
+    available_agents: Vec<(String, concats_config::AgentConfig)>,
     auto_push: bool,
     push_remote: String,
 ) -> miette::Result<()> {
@@ -289,17 +300,23 @@ async fn run_tui(
     let mut terminal =
         Terminal::new(backend).map_err(|e| miette::miette!("failed to create terminal: {e}"))?;
 
-    let mut app = app::App::new(session, workspace_root.clone());
-    app.agent_command = agent_config.command.clone();
-    app.agent_args = agent_config.args.clone();
-    app.agent_env = agent_config.env.clone();
-    app.agent_label = if !agent_config.name.trim().is_empty() {
-        agent_config.name
-    } else {
-        resolved_agent_id
-    };
+    let mut app = app::App::new(workspace_root, available_agents);
     app.auto_push = auto_push;
     app.push_remote = push_remote;
+
+    // Add the initial session as the first tab.
+    let initial_label = if initial_agent_config.name.trim().is_empty() {
+        resolved_agent_id.clone()
+    } else {
+        initial_agent_config.name.clone()
+    };
+    let initial_id = app.add_session(
+        initial_session,
+        initial_label,
+        &resolved_agent_id,
+        &initial_agent_config,
+    );
+    app.switch_tab(ActiveTab::Session(initial_id));
 
     let result = event_loop(&mut terminal, &mut app).await;
 
@@ -330,11 +347,12 @@ async fn event_loop(
             needs_draw = false;
         }
 
-        // Poll for crossterm events and session events.
+        // Poll for crossterm events and session events via fan-in channel.
         tokio::select! {
             // Tick for spinner animation.
             _ = tick_interval.tick() => {
-                if app.waiting {
+                let any_waiting = app.session_tabs.iter().any(|t| t.waiting);
+                if any_waiting {
                     app.tick = app.tick.wrapping_add(1);
                     needs_draw = true;
                 }
@@ -343,24 +361,29 @@ async fn event_loop(
             maybe_event = reader.next() => {
                 match maybe_event {
                     Some(Ok(Event::Key(key))) => {
+                        let is_session_tab = matches!(app.active_tab, ActiveTab::Session(_));
                         let is_submit = key.code == KeyCode::Enter
                             && !key.modifiers.intersects(KeyModifiers::ALT | KeyModifiers::SHIFT)
-                            && !app.waiting
-                            && app.active_tab == Tab::Agent;
+                            && app.active_session().is_some_and(|t| !t.waiting)
+                            && is_session_tab
+                            && app.agent_picker.is_none();
                         if is_submit {
-                            app.send_prompt().await;
+                            if let Some(tab) = app.active_session_mut() {
+                                tab.send_prompt().await;
+                            }
                         } else if key.code == KeyCode::Enter
                             && key.modifiers.intersects(KeyModifiers::ALT | KeyModifiers::SHIFT)
-                            && !app.waiting
-                            && app.active_tab == Tab::Agent
+                            && app.active_session().is_some_and(|t| !t.waiting)
+                            && is_session_tab
+                            && app.agent_picker.is_none()
                         {
                             // Insert newline in textarea for Alt+Enter / Shift+Enter.
-                            app.textarea.insert_newline();
+                            if let Some(tab) = app.active_session_mut() {
+                                tab.textarea.insert_newline();
+                            }
                         } else {
                             let action = input::handle_key_event(app, key);
-                            if let InputAction::Fork = action {
-                                handle_fork(app).await;
-                            }
+                            handle_input_action(app, action).await;
                         }
                         needs_draw = true;
                     }
@@ -371,8 +394,18 @@ async fn event_loop(
                             MouseEventKind::Down(MouseButton::Left) => {
                                 // Check if click is on the tab/menu bar (last row).
                                 if mouse.row == size.height.saturating_sub(1) {
-                                    if let Some(tab) = tab_from_click(mouse.column, app) {
-                                        app.switch_tab(tab);
+                                    if let Some(target) = target_from_click(mouse.column, app) {
+                                        match target {
+                                            ClickTarget::SwitchTab(tab) => {
+                                                app.switch_tab(tab);
+                                            }
+                                            ClickTarget::CloseSession(id) => {
+                                                app.close_session(id);
+                                            }
+                                            ClickTarget::NewSession => {
+                                                handle_input_action(app, InputAction::NewSession).await;
+                                            }
+                                        }
                                     }
                                     needs_draw = true;
                                 }
@@ -405,14 +438,19 @@ async fn event_loop(
                     _ => {}
                 }
             }
-            // Check for session events.
-            session_event = app.session.event_rx.recv() => {
-                match session_event {
-                    Some(event) => app.handle_session_event(event),
-                    None => {
-                        // Session channel closed.
-                        app.status = "session ended".into();
-                        app.waiting = false;
+            // Check for session events via the fan-in channel.
+            session_event = app.session_event_rx.recv() => {
+                if let Some((tab_id, fan_in_event)) = session_event {
+                    if let Some(tab) = app.session_tabs.iter_mut().find(|t| t.id == tab_id) {
+                        match fan_in_event {
+                            app::FanInEvent::Session(event) => {
+                                tab.handle_session_event(event);
+                            }
+                            app::FanInEvent::ChannelClosed => {
+                                tab.waiting = false;
+                                tab.status = "session ended".into();
+                            }
+                        }
                     }
                 }
                 needs_draw = true;
@@ -427,12 +465,95 @@ async fn event_loop(
     Ok(())
 }
 
-/// Map an x-coordinate click on the tab/menu row to a Tab.
-fn tab_from_click(x: u16, app: &app::App<'_>) -> Option<Tab> {
+/// Handle an InputAction that requires async work or state changes.
+async fn handle_input_action(app: &mut app::App<'_>, action: InputAction) {
+    match action {
+        InputAction::None => {}
+        InputAction::Fork => {
+            handle_fork(app).await;
+        }
+        InputAction::NewSession => {
+            if app.available_agents.len() == 1 {
+                // Single agent -- create immediately.
+                create_session_from_agent(app, 0);
+            } else if app.available_agents.is_empty() {
+                // No agents configured.
+                if let Some(tab) = app.active_session_mut() {
+                    tab.messages
+                        .push(app::Message::System("No agents configured.".into()));
+                }
+            } else {
+                // Open the agent picker.
+                app.agent_picker = Some(AgentPickerState {
+                    agents: app
+                        .available_agents
+                        .iter()
+                        .map(|(id, cfg)| {
+                            let display = if cfg.name.trim().is_empty() {
+                                id.clone()
+                            } else {
+                                cfg.name.clone()
+                            };
+                            (id.clone(), display)
+                        })
+                        .collect(),
+                    selected: 0,
+                });
+            }
+        }
+        InputAction::CloseActiveSession => {
+            if let ActiveTab::Session(id) = app.active_tab {
+                app.close_session(id);
+            }
+        }
+        InputAction::CreateSession(agent_idx) => {
+            create_session_from_agent(app, agent_idx);
+        }
+    }
+}
+
+/// Create a new session tab from an agent at the given index.
+fn create_session_from_agent(app: &mut app::App<'_>, agent_idx: usize) {
+    let Some((agent_id, agent_config)) = app.available_agents.get(agent_idx).cloned() else {
+        return;
+    };
+
+    let session_config = SessionConfig {
+        agent_command: agent_config.command.clone(),
+        agent_args: agent_config.args.clone(),
+        workspace_root: app.workspace_root.clone(),
+        env: agent_config.env.clone(),
+        fork_from: None,
+        auto_push: app.auto_push,
+        push_remote: app.push_remote.clone(),
+    };
+
+    match start_session(session_config) {
+        Ok(session) => {
+            let label = if agent_config.name.trim().is_empty() {
+                agent_id.clone()
+            } else {
+                agent_config.name.clone()
+            };
+            let new_id = app.add_session(session, label, &agent_id, &agent_config);
+            app.switch_tab(ActiveTab::Session(new_id));
+        }
+        Err(e) => {
+            if let Some(tab) = app.active_session_mut() {
+                tab.messages.push(app::Message::System(format!(
+                    "Failed to start session: {e}"
+                )));
+            }
+        }
+    }
+}
+
+/// Map an x-coordinate click on the tab/menu row to a ClickTarget.
+fn target_from_click(x: u16, app: &app::App<'_>) -> Option<ClickTarget> {
     let x = x as usize;
-    for (tab, start, end) in ui::tab_click_hitboxes(app) {
+    for (target, start, end) in ui::tab_click_hitboxes(app) {
         if x >= start && x < end {
-            return Some(tab);
+            return Some(target);
         }
     }
     None
@@ -445,9 +566,13 @@ fn scroll_under_mouse(
     row: u16,
     delta: i16,
 ) -> bool {
-    if app.active_tab != Tab::Agent {
+    if !matches!(app.active_tab, ActiveTab::Session(_)) {
         return false;
     }
+
+    let Some(tab) = app.active_session_mut() else {
+        return false;
+    };
 
     let root_chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -462,7 +587,7 @@ fn scroll_under_mouse(
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Min(1),
-            Constraint::Length(ui::agent_input_height(app, main_area.width)),
+            Constraint::Length(ui::session_input_height(tab, main_area.width)),
         ])
         .split(main_area);
     let conversation_area = agent_chunks[0];
@@ -470,26 +595,26 @@ fn scroll_under_mouse(
         return false;
     }
 
-    if app.show_stderr {
+    if tab.show_stderr {
         let panel_chunks = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
             .split(conversation_area);
 
         if rect_contains(panel_chunks[0], column, row) {
-            app.focused_panel = app::FocusedPanel::Conversation;
-            app.scroll_offset = apply_scroll_delta(app.scroll_offset, delta);
+            tab.focused_panel = app::FocusedPanel::Conversation;
+            tab.scroll_offset = apply_scroll_delta(tab.scroll_offset, delta);
             return true;
         }
 
         if rect_contains(panel_chunks[1], column, row) {
-            app.focused_panel = app::FocusedPanel::Stderr;
-            app.stderr_scroll = apply_scroll_delta(app.stderr_scroll, delta);
+            tab.focused_panel = app::FocusedPanel::Stderr;
+            tab.stderr_scroll = apply_scroll_delta(tab.stderr_scroll, delta);
             return true;
         }
     } else {
-        app.focused_panel = app::FocusedPanel::Conversation;
-        app.scroll_offset = apply_scroll_delta(app.scroll_offset, delta);
+        tab.focused_panel = app::FocusedPanel::Conversation;
+        tab.scroll_offset = apply_scroll_delta(tab.scroll_offset, delta);
         return true;
     }
 
@@ -512,13 +637,16 @@ fn apply_scroll_delta(current: u16, delta: i16) -> u16 {
 }
 
 /// Handle a fork request from the Sessions tab.
+/// Creates a **new tab** instead of replacing the current session.
 async fn handle_fork(app: &mut app::App<'_>) {
     let fork_request = match app.fork_from_selected_turn() {
         Some(req) => req,
         None => {
-            app.messages.push(app::Message::System(
-                "No turn selected to fork from.".into(),
-            ));
+            if let Some(tab) = app.active_session_mut() {
+                tab.messages.push(app::Message::System(
+                    "No turn selected to fork from.".into(),
+                ));
+            }
             return;
         }
     };
@@ -536,10 +664,12 @@ async fn handle_fork(app: &mut app::App<'_>) {
             )
         });
         if dirty {
-            app.messages.push(app::Message::System(
-                "Warning: uncommitted changes in working directory will be overwritten by fork."
-                    .into(),
-            ));
+            if let Some(tab) = app.active_session_mut() {
+                tab.messages.push(app::Message::System(
+                    "Warning: uncommitted changes in working directory will be overwritten by fork."
+                        .into(),
+                ));
+            }
         }
     }
 
@@ -548,45 +678,76 @@ async fn handle_fork(app: &mut app::App<'_>) {
         &app.workspace_root,
         fork_request.commit_oid,
     ) {
-        app.messages.push(app::Message::System(format!(
-            "Failed to restore working directory: {e}"
-        )));
+        if let Some(tab) = app.active_session_mut() {
+            tab.messages.push(app::Message::System(format!(
+                "Failed to restore working directory: {e}"
+            )));
+        }
         return;
     }
 
+    // Prefer the active session's agent config; fall back to the first available agent.
+    let (agent_id, agent_config, auto_push, push_remote) =
+        if let Some(active) = app.active_session() {
+            let cfg = concats_config::AgentConfig {
+                name: active.agent_label.clone(),
+                command: active.agent_command.clone(),
+                args: active.agent_args.clone(),
+                env: active.agent_env.clone(),
+            };
+            (
+                active.agent_label.clone(),
+                cfg,
+                active.auto_push,
+                active.push_remote.clone(),
+            )
+        } else if let Some((id, cfg)) = app.available_agents.first() {
+            (
+                id.clone(),
+                cfg.clone(),
+                app.auto_push,
+                app.push_remote.clone(),
+            )
+        } else {
+            return;
+        };
+
     // Start a new session forked from the selected commit.
     let session_config = SessionConfig {
-        agent_command: app.agent_command.clone(),
-        agent_args: app.agent_args.clone(),
+        agent_command: agent_config.command.clone(),
+        agent_args: agent_config.args.clone(),
         workspace_root: app.workspace_root.clone(),
-        env: app.agent_env.clone(),
+        env: agent_config.env.clone(),
         fork_from: Some(fork_request.commit_oid),
-        auto_push: app.auto_push,
-        push_remote: app.push_remote.clone(),
+        auto_push,
+        push_remote,
     };
 
     match start_session(session_config) {
         Ok(new_session) => {
-            // Drop old session handle (thread will exit when channels close).
-            app.session = new_session;
-            app.messages.clear();
-            app.queue_fork_message(
-                &fork_request.source_session_id,
-                fork_request.source_turn,
-                fork_request.commit_oid,
+            let label = format!(
+                "fork:{}",
+                &fork_request.source_session_id[..8.min(fork_request.source_session_id.len())]
             );
-            app.waiting = false;
-            app.status = "connected".into();
-            app.stderr_lines.clear();
-            app.show_stderr = false;
-            app.scroll_offset = 0;
-            app.current_model = None;
-            app.current_mode = None;
-            app.switch_tab(Tab::Agent);
+            let new_id = app.add_session(new_session, label, &agent_id, &agent_config);
+
+            // Queue fork message on the new tab.
+            if let Some(new_tab) = app.session_tabs.iter_mut().find(|t| t.id == new_id) {
+                new_tab.queue_fork_message(
+                    &fork_request.source_session_id,
+                    fork_request.source_turn,
+                    fork_request.commit_oid,
+                );
+            }
+
+            // Switch to the new tab.
+            app.switch_tab(ActiveTab::Session(new_id));
         }
         Err(e) => {
-            app.messages
-                .push(app::Message::System(format!("Failed to start fork: {e}")));
+            if let Some(tab) = app.active_session_mut() {
+                tab.messages
+                    .push(app::Message::System(format!("Failed to start fork: {e}")));
+            }
         }
     }
 }

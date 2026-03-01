@@ -2,38 +2,40 @@ use std::path::PathBuf;
 
 use concats_core::session_history::{SessionInfo, TurnInfo};
 
-/// Available tabs in the TUI.
+/// Which tab is currently active.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Tab {
-    Agent,
+pub enum ActiveTab {
+    /// An active agent session tab, identified by session ID.
+    Session(u32),
+    /// The session history browser.
     Sessions,
     Settings,
     Help,
 }
 
-impl Tab {
-    pub fn all() -> &'static [Tab] {
-        &[Tab::Agent, Tab::Sessions, Tab::Settings, Tab::Help]
-    }
+/// An entry in the tab bar for rendering and click handling.
+#[derive(Debug, Clone)]
+pub enum TabBarEntry {
+    /// An active session tab.
+    Session { id: u32, label: String },
+    /// The [+] button for creating new sessions.
+    NewButton,
+    /// A utility tab (Sessions, Settings, Help).
+    Utility {
+        tab: ActiveTab,
+        label: &'static str,
+    },
+}
 
-    pub fn label(self) -> &'static str {
-        match self {
-            Tab::Agent => "Agent",
-            Tab::Sessions => "Sessions",
-            Tab::Settings => "Settings",
-            Tab::Help => "Help",
-        }
-    }
-
-    /// Shortcut key shown in tab bar (1-indexed).
-    pub fn index(self) -> usize {
-        match self {
-            Tab::Agent => 0,
-            Tab::Sessions => 1,
-            Tab::Settings => 2,
-            Tab::Help => 3,
-        }
-    }
+/// Click target returned from tab bar hit-testing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClickTarget {
+    /// Switch to this tab.
+    SwitchTab(ActiveTab),
+    /// Close a session tab.
+    CloseSession(u32),
+    /// Open agent picker / create new session.
+    NewSession,
 }
 
 /// State for the Sessions tab.
