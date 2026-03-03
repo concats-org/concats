@@ -10,6 +10,10 @@ version = "0.0.0"
 
 
 [workspace.dependencies]
+concats_config = { package = "concats-config", path = "crates/config" }
+concats_core = { package = "concats-core", path = "crates/core" }
+concats_registry = { package = "concats-registry", path = "crates/registry" }
+concats_cli = { package = "concats-cli", path = "crates/cli" }
 async-trait = "0.1"
 clap = { version = "4.5.31", features = ["derive"] }
 console = "0.15.8"

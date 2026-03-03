@@ -64,7 +64,7 @@ pub enum SessionEvent {
 /// Send-safe handle for interacting with a running session from the TUI thread.
 pub struct SessionHandle {
     pub prompt_tx: mpsc::Sender<String>,
-    pub event_rx: mpsc::UnboundedReceiver<SessionEvent>,
+    pub event_rx: mpsc::Receiver<SessionEvent>,
     pub cancel_tx: mpsc::Sender<()>,
 }
 
@@ -75,7 +75,7 @@ pub struct SessionHandle {
 /// to satisfy the `!Send` requirements of ACP's `ClientSideConnection`.
 pub fn start_session(config: SessionConfig) -> Result<SessionHandle> {
     let (prompt_tx, prompt_rx) = mpsc::channel::<String>(16);
-    let (event_tx, event_rx) = mpsc::unbounded_channel::<SessionEvent>();
+    let (event_tx, event_rx) = mpsc::channel::<SessionEvent>(1024);
     let (cancel_tx, cancel_rx) = mpsc::channel::<()>(1);
 
     let handle = SessionHandle {
@@ -103,18 +103,18 @@ pub fn start_session(config: SessionConfig) -> Result<SessionHandle> {
 async fn session_loop(
     config: SessionConfig,
     mut prompt_rx: mpsc::Receiver<String>,
-    event_tx: mpsc::UnboundedSender<SessionEvent>,
+    event_tx: mpsc::Sender<SessionEvent>,
     mut cancel_rx: mpsc::Receiver<()>,
 ) {
     if let Err(e) = session_loop_inner(&config, &mut prompt_rx, &event_tx, &mut cancel_rx).await {
-        let _ = event_tx.send(SessionEvent::Error(e));
+        let _ = event_tx.send(SessionEvent::Error(e)).await;
     }
 }
 
 async fn session_loop_inner(
     config: &SessionConfig,
     prompt_rx: &mut mpsc::Receiver<String>,
-    event_tx: &mpsc::UnboundedSender<SessionEvent>,
+    event_tx: &mpsc::Sender<SessionEvent>,
     _cancel_rx: &mut mpsc::Receiver<()>,
 ) -> Result<()> {
     // 1. Spawn agent process.
@@ -130,7 +130,7 @@ async fn session_loop_inner(
     let checkpoint: Rc<RefCell<Option<CheckpointStore>>> = Rc::new(RefCell::new(None));
 
     // 3. Build the ClientHandler (shares the checkpoint store via Rc<RefCell>).
-    let (notification_tx, mut notification_rx) = mpsc::unbounded_channel::<SessionNotification>();
+    let (notification_tx, mut notification_rx) = mpsc::channel::<SessionNotification>(1024);
     let handler = ClientHandler::new(
         FileSystem::new(config.workspace_root.clone()),
         TerminalManager::new(),
@@ -161,7 +161,7 @@ async fn session_loop_inner(
     tokio::task::spawn_local(async move {
         let mut reader = BufReader::new(streams.stderr).lines();
         while let Ok(Some(line)) = reader.next_line().await {
-            if stderr_event_tx.send(SessionEvent::Stderr(line)).is_err() {
+            if stderr_event_tx.send(SessionEvent::Stderr(line)).await.is_err() {
                 break;
             }
         }
@@ -180,7 +180,7 @@ async fn session_loop_inner(
             {
                 response_text_clone.borrow_mut().push_str(&t.text);
             }
-            let _ = event_tx_clone.send(SessionEvent::Notification(Box::new(notification)));
+            let _ = event_tx_clone.send(SessionEvent::Notification(Box::new(notification))).await;
         }
     });
 
@@ -212,7 +212,7 @@ async fn session_loop_inner(
     let _ = event_tx.send(SessionEvent::SessionConfigured {
         mode: initial_mode,
         config_options: initial_config_options,
-    });
+    }).await;
 
     // 9. Create the checkpoint store using the ACP session ID.
     {
@@ -264,36 +264,35 @@ async fn session_loop_inner(
                     };
 
                 // Auto-push the session ref in a background thread if enabled.
-                if config.auto_push {
-                    if let Some(ref_name) = finalized_ref_name {
-                        let repo_path = config.workspace_root.clone();
-                        let remote = config.push_remote.clone();
-                        let push_event_tx = event_tx.clone();
-                        std::thread::Builder::new()
-                            .name("push-ref".into())
-                            .spawn(move || {
-                                if let Err(e) = crate::git::push_ref(&repo_path, &remote, &ref_name)
-                                {
-                                    tracing::warn!("auto-push failed for {ref_name}: {e}");
-                                    let _ = push_event_tx.send(SessionEvent::PushFailed {
-                                        ref_name,
-                                        error: e.to_string(),
-                                    });
-                                }
-                            })
-                            .ok();
-                    }
+                if config.auto_push
+                    && let Some(ref_name) = finalized_ref_name
+                {
+                    let repo_path = config.workspace_root.clone();
+                    let remote = config.push_remote.clone();
+                    let push_event_tx = event_tx.clone();
+                    std::thread::Builder::new()
+                        .name("push-ref".into())
+                        .spawn(move || {
+                            if let Err(e) = crate::git::push_ref(&repo_path, &remote, &ref_name) {
+                                tracing::warn!("auto-push failed for {ref_name}: {e}");
+                                let _ = push_event_tx.try_send(SessionEvent::PushFailed {
+                                    ref_name,
+                                    error: e.to_string(),
+                                });
+                            }
+                        })
+                        .ok();
                 }
 
                 let _ = event_tx.send(SessionEvent::TurnComplete {
                     stop_reason: response.stop_reason,
                     commit_oid,
-                });
+                }).await;
             }
             Err(e) => {
                 let _ = event_tx.send(SessionEvent::Error(Error::protocol(format!(
                     "prompt failed: {e}"
-                ))));
+                )))).await;
             }
         }
     }

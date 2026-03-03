@@ -210,7 +210,7 @@ impl CheckpointStore {
                 Err(_) => continue, // vanished mid-walk, skip
             };
             // Skip directories — only add files
-            if entry.file_type().map_or(true, |ft| !ft.is_file()) {
+            if entry.file_type().is_none_or(|ft| !ft.is_file()) {
                 continue;
             }
             if let Ok(rel) = entry.path().strip_prefix(workdir) {
@@ -280,6 +280,7 @@ impl CheckpointStore {
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods)]
 mod tests {
     use std::fs;
 

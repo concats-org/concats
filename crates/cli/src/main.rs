@@ -1,7 +1,7 @@
 use std::{io, path::PathBuf};
 
 use clap::{Parser, Subcommand};
-use cli::{
+use concats_cli::{
     app::App,
     event::{Event, EventHandler},
     handler,
@@ -226,7 +226,7 @@ async fn run_tui_command(agent: Option<String>, workspace: Option<PathBuf>) -> m
     // Start the event loop.
     while !app.should_quit {
         tui.terminal
-            .draw(|f| cli::ui::render(f, &mut app))
+            .draw(|f| concats_cli::ui::render(f, &mut app))
             .map_err(|e| miette::miette!("draw error: {e}"))?;
 
         tokio::select! {

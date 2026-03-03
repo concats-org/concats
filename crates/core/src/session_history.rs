@@ -187,10 +187,10 @@ fn count_turns_and_first_prompt(
         }
         if msg.contains("Agent-Stop-Reason:") {
             count += 1;
-            if let Some(parsed) = parse_commit_message(msg) {
-                if parsed.session_id == session_id {
-                    first_prompt = parsed.prompt;
-                }
+            if let Some(parsed) = parse_commit_message(msg)
+                && parsed.session_id == session_id
+            {
+                first_prompt = parsed.prompt;
             }
         }
         if current.parent_count() == 0 {
@@ -229,7 +229,7 @@ fn derive_title(prompt: &str) -> String {
 
     let window = &cleaned[..limit];
     // Find the last sentence-ending punctuation followed by a space (or at end).
-    if let Some(pos) = window.rfind(|c| c == '.' || c == '!' || c == '?') {
+    if let Some(pos) = window.rfind(['.', '!', '?']) {
         // Only use the sentence boundary if it's not too short (at least 10 chars).
         if pos >= 10 {
             return cleaned[..=pos].to_string();
@@ -360,6 +360,7 @@ fn days_to_ymd(days: u64) -> (u64, u64, u64) {
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods)]
 mod tests {
     use std::fs;
 

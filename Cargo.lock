@@ -346,30 +346,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3a822ea5bc7590f9d40f1ba12c0dc3c2760f3482c6984db1573ad11031420831"
 
 [[package]]
-name = "cli"
-version = "0.0.0"
-dependencies = [
- "agent-client-protocol",
- "clap",
- "config",
- "core",
- "crossterm",
- "git2",
- "miette",
- "pretty_assertions",
- "ratatui",
- "ratatui-textarea",
- "registry",
- "serde_json",
- "tempfile",
- "tokio",
- "tokio-stream",
- "tokio-test",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
 name = "colorchoice"
 version = "1.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -390,16 +366,31 @@ dependencies = [
 ]
 
 [[package]]
-name = "concurrent-queue"
-version = "2.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4ca0197aee26d1ae37445ee532fefce43251d24cc7c166799f4d46817f1d3973"
+name = "concats-cli"
+version = "0.0.0"
 dependencies = [
- "crossbeam-utils",
+ "agent-client-protocol",
+ "clap",
+ "concats-config",
+ "concats-core",
+ "concats-registry",
+ "crossterm",
+ "git2",
+ "miette",
+ "pretty_assertions",
+ "ratatui",
+ "ratatui-textarea",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-stream",
+ "tokio-test",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
-name = "config"
+name = "concats-config"
 version = "0.0.0"
 dependencies = [
  "dirs",
@@ -412,16 +403,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "convert_case"
-version = "0.10.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "633458d4ef8c78b72454de2d54fd6ab2e60f9e02be22f3c6104cdc8a4e0fceb9"
-dependencies = [
- "unicode-segmentation",
-]
-
-[[package]]
-name = "core"
+name = "concats-core"
 version = "0.0.0"
 dependencies = [
  "agent-client-protocol",
@@ -439,6 +421,35 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+]
+
+[[package]]
+name = "concats-registry"
+version = "0.0.0"
+dependencies = [
+ "concats-config",
+ "miette",
+ "reqwest",
+ "serde",
+ "tracing",
+]
+
+[[package]]
+name = "concurrent-queue"
+version = "2.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4ca0197aee26d1ae37445ee532fefce43251d24cc7c166799f4d46817f1d3973"
+dependencies = [
+ "crossbeam-utils",
+]
+
+[[package]]
+name = "convert_case"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "633458d4ef8c78b72454de2d54fd6ab2e60f9e02be22f3c6104cdc8a4e0fceb9"
+dependencies = [
+ "unicode-segmentation",
 ]
 
 [[package]]
@@ -2319,17 +2330,6 @@ name = "regex-syntax"
 version = "0.8.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dc897dd8d9e8bd1ed8cdad82b5966c3e0ecae09fb1907d58efaa013543185d0a"
-
-[[package]]
-name = "registry"
-version = "0.0.0"
-dependencies = [
- "config",
- "miette",
- "reqwest",
- "serde",
- "tracing",
-]
 
 [[package]]
 name = "reqwest"

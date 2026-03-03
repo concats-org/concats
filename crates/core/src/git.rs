@@ -36,10 +36,10 @@ pub fn push_ref(repo_path: &Path, remote_name: &str, ref_name: &str) -> Result<(
     let mut callbacks = git2::RemoteCallbacks::new();
     callbacks.credentials(|url, username_from_url, allowed_types| {
         // Try SSH agent first.
-        if allowed_types.contains(git2::CredentialType::SSH_KEY) {
-            if let Some(username) = username_from_url {
-                return git2::Cred::ssh_key_from_agent(username);
-            }
+        if allowed_types.contains(git2::CredentialType::SSH_KEY)
+            && let Some(username) = username_from_url
+        {
+            return git2::Cred::ssh_key_from_agent(username);
         }
         // Try git credential helper.
         if allowed_types.contains(git2::CredentialType::USER_PASS_PLAINTEXT) {

@@ -10,7 +10,7 @@ name = "concats_registry"
 path = "src/lib.rs"
 
 [dependencies]
-concats_config = { package = "config", path = "../config" }
+concats_config = { workspace = true }
 miette = { workspace = true }
 reqwest = { workspace = true }
 serde = { workspace = true }

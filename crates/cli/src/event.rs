@@ -21,13 +21,13 @@ pub enum Event {
 #[derive(Debug)]
 pub struct EventHandler {
     /// Event receiver.
-    receiver: mpsc::UnboundedReceiver<Event>,
+    receiver: mpsc::Receiver<Event>,
 }
 
 impl EventHandler {
     /// Constructs a new instance of [`EventHandler`].
     pub fn new(tick_rate: Duration) -> Self {
-        let (sender, receiver) = mpsc::unbounded_channel();
+        let (sender, receiver) = mpsc::channel(1024);
         let _sender = sender.clone();
 
         tokio::spawn(async move {
@@ -40,18 +40,18 @@ impl EventHandler {
 
                 tokio::select! {
                     _ = tick_delay => {
-                        sender.send(Event::Tick).ok();
+                        sender.send(Event::Tick).await.ok();
                     }
                     Some(Ok(evt)) = crossterm_event => {
                         match evt {
                             CrosstermEvent::Key(key) => {
-                                sender.send(Event::Key(key)).ok();
+                                sender.send(Event::Key(key)).await.ok();
                             }
                             CrosstermEvent::Mouse(mouse) => {
-                                sender.send(Event::Mouse(mouse)).ok();
+                                sender.send(Event::Mouse(mouse)).await.ok();
                             }
                             CrosstermEvent::Resize(x, y) => {
-                                sender.send(Event::Resize(x, y)).ok();
+                                sender.send(Event::Resize(x, y)).await.ok();
                             }
                             _ => {}
                         }

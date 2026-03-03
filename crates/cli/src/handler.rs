@@ -219,18 +219,18 @@ pub async fn handle_mouse_events(
     match mouse.kind {
         MouseEventKind::Down(MouseButton::Left) => {
             // Check if click is on the tab/menu bar (last row).
-            if mouse.row == size.height.saturating_sub(1) {
-                if let Some(target) = target_from_click(mouse.column, app) {
-                    match target {
-                        ClickTarget::SwitchTab(tab) => {
-                            app.switch_tab(tab);
-                        }
-                        ClickTarget::CloseSession(id) => {
-                            app.close_session(id);
-                        }
-                        ClickTarget::NewSession => {
-                            app.handle_action(Action::NewSession).await?;
-                        }
+            if mouse.row == size.height.saturating_sub(1)
+                && let Some(target) = target_from_click(mouse.column, app)
+            {
+                match target {
+                    ClickTarget::SwitchTab(tab) => {
+                        app.switch_tab(tab);
+                    }
+                    ClickTarget::CloseSession(id) => {
+                        app.close_session(id);
+                    }
+                    ClickTarget::NewSession => {
+                        app.handle_action(Action::NewSession).await?;
                     }
                 }
             }

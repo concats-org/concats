@@ -87,8 +87,8 @@ mod tests {
             sync: SyncConfig::default(),
         };
 
-        let toml_str = toml::to_string_pretty(&config).unwrap();
-        let decoded: Config = toml::from_str(&toml_str).unwrap();
+        let toml_str = toml::to_string_pretty(&config).expect("should serialize config");
+        let decoded: Config = toml::from_str(&toml_str).expect("should deserialize config");
 
         assert_eq!(config.default_agent, decoded.default_agent);
         assert_eq!(config.workspace, decoded.workspace);
@@ -102,7 +102,7 @@ mod tests {
     #[test]
     fn test_config_defaults() {
         let toml_str = "";
-        let decoded: Config = toml::from_str(toml_str).unwrap();
+        let decoded: Config = toml::from_str(toml_str).expect("should deserialize empty config");
 
         assert_eq!(decoded.default_agent, None);
         assert_eq!(decoded.workspace, None);

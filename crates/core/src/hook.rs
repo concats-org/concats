@@ -238,23 +238,22 @@ fn extract_last_response(transcript_path: &str) -> Result<String> {
     let data = fs::read_to_string(transcript_path)?;
     // Walk lines in reverse to find the last assistant message.
     for line in data.lines().rev() {
-        if let Ok(entry) = serde_json::from_str::<serde_json::Value>(line) {
-            if entry.get("role").and_then(|r| r.as_str()) == Some("assistant") {
-                if let Some(content) = entry.get("content") {
-                    // Content may be a string or array of blocks.
-                    if let Some(text) = content.as_str() {
-                        return Ok(text.to_string());
-                    }
-                    if let Some(arr) = content.as_array() {
-                        let text: String = arr
-                            .iter()
-                            .filter_map(|block| block.get("text").and_then(|t| t.as_str()))
-                            .collect::<Vec<_>>()
-                            .join("\n");
-                        if !text.is_empty() {
-                            return Ok(text);
-                        }
-                    }
+        if let Ok(entry) = serde_json::from_str::<serde_json::Value>(line)
+            && entry.get("role").and_then(|r| r.as_str()) == Some("assistant")
+            && let Some(content) = entry.get("content")
+        {
+            // Content may be a string or array of blocks.
+            if let Some(text) = content.as_str() {
+                return Ok(text.to_string());
+            }
+            if let Some(arr) = content.as_array() {
+                let text: String = arr
+                    .iter()
+                    .filter_map(|block| block.get("text").and_then(|t| t.as_str()))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                if !text.is_empty() {
+                    return Ok(text);
                 }
             }
         }
@@ -270,6 +269,7 @@ fn extract_last_response(transcript_path: &str) -> Result<String> {
 ///
 /// `project_root` is the project directory (where `.claude/` lives).
 /// `binary_name` is the name of the concats binary (e.g. `"concats"`).
+#[allow(clippy::disallowed_methods)]
 pub fn install_hooks(project_root: &Path, binary_name: &str) -> Result<()> {
     let settings_dir = project_root.join(".claude");
     fs::create_dir_all(&settings_dir)?;
@@ -382,6 +382,7 @@ pub fn find_repo_root(cwd: Option<&str>) -> Result<PathBuf> {
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods)]
 mod tests {
     use std::fs;
 

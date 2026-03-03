@@ -312,9 +312,9 @@ pub struct App<'a> {
     /// Git remote name for auto-push.
     pub push_remote: String,
     /// Fan-in channel sender for all session events (tagged with session ID).
-    pub session_event_tx: mpsc::UnboundedSender<(u32, FanInEvent)>,
+    pub session_event_tx: mpsc::Sender<(u32, FanInEvent)>,
     /// Fan-in channel receiver for all session events.
-    pub session_event_rx: mpsc::UnboundedReceiver<(u32, FanInEvent)>,
+    pub session_event_rx: mpsc::Receiver<(u32, FanInEvent)>,
 }
 
 impl<'a> App<'a> {
@@ -323,7 +323,7 @@ impl<'a> App<'a> {
         available_agents: Vec<(String, concats_config::AgentConfig)>,
     ) -> Self {
         let sessions_state = SessionsTabState::new(workspace_root.clone());
-        let (session_event_tx, session_event_rx) = mpsc::unbounded_channel();
+        let (session_event_tx, session_event_rx) = mpsc::channel(1024);
 
         Self {
             session_tabs: Vec::new(),
@@ -446,7 +446,7 @@ impl<'a> App<'a> {
 
         // Take the event_rx out of the handle *before* moving it into the tab.
         // The forwarder task will own it; the tab retains prompt_tx and cancel_tx.
-        let (placeholder_tx, placeholder_rx) = mpsc::unbounded_channel();
+        let (placeholder_tx, placeholder_rx) = mpsc::channel(1);
         let session_rx = std::mem::replace(&mut session.event_rx, placeholder_rx);
         drop(placeholder_tx);
 
@@ -471,11 +471,11 @@ impl<'a> App<'a> {
         tokio::spawn(async move {
             let mut rx = session_rx;
             while let Some(event) = rx.recv().await {
-                if fan_in_tx.send((id, FanInEvent::Session(event))).is_err() {
+                if fan_in_tx.send((id, FanInEvent::Session(event))).await.is_err() {
                     break;
                 }
             }
-            let _ = fan_in_tx.send((id, FanInEvent::ChannelClosed));
+            let _ = fan_in_tx.send((id, FanInEvent::ChannelClosed)).await;
         });
 
         id
@@ -633,13 +633,11 @@ impl<'a> App<'a> {
                         | git2::Status::INDEX_NEW,
                 )
             });
-            if dirty {
-                if let Some(tab) = self.active_session_mut() {
-                    tab.messages.push(Message::System(
-                        "Warning: uncommitted changes in working directory will be overwritten by fork."
-                            .into(),
-                    ));
-                }
+            if dirty && let Some(tab) = self.active_session_mut() {
+                tab.messages.push(Message::System(
+                    "Warning: uncommitted changes in working directory will be overwritten by fork."
+                        .into(),
+                ));
             }
         }
 
