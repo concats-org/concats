@@ -1,7 +1,6 @@
 use std::path::PathBuf;
 
-use crate::error::Result;
-use crate::git::Oid;
+use crate::{error::Result, git::Oid};
 
 /// Session-scoped checkpoint store that writes commits to a per-session ref
 /// (`refs/agent/sessions/<session-id>`) without touching the user's branch,
@@ -282,8 +281,9 @@ impl CheckpointStore {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::fs;
+
+    use super::*;
 
     /// Helper: create a temp git repo with an initial commit so HEAD exists.
     fn init_repo_with_commit(dir: &std::path::Path) -> git2::Repository {

@@ -3,13 +3,14 @@ pub mod provider;
 
 use std::path::PathBuf;
 
-use figment::Figment;
-use figment::providers::{Env, Format, Serialized, Toml};
-
-use crate::provider::CliArgs;
-
+use figment::{
+    Figment,
+    providers::{Env, Format, Serialized, Toml},
+};
 pub use model::{AgentConfig, Config, SyncConfig};
 pub use provider::CliArgs as ConfigCliArgs;
+
+use crate::provider::CliArgs;
 
 /// Load configuration with figment layering:
 ///

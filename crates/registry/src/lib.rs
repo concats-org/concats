@@ -1,8 +1,7 @@
 use std::collections::HashMap;
 
-use serde::Deserialize;
-
 use concats_config::{AgentConfig, Config};
+use serde::Deserialize;
 
 const REGISTRY_URL: &str = "https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json";
 

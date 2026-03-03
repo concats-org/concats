@@ -1,11 +1,10 @@
-use std::collections::HashMap;
-use std::path::PathBuf;
+use std::{collections::HashMap, path::PathBuf};
 
 use agent_client_protocol::{
     ContentBlock, SessionConfigKind, SessionConfigOption, SessionConfigOptionCategory,
     SessionConfigSelectOptions, SessionNotification, SessionUpdate,
 };
-use concats_core::session::{SessionEvent, SessionHandle, SessionConfig, start_session};
+use concats_core::session::{SessionConfig, SessionEvent, SessionHandle, start_session};
 use ratatui_textarea::TextArea;
 use tokio::sync::mpsc;
 
@@ -319,7 +318,10 @@ pub struct App<'a> {
 }
 
 impl<'a> App<'a> {
-    pub fn new(workspace_root: PathBuf, available_agents: Vec<(String, concats_config::AgentConfig)>) -> Self {
+    pub fn new(
+        workspace_root: PathBuf,
+        available_agents: Vec<(String, concats_config::AgentConfig)>,
+    ) -> Self {
         let sessions_state = SessionsTabState::new(workspace_root.clone());
         let (session_event_tx, session_event_rx) = mpsc::unbounded_channel();
 
@@ -489,7 +491,13 @@ impl<'a> App<'a> {
                 let neighbor = self
                     .session_tabs
                     .get(pos)
-                    .or_else(|| if pos > 0 { self.session_tabs.get(pos - 1) } else { None })
+                    .or_else(|| {
+                        if pos > 0 {
+                            self.session_tabs.get(pos - 1)
+                        } else {
+                            None
+                        }
+                    })
                     .map(|t| t.id);
 
                 self.active_tab = match neighbor {
@@ -606,9 +614,8 @@ impl<'a> App<'a> {
             Some(req) => req,
             None => {
                 if let Some(tab) = self.active_session_mut() {
-                    tab.messages.push(Message::System(
-                        "No turn selected to fork from.".into(),
-                    ));
+                    tab.messages
+                        .push(Message::System("No turn selected to fork from.".into()));
                 }
                 return;
             }
@@ -690,8 +697,7 @@ impl<'a> App<'a> {
             Ok(new_session) => {
                 let label = format!(
                     "fork:{}",
-                    &fork_request.source_session_id
-                        [..8.min(fork_request.source_session_id.len())]
+                    &fork_request.source_session_id[..8.min(fork_request.source_session_id.len())]
                 );
                 let new_id = self.add_session(new_session, label, &agent_id, &agent_config);
 

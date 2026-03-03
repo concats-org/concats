@@ -1,19 +1,17 @@
-use std::io;
-use std::path::PathBuf;
+use std::{io, path::PathBuf};
 
 use clap::{Parser, Subcommand};
-use ratatui::backend::CrosstermBackend;
-use ratatui::Terminal;
-
-use cli::app::{App};
-use cli::tabs::{ActiveTab};
-use cli::event::{Event, EventHandler};
-use cli::tui::Tui;
-use cli::handler;
-
+use cli::{
+    app::App,
+    event::{Event, EventHandler},
+    handler,
+    tabs::ActiveTab,
+    tui::Tui,
+};
 use concats_config::{ConfigCliArgs, load_config, save_config};
 use concats_core::session::{SessionConfig, start_session};
 use concats_registry::{fetch_registry, install_agents};
+use ratatui::{Terminal, backend::CrosstermBackend};
 
 #[derive(Parser)]
 #[command(about = "Concats \u{2013} git-native session history for coding agents")]
@@ -205,7 +203,8 @@ async fn run_tui_command(agent: Option<String>, workspace: Option<PathBuf>) -> m
 
     // Initialize the terminal user interface.
     let backend = CrosstermBackend::new(io::stdout());
-    let terminal = Terminal::new(backend).map_err(|e| miette::miette!("failed to create terminal: {e}"))?;
+    let terminal =
+        Terminal::new(backend).map_err(|e| miette::miette!("failed to create terminal: {e}"))?;
     let events = EventHandler::new(std::time::Duration::from_millis(80));
     let mut tui = Tui::new(terminal, events);
     tui.init()?;
@@ -221,17 +220,13 @@ async fn run_tui_command(agent: Option<String>, workspace: Option<PathBuf>) -> m
     } else {
         agent_config.name.clone()
     };
-    let initial_id = app.add_session(
-        session,
-        initial_label,
-        &resolved_id,
-        &agent_config,
-    );
+    let initial_id = app.add_session(session, initial_label, &resolved_id, &agent_config);
     app.switch_tab(ActiveTab::Session(initial_id));
 
     // Start the event loop.
     while !app.should_quit {
-        tui.terminal.draw(|f| cli::ui::render(f, &mut app))
+        tui.terminal
+            .draw(|f| cli::ui::render(f, &mut app))
             .map_err(|e| miette::miette!("draw error: {e}"))?;
 
         tokio::select! {

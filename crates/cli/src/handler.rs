@@ -1,9 +1,11 @@
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseButton, MouseEventKind};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::{Constraint, Direction, Layout, Rect, Size};
 
-use crate::app::{App, FocusedPanel, Action};
-use crate::tabs::{ActiveTab, ClickTarget};
-use crate::ui;
+use crate::{
+    app::{Action, App, FocusedPanel},
+    tabs::{ActiveTab, ClickTarget},
+    ui,
+};
 
 /// Handle key events and map them to actions or direct app changes.
 pub async fn handle_key_events(key: KeyEvent, app: &mut App<'_>) -> miette::Result<()> {
@@ -91,7 +93,9 @@ pub async fn handle_key_events(key: KeyEvent, app: &mut App<'_>) -> miette::Resu
 async fn handle_session_keys(app: &mut App<'_>, key: KeyEvent) -> miette::Result<()> {
     let is_session_tab = matches!(app.active_tab, ActiveTab::Session(_));
     let is_submit = key.code == KeyCode::Enter
-        && !key.modifiers.intersects(KeyModifiers::ALT | KeyModifiers::SHIFT)
+        && !key
+            .modifiers
+            .intersects(KeyModifiers::ALT | KeyModifiers::SHIFT)
         && app.active_session().is_some_and(|t| !t.waiting)
         && is_session_tab
         && app.agent_picker.is_none();
@@ -104,7 +108,9 @@ async fn handle_session_keys(app: &mut App<'_>, key: KeyEvent) -> miette::Result
     }
 
     if key.code == KeyCode::Enter
-        && key.modifiers.intersects(KeyModifiers::ALT | KeyModifiers::SHIFT)
+        && key
+            .modifiers
+            .intersects(KeyModifiers::ALT | KeyModifiers::SHIFT)
         && app.active_session().is_some_and(|t| !t.waiting)
         && is_session_tab
         && app.agent_picker.is_none()
@@ -204,7 +210,11 @@ fn apply_scroll_delta(current: u16, delta: i16) -> u16 {
 }
 
 /// Handle mouse events.
-pub async fn handle_mouse_events(mouse: MouseEvent, app: &mut App<'_>, size: Size) -> miette::Result<()> {
+pub async fn handle_mouse_events(
+    mouse: MouseEvent,
+    app: &mut App<'_>,
+    size: Size,
+) -> miette::Result<()> {
     let terminal_area = Rect::new(0, 0, size.width, size.height);
     match mouse.kind {
         MouseEventKind::Down(MouseButton::Left) => {

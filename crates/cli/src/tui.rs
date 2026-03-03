@@ -1,10 +1,11 @@
 use std::io;
 
-use crossterm::event::{DisableMouseCapture, EnableMouseCapture};
-use crossterm::terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode};
-use crossterm::{ExecutableCommand};
-use ratatui::backend::CrosstermBackend;
-use ratatui::Terminal;
+use crossterm::{
+    ExecutableCommand,
+    event::{DisableMouseCapture, EnableMouseCapture},
+    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
+};
+use ratatui::{Terminal, backend::CrosstermBackend};
 
 use crate::event::EventHandler;
 
@@ -37,8 +38,12 @@ impl Tui {
         io::stdout()
             .execute(EnableMouseCapture)
             .map_err(|e| miette::miette!("failed to enable mouse capture: {e}"))?;
-        self.terminal.hide_cursor().map_err(|e| miette::miette!("failed to hide cursor: {e}"))?;
-        self.terminal.clear().map_err(|e| miette::miette!("failed to clear terminal: {e}"))?;
+        self.terminal
+            .hide_cursor()
+            .map_err(|e| miette::miette!("failed to hide cursor: {e}"))?;
+        self.terminal
+            .clear()
+            .map_err(|e| miette::miette!("failed to clear terminal: {e}"))?;
         Ok(())
     }
 
@@ -50,7 +55,9 @@ impl Tui {
         disable_raw_mode().ok();
         io::stdout().execute(LeaveAlternateScreen).ok();
         io::stdout().execute(DisableMouseCapture).ok();
-        self.terminal.show_cursor().map_err(|e| miette::miette!("failed to show cursor: {e}"))?;
+        self.terminal
+            .show_cursor()
+            .map_err(|e| miette::miette!("failed to show cursor: {e}"))?;
         Ok(())
     }
 }

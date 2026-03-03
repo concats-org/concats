@@ -43,11 +43,7 @@ pub fn push_ref(repo_path: &Path, remote_name: &str, ref_name: &str) -> Result<(
         }
         // Try git credential helper.
         if allowed_types.contains(git2::CredentialType::USER_PASS_PLAINTEXT) {
-            return git2::Cred::credential_helper(
-                &repo.config()?,
-                url,
-                username_from_url,
-            );
+            return git2::Cred::credential_helper(&repo.config()?, url, username_from_url);
         }
         // Fall back to default credentials.
         git2::Cred::default()

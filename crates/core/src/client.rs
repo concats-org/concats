@@ -1,5 +1,4 @@
-use std::cell::RefCell;
-use std::rc::Rc;
+use std::{cell::RefCell, rc::Rc};
 
 use agent_client_protocol::{
     CreateTerminalRequest, CreateTerminalResponse, ExtNotification, ExtRequest, ExtResponse,
@@ -12,11 +11,10 @@ use agent_client_protocol::{
 };
 use serde_json::value::RawValue;
 
-use crate::checkpoint::CheckpointStore;
-use crate::fs::FileSystem;
-use crate::notification::NotificationSender;
-use crate::permission::PermissionHandler;
-use crate::terminal::TerminalManager;
+use crate::{
+    checkpoint::CheckpointStore, fs::FileSystem, notification::NotificationSender,
+    permission::PermissionHandler, terminal::TerminalManager,
+};
 
 /// Implements the ACP `Client` trait by delegating to owned tool modules.
 ///

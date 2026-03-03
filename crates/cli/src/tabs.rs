@@ -21,10 +21,7 @@ pub enum TabBarEntry {
     /// The [+] button for creating new sessions.
     NewButton,
     /// A utility tab (Sessions, Settings, Help).
-    Utility {
-        tab: ActiveTab,
-        label: &'static str,
-    },
+    Utility { tab: ActiveTab, label: &'static str },
 }
 
 /// Click target returned from tab bar hit-testing.

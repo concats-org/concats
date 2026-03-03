@@ -1,26 +1,27 @@
-use std::cell::RefCell;
-use std::collections::HashMap;
-use std::path::PathBuf;
-use std::rc::Rc;
+use std::{cell::RefCell, collections::HashMap, path::PathBuf, rc::Rc};
 
 use agent_client_protocol::{
     Agent, ClientCapabilities, ClientSideConnection, ContentBlock, FileSystemCapability,
     InitializeRequest, NewSessionRequest, PromptRequest, ProtocolVersion, SessionNotification,
     SessionUpdate, StopReason,
 };
-use tokio::io::{AsyncBufReadExt, BufReader};
-use tokio::sync::mpsc;
-use tokio::task::LocalSet;
+use tokio::{
+    io::{AsyncBufReadExt, BufReader},
+    sync::mpsc,
+    task::LocalSet,
+};
 
-use crate::agent_process::AgentProcess;
-use crate::checkpoint::CheckpointStore;
-use crate::client::ClientHandler;
-use crate::error::{Error, Result};
-use crate::fs::FileSystem;
-use crate::git::Oid;
-use crate::notification::NotificationSender;
-use crate::permission::PermissionHandler;
-use crate::terminal::TerminalManager;
+use crate::{
+    agent_process::AgentProcess,
+    checkpoint::CheckpointStore,
+    client::ClientHandler,
+    error::{Error, Result},
+    fs::FileSystem,
+    git::Oid,
+    notification::NotificationSender,
+    permission::PermissionHandler,
+    terminal::TerminalManager,
+};
 
 /// Configuration for starting a new agent session.
 pub struct SessionConfig {
@@ -55,10 +56,7 @@ pub enum SessionEvent {
     /// A line of stderr output from the agent process.
     Stderr(String),
     /// A push to the remote failed (non-fatal).
-    PushFailed {
-        ref_name: String,
-        error: String,
-    },
+    PushFailed { ref_name: String, error: String },
     /// An error occurred.
     Error(Error),
 }
@@ -274,15 +272,13 @@ async fn session_loop_inner(
                         std::thread::Builder::new()
                             .name("push-ref".into())
                             .spawn(move || {
-                                if let Err(e) =
-                                    crate::git::push_ref(&repo_path, &remote, &ref_name)
+                                if let Err(e) = crate::git::push_ref(&repo_path, &remote, &ref_name)
                                 {
                                     tracing::warn!("auto-push failed for {ref_name}: {e}");
-                                    let _ =
-                                        push_event_tx.send(SessionEvent::PushFailed {
-                                            ref_name,
-                                            error: e.to_string(),
-                                        });
+                                    let _ = push_event_tx.send(SessionEvent::PushFailed {
+                                        ref_name,
+                                        error: e.to_string(),
+                                    });
                                 }
                             })
                             .ok();

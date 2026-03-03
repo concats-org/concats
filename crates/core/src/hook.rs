@@ -1,10 +1,11 @@
-use std::fs;
-use std::path::{Path, PathBuf};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 
 use serde::{Deserialize, Serialize};
 
-use crate::checkpoint::CheckpointStore;
-use crate::error::Result;
+use crate::{checkpoint::CheckpointStore, error::Result};
 
 // ── Claude Code hook payloads (deserialized from stdin JSON) ─────────
 
@@ -157,11 +158,8 @@ pub fn handle_post_tool_use(payload: &PostToolUsePayload) -> Result<()> {
         }
     };
 
-    let store = CheckpointStore::new_with_turn_count(
-        repo_path,
-        state.session_id.clone(),
-        state.turn_count,
-    );
+    let store =
+        CheckpointStore::new_with_turn_count(repo_path, state.session_id.clone(), state.turn_count);
     store.amend_checkpoint()?;
 
     Ok(())
@@ -217,11 +215,8 @@ pub fn handle_stop(payload: &StopPayload) -> Result<()> {
 /// created the state (e.g. after `/clear` or when the session was started
 /// externally).
 fn init_session_state(repo_path: &Path, session_id: &str) -> Result<HookSessionState> {
-    let store = CheckpointStore::new_with_turn_count(
-        repo_path.to_path_buf(),
-        session_id.to_string(),
-        0,
-    );
+    let store =
+        CheckpointStore::new_with_turn_count(repo_path.to_path_buf(), session_id.to_string(), 0);
     store.create_checkpoint("(session joined mid-flight)")?;
 
     let state = HookSessionState {
@@ -388,8 +383,9 @@ pub fn find_repo_root(cwd: Option<&str>) -> Result<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::fs;
+
+    use super::*;
 
     /// Helper: create a temp git repo with an initial commit.
     fn init_repo_with_commit(dir: &Path) -> git2::Repository {
@@ -691,8 +687,7 @@ mod tests {
         .unwrap();
 
         // Use session_history to load turns — should work without changes.
-        let turns =
-            crate::session_history::load_session_turns(dir.path(), session_id).unwrap();
+        let turns = crate::session_history::load_session_turns(dir.path(), session_id).unwrap();
         assert_eq!(turns.len(), 2);
         assert_eq!(turns[0].turn_number, 0);
         assert_eq!(turns[0].prompt, "first prompt");
@@ -765,6 +760,9 @@ mod tests {
         fs::create_dir_all(&sub).unwrap();
 
         let root = find_repo_root(Some(sub.to_str().unwrap())).unwrap();
-        assert_eq!(root.canonicalize().unwrap(), dir.path().canonicalize().unwrap());
+        assert_eq!(
+            root.canonicalize().unwrap(),
+            dir.path().canonicalize().unwrap()
+        );
     }
 }

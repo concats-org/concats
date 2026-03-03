@@ -1,17 +1,20 @@
-use ratatui::Frame;
-use ratatui::layout::{Constraint, Direction, Layout, Rect, Spacing};
-use ratatui::style::{Color, Modifier, Style};
-use ratatui::symbols::merge::MergeStrategy;
-use ratatui::symbols::scrollbar::Set;
-use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{
-    Block, BorderType, Borders, Clear, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
-    Wrap,
+use ratatui::{
+    Frame,
+    layout::{Constraint, Direction, Layout, Rect, Spacing},
+    style::{Color, Modifier, Style},
+    symbols::{merge::MergeStrategy, scrollbar::Set},
+    text::{Line, Span, Text},
+    widgets::{
+        Block, BorderType, Borders, Clear, Paragraph, Scrollbar, ScrollbarOrientation,
+        ScrollbarState, Wrap,
+    },
 };
 
-use crate::app::{App, FocusedPanel, Message, SessionTab};
-use crate::sessions_ui;
-use crate::tabs::{ActiveTab, ClickTarget, TabBarEntry};
+use crate::{
+    app::{App, FocusedPanel, Message, SessionTab},
+    sessions_ui,
+    tabs::{ActiveTab, ClickTarget, TabBarEntry},
+};
 
 const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 pub const TAB_BAR_HEIGHT: u16 = 1;
@@ -64,7 +67,9 @@ pub fn render(frame: &mut Frame, app: &mut App) {
             }
         }
         ActiveTab::Sessions => sessions_ui::render_sessions_tab(frame, app, chunks[0]),
-        ActiveTab::Settings => render_placeholder(frame, chunks[0], "Settings", "Not yet implemented."),
+        ActiveTab::Settings => {
+            render_placeholder(frame, chunks[0], "Settings", "Not yet implemented.")
+        }
         ActiveTab::Help => render_placeholder(
             frame,
             chunks[0],
@@ -104,9 +109,7 @@ fn render_tab_bar(frame: &mut Frame, app: &App, area: Rect) {
                     ));
                     spans.push(Span::styled(
                         "\u{2715} ",
-                        Style::default()
-                            .fg(Color::DarkGray)
-                            .bg(Color::White),
+                        Style::default().fg(Color::DarkGray).bg(Color::White),
                     ));
                 } else {
                     spans.push(Span::styled(
@@ -115,15 +118,14 @@ fn render_tab_bar(frame: &mut Frame, app: &App, area: Rect) {
                     ));
                     spans.push(Span::styled(
                         "\u{2715} ",
-                        Style::default().fg(Color::DarkGray).add_modifier(Modifier::DIM),
+                        Style::default()
+                            .fg(Color::DarkGray)
+                            .add_modifier(Modifier::DIM),
                     ));
                 }
             }
             TabBarEntry::NewButton => {
-                spans.push(Span::styled(
-                    " [+] ",
-                    Style::default().fg(Color::Green),
-                ));
+                spans.push(Span::styled(" [+] ", Style::default().fg(Color::Green)));
             }
             TabBarEntry::Utility { tab, label } => {
                 let is_active = app.active_tab == *tab;
@@ -206,7 +208,11 @@ pub fn tab_click_hitboxes(app: &App) -> Vec<(ClickTarget, usize, usize)> {
                 let label_text = format!(" {label} ");
                 let label_start = pos;
                 let label_end = label_start + label_text.chars().count();
-                hitboxes.push((ClickTarget::SwitchTab(ActiveTab::Session(*id)), label_start, label_end));
+                hitboxes.push((
+                    ClickTarget::SwitchTab(ActiveTab::Session(*id)),
+                    label_start,
+                    label_end,
+                ));
                 pos = label_end;
 
                 // Close button part.

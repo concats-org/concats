@@ -1,9 +1,10 @@
-use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
-use std::rc::Rc;
+use std::{
+    cell::{Cell, RefCell},
+    collections::HashMap,
+    rc::Rc,
+};
 
-use tokio::io::AsyncReadExt;
-use tokio::process::Command;
+use tokio::{io::AsyncReadExt, process::Command};
 
 use crate::error::{Error, Result};
 

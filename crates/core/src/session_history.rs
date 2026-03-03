@@ -1,7 +1,6 @@
 use std::path::Path;
 
-use crate::error::Result;
-use crate::git::Oid;
+use crate::{error::Result, git::Oid};
 
 /// Metadata for a single session discovered from git refs.
 #[derive(Debug, Clone)]
@@ -362,8 +361,9 @@ fn days_to_ymd(days: u64) -> (u64, u64, u64) {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::fs;
+
+    use super::*;
 
     fn init_repo_with_commit(dir: &Path) -> git2::Repository {
         let repo = git2::Repository::init(dir).unwrap();
