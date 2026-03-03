@@ -5,7 +5,7 @@ use agent_client_protocol::{
     ContentBlock, SessionConfigKind, SessionConfigOption, SessionConfigOptionCategory,
     SessionConfigSelectOptions, SessionNotification, SessionUpdate,
 };
-use concats_core::session::{SessionEvent, SessionHandle};
+use concats_core::session::{SessionEvent, SessionHandle, SessionConfig, start_session};
 use ratatui_textarea::TextArea;
 use tokio::sync::mpsc;
 
@@ -26,7 +26,7 @@ pub enum Message {
 }
 
 /// Which panel currently has focus.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum FocusedPanel {
     Conversation,
     Stderr,
@@ -45,6 +45,20 @@ pub struct AgentPickerState {
     pub agents: Vec<(String, String)>,
     /// Currently highlighted index.
     pub selected: usize,
+}
+
+/// Actions that can be performed by the application.
+#[derive(Debug, Clone)]
+pub enum Action {
+    None,
+    Quit,
+    Fork,
+    /// Open the agent picker (or create session immediately if single agent).
+    NewSession,
+    /// Close the active session tab.
+    CloseActiveSession,
+    /// Create a session with the agent at the given index in available_agents.
+    CreateSession(usize),
 }
 
 /// Per-session state. Each open session tab holds one of these.
@@ -326,6 +340,74 @@ impl<'a> App<'a> {
         }
     }
 
+    pub fn tick(&mut self) {
+        let any_waiting = self.session_tabs.iter().any(|t| t.waiting);
+        if any_waiting {
+            self.tick = self.tick.wrapping_add(1);
+        }
+    }
+
+    pub fn handle_fan_in_event(&mut self, tab_id: u32, event: FanInEvent) {
+        if let Some(tab) = self.session_tabs.iter_mut().find(|t| t.id == tab_id) {
+            match event {
+                FanInEvent::Session(session_event) => {
+                    tab.handle_session_event(session_event);
+                }
+                FanInEvent::ChannelClosed => {
+                    tab.waiting = false;
+                    tab.status = "session ended".into();
+                }
+            }
+        }
+    }
+
+    pub async fn handle_action(&mut self, action: Action) -> miette::Result<()> {
+        match action {
+            Action::None => {}
+            Action::Quit => {
+                self.should_quit = true;
+            }
+            Action::Fork => {
+                self.handle_fork().await;
+            }
+            Action::NewSession => {
+                if self.available_agents.len() == 1 {
+                    self.create_session_from_agent(0);
+                } else if self.available_agents.is_empty() {
+                    if let Some(tab) = self.active_session_mut() {
+                        tab.messages
+                            .push(Message::System("No agents configured.".into()));
+                    }
+                } else {
+                    self.agent_picker = Some(AgentPickerState {
+                        agents: self
+                            .available_agents
+                            .iter()
+                            .map(|(id, cfg)| {
+                                let display = if cfg.name.trim().is_empty() {
+                                    id.clone()
+                                } else {
+                                    cfg.name.clone()
+                                };
+                                (id.clone(), display)
+                            })
+                            .collect(),
+                        selected: 0,
+                    });
+                }
+            }
+            Action::CloseActiveSession => {
+                if let ActiveTab::Session(id) = self.active_tab {
+                    self.close_session(id);
+                }
+            }
+            Action::CreateSession(agent_idx) => {
+                self.create_session_from_agent(agent_idx);
+            }
+        }
+        Ok(())
+    }
+
     /// Get the active session tab (if the active tab is a session).
     pub fn active_session(&self) -> Option<&SessionTab<'a>> {
         if let ActiveTab::Session(id) = self.active_tab {
@@ -398,28 +480,23 @@ impl<'a> App<'a> {
     }
 
     /// Close a session tab by ID.
-    ///
-    /// If the closed tab was active, switches to the nearest adjacent session
-    /// tab, or falls back to the Sessions (history) utility tab.
     pub fn close_session(&mut self, id: u32) {
-        let old_index = self.session_tabs.iter().position(|t| t.id == id);
-        self.session_tabs.retain(|t| t.id != id);
+        if let Some(pos) = self.session_tabs.iter().position(|t| t.id == id) {
+            self.session_tabs.remove(pos);
 
-        if self.active_tab == ActiveTab::Session(id) {
-            // Try to stay near the same position in the tab list.
-            let neighbor = old_index
-                .and_then(|idx| {
-                    // Prefer the tab that slid into the same index, else the one before.
-                    self.session_tabs
-                        .get(idx)
-                        .or_else(|| self.session_tabs.last())
-                })
-                .map(|t| t.id);
+            // If we closed the active tab, switch to a neighbor.
+            if self.active_tab == ActiveTab::Session(id) {
+                let neighbor = self
+                    .session_tabs
+                    .get(pos)
+                    .or_else(|| if pos > 0 { self.session_tabs.get(pos - 1) } else { None })
+                    .map(|t| t.id);
 
-            self.active_tab = match neighbor {
-                Some(neighbor_id) => ActiveTab::Session(neighbor_id),
-                None => ActiveTab::Sessions,
-            };
+                self.active_tab = match neighbor {
+                    Some(neighbor_id) => ActiveTab::Session(neighbor_id),
+                    None => ActiveTab::Sessions,
+                };
+            }
         }
     }
 
@@ -488,6 +565,155 @@ impl<'a> App<'a> {
             }
         }
         unreachable!()
+    }
+
+    fn create_session_from_agent(&mut self, agent_idx: usize) {
+        let Some((agent_id, agent_config)) = self.available_agents.get(agent_idx).cloned() else {
+            return;
+        };
+
+        let session_config = SessionConfig {
+            agent_command: agent_config.command.clone(),
+            agent_args: agent_config.args.clone(),
+            workspace_root: self.workspace_root.clone(),
+            env: agent_config.env.clone(),
+            fork_from: None,
+            auto_push: self.auto_push,
+            push_remote: self.push_remote.clone(),
+        };
+
+        match start_session(session_config) {
+            Ok(session) => {
+                let label = if agent_config.name.trim().is_empty() {
+                    agent_id.clone()
+                } else {
+                    agent_config.name.clone()
+                };
+                let new_id = self.add_session(session, label, &agent_id, &agent_config);
+                self.switch_tab(ActiveTab::Session(new_id));
+            }
+            Err(e) => {
+                if let Some(tab) = self.active_session_mut() {
+                    tab.messages
+                        .push(Message::System(format!("Failed to start session: {e}")));
+                }
+            }
+        }
+    }
+
+    async fn handle_fork(&mut self) {
+        let fork_request = match self.fork_from_selected_turn() {
+            Some(req) => req,
+            None => {
+                if let Some(tab) = self.active_session_mut() {
+                    tab.messages.push(Message::System(
+                        "No turn selected to fork from.".into(),
+                    ));
+                }
+                return;
+            }
+        };
+
+        // Check for uncommitted changes.
+        if let Ok(repo) = git2::Repository::open(&self.workspace_root)
+            && let Ok(statuses) = repo.statuses(None)
+        {
+            let dirty = statuses.iter().any(|s| {
+                s.status().intersects(
+                    git2::Status::WT_MODIFIED
+                        | git2::Status::WT_NEW
+                        | git2::Status::INDEX_MODIFIED
+                        | git2::Status::INDEX_NEW,
+                )
+            });
+            if dirty {
+                if let Some(tab) = self.active_session_mut() {
+                    tab.messages.push(Message::System(
+                        "Warning: uncommitted changes in working directory will be overwritten by fork."
+                            .into(),
+                    ));
+                }
+            }
+        }
+
+        // Restore working directory to the selected commit.
+        if let Err(e) = concats_core::session_history::restore_workdir_to_commit(
+            &self.workspace_root,
+            fork_request.commit_oid,
+        ) {
+            if let Some(tab) = self.active_session_mut() {
+                tab.messages.push(Message::System(format!(
+                    "Failed to restore working directory: {e}"
+                )));
+            }
+            return;
+        }
+
+        // Prefer the active session's agent config; fall back to the first available agent.
+        let (agent_id, agent_config, auto_push, push_remote) =
+            if let Some(active) = self.active_session() {
+                let cfg = concats_config::AgentConfig {
+                    name: active.agent_label.clone(),
+                    command: active.agent_command.clone(),
+                    args: active.agent_args.clone(),
+                    env: active.agent_env.clone(),
+                };
+                (
+                    active.agent_label.clone(),
+                    cfg,
+                    active.auto_push,
+                    active.push_remote.clone(),
+                )
+            } else if let Some((id, cfg)) = self.available_agents.first() {
+                (
+                    id.clone(),
+                    cfg.clone(),
+                    self.auto_push,
+                    self.push_remote.clone(),
+                )
+            } else {
+                return;
+            };
+
+        // Start a new session forked from the selected commit.
+        let session_config = SessionConfig {
+            agent_command: agent_config.command.clone(),
+            agent_args: agent_config.args.clone(),
+            workspace_root: self.workspace_root.clone(),
+            env: agent_config.env.clone(),
+            fork_from: Some(fork_request.commit_oid),
+            auto_push,
+            push_remote,
+        };
+
+        match start_session(session_config) {
+            Ok(new_session) => {
+                let label = format!(
+                    "fork:{}",
+                    &fork_request.source_session_id
+                        [..8.min(fork_request.source_session_id.len())]
+                );
+                let new_id = self.add_session(new_session, label, &agent_id, &agent_config);
+
+                // Queue fork message on the new tab.
+                if let Some(new_tab) = self.session_tabs.iter_mut().find(|t| t.id == new_id) {
+                    new_tab.queue_fork_message(
+                        &fork_request.source_session_id,
+                        fork_request.source_turn,
+                        fork_request.commit_oid,
+                    );
+                }
+
+                // Switch to the new tab.
+                self.switch_tab(ActiveTab::Session(new_id));
+            }
+            Err(e) => {
+                if let Some(tab) = self.active_session_mut() {
+                    tab.messages
+                        .push(Message::System(format!("Failed to start fork: {e}")));
+                }
+            }
+        }
     }
 }
 
