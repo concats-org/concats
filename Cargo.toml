@@ -7,7 +7,7 @@ default-members = ["crates/config", "crates/core", "crates/registry", "crates/cl
 publish = false
 edition = "2024"
 version = "0.0.0"
-license = "AGPL-3.0-or-later"
+
 
 [workspace.dependencies]
 async-trait = "0.1"

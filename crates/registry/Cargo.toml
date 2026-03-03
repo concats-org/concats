@@ -3,7 +3,7 @@ name = "concats-registry"
 publish.workspace = true
 edition.workspace = true
 version.workspace = true
-license.workspace = true
+license = "Apache-2.0"
 
 [lib]
 name = "concats_registry"
