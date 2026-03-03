@@ -39,97 +39,110 @@ Session/code coupling rule:
 
 ## Setup
 
-Install required Rust toolchains:
+Install the stable toolchain for building and the nightly toolchain for formatting:
 
 ```sh
 rustup toolchain install stable
 rustup toolchain install nightly --component rustfmt
 ```
 
-## Testing Requirements
 
-Testing rigor is mandatory.
+## Components
 
-For Rust core contributions, you SHOULD use:
+The project is organized into multiple components, each with destinct purpose and responsibilities.
 
-- Unit tests for local behavior.
-- Integration tests for end-to-end core workflows.
-- `mockall` for mocking trait boundaries.
-- `proptest` for property-based coverage of invariants.
+Most components are released under **AGPL-3.0-or-later**, but individual components MAY use a different license. Each component's manifest and `LICENSE` file are authoritative — always check them.
 
-### AI Contribution Rule
+All dependencies MUST be license-compatible with the component they are added to. Use [SPDX identifiers](https://spdx.org/licenses/) (e.g., `AGPL-3.0-or-later`) in `Cargo.toml` and other manifests. If you are uncertain about which license applies or whether a dependency is compatible, please reach out to the maintainers before merging.
 
-When using an AI assistant, keep tasks scoped to either:
+### Adding Components
 
-- implementation changes, or
-- test authoring
+New components SHOULD be added using `cargo new crates/${NAME}`.
 
-Do not do both in one task unless explicitly requested by the human reviewer.
-
-### Required Checks (Rust Core)
-
-```sh
-cargo +nightly fmt --check
-cargo clippy --all-targets --all-features -- -D warnings
-cargo test --workspace
-```
-
-## Licensing
-
-The core project direction is open source under **AGPL**. Use SPDX identifiers in `Cargo.toml` and other manifests.
-
-If you are unsure about licensing implications for a component, consult the project lead before merging.
-
-## Documentation
-
-All user-facing behavior MUST be documented.
-
-Documentation should explain:
-
-- What changed.
-- Why it changed.
-- How checkpoint/session semantics are affected.
-
-For Rust crates, prefer complete crate-level docs in `lib.rs` and clear `///` docs for public APIs.
-
-## Adding Components
-
-For new Rust components:
-
-```sh
-cargo new crates/${NAME}
-```
-
-Then:
+After creating a new crate:
 
 - add the crate to workspace members,
-- apply the correct license metadata,
+- link the appropriate license file: `ln -s ../../LICENSE-${TYPE} crates/${NAME}/LICENSE-${TYPE}`,
+- set the correct `license` field in the crate's `Cargo.toml` using the SPDX identifier,
 - document the crate purpose and integration points.
 
-For non-Rust interfaces, place them in clearly named top-level directories and document ownership and build/test commands.
+If you are uncertain about where to put things or which license to use for a new component, please consult the maintainers.
 
-## Version Control
-
-- Commit frequently in small, logical chunks.
-- Ensure each commit is coherent and reviewable.
-- Do not commit secrets, tokens, or private user data.
-
-Commit messages MUST follow [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
 ## AI Assistants
 
-AI assistance is encouraged with guardrails. Human contributors remain fully accountable for all committed code.
+> [!TIP]
+> For _AI Agent_ guidance on effective collaboration on this project, please refer to the `AGENTS.md` file in the repository root.
 
-### Rules
+We actively encourage the use of AI assistants (e.g., Claude, Gemini, ChatGPT) to boost productivity. We also encourage you to share your AI sessions using _concats_ — making collaboration visible helps the whole team learn, iterate faster, and build on each other's work.
 
-- Review and understand AI-generated changes before committing.
-- Validate behavior with appropriate tests/checks.
-- Add attribution when AI materially contributes.
+That said, the human contributor is always ultimately accountable for the code they commit. AI assistance does not diminish that responsibility. Contributors MUST review, understand, and test all AI-generated code before submitting it.
+
+### Principles
+
+- **Accountability** — You own every line you commit, whether you wrote it or an AI did. Review it, test it, and make sure it meets the project's standards.
+- **Transparency** — When an AI materially contributes to a commit, acknowledge it with a `Co-Authored-By:` trailer. Share your sessions via _concats_ so reviewers have full context.
+- **Quality** — AI-generated code MUST pass the same bar as human-written code. Run the required checks and make sure the contribution is correct, secure, and well-documented.
 
 ### Attribution
 
-Use a `Co-Authored-By` trailer when applicable:
+Add the appropriate `Co-Authored-By` trailer in the commit message body:
 
 - Claude: `Co-Authored-By: Claude <noreply@anthropic.com>`
 - Gemini: `Co-Authored-By: Gemini <google@users.noreply.github.com>`
 - ChatGPT: `Co-Authored-By: ChatGPT <openai@users.noreply.github.com>`
+
+> [!NOTE]
+> Not all AI assistants have an official GitHub account. Use the organization name with the default GitHub noreply email to avoid mentioning actual users.
+
+## Documentation
+
+All user-facing features MUST be documented. Quality documentation lowers the barrier to entry and helps users effectively understand and work with the system.
+
+Each crate MUST include comprehensive front-page documentation in `lib.rs` covering an introduction, quick start example, feature overview, and integration guide. Every public function, struct, enum, trait, and module MUST have `///` doc comments describing their purpose and SHOULD include usage examples.
+
+Documentation SHOULD be clear, concise, complete, up to date, and consistent with project conventions. Missing or poor documentation for user-facing features will block pull requests — when in doubt, document more rather than less.
+
+For detailed guidance on how to write good documentation, see the [rustdoc book](https://doc.rust-lang.org/rustdoc/how-to-write-documentation.html).
+
+## Version Control
+
+Changes SHOULD be committed frequently in small logical chunks that MUST be consistent, work independently of any later commits, and pass the linter plus the tests. Doing so eases rollback and rebase operations. Commits MUST not include any customer data.
+
+Commit messages SHALL follow the [Conventional Commits specification](https://www.conventionalcommits.org/en/v1.0.0/). This provides a framework for explicit, readable messages and enables automated changelog generation.
+
+## Code Quality
+
+### Formatting
+
+All Rust code MUST be formatted using the nightly toolchain:
+
+```sh
+cargo +nightly fmt
+```
+
+To verify formatting without modifying files:
+
+```sh
+cargo +nightly fmt --check
+```
+
+### Linting
+
+All code MUST pass clippy with no warnings:
+
+```sh
+cargo clippy --all-targets --all-features -- -D warnings
+```
+
+Address clippy suggestions rather than suppressing them. If a lint is genuinely inapplicable, add an `#[allow(...)]` with a comment explaining why.
+
+### Testing
+
+Run the full test suite before submitting changes:
+
+```sh
+cargo test --workspace
+```
+
+New functionality MUST include tests. Bug fixes MUST include a regression test that fails without the fix. Tests SHOULD be placed in a `#[cfg(test)]` module within the same file as the code under test. Integration tests that exercise cross-crate behavior belong in the `tests/` directory of the relevant crate.
