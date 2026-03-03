@@ -1,5 +1,5 @@
 [package]
-name = "registry"
+name = "concats-registry"
 publish.workspace = true
 edition.workspace = true
 version.workspace = true

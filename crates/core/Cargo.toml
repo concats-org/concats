@@ -1,5 +1,5 @@
 [package]
-name = "core"
+name = "concats-core"
 publish.workspace = true
 edition.workspace = true
 version.workspace = true
