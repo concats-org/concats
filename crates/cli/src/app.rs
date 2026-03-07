@@ -69,7 +69,7 @@ pub struct SessionTab<'a> {
     pub textarea: TextArea<'a>,
     pub status: String,
     pub waiting: bool,
-    pub conv_list_state: tui_widget_list::ListState,
+    pub list: tui_widget_list::ListState,
     pub stderr_lines: Vec<String>,
     pub stderr_scroll: u16,
     pub show_stderr: bool,
@@ -104,7 +104,7 @@ impl<'a> SessionTab<'a> {
             textarea,
             status: "connected".into(),
             waiting: false,
-            conv_list_state: tui_widget_list::ListState::default(),
+            list: tui_widget_list::ListState::default(),
             stderr_lines: Vec::new(),
             stderr_scroll: 0,
             show_stderr: false,
@@ -471,7 +471,11 @@ impl<'a> App<'a> {
         tokio::spawn(async move {
             let mut rx = session_rx;
             while let Some(event) = rx.recv().await {
-                if fan_in_tx.send((id, FanInEvent::Session(event))).await.is_err() {
+                if fan_in_tx
+                    .send((id, FanInEvent::Session(event)))
+                    .await
+                    .is_err()
+                {
                     break;
                 }
             }

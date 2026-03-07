@@ -193,7 +193,7 @@ async fn handle_sessions_keys(app: &mut App<'_>, key: KeyEvent) -> miette::Resul
 fn scroll_focused_panel(tab: &mut crate::app::SessionTab, delta: i16) {
     match tab.focused_panel {
         FocusedPanel::Conversation => {
-            tab.conv_list_state.scroll_by(delta);
+            tab.list.scroll_by(delta);
         }
         FocusedPanel::Stderr => {
             tab.stderr_scroll = apply_scroll_delta(tab.stderr_scroll, delta);
@@ -300,7 +300,7 @@ fn scroll_under_mouse(
 
         if rect_contains(panel_chunks[0], column, row) {
             tab.focused_panel = FocusedPanel::Conversation;
-            tab.conv_list_state.scroll_by(delta);
+            tab.list.scroll_by(delta);
             return true;
         }
 
@@ -311,7 +311,7 @@ fn scroll_under_mouse(
         }
     } else {
         tab.focused_panel = FocusedPanel::Conversation;
-        tab.conv_list_state.scroll_by(delta);
+        tab.list.scroll_by(delta);
         return true;
     }
 

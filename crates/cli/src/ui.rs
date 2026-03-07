@@ -295,63 +295,59 @@ fn render_agent_picker(frame: &mut Frame, picker: &crate::app::AgentPickerState)
     frame.render_widget(list, popup_area);
 }
 
-/// Build the lines for a single message (same styling as before).
-fn message_lines(msg: &Message) -> Vec<Line<'_>> {
-    match msg {
-        Message::User(text) => {
-            vec![Line::from(vec![
-                Span::styled(
-                    "> ",
-                    Style::default()
-                        .fg(Color::Green)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::raw(text.as_str()),
-            ])]
-        }
-        Message::Agent(text) => text
-            .lines()
-            .map(|line| Line::from(Span::styled(line, Style::default().fg(Color::Cyan))))
-            .collect(),
-        Message::System(text) => {
-            vec![Line::from(vec![
-                Span::styled("[", Style::default().fg(Color::Yellow)),
-                Span::styled(text.as_str(), Style::default().fg(Color::Yellow)),
-                Span::styled("]", Style::default().fg(Color::Yellow)),
-            ])]
-        }
-    }
-}
-
-/// Compute the rendered height of a message after word-wrapping to the given width.
-fn wrapped_message_height(msg: &Message, width: u16) -> u16 {
-    let lines = message_lines(msg);
-    let w = width.max(1) as usize;
-    let mut total: u16 = 0;
-    for line in &lines {
-        let char_count: usize = line.spans.iter().map(|s| s.content.chars().count()).sum();
-        let wrapped = (char_count.max(1)).div_ceil(w).max(1) as u16;
-        total = total.saturating_add(wrapped);
-    }
-    total.max(1)
-}
-
 /// Render the conversation as a `ListView` of per-message `Paragraph` widgets.
 fn render_conversation_list(frame: &mut Frame, tab: &mut SessionTab, area: Rect) {
     let messages = &tab.messages;
     let msg_count = messages.len();
-    let avail_width = area.width;
 
     let builder = ListBuilder::new(move |context: &ListBuildContext| {
+        let width = context.cross_axis_size.max(1) as usize;
         let msg = &messages[context.index];
-        let lines = message_lines(msg);
-        let height = wrapped_message_height(msg, avail_width);
-        let widget = Paragraph::new(lines).wrap(Wrap { trim: false });
-        (widget, height)
+
+        let (lines, height) = match msg {
+            Message::User(text) => {
+                let lines = vec![Line::from(vec![
+                    Span::styled(
+                        "> ",
+                        Style::default()
+                            .fg(Color::Green)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::raw(text.as_str()),
+                ])];
+                let h = (text.chars().count() + 2).div_ceil(width).max(1) as u16;
+                (lines, h)
+            }
+            Message::Agent(text) => {
+                let lines: Vec<Line> = text
+                    .lines()
+                    .map(|line| {
+                        Line::from(Span::styled(line, Style::default().fg(Color::Cyan)))
+                    })
+                    .collect();
+                let h: u16 = text
+                    .lines()
+                    .map(|line| line.chars().count().div_ceil(width).max(1) as u16)
+                    .sum::<u16>()
+                    .max(1);
+                (lines, h)
+            }
+            Message::System(text) => {
+                let lines = vec![Line::from(vec![
+                    Span::styled("[", Style::default().fg(Color::Yellow)),
+                    Span::styled(text.as_str(), Style::default().fg(Color::Yellow)),
+                    Span::styled("]", Style::default().fg(Color::Yellow)),
+                ])];
+                let h = (text.chars().count() + 2).div_ceil(width).max(1) as u16;
+                (lines, h)
+            }
+        };
+
+        (Paragraph::new(lines).wrap(Wrap { trim: false }), height)
     });
 
     let list_view = ListView::new(builder, msg_count);
-    frame.render_stateful_widget(list_view, area, &mut tab.conv_list_state);
+    frame.render_stateful_widget(list_view, area, &mut tab.list);
 }
 
 pub fn render_session_tab(frame: &mut Frame, tab: &mut SessionTab, tick: usize, area: Rect) {
