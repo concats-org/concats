@@ -1,15 +1,16 @@
 use ratatui::{
     Frame,
+    buffer::Buffer,
     layout::{Constraint, Direction, Layout, Rect, Spacing},
     style::{Color, Modifier, Style},
     symbols::{merge::MergeStrategy, scrollbar::Set},
     text::{Line, Span, Text},
     widgets::{
         Block, BorderType, Borders, Clear, Paragraph, Scrollbar, ScrollbarOrientation,
-        ScrollbarState, Wrap,
+        ScrollbarState, Widget, Wrap,
     },
 };
-use tui_widget_list::{ListBuildContext, ListBuilder, ListView};
+use tui_widget_list::{ListBuilder, ListView};
 
 use crate::{
     app::{App, FocusedPanel, Message, SessionTab},
@@ -295,18 +296,18 @@ fn render_agent_picker(frame: &mut Frame, picker: &crate::app::AgentPickerState)
     frame.render_widget(list, popup_area);
 }
 
-/// Render the conversation as a `ListView` of per-message `Paragraph` widgets.
-fn render_conversation_list(frame: &mut Frame, tab: &mut SessionTab, area: Rect) {
-    let messages = &tab.messages;
-    let msg_count = messages.len();
+/// A widget representing a single conversation message.
+struct MessageWidget<'a> {
+    paragraph: Paragraph<'a>,
+    height: u16,
+}
 
-    let builder = ListBuilder::new(move |context: &ListBuildContext| {
-        let width = context.cross_axis_size.max(1) as usize;
-        let msg = &messages[context.index];
-
-        let (lines, height) = match msg {
+impl MessageWidget<'_> {
+    fn from_message(msg: &Message, width: u16) -> MessageWidget<'_> {
+        let w = width.max(1) as usize;
+        match msg {
             Message::User(text) => {
-                let lines = vec![Line::from(vec![
+                let line = Line::from(vec![
                     Span::styled(
                         "> ",
                         Style::default()
@@ -314,9 +315,12 @@ fn render_conversation_list(frame: &mut Frame, tab: &mut SessionTab, area: Rect)
                             .add_modifier(Modifier::BOLD),
                     ),
                     Span::raw(text.as_str()),
-                ])];
-                let h = (text.chars().count() + 2).div_ceil(width).max(1) as u16;
-                (lines, h)
+                ]);
+                let height = (text.chars().count() + 2).div_ceil(w).max(1) as u16;
+                MessageWidget {
+                    paragraph: Paragraph::new(line).wrap(Wrap { trim: false }),
+                    height,
+                }
             }
             Message::Agent(text) => {
                 let lines: Vec<Line> = text
@@ -325,25 +329,48 @@ fn render_conversation_list(frame: &mut Frame, tab: &mut SessionTab, area: Rect)
                         Line::from(Span::styled(line, Style::default().fg(Color::Cyan)))
                     })
                     .collect();
-                let h: u16 = text
+                let height: u16 = text
                     .lines()
-                    .map(|line| line.chars().count().div_ceil(width).max(1) as u16)
+                    .map(|l| l.chars().count().div_ceil(w).max(1) as u16)
                     .sum::<u16>()
                     .max(1);
-                (lines, h)
+                MessageWidget {
+                    paragraph: Paragraph::new(lines).wrap(Wrap { trim: false }),
+                    height,
+                }
             }
             Message::System(text) => {
-                let lines = vec![Line::from(vec![
+                let line = Line::from(vec![
                     Span::styled("[", Style::default().fg(Color::Yellow)),
                     Span::styled(text.as_str(), Style::default().fg(Color::Yellow)),
                     Span::styled("]", Style::default().fg(Color::Yellow)),
-                ])];
-                let h = (text.chars().count() + 2).div_ceil(width).max(1) as u16;
-                (lines, h)
+                ]);
+                let height = (text.chars().count() + 2).div_ceil(w).max(1) as u16;
+                MessageWidget {
+                    paragraph: Paragraph::new(line).wrap(Wrap { trim: false }),
+                    height,
+                }
             }
-        };
+        }
+    }
+}
 
-        (Paragraph::new(lines).wrap(Wrap { trim: false }), height)
+impl Widget for MessageWidget<'_> {
+    fn render(self, area: Rect, buf: &mut Buffer) {
+        self.paragraph.render(area, buf);
+    }
+}
+
+/// Render the conversation as a `ListView` of per-message widgets.
+fn render_conversation_list(frame: &mut Frame, tab: &mut SessionTab, area: Rect) {
+    let messages = &tab.messages;
+    let msg_count = messages.len();
+
+    let builder = ListBuilder::new(move |context| {
+        let msg = &messages[context.index];
+        let widget = MessageWidget::from_message(msg, context.cross_axis_size);
+        let height = widget.height;
+        (widget, height)
     });
 
     let list_view = ListView::new(builder, msg_count);
