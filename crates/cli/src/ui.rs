@@ -9,6 +9,7 @@ use ratatui::{
         ScrollbarState, Wrap,
     },
 };
+use tui_widget_list::{ListBuildContext, ListBuilder, ListView};
 
 use crate::{
     app::{App, FocusedPanel, Message, SessionTab},
@@ -294,6 +295,65 @@ fn render_agent_picker(frame: &mut Frame, picker: &crate::app::AgentPickerState)
     frame.render_widget(list, popup_area);
 }
 
+/// Build the lines for a single message (same styling as before).
+fn message_lines(msg: &Message) -> Vec<Line<'_>> {
+    match msg {
+        Message::User(text) => {
+            vec![Line::from(vec![
+                Span::styled(
+                    "> ",
+                    Style::default()
+                        .fg(Color::Green)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::raw(text.as_str()),
+            ])]
+        }
+        Message::Agent(text) => text
+            .lines()
+            .map(|line| Line::from(Span::styled(line, Style::default().fg(Color::Cyan))))
+            .collect(),
+        Message::System(text) => {
+            vec![Line::from(vec![
+                Span::styled("[", Style::default().fg(Color::Yellow)),
+                Span::styled(text.as_str(), Style::default().fg(Color::Yellow)),
+                Span::styled("]", Style::default().fg(Color::Yellow)),
+            ])]
+        }
+    }
+}
+
+/// Compute the rendered height of a message after word-wrapping to the given width.
+fn wrapped_message_height(msg: &Message, width: u16) -> u16 {
+    let lines = message_lines(msg);
+    let w = width.max(1) as usize;
+    let mut total: u16 = 0;
+    for line in &lines {
+        let char_count: usize = line.spans.iter().map(|s| s.content.chars().count()).sum();
+        let wrapped = (char_count.max(1)).div_ceil(w).max(1) as u16;
+        total = total.saturating_add(wrapped);
+    }
+    total.max(1)
+}
+
+/// Render the conversation as a `ListView` of per-message `Paragraph` widgets.
+fn render_conversation_list(frame: &mut Frame, tab: &mut SessionTab, area: Rect) {
+    let messages = &tab.messages;
+    let msg_count = messages.len();
+    let avail_width = area.width;
+
+    let builder = ListBuilder::new(move |context: &ListBuildContext| {
+        let msg = &messages[context.index];
+        let lines = message_lines(msg);
+        let height = wrapped_message_height(msg, avail_width);
+        let widget = Paragraph::new(lines).wrap(Wrap { trim: false });
+        (widget, height)
+    });
+
+    let list_view = ListView::new(builder, msg_count);
+    frame.render_stateful_widget(list_view, area, &mut tab.conv_list_state);
+}
+
 pub fn render_session_tab(frame: &mut Frame, tab: &mut SessionTab, tick: usize, area: Rect) {
     let _ = tick; // tick is used in the tab bar, not directly here
     let chunks = Layout::default()
@@ -303,39 +363,6 @@ pub fn render_session_tab(frame: &mut Frame, tab: &mut SessionTab, tick: usize, 
             Constraint::Length(session_input_height(tab, area.width)), // input (+ optional fork context block)
         ])
         .split(area);
-
-    // Build conversation lines.
-    let mut conv_lines: Vec<Line> = Vec::new();
-    for msg in &tab.messages {
-        match msg {
-            Message::User(text) => {
-                conv_lines.push(Line::from(vec![
-                    Span::styled(
-                        "> ",
-                        Style::default()
-                            .fg(Color::Green)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    Span::raw(text),
-                ]));
-            }
-            Message::Agent(text) => {
-                for line in text.lines() {
-                    conv_lines.push(Line::from(Span::styled(
-                        line,
-                        Style::default().fg(Color::Cyan),
-                    )));
-                }
-            }
-            Message::System(text) => {
-                conv_lines.push(Line::from(vec![
-                    Span::styled("[", Style::default().fg(Color::Yellow)),
-                    Span::styled(text, Style::default().fg(Color::Yellow)),
-                    Span::styled("]", Style::default().fg(Color::Yellow)),
-                ]));
-            }
-        }
-    }
 
     if tab.show_stderr {
         // Split the main area horizontally: conversation left, stderr right.
@@ -347,22 +374,7 @@ pub fn render_session_tab(frame: &mut Frame, tab: &mut SessionTab, tick: usize, 
             ])
             .split(chunks[0]);
 
-        let conv_len = conv_lines.len();
-        let conversation = Paragraph::new(conv_lines)
-            .wrap(Wrap { trim: false })
-            .scroll((tab.scroll_offset, 0));
-        frame.render_widget(conversation, horiz[0]);
-
-        let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight).symbols(Set {
-            track: "\u{2502}",
-            thumb: "\u{2588}",
-            begin: "\u{25b2}",
-            end: "\u{25bc}",
-        });
-        let mut scrollbar_state = ScrollbarState::default()
-            .content_length(conv_len)
-            .position(tab.scroll_offset as usize);
-        frame.render_stateful_widget(scrollbar, horiz[0], &mut scrollbar_state);
+        render_conversation_list(frame, tab, horiz[0]);
 
         // Stderr panel.
         let stderr_lines: Vec<Line> = tab
@@ -407,22 +419,7 @@ pub fn render_session_tab(frame: &mut Frame, tab: &mut SessionTab, tick: usize, 
         );
     } else {
         // Full-width conversation.
-        let conv_len = conv_lines.len();
-        let conversation = Paragraph::new(conv_lines)
-            .wrap(Wrap { trim: false })
-            .scroll((tab.scroll_offset, 0));
-        frame.render_widget(conversation, chunks[0]);
-
-        let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight).symbols(Set {
-            track: "\u{2502}",
-            thumb: "\u{2588}",
-            begin: "\u{25b2}",
-            end: "\u{25bc}",
-        });
-        let mut scrollbar_state = ScrollbarState::default()
-            .content_length(conv_len)
-            .position(tab.scroll_offset as usize);
-        frame.render_stateful_widget(scrollbar, chunks[0], &mut scrollbar_state);
+        render_conversation_list(frame, tab, chunks[0]);
     }
 
     // Input area using TextArea widget.
