@@ -264,7 +264,12 @@ impl CheckpointStore {
     fn initial_message(&self, prompt: &str) -> String {
         let subject: String = prompt.chars().take(72).collect();
         format!(
-            "checkpoint: {subject}\n\n{prompt}\n\nAgent-Session: {}\nAgent-Turn: {}",
+            "checkpoint: {subject}\n\n\
+             <checkpoint>\n\
+             <prompt>\n{prompt}\n</prompt>\n\
+             <session>{}</session>\n\
+             <turn>{}</turn>\n\
+             </checkpoint>",
             self.session_id, self.turn_count
         )
     }
@@ -273,7 +278,14 @@ impl CheckpointStore {
         let subject: String = prompt.chars().take(72).collect();
         let trimmed_response: String = response_summary.chars().take(500).collect();
         format!(
-            "checkpoint: {subject}\n\n{prompt}\n\n---\n\n{trimmed_response}\n\nAgent-Session: {}\nAgent-Turn: {}\nAgent-Stop-Reason: {stop_reason}",
+            "checkpoint: {subject}\n\n\
+             <checkpoint>\n\
+             <prompt>\n{prompt}\n</prompt>\n\
+             <response>\n{trimmed_response}\n</response>\n\
+             <session>{}</session>\n\
+             <turn>{}</turn>\n\
+             <stop-reason>{stop_reason}</stop-reason>\n\
+             </checkpoint>",
             self.session_id, self.turn_count
         )
     }
@@ -358,9 +370,9 @@ mod tests {
         let commit = r.peel_to_commit().unwrap();
         let msg = commit.message().unwrap();
 
-        assert!(msg.contains("Agent-Session: test-session"));
-        assert!(msg.contains("Agent-Turn: 0"));
-        assert!(msg.contains("Agent-Stop-Reason: end_turn"));
+        assert!(msg.contains("<session>test-session</session>"));
+        assert!(msg.contains("<turn>0</turn>"));
+        assert!(msg.contains("<stop-reason>end_turn</stop-reason>"));
         assert!(msg.contains("I fixed the bug by..."));
     }
 
@@ -387,7 +399,7 @@ mod tests {
             .unwrap();
         let commit = r.peel_to_commit().unwrap();
         let msg = commit.message().unwrap();
-        assert!(msg.contains("Agent-Turn: 1"));
+        assert!(msg.contains("<turn>1</turn>"));
     }
 
     #[test]
@@ -456,14 +468,14 @@ mod tests {
             .peel_to_commit()
             .unwrap();
         assert!(
-            tip.message().unwrap().contains("Agent-Turn: 1"),
+            tip.message().unwrap().contains("<turn>1</turn>"),
             "tip should be turn 1"
         );
         assert_eq!(tip.parent_count(), 1);
 
         let turn0 = tip.parent(0).unwrap();
         assert!(
-            turn0.message().unwrap().contains("Agent-Turn: 0"),
+            turn0.message().unwrap().contains("<turn>0</turn>"),
             "parent should be turn 0"
         );
         assert_eq!(turn0.parent_count(), 1);

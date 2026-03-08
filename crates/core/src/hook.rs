@@ -532,9 +532,9 @@ mod tests {
             .peel_to_commit()
             .unwrap();
         let msg = tip.message().unwrap();
-        assert!(msg.contains("Agent-Session:"));
-        assert!(msg.contains("Agent-Turn: 0"));
-        assert!(msg.contains("Agent-Stop-Reason: end_turn"));
+        assert!(msg.contains("<session>"));
+        assert!(msg.contains("<turn>0</turn>"));
+        assert!(msg.contains("<stop-reason>end_turn</stop-reason>"));
         assert!(msg.contains("I fixed the bug"));
 
         // State should have incremented turn count.
@@ -592,10 +592,10 @@ mod tests {
             .unwrap()
             .peel_to_commit()
             .unwrap();
-        assert!(tip.message().unwrap().contains("Agent-Turn: 1"));
+        assert!(tip.message().unwrap().contains("<turn>1</turn>"));
 
         let parent = tip.parent(0).unwrap();
-        assert!(parent.message().unwrap().contains("Agent-Turn: 0"));
+        assert!(parent.message().unwrap().contains("<turn>0</turn>"));
 
         // State should show turn_count = 2.
         let state = load_state(&repo_path, session_id).unwrap().unwrap();
