@@ -195,9 +195,7 @@ pub fn handle_stop(payload: &StopPayload) -> Result<()> {
         .or(transcript_response.as_deref())
         .unwrap_or("(response not captured)");
 
-    let stop_reason = payload.stop_reason.as_deref().unwrap_or("end_turn");
-
-    store.finalize_checkpoint(&state.current_prompt, response_summary, stop_reason)?;
+    store.finalize_checkpoint(&state.current_prompt, response_summary)?;
 
     let updated = HookSessionState {
         turn_count: state.turn_count + 1,
@@ -532,9 +530,8 @@ mod tests {
             .peel_to_commit()
             .unwrap();
         let msg = tip.message().unwrap();
-        assert!(msg.contains("<session>"));
-        assert!(msg.contains("<turn>0</turn>"));
-        assert!(msg.contains("<stop-reason>end_turn</stop-reason>"));
+        assert!(msg.contains("<prompt>"));
+        assert!(msg.contains("<response>"));
         assert!(msg.contains("I fixed the bug"));
 
         // State should have incremented turn count.
@@ -592,10 +589,10 @@ mod tests {
             .unwrap()
             .peel_to_commit()
             .unwrap();
-        assert!(tip.message().unwrap().contains("<turn>1</turn>"));
+        assert!(tip.message().unwrap().contains("turn one"));
 
         let parent = tip.parent(0).unwrap();
-        assert!(parent.message().unwrap().contains("<turn>0</turn>"));
+        assert!(parent.message().unwrap().contains("turn zero"));
 
         // State should show turn_count = 2.
         let state = load_state(&repo_path, session_id).unwrap().unwrap();

@@ -85,15 +85,14 @@ impl CheckpointStore {
     }
 
     /// Finalize the checkpoint for the completed turn. Writes the full commit
-    /// message with prompt, response summary, and trailers, then increments
-    /// the turn counter.
+    /// message with prompt and response summary, then increments the turn
+    /// counter.
     pub fn finalize_checkpoint(
         &mut self,
         prompt: &str,
         response_summary: &str,
-        stop_reason: &str,
     ) -> Result<Oid> {
-        let oid = self.finalize_checkpoint_sync(prompt, response_summary, stop_reason)?;
+        let oid = self.finalize_checkpoint_sync(prompt, response_summary)?;
         self.turn_count += 1;
         Ok(oid)
     }
@@ -150,14 +149,13 @@ impl CheckpointStore {
         &self,
         prompt: &str,
         response_summary: &str,
-        stop_reason: &str,
     ) -> Result<Oid> {
         let repo = git2::Repository::open(&self.repo_path)?;
         let tree_oid = self.build_tree_from_workdir(&repo)?;
         let tree = repo.find_tree(tree_oid)?;
         let sig = self.signature(&repo)?;
 
-        let message = self.final_message(prompt, response_summary, stop_reason);
+        let message = self.final_message(prompt, response_summary);
 
         // Amend semantics: reuse the current tip's parents so we replace
         // it rather than chaining from it. Falls back to HEAD if no tip
@@ -265,28 +263,17 @@ impl CheckpointStore {
         let subject: String = prompt.chars().take(72).collect();
         format!(
             "checkpoint: {subject}\n\n\
-             <checkpoint>\n\
-             <prompt>\n{prompt}\n</prompt>\n\
-             <session>{}</session>\n\
-             <turn>{}</turn>\n\
-             </checkpoint>",
-            self.session_id, self.turn_count
+             <prompt>\n{prompt}\n</prompt>"
         )
     }
 
-    fn final_message(&self, prompt: &str, response_summary: &str, stop_reason: &str) -> String {
+    fn final_message(&self, prompt: &str, response_summary: &str) -> String {
         let subject: String = prompt.chars().take(72).collect();
         let trimmed_response: String = response_summary.chars().take(500).collect();
         format!(
             "checkpoint: {subject}\n\n\
-             <checkpoint>\n\
              <prompt>\n{prompt}\n</prompt>\n\
-             <response>\n{trimmed_response}\n</response>\n\
-             <session>{}</session>\n\
-             <turn>{}</turn>\n\
-             <stop-reason>{stop_reason}</stop-reason>\n\
-             </checkpoint>",
-            self.session_id, self.turn_count
+             <response>\n{trimmed_response}\n</response>"
         )
     }
 }
@@ -360,7 +347,7 @@ mod tests {
         let mut store = CheckpointStore::new(dir.path().to_path_buf(), "test-session".into());
         store.create_checkpoint("fix the bug").unwrap();
         store
-            .finalize_checkpoint("fix the bug", "I fixed the bug by...", "end_turn")
+            .finalize_checkpoint("fix the bug", "I fixed the bug by...")
             .unwrap();
 
         let repo = git2::Repository::open(dir.path()).unwrap();
@@ -370,9 +357,8 @@ mod tests {
         let commit = r.peel_to_commit().unwrap();
         let msg = commit.message().unwrap();
 
-        assert!(msg.contains("<session>test-session</session>"));
-        assert!(msg.contains("<turn>0</turn>"));
-        assert!(msg.contains("<stop-reason>end_turn</stop-reason>"));
+        assert!(msg.contains("<prompt>"));
+        assert!(msg.contains("<response>"));
         assert!(msg.contains("I fixed the bug by..."));
     }
 
@@ -385,12 +371,12 @@ mod tests {
 
         store.create_checkpoint("turn 0").unwrap();
         store
-            .finalize_checkpoint("turn 0", "resp 0", "end_turn")
+            .finalize_checkpoint("turn 0", "resp 0")
             .unwrap();
 
         store.create_checkpoint("turn 1").unwrap();
         store
-            .finalize_checkpoint("turn 1", "resp 1", "end_turn")
+            .finalize_checkpoint("turn 1", "resp 1")
             .unwrap();
 
         let repo = git2::Repository::open(dir.path()).unwrap();
@@ -399,7 +385,9 @@ mod tests {
             .unwrap();
         let commit = r.peel_to_commit().unwrap();
         let msg = commit.message().unwrap();
-        assert!(msg.contains("<turn>1</turn>"));
+        // Turn 1 finalized message contains "turn 1" in the prompt.
+        assert!(msg.contains("turn 1"));
+        assert!(msg.contains("<response>"));
     }
 
     #[test]
@@ -414,7 +402,7 @@ mod tests {
         assert!(!oid.to_string().is_empty());
 
         let oid2 = store
-            .finalize_checkpoint("just talking", "response", "end_turn")
+            .finalize_checkpoint("just talking", "response")
             .unwrap();
         assert!(!oid2.to_string().is_empty());
     }
@@ -430,7 +418,7 @@ mod tests {
         fs::write(dir.path().join("changed.txt"), "data").unwrap();
         store.create_checkpoint("test").unwrap();
         store
-            .finalize_checkpoint("test", "resp", "end_turn")
+            .finalize_checkpoint("test", "resp")
             .unwrap();
 
         // HEAD should not have moved.
@@ -450,13 +438,13 @@ mod tests {
         // Turn 0: create + finalize.
         store.create_checkpoint("turn 0").unwrap();
         store
-            .finalize_checkpoint("turn 0", "resp 0", "end_turn")
+            .finalize_checkpoint("turn 0", "resp 0")
             .unwrap();
 
         // Turn 1: create + finalize.
         store.create_checkpoint("turn 1").unwrap();
         store
-            .finalize_checkpoint("turn 1", "resp 1", "end_turn")
+            .finalize_checkpoint("turn 1", "resp 1")
             .unwrap();
 
         // Walk the ref: tip should be turn 1, its parent should be turn 0,
@@ -468,14 +456,14 @@ mod tests {
             .peel_to_commit()
             .unwrap();
         assert!(
-            tip.message().unwrap().contains("<turn>1</turn>"),
+            tip.message().unwrap().contains("turn 1"),
             "tip should be turn 1"
         );
         assert_eq!(tip.parent_count(), 1);
 
         let turn0 = tip.parent(0).unwrap();
         assert!(
-            turn0.message().unwrap().contains("<turn>0</turn>"),
+            turn0.message().unwrap().contains("turn 0"),
             "parent should be turn 0"
         );
         assert_eq!(turn0.parent_count(), 1);
