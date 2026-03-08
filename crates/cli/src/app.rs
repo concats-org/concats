@@ -2,7 +2,7 @@ use std::{collections::HashMap, path::PathBuf};
 
 use agent_client_protocol::{
     ContentBlock, SessionConfigKind, SessionConfigOption, SessionConfigOptionCategory,
-    SessionConfigSelectOptions, SessionNotification, SessionUpdate,
+    SessionConfigSelectOptions, SessionNotification, SessionUpdate, ToolCall,
 };
 use concats_core::session::{SessionConfig, SessionEvent, SessionHandle, start_session};
 use ratatui_textarea::TextArea;
@@ -22,6 +22,7 @@ pub enum Message {
     User(String),
     Agent(String),
     System(String),
+    ToolCall(ToolCall),
 }
 
 /// Which panel currently has focus.
@@ -69,7 +70,7 @@ pub struct SessionTab<'a> {
     pub textarea: TextArea<'a>,
     pub status: String,
     pub waiting: bool,
-    pub scroll_offset: u16,
+    pub list: tui_widget_list::ListState,
     pub stderr_lines: Vec<String>,
     pub stderr_scroll: u16,
     pub show_stderr: bool,
@@ -104,7 +105,7 @@ impl<'a> SessionTab<'a> {
             textarea,
             status: "connected".into(),
             waiting: false,
-            scroll_offset: 0,
+            list: tui_widget_list::ListState::default(),
             stderr_lines: Vec::new(),
             stderr_scroll: 0,
             show_stderr: false,
@@ -249,8 +250,7 @@ impl<'a> SessionTab<'a> {
                 }
             }
             SessionUpdate::ToolCall(tc) => {
-                self.messages
-                    .push(Message::System(format!("Tool: {}", tc.title)));
+                self.messages.push(Message::ToolCall(tc));
             }
             SessionUpdate::CurrentModeUpdate(mode_update) => {
                 self.current_mode = Some(mode_update.current_mode_id.to_string());
@@ -471,7 +471,11 @@ impl<'a> App<'a> {
         tokio::spawn(async move {
             let mut rx = session_rx;
             while let Some(event) = rx.recv().await {
-                if fan_in_tx.send((id, FanInEvent::Session(event))).await.is_err() {
+                if fan_in_tx
+                    .send((id, FanInEvent::Session(event)))
+                    .await
+                    .is_err()
+                {
                     break;
                 }
             }

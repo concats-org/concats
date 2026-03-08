@@ -28,6 +28,7 @@ tokio = { workspace = true }
 tokio-stream = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+tui-widget-list = "0.15"
 
 [dev-dependencies]
 pretty_assertions = "1.4.1"

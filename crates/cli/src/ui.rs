@@ -1,14 +1,18 @@
 use ratatui::{
     Frame,
+    buffer::Buffer,
     layout::{Constraint, Direction, Layout, Rect, Spacing},
     style::{Color, Modifier, Style},
     symbols::{merge::MergeStrategy, scrollbar::Set},
     text::{Line, Span, Text},
     widgets::{
         Block, BorderType, Borders, Clear, Paragraph, Scrollbar, ScrollbarOrientation,
-        ScrollbarState, Wrap,
+        ScrollbarState, Widget, Wrap,
     },
 };
+use tui_widget_list::{ListBuilder, ListView};
+
+use agent_client_protocol::ToolKind;
 
 use crate::{
     app::{App, FocusedPanel, Message, SessionTab},
@@ -294,6 +298,205 @@ fn render_agent_picker(frame: &mut Frame, picker: &crate::app::AgentPickerState)
     frame.render_widget(list, popup_area);
 }
 
+/// A widget representing a single conversation message.
+struct MessageWidget<'a> {
+    paragraph: Paragraph<'a>,
+    height: u16,
+}
+
+impl MessageWidget<'_> {
+    fn from_message(msg: &Message, width: u16) -> MessageWidget<'_> {
+        let w = width.max(1) as usize;
+        match msg {
+            Message::User(text) => {
+                let line = Line::from(vec![
+                    Span::styled(
+                        "> ",
+                        Style::default()
+                            .fg(Color::Green)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::raw(text.as_str()),
+                ]);
+                let height = (text.chars().count() + 2).div_ceil(w).max(1) as u16;
+                MessageWidget {
+                    paragraph: Paragraph::new(line).wrap(Wrap { trim: false }),
+                    height,
+                }
+            }
+            Message::Agent(text) => {
+                let lines: Vec<Line> = text
+                    .lines()
+                    .map(|line| {
+                        Line::from(Span::styled(line, Style::default().fg(Color::Cyan)))
+                    })
+                    .collect();
+                let height: u16 = text
+                    .lines()
+                    .map(|l| l.chars().count().div_ceil(w).max(1) as u16)
+                    .sum::<u16>()
+                    .max(1);
+                MessageWidget {
+                    paragraph: Paragraph::new(lines).wrap(Wrap { trim: false }),
+                    height,
+                }
+            }
+            Message::System(text) => {
+                let line = Line::from(vec![
+                    Span::styled("[", Style::default().fg(Color::Yellow)),
+                    Span::styled(text.as_str(), Style::default().fg(Color::Yellow)),
+                    Span::styled("]", Style::default().fg(Color::Yellow)),
+                ]);
+                let height = (text.chars().count() + 2).div_ceil(w).max(1) as u16;
+                MessageWidget {
+                    paragraph: Paragraph::new(line).wrap(Wrap { trim: false }),
+                    height,
+                }
+            }
+            Message::ToolCall(tc) => {
+                // Fallback: should be rendered via ToolCallWidget, but handle gracefully.
+                let text = &tc.title;
+                let line = Line::from(Span::styled(
+                    format!("[Tool: {text}]"),
+                    Style::default().fg(Color::Yellow),
+                ));
+                let height = (text.chars().count() + 8).div_ceil(w).max(1) as u16;
+                MessageWidget {
+                    paragraph: Paragraph::new(line).wrap(Wrap { trim: false }),
+                    height,
+                }
+            }
+        }
+    }
+}
+
+impl Widget for MessageWidget<'_> {
+    fn render(self, area: Rect, buf: &mut Buffer) {
+        self.paragraph.render(area, buf);
+    }
+}
+
+/// A widget rendering a tool call as a bordered box.
+struct ToolCallWidget<'a> {
+    block: Block<'a>,
+    lines: Vec<Line<'a>>,
+    height: u16,
+}
+
+impl ToolCallWidget<'_> {
+    fn from_tool_call(tc: &agent_client_protocol::ToolCall, _width: u16) -> ToolCallWidget<'_> {
+        let kind_label = match tc.kind {
+            ToolKind::Read => "Read",
+            ToolKind::Edit => "Edit",
+            ToolKind::Delete => "Delete",
+            ToolKind::Move => "Move",
+            ToolKind::Search => "Search",
+            ToolKind::Execute => "Execute",
+            ToolKind::Think => "Think",
+            ToolKind::Fetch => "Fetch",
+            ToolKind::SwitchMode => "SwitchMode",
+            _ => "Tool",
+        };
+
+        let border_color = Color::DarkGray;
+
+        let mut lines = Vec::new();
+        if !tc.title.is_empty() {
+            lines.push(Line::from(Span::styled(
+                tc.title.clone(),
+                Style::default().fg(Color::White),
+            )));
+        }
+
+        for loc in &tc.locations {
+            let path_str = loc.path.display().to_string();
+            let loc_text = if let Some(line) = loc.line {
+                format!("path: {path_str}:{line}")
+            } else {
+                format!("path: {path_str}")
+            };
+            lines.push(Line::from(Span::styled(
+                loc_text,
+                Style::default().fg(Color::DarkGray),
+            )));
+        }
+
+        let height = lines.len() as u16 + 2; // +2 for borders
+
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .title(Span::styled(
+                format!(" {kind_label} "),
+                Style::default()
+                    .fg(border_color)
+                    .add_modifier(Modifier::BOLD),
+            ))
+            .border_style(Style::default().fg(border_color));
+
+        ToolCallWidget {
+            block,
+            lines,
+            height,
+        }
+    }
+}
+
+impl Widget for ToolCallWidget<'_> {
+    fn render(self, area: Rect, buf: &mut Buffer) {
+        let paragraph = Paragraph::new(self.lines).block(self.block);
+        paragraph.render(area, buf);
+    }
+}
+
+/// Wrapper enum so `ListBuilder` can return either message or tool-call widgets.
+enum ConversationWidget<'a> {
+    Message(MessageWidget<'a>),
+    ToolCall(ToolCallWidget<'a>),
+}
+
+impl ConversationWidget<'_> {
+    fn height(&self) -> u16 {
+        match self {
+            ConversationWidget::Message(w) => w.height,
+            ConversationWidget::ToolCall(w) => w.height,
+        }
+    }
+}
+
+impl Widget for ConversationWidget<'_> {
+    fn render(self, area: Rect, buf: &mut Buffer) {
+        match self {
+            ConversationWidget::Message(w) => w.render(area, buf),
+            ConversationWidget::ToolCall(w) => w.render(area, buf),
+        }
+    }
+}
+
+/// Render the conversation as a `ListView` of per-message widgets.
+fn render_conversation_list(frame: &mut Frame, tab: &mut SessionTab, area: Rect) {
+    let messages = &tab.messages;
+    let msg_count = messages.len();
+
+    let builder = ListBuilder::new(move |context| {
+        let msg = &messages[context.index];
+        let widget = match msg {
+            Message::ToolCall(tc) => {
+                let w = ToolCallWidget::from_tool_call(tc, context.cross_axis_size);
+                ConversationWidget::ToolCall(w)
+            }
+            other => ConversationWidget::Message(MessageWidget::from_message(
+                other,
+                context.cross_axis_size,
+            )),
+        };
+        let height = widget.height();
+        (widget, height)
+    });
+
+    let list_view = ListView::new(builder, msg_count);
+    frame.render_stateful_widget(list_view, area, &mut tab.list);
+}
+
 pub fn render_session_tab(frame: &mut Frame, tab: &mut SessionTab, tick: usize, area: Rect) {
     let _ = tick; // tick is used in the tab bar, not directly here
     let chunks = Layout::default()
@@ -303,39 +506,6 @@ pub fn render_session_tab(frame: &mut Frame, tab: &mut SessionTab, tick: usize, 
             Constraint::Length(session_input_height(tab, area.width)), // input (+ optional fork context block)
         ])
         .split(area);
-
-    // Build conversation lines.
-    let mut conv_lines: Vec<Line> = Vec::new();
-    for msg in &tab.messages {
-        match msg {
-            Message::User(text) => {
-                conv_lines.push(Line::from(vec![
-                    Span::styled(
-                        "> ",
-                        Style::default()
-                            .fg(Color::Green)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    Span::raw(text),
-                ]));
-            }
-            Message::Agent(text) => {
-                for line in text.lines() {
-                    conv_lines.push(Line::from(Span::styled(
-                        line,
-                        Style::default().fg(Color::Cyan),
-                    )));
-                }
-            }
-            Message::System(text) => {
-                conv_lines.push(Line::from(vec![
-                    Span::styled("[", Style::default().fg(Color::Yellow)),
-                    Span::styled(text, Style::default().fg(Color::Yellow)),
-                    Span::styled("]", Style::default().fg(Color::Yellow)),
-                ]));
-            }
-        }
-    }
 
     if tab.show_stderr {
         // Split the main area horizontally: conversation left, stderr right.
@@ -347,22 +517,7 @@ pub fn render_session_tab(frame: &mut Frame, tab: &mut SessionTab, tick: usize, 
             ])
             .split(chunks[0]);
 
-        let conv_len = conv_lines.len();
-        let conversation = Paragraph::new(conv_lines)
-            .wrap(Wrap { trim: false })
-            .scroll((tab.scroll_offset, 0));
-        frame.render_widget(conversation, horiz[0]);
-
-        let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight).symbols(Set {
-            track: "\u{2502}",
-            thumb: "\u{2588}",
-            begin: "\u{25b2}",
-            end: "\u{25bc}",
-        });
-        let mut scrollbar_state = ScrollbarState::default()
-            .content_length(conv_len)
-            .position(tab.scroll_offset as usize);
-        frame.render_stateful_widget(scrollbar, horiz[0], &mut scrollbar_state);
+        render_conversation_list(frame, tab, horiz[0]);
 
         // Stderr panel.
         let stderr_lines: Vec<Line> = tab
@@ -407,22 +562,7 @@ pub fn render_session_tab(frame: &mut Frame, tab: &mut SessionTab, tick: usize, 
         );
     } else {
         // Full-width conversation.
-        let conv_len = conv_lines.len();
-        let conversation = Paragraph::new(conv_lines)
-            .wrap(Wrap { trim: false })
-            .scroll((tab.scroll_offset, 0));
-        frame.render_widget(conversation, chunks[0]);
-
-        let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight).symbols(Set {
-            track: "\u{2502}",
-            thumb: "\u{2588}",
-            begin: "\u{25b2}",
-            end: "\u{25bc}",
-        });
-        let mut scrollbar_state = ScrollbarState::default()
-            .content_length(conv_len)
-            .position(tab.scroll_offset as usize);
-        frame.render_stateful_widget(scrollbar, chunks[0], &mut scrollbar_state);
+        render_conversation_list(frame, tab, chunks[0]);
     }
 
     // Input area using TextArea widget.
