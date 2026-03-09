@@ -552,9 +552,9 @@ impl<'a> App<'a> {
         }
     }
 
-    /// Attempt to fork from the currently selected turn in the Sessions tab.
+    /// Attempt to fork from the sessions browser (always forks the session tip).
     pub fn fork_from_selected_turn(&self) -> Option<ForkRequest> {
-        let commit_oid = self.sessions_state.selected_turn_oid()?;
+        let commit_oid = self.sessions_state.selected_session_tip_oid()?;
         let (session_id, turn) = self.sessions_state.selected_fork_info()?;
         Some(ForkRequest {
             commit_oid,

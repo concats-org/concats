@@ -35,36 +35,47 @@ pub enum ClickTarget {
     NewSession,
 }
 
+/// Which panel of the sessions browser has focus.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionsPanelFocus {
+    List,
+    Detail,
+}
+
+/// State for the detail (right) panel showing checkpoints.
+pub struct DetailPanel {
+    pub session_index: usize,
+    pub turns: Vec<TurnInfo>,
+    pub list_state: tui_widget_list::ListState,
+}
+
 /// State for the Sessions tab.
 pub struct SessionsTabState {
     pub sessions: Vec<SessionInfo>,
-    /// Index of the selected session in the sessions list.
-    pub selected_session: usize,
-    /// When a session is expanded, holds its turns and selected turn index.
-    pub expanded: Option<ExpandedSession>,
-    /// Scroll offset for the sessions list (reserved for future use).
-    #[allow(dead_code)]
-    pub scroll_offset: usize,
+    /// Detail panel state (right side), shown when a session is opened.
+    pub detail: Option<DetailPanel>,
+    /// ListView state for the session list (left panel).
+    pub list_state: tui_widget_list::ListState,
+    /// Which panel currently has focus.
+    pub focus: SessionsPanelFocus,
     /// Path to the git repository.
     pub repo_path: PathBuf,
-}
-
-/// State for an expanded session showing its turns.
-pub struct ExpandedSession {
-    pub session_index: usize,
-    pub turns: Vec<TurnInfo>,
-    pub selected_turn: usize,
 }
 
 impl SessionsTabState {
     pub fn new(repo_path: PathBuf) -> Self {
         Self {
             sessions: Vec::new(),
-            selected_session: 0,
-            expanded: None,
-            scroll_offset: 0,
+            detail: None,
+            list_state: tui_widget_list::ListState::default(),
+            focus: SessionsPanelFocus::List,
             repo_path,
         }
+    }
+
+    /// The currently selected session index (driven by list_state).
+    pub fn selected_session(&self) -> usize {
+        self.list_state.selected.unwrap_or(0)
     }
 
     /// Refresh the sessions list from git refs.
@@ -72,11 +83,12 @@ impl SessionsTabState {
         match concats_core::session_history::list_sessions(&self.repo_path) {
             Ok(sessions) => {
                 self.sessions = sessions;
-                if self.selected_session >= self.sessions.len() {
-                    self.selected_session = self.sessions.len().saturating_sub(1);
-                }
-                // Collapse any expansion since data changed.
-                self.expanded = None;
+                // Clamp selection.
+                let sel = self.selected_session().min(self.sessions.len().saturating_sub(1));
+                self.list_state.select(Some(sel));
+                // Close detail panel since data changed.
+                self.detail = None;
+                self.focus = SessionsPanelFocus::List;
             }
             Err(e) => {
                 tracing::warn!("failed to list sessions: {e}");
@@ -85,38 +97,51 @@ impl SessionsTabState {
     }
 
     pub fn select_next(&mut self) {
-        if let Some(ref mut expanded) = self.expanded {
-            if expanded.selected_turn + 1 < expanded.turns.len() {
-                expanded.selected_turn += 1;
+        match self.focus {
+            SessionsPanelFocus::List => {
+                if !self.sessions.is_empty() {
+                    let cur = self.selected_session();
+                    let next = (cur + 1).min(self.sessions.len() - 1);
+                    self.list_state.select(Some(next));
+                }
             }
-        } else if !self.sessions.is_empty() {
-            self.selected_session = (self.selected_session + 1).min(self.sessions.len() - 1);
+            SessionsPanelFocus::Detail => {
+                self.scroll_detail(1);
+            }
         }
     }
 
     pub fn select_prev(&mut self) {
-        if let Some(ref mut expanded) = self.expanded {
-            expanded.selected_turn = expanded.selected_turn.saturating_sub(1);
-        } else {
-            self.selected_session = self.selected_session.saturating_sub(1);
+        match self.focus {
+            SessionsPanelFocus::List => {
+                let cur = self.selected_session();
+                self.list_state.select(Some(cur.saturating_sub(1)));
+            }
+            SessionsPanelFocus::Detail => {
+                self.scroll_detail(-1);
+            }
         }
     }
 
-    /// Toggle expansion of the selected session.
-    pub fn toggle_expand(&mut self) {
-        if self.expanded.is_some() {
-            self.expanded = None;
-            return;
+    /// Scroll the detail panel viewport by `delta` rows.
+    pub fn scroll_detail(&mut self, delta: i16) {
+        if let Some(ref mut detail) = self.detail {
+            detail.list_state.scroll_by(delta);
         }
+    }
 
-        if let Some(session) = self.sessions.get(self.selected_session) {
+    /// Open the detail panel for the currently selected session.
+    pub fn open_detail(&mut self) {
+        let idx = self.selected_session();
+        if let Some(session) = self.sessions.get(idx) {
             match concats_core::session_history::load(&self.repo_path, &session.id) {
                 Ok(turns) => {
-                    self.expanded = Some(ExpandedSession {
-                        session_index: self.selected_session,
+                    self.detail = Some(DetailPanel {
+                        session_index: idx,
                         turns,
-                        selected_turn: 0,
+                        list_state: tui_widget_list::ListState::default(),
                     });
+                    self.focus = SessionsPanelFocus::Detail;
                 }
                 Err(e) => {
                     tracing::warn!("failed to load turns for session {}: {e}", session.id);
@@ -125,30 +150,28 @@ impl SessionsTabState {
         }
     }
 
-    /// Get the commit OID for the currently selected turn (when expanded).
-    pub fn selected_turn_oid(&self) -> Option<git2::Oid> {
-        let expanded = self.expanded.as_ref()?;
-        let turn = expanded.turns.get(expanded.selected_turn)?;
-        // Convert our Oid wrapper back to git2::Oid by parsing the string.
-        let oid_str = turn.commit_oid.to_string();
+    /// Close the detail panel and return focus to the list.
+    pub fn close_detail(&mut self) {
+        self.detail = None;
+        self.focus = SessionsPanelFocus::List;
+    }
+
+    /// Get the tip OID for the currently selected session in the list.
+    pub fn selected_session_tip_oid(&self) -> Option<git2::Oid> {
+        let session = self.sessions.get(self.selected_session())?;
+        let oid_str = session.tip_oid.to_string();
         git2::Oid::from_str(&oid_str).ok()
     }
 
-    /// Get info about the selected session and turn for fork display.
+    /// Get info about the selected session for fork display.
     pub fn selected_fork_info(&self) -> Option<(String, u32)> {
-        let expanded = self.expanded.as_ref()?;
-        let session = self.sessions.get(expanded.session_index)?;
-        let turn = expanded.turns.get(expanded.selected_turn)?;
-        Some((session.id.clone(), turn.turn_number))
-    }
-
-    /// Returns the total number of visible rows (sessions + expanded turns).
-    #[allow(dead_code)]
-    pub fn visible_row_count(&self) -> usize {
-        let mut count = self.sessions.len();
-        if let Some(ref expanded) = self.expanded {
-            count += expanded.turns.len();
-        }
-        count
+        let idx = match self.focus {
+            SessionsPanelFocus::Detail => {
+                self.detail.as_ref().map(|d| d.session_index)?
+            }
+            SessionsPanelFocus::List => self.selected_session(),
+        };
+        let session = self.sessions.get(idx)?;
+        Some((session.id.clone(), session.turn_count.saturating_sub(1)))
     }
 }

@@ -166,22 +166,26 @@ async fn handle_sessions_keys(app: &mut App<'_>, key: KeyEvent) -> miette::Resul
         KeyCode::Down | KeyCode::Char('j') => {
             app.sessions_state.select_next();
         }
-        KeyCode::Enter => {
-            app.sessions_state.toggle_expand();
+        KeyCode::Right | KeyCode::Char('l') | KeyCode::Enter => {
+            if app.sessions_state.focus == crate::tabs::SessionsPanelFocus::List {
+                app.sessions_state.open_detail();
+            }
+        }
+        KeyCode::Left | KeyCode::Char('h') => {
+            if app.sessions_state.focus == crate::tabs::SessionsPanelFocus::Detail {
+                app.sessions_state.close_detail();
+            }
         }
         KeyCode::Char('f') => {
-            if app.sessions_state.expanded.is_some() {
-                app.handle_action(Action::Fork).await?;
-            }
+            app.handle_action(Action::Fork).await?;
         }
         KeyCode::Char('r') => {
             app.sessions_state.refresh();
         }
         KeyCode::Esc => {
-            if app.sessions_state.expanded.is_some() {
-                app.sessions_state.expanded = None;
+            if app.sessions_state.detail.is_some() {
+                app.sessions_state.close_detail();
             } else if let Some(tab) = app.session_tabs.first() {
-                // Switch to the first session tab (if any).
                 app.switch_tab(ActiveTab::Session(tab.id));
             }
         }
@@ -263,14 +267,6 @@ fn scroll_under_mouse(
     row: u16,
     delta: i16,
 ) -> bool {
-    if !matches!(app.active_tab, ActiveTab::Session(_)) {
-        return false;
-    }
-
-    let Some(tab) = app.active_session_mut() else {
-        return false;
-    };
-
     let root_chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(1), Constraint::Length(ui::TAB_BAR_HEIGHT)])
@@ -279,6 +275,28 @@ fn scroll_under_mouse(
     if !rect_contains(main_area, column, row) {
         return false;
     }
+
+    match app.active_tab {
+        ActiveTab::Session(_) => scroll_session_tab(app, main_area, column, row, delta),
+        ActiveTab::Sessions => {
+            // Scroll the detail panel of the sessions browser.
+            app.sessions_state.scroll_detail(delta);
+            true
+        }
+        _ => false,
+    }
+}
+
+fn scroll_session_tab(
+    app: &mut App<'_>,
+    main_area: Rect,
+    column: u16,
+    row: u16,
+    delta: i16,
+) -> bool {
+    let Some(tab) = app.active_session_mut() else {
+        return false;
+    };
 
     let agent_chunks = Layout::default()
         .direction(Direction::Vertical)

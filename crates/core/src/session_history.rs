@@ -32,6 +32,47 @@ pub struct TurnInfo {
     pub response_summary: String,
     /// Commit OID for this turn.
     pub commit_oid: Oid,
+    /// Per-file diffs introduced by this turn's commit.
+    pub diffs: Vec<FileDiff>,
+}
+
+/// A single changed file in a checkpoint diff.
+#[derive(Debug, Clone)]
+pub struct FileDiff {
+    pub path: String,
+    pub status: DiffStatus,
+    pub hunks: Vec<DiffHunk>,
+}
+
+/// The kind of change applied to a file.
+#[derive(Debug, Clone)]
+pub enum DiffStatus {
+    Added,
+    Modified,
+    Deleted,
+    Renamed { old_path: String },
+}
+
+/// A contiguous hunk within a file diff.
+#[derive(Debug, Clone)]
+pub struct DiffHunk {
+    pub header: String,
+    pub lines: Vec<DiffLine>,
+}
+
+/// A single line within a diff hunk.
+#[derive(Debug, Clone)]
+pub struct DiffLine {
+    pub kind: DiffLineKind,
+    pub content: String,
+}
+
+/// Whether a diff line is context, an addition, or a removal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiffLineKind {
+    Context,
+    Add,
+    Remove,
 }
 
 /// Parsed fields from a checkpoint commit message.
@@ -123,11 +164,13 @@ pub fn load(repo_path: &Path, session_id: &str) -> Result<Vec<TurnInfo>> {
             && !parsed.response_summary.is_empty()
         {
             let turn_number = turns.len() as u32;
+            let diffs = load_turn_diff(&repo, commit).unwrap_or_default();
             turns.push(TurnInfo {
                 turn_number,
                 prompt: parsed.prompt,
                 response_summary: parsed.response_summary,
                 commit_oid: Oid::from(commit.id()),
+                diffs,
             });
         }
     }
@@ -147,6 +190,115 @@ pub fn restore_workdir_to_commit(repo_path: &Path, commit_oid: git2::Oid) -> Res
     )?;
 
     Ok(())
+}
+
+/// Compute per-file diffs for a single commit by diffing against its parent.
+fn load_turn_diff(repo: &git2::Repository, commit: &git2::Commit<'_>) -> Result<Vec<FileDiff>> {
+    let commit_tree = commit.tree()?;
+    let parent_tree = commit
+        .parent(0)
+        .ok()
+        .and_then(|p| p.tree().ok());
+
+    let diff = repo.diff_tree_to_tree(
+        parent_tree.as_ref(),
+        Some(&commit_tree),
+        None,
+    )?;
+
+    let mut files: Vec<FileDiff> = Vec::new();
+
+    // Use `print` which invokes a single callback for all line types,
+    // avoiding multiple-mutable-borrow issues with `foreach`.
+    diff.print(git2::DiffFormat::Patch, |delta, maybe_hunk, line| {
+        match line.origin() {
+            // File header lines — start a new FileDiff entry.
+            'F' | 'H' => {
+                // 'F' = file header. Check if this is a new file delta.
+                if line.origin() == 'F' {
+                    let path = delta
+                        .new_file()
+                        .path()
+                        .or_else(|| delta.old_file().path())
+                        .map(|p| p.to_string_lossy().to_string())
+                        .unwrap_or_default();
+
+                    // Avoid duplicates: only push if path differs from last entry.
+                    let dominated = files.last().is_some_and(|f| f.path == path);
+                    if !dominated {
+                        let status = match delta.status() {
+                            git2::Delta::Added => DiffStatus::Added,
+                            git2::Delta::Deleted => DiffStatus::Deleted,
+                            git2::Delta::Renamed => {
+                                let old = delta
+                                    .old_file()
+                                    .path()
+                                    .map(|p| p.to_string_lossy().to_string())
+                                    .unwrap_or_default();
+                                DiffStatus::Renamed { old_path: old }
+                            }
+                            _ => DiffStatus::Modified,
+                        };
+                        files.push(FileDiff {
+                            path,
+                            status,
+                            hunks: Vec::new(),
+                        });
+                    }
+                }
+                // 'H' = hunk header.
+                if line.origin() == 'H'
+                    && let Some(hunk) = maybe_hunk
+                    && let Some(file) = files.last_mut()
+                {
+                    file.hunks.push(DiffHunk {
+                        header: String::from_utf8_lossy(hunk.header())
+                            .trim_end()
+                            .to_string(),
+                        lines: Vec::new(),
+                    });
+                }
+            }
+            // Content lines.
+            '+' | '-' | ' ' => {
+                let kind = match line.origin() {
+                    '+' => DiffLineKind::Add,
+                    '-' => DiffLineKind::Remove,
+                    _ => DiffLineKind::Context,
+                };
+                if let Some(file) = files.last_mut() {
+                    // Ensure there is a hunk to append to.
+                    if file.hunks.is_empty() {
+                        if let Some(hunk) = maybe_hunk {
+                            file.hunks.push(DiffHunk {
+                                header: String::from_utf8_lossy(hunk.header())
+                                    .trim_end()
+                                    .to_string(),
+                                lines: Vec::new(),
+                            });
+                        } else {
+                            file.hunks.push(DiffHunk {
+                                header: String::new(),
+                                lines: Vec::new(),
+                            });
+                        }
+                    }
+                    if let Some(hunk) = file.hunks.last_mut() {
+                        hunk.lines.push(DiffLine {
+                            kind,
+                            content: String::from_utf8_lossy(line.content())
+                                .trim_end()
+                                .to_string(),
+                        });
+                    }
+                }
+            }
+            _ => {}
+        }
+        true
+    })?;
+
+    Ok(files)
 }
 
 /// Count finalized turns and extract the first prompt from a session commit chain.
