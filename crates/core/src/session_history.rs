@@ -28,8 +28,6 @@ pub struct TurnInfo {
     pub prompt: String,
     /// Truncated response summary from the agent.
     pub response_summary: String,
-    /// Stop reason (e.g. "EndTurn").
-    pub stop_reason: String,
     /// Commit OID for this turn.
     pub commit_oid: Oid,
 }
@@ -38,9 +36,6 @@ pub struct TurnInfo {
 struct ParsedCommitMessage {
     prompt: String,
     response_summary: String,
-    session_id: String,
-    turn_number: u32,
-    stop_reason: String,
 }
 
 /// List all sessions by iterating `refs/agent/sessions/*`.
@@ -69,7 +64,7 @@ pub fn list_sessions(repo_path: &Path) -> Result<Vec<SessionInfo>> {
         let tip_oid = Oid::from(tip.id());
 
         // Count turns and find the first prompt by walking the commit chain.
-        let (turn_count, first_prompt) = count_turns_and_first_prompt(&repo, &tip, &session_id);
+        let (turn_count, first_prompt) = count_turns_and_first_prompt(&repo, &tip);
 
         let commit_epoch = tip.time().seconds();
         let timestamp = format_epoch_timestamp(commit_epoch);
@@ -109,14 +104,13 @@ pub fn load_session_turns(repo_path: &Path, session_id: &str) -> Result<Vec<Turn
     for commit in &commits {
         let msg = commit.message().unwrap_or("");
         if let Some(parsed) = parse_commit_message(msg)
-            && parsed.session_id == session_id
-            && !parsed.stop_reason.is_empty()
+            && !parsed.response_summary.is_empty()
         {
+            let turn_number = turns.len() as u32;
             turns.push(TurnInfo {
-                turn_number: parsed.turn_number,
+                turn_number,
                 prompt: parsed.prompt,
                 response_summary: parsed.response_summary,
-                stop_reason: parsed.stop_reason,
                 commit_oid: Oid::from(commit.id()),
             });
         }
@@ -142,15 +136,18 @@ pub fn restore_workdir_to_commit(repo_path: &Path, commit_oid: git2::Oid) -> Res
 // ── helpers ────────────────────────────────────────────────────────
 
 /// Walk the commit chain from tip, collecting commits that belong to this session.
+///
+/// Session identity is determined by the ref (`refs/agent/sessions/{id}`), not
+/// by the commit message. We stop walking when we hit a commit that is not a
+/// checkpoint (i.e. does not start with `checkpoint:`).
 fn collect_session_commits<'r>(
     _repo: &'r git2::Repository,
     commit: &git2::Commit<'r>,
-    session_id: &str,
+    _session_id: &str,
     out: &mut Vec<git2::Commit<'r>>,
 ) {
     let msg = commit.message().unwrap_or("");
-    // Stop walking if this commit doesn't belong to our session.
-    if !msg.contains(&format!("Agent-Session: {session_id}")) {
+    if !msg.starts_with("checkpoint:") {
         return;
     }
 
@@ -160,7 +157,7 @@ fn collect_session_commits<'r>(
     if commit.parent_count() > 0
         && let Ok(parent) = commit.parent(0)
     {
-        collect_session_commits(_repo, &parent, session_id, out);
+        collect_session_commits(_repo, &parent, _session_id, out);
     }
 }
 
@@ -171,7 +168,6 @@ fn collect_session_commits<'r>(
 fn count_turns_and_first_prompt(
     repo: &git2::Repository,
     tip: &git2::Commit<'_>,
-    session_id: &str,
 ) -> (u32, String) {
     let mut count = 0u32;
     let mut first_prompt = String::new();
@@ -182,14 +178,13 @@ fn count_turns_and_first_prompt(
     // so at the end we have the oldest one.
     loop {
         let msg = current.message().unwrap_or("");
-        if !msg.contains("Agent-Session:") {
+        if !msg.starts_with("checkpoint:") {
             break;
         }
-        if msg.contains("Agent-Stop-Reason:") {
+        // A finalized checkpoint has a <response> tag.
+        if msg.contains("<response>") {
             count += 1;
-            if let Some(parsed) = parse_commit_message(msg)
-                && parsed.session_id == session_id
-            {
+            if let Some(parsed) = parse_commit_message(msg) {
                 first_prompt = parsed.prompt;
             }
         }
@@ -245,84 +240,44 @@ fn derive_title(prompt: &str) -> String {
 }
 
 /// Parse a checkpoint commit message into its constituent fields.
+///
+/// Format:
+///
+/// ```text
+/// checkpoint: <subject>
+///
+/// <prompt>
+/// ...
+/// </prompt>
+/// <response>
+/// ...
+/// </response>
+/// ```
+///
+/// The `<response>` block is only present in finalized checkpoints.
+/// Session identity comes from the ref path, not the message.
+/// Turn numbers are derived from commit order, not stored in the message.
 fn parse_commit_message(msg: &str) -> Option<ParsedCommitMessage> {
-    // Format:
-    //   checkpoint: <subject>
-    //
-    //   <prompt>
-    //
-    //   ---
-    //
-    //   <response_summary>
-    //
-    //   Agent-Session: <id>
-    //   Agent-Turn: <n>
-    //   Agent-Stop-Reason: <reason>
-
     if !msg.starts_with("checkpoint:") {
         return None;
     }
 
-    // Extract trailers.
-    let session_id = extract_trailer(msg, "Agent-Session")?;
-    let turn_str = extract_trailer(msg, "Agent-Turn")?;
-    let turn_number: u32 = turn_str.parse().ok()?;
-    let stop_reason = extract_trailer(msg, "Agent-Stop-Reason").unwrap_or_default();
-
-    // Split on the first blank line to separate subject from body.
-    let body = msg
-        .split_once("\n\n")
-        .map(|x| x.1)
-        .unwrap_or("")
-        .to_string();
-
-    // Split body on "---" separator.
-    let (prompt, response_summary) = if let Some(idx) = body.find("\n---\n") {
-        let prompt = body[..idx].trim().to_string();
-        let after_separator = &body[idx + 5..]; // skip "\n---\n"
-        // Response is everything after --- but before trailers.
-        let response = strip_trailers(after_separator).trim().to_string();
-        (prompt, response)
-    } else {
-        // No separator — all body before trailers is the prompt.
-        let prompt = strip_trailers(&body).trim().to_string();
-        (prompt, String::new())
-    };
+    let prompt = extract_xml_tag(msg, "prompt").unwrap_or_default();
+    let response_summary = extract_xml_tag(msg, "response").unwrap_or_default();
 
     Some(ParsedCommitMessage {
         prompt,
         response_summary,
-        session_id,
-        turn_number,
-        stop_reason,
     })
 }
 
-/// Extract a trailer value like "Agent-Session: foo" -> "foo".
-fn extract_trailer(msg: &str, key: &str) -> Option<String> {
-    let prefix = format!("{key}: ");
-    for line in msg.lines().rev() {
-        if let Some(value) = line.strip_prefix(&prefix) {
-            return Some(value.trim().to_string());
-        }
-    }
-    None
-}
-
-/// Remove trailer lines (Agent-*) from the end of text.
-fn strip_trailers(text: &str) -> &str {
-    let trimmed = text.trim_end();
-    // Find where trailers start by looking backwards for Agent-* lines.
-    let mut end = trimmed.len();
-    for line in trimmed.lines().rev() {
-        let l = line.trim();
-        if l.starts_with("Agent-") {
-            end = end.saturating_sub(line.len() + 1); // +1 for newline
-        } else {
-            break;
-        }
-    }
-    &text[..end]
+/// Extract content between `<tag>` and `</tag>`, trimming leading/trailing whitespace.
+fn extract_xml_tag(msg: &str, tag: &str) -> Option<String> {
+    let open = format!("<{tag}>");
+    let close = format!("</{tag}>");
+    let start = msg.find(&open)? + open.len();
+    let end = msg.find(&close)?;
+    Some(msg[start..end].trim().to_string())
 }
 
 /// Format a Unix epoch timestamp into a human-readable `YYYY-MM-DD HH:MM:SS` string.
@@ -405,7 +360,9 @@ mod tests {
             let tree = repo.find_tree(tree_oid).unwrap();
 
             let msg = format!(
-                "checkpoint: prompt {turn}\n\nprompt {turn}\n\n---\n\nresponse for turn {turn}\n\nAgent-Session: {session_id}\nAgent-Turn: {turn}\nAgent-Stop-Reason: EndTurn"
+                "checkpoint: prompt {turn}\n\n\
+                 <prompt>\nprompt {turn}\n</prompt>\n\
+                 <response>\nresponse for turn {turn}\n</response>"
             );
 
             let oid = repo
@@ -460,13 +417,10 @@ mod tests {
 
     #[test]
     fn parse_commit_message_extracts_fields() {
-        let msg = "checkpoint: fix the bug\n\nfix the bug\n\n---\n\nI fixed it\n\nAgent-Session: test-session\nAgent-Turn: 0\nAgent-Stop-Reason: EndTurn";
+        let msg = "checkpoint: fix the bug\n\n<prompt>\nfix the bug\n</prompt>\n<response>\nI fixed it\n</response>";
         let parsed = parse_commit_message(msg).unwrap();
-        assert_eq!(parsed.session_id, "test-session");
-        assert_eq!(parsed.turn_number, 0);
-        assert_eq!(parsed.stop_reason, "EndTurn");
         assert_eq!(parsed.prompt, "fix the bug");
-        assert!(parsed.response_summary.contains("I fixed it"));
+        assert_eq!(parsed.response_summary, "I fixed it");
     }
 
     #[test]
