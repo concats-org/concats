@@ -685,7 +685,7 @@ mod tests {
         .unwrap();
 
         // Use session_history to load turns — should work without changes.
-        let turns = crate::session_history::load_session_turns(dir.path(), session_id).unwrap();
+        let turns = crate::session_history::load(dir.path(), session_id).unwrap();
         assert_eq!(turns.len(), 2);
         assert_eq!(turns[0].turn_number, 0);
         assert_eq!(turns[0].prompt, "first prompt");

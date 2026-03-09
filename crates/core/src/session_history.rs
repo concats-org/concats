@@ -1,5 +1,7 @@
 use std::path::Path;
 
+use git2::Commit;
+
 use crate::{error::Result, git::Oid};
 
 /// Metadata for a single session discovered from git refs.
@@ -87,15 +89,29 @@ pub fn list_sessions(repo_path: &Path) -> Result<Vec<SessionInfo>> {
 }
 
 /// Load all turns for a given session by walking the commit chain.
-pub fn load_session_turns(repo_path: &Path, session_id: &str) -> Result<Vec<TurnInfo>> {
+pub fn load(repo_path: &Path, session_id: &str) -> Result<Vec<TurnInfo>> {
     let repo = git2::Repository::open(repo_path)?;
-    let ref_name = format!("refs/agent/sessions/{session_id}");
 
-    let reference = repo.find_reference(&ref_name)?;
-    let tip = reference.peel_to_commit()?;
+    let mut revwalk = repo.revwalk()?;
+    revwalk.push_glob(format!("refs/agent/sessions/{session_id}").as_str())?;
+    revwalk.simplify_first_parent()?;
 
-    let mut commits = Vec::new();
-    collect_session_commits(&repo, &tip, session_id, &mut commits);
+    let mut commits: Vec<Commit> = revwalk
+        .map_while(|oid_result| {
+            if let Ok(oid) = oid_result
+                && let Ok(commit) = repo.find_commit(oid)
+            {
+                let msg = commit.message().unwrap_or("");
+                if msg.starts_with("checkpoint:") {
+                    return Some(commit);
+                }
+
+                return Some(commit);
+            }
+
+            return None;
+        })
+        .collect();
 
     // Commits were collected tip-first; reverse to get chronological order.
     commits.reverse();
@@ -133,42 +149,11 @@ pub fn restore_workdir_to_commit(repo_path: &Path, commit_oid: git2::Oid) -> Res
     Ok(())
 }
 
-// ── helpers ────────────────────────────────────────────────────────
-
-/// Walk the commit chain from tip, collecting commits that belong to this session.
-///
-/// Session identity is determined by the ref (`refs/agent/sessions/{id}`), not
-/// by the commit message. We stop walking when we hit a commit that is not a
-/// checkpoint (i.e. does not start with `checkpoint:`).
-fn collect_session_commits<'r>(
-    _repo: &'r git2::Repository,
-    commit: &git2::Commit<'r>,
-    _session_id: &str,
-    out: &mut Vec<git2::Commit<'r>>,
-) {
-    let msg = commit.message().unwrap_or("");
-    if !msg.starts_with("checkpoint:") {
-        return;
-    }
-
-    out.push(commit.clone());
-
-    // Walk to parent (session commits form a linear chain).
-    if commit.parent_count() > 0
-        && let Ok(parent) = commit.parent(0)
-    {
-        collect_session_commits(_repo, &parent, _session_id, out);
-    }
-}
-
 /// Count finalized turns and extract the first prompt from a session commit chain.
 ///
 /// Returns `(turn_count, first_prompt)`. The first prompt is the prompt from
 /// the earliest finalized commit (lowest turn number) belonging to this session.
-fn count_turns_and_first_prompt(
-    repo: &git2::Repository,
-    tip: &git2::Commit<'_>,
-) -> (u32, String) {
+fn count_turns_and_first_prompt(repo: &git2::Repository, tip: &git2::Commit<'_>) -> (u32, String) {
     let mut count = 0u32;
     let mut first_prompt = String::new();
     let mut current = tip.clone();
@@ -406,7 +391,7 @@ mod tests {
 
         create_session_commits(&repo, dir.path(), "a1b2c3d4-e5f6-7890-abcd-ef1234567890", 3);
 
-        let turns = load_session_turns(dir.path(), "a1b2c3d4-e5f6-7890-abcd-ef1234567890").unwrap();
+        let turns = load(dir.path(), "a1b2c3d4-e5f6-7890-abcd-ef1234567890").unwrap();
         assert_eq!(turns.len(), 3);
         assert_eq!(turns[0].turn_number, 0);
         assert_eq!(turns[1].turn_number, 1);
