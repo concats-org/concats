@@ -246,13 +246,12 @@ async fn session_loop_inner(
         match conn.prompt(request).await {
             Ok(response) => {
                 // Finalize checkpoint with the accumulated response text.
-                let stop_reason_str = format!("{:?}", response.stop_reason);
                 let summary = response_text.borrow().clone();
                 let (commit_oid, finalized_ref_name) =
                     match checkpoint.borrow_mut().as_mut().map(|store| {
                         let ref_name = store.ref_name().to_owned();
                         store
-                            .finalize_checkpoint(&prompt_text, &summary, &stop_reason_str)
+                            .finalize_checkpoint(&prompt_text, &summary)
                             .map(|oid| (oid, ref_name))
                     }) {
                         Some(Ok((oid, ref_name))) => (Some(oid), Some(ref_name)),

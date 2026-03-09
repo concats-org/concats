@@ -110,7 +110,7 @@ impl SessionsTabState {
         }
 
         if let Some(session) = self.sessions.get(self.selected_session) {
-            match concats_core::session_history::load_session_turns(&self.repo_path, &session.id) {
+            match concats_core::session_history::load(&self.repo_path, &session.id) {
                 Ok(turns) => {
                     self.expanded = Some(ExpandedSession {
                         session_index: self.selected_session,

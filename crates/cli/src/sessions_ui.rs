@@ -74,19 +74,11 @@ pub fn render_sessions_tab(frame: &mut Frame, app: &mut App, area: Rect) {
                     Style::default().fg(Color::Gray)
                 };
 
-                let stop_style = match turn.stop_reason.as_str() {
-                    "EndTurn" => Style::default().fg(Color::Green),
-                    _ => Style::default().fg(Color::Yellow),
-                };
-
                 let turn_prefix = format!("      #{:<3} ", turn.turn_number);
-                let stop_reason = turn.stop_reason.clone();
 
                 lines.push(Line::from(vec![
                     Span::styled(turn_prefix, turn_style),
                     Span::styled(prompt_display, turn_style),
-                    Span::raw("  "),
-                    Span::styled(stop_reason, stop_style),
                 ]));
             }
 
