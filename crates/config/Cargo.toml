@@ -5,6 +5,9 @@ edition.workspace = true
 version.workspace = true
 license = "AGPL-3.0-or-later"
 
+[lints]
+workspace = true
+
 [lib]
 name = "concats_config"
 path = "src/lib.rs"

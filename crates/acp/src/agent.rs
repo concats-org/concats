@@ -21,6 +21,10 @@ impl AgentProcess {
     ///
     /// stdin and stdout are piped for ACP protocol communication.
     /// stderr is inherited so agent diagnostic output goes to the parent terminal.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the agent process cannot be spawned.
     pub fn spawn(
         command: &str,
         args: &[String],
@@ -43,6 +47,10 @@ impl AgentProcess {
     /// Take ownership of the stdio streams for ACP communication.
     ///
     /// Can only be called once; subsequent calls return an error.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any required stdio stream has already been taken.
     pub fn take_streams(&mut self) -> Result<AgentStreams> {
         let stdin = self
             .child
@@ -67,6 +75,10 @@ impl AgentProcess {
     }
 
     /// Wait for the agent process to exit.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if waiting on the child process fails.
     pub async fn wait(&mut self) -> Result<std::process::ExitStatus> {
         self.child
             .wait()
@@ -75,6 +87,10 @@ impl AgentProcess {
     }
 
     /// Kill the agent process.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the child process cannot be terminated.
     pub async fn kill(&mut self) -> Result<()> {
         self.child
             .kill()

@@ -1,5 +1,3 @@
-use std::{cell::RefCell, rc::Rc};
-
 use agent_client_protocol::{
     CreateTerminalRequest, CreateTerminalResponse, ExtNotification, ExtRequest, ExtResponse,
     KillTerminalCommandRequest, KillTerminalCommandResponse, PermissionOptionKind,
@@ -12,8 +10,8 @@ use agent_client_protocol::{
 use serde_json::value::RawValue;
 
 use crate::{
-    checkpoint::CheckpointStore, fs::FileSystem, notification::NotificationSender,
-    permission::PermissionHandler, terminal::TerminalManager,
+    checkpoint_recorder::CheckpointRecorder, error::Error, fs::FileSystem,
+    notification::NotificationSender, terminal::TerminalManager,
 };
 
 /// Implements the ACP `Client` trait by delegating to owned tool modules.
@@ -22,40 +20,34 @@ use crate::{
 pub struct ClientHandler {
     fs: FileSystem,
     terminals: TerminalManager,
-    permissions: PermissionHandler,
     notifications: NotificationSender,
-    checkpoint: Rc<RefCell<Option<CheckpointStore>>>,
+    checkpoint_recorder: CheckpointRecorder,
 }
 
 impl ClientHandler {
+    #[must_use]
     pub fn new(
         fs: FileSystem,
         terminals: TerminalManager,
-        permissions: PermissionHandler,
         notifications: NotificationSender,
-        checkpoint: Rc<RefCell<Option<CheckpointStore>>>,
+        checkpoint_recorder: CheckpointRecorder,
     ) -> Self {
         Self {
             fs,
             terminals,
-            permissions,
             notifications,
-            checkpoint,
+            checkpoint_recorder,
         }
     }
 
     /// Amend the current checkpoint after a tool call that may have changed files.
     fn amend_checkpoint(&self) {
-        if let Some(store) = self.checkpoint.borrow().as_ref()
-            && let Err(e) = store.amend_checkpoint()
-        {
-            tracing::warn!("checkpoint amend failed: {e}");
-        }
+        self.checkpoint_recorder.snapshot_after_tool_write();
     }
 }
 
 /// Convert our internal errors to ACP protocol errors.
-fn to_acp_error(err: crate::error::Error) -> agent_client_protocol::Error {
+fn to_acp_error(err: &Error) -> agent_client_protocol::Error {
     agent_client_protocol::Error::new(-32603, err.to_string())
 }
 
@@ -67,8 +59,6 @@ impl agent_client_protocol::Client for ClientHandler {
     ) -> agent_client_protocol::Result<RequestPermissionResponse> {
         tracing::debug!("permission request for session {}", args.session_id);
 
-        // Auto-accept: find the first "allow" option.
-        let _granted = self.permissions.check("auto");
         let option = args
             .options
             .iter()
@@ -106,30 +96,16 @@ impl agent_client_protocol::Client for ClientHandler {
             .fs
             .read_text_file(&args.path)
             .await
-            .map_err(to_acp_error)?;
+            .map_err(|error| to_acp_error(&error))?;
 
-        // Handle line/limit parameters.
-        let content = match (args.line, args.limit) {
-            (Some(start_line), Some(limit)) => {
-                let start = start_line.saturating_sub(1) as usize;
-                content
-                    .lines()
-                    .skip(start)
-                    .take(limit as usize)
-                    .collect::<Vec<_>>()
-                    .join("\n")
-            }
-            (Some(start_line), None) => {
-                let start = start_line.saturating_sub(1) as usize;
-                content.lines().skip(start).collect::<Vec<_>>().join("\n")
-            }
-            (None, Some(limit)) => content
-                .lines()
-                .take(limit as usize)
-                .collect::<Vec<_>>()
-                .join("\n"),
-            (None, None) => content,
-        };
+        let start = args.line.map_or(0, |line| line.saturating_sub(1) as usize);
+        let limit = args.limit.map_or(usize::MAX, |limit| limit as usize);
+        let content = content
+            .lines()
+            .skip(start)
+            .take(limit)
+            .collect::<Vec<_>>()
+            .join("\n");
 
         Ok(ReadTextFileResponse::new(content))
     }
@@ -142,7 +118,7 @@ impl agent_client_protocol::Client for ClientHandler {
         self.fs
             .write_text_file(&args.path, &args.content)
             .await
-            .map_err(to_acp_error)?;
+            .map_err(|error| to_acp_error(&error))?;
 
         self.amend_checkpoint();
 
@@ -158,8 +134,7 @@ impl agent_client_protocol::Client for ClientHandler {
         let terminal_id = self
             .terminals
             .create(&args.command, &args.args, cwd.as_deref())
-            .await
-            .map_err(to_acp_error)?;
+            .map_err(|error| to_acp_error(&error))?;
         Ok(CreateTerminalResponse::new(terminal_id))
     }
 
@@ -168,7 +143,10 @@ impl agent_client_protocol::Client for ClientHandler {
         args: TerminalOutputRequest,
     ) -> agent_client_protocol::Result<TerminalOutputResponse> {
         let id = args.terminal_id.0.as_ref();
-        let output = self.terminals.read_output(id).await.map_err(to_acp_error)?;
+        let output = self
+            .terminals
+            .read_all_output(id)
+            .map_err(|error| to_acp_error(&error))?;
         Ok(TerminalOutputResponse::new(output, false))
     }
 
@@ -177,7 +155,9 @@ impl agent_client_protocol::Client for ClientHandler {
         args: ReleaseTerminalRequest,
     ) -> agent_client_protocol::Result<ReleaseTerminalResponse> {
         let id = args.terminal_id.0.as_ref();
-        self.terminals.release(id).map_err(to_acp_error)?;
+        self.terminals
+            .release(id)
+            .map_err(|error| to_acp_error(&error))?;
         Ok(ReleaseTerminalResponse::new())
     }
 
@@ -190,8 +170,8 @@ impl agent_client_protocol::Client for ClientHandler {
             .terminals
             .wait_for_exit(id)
             .await
-            .map_err(to_acp_error)?;
-        let status = TerminalExitStatus::new().exit_code(exit_code as u32);
+            .map_err(|error| to_acp_error(&error))?;
+        let status = TerminalExitStatus::new().exit_code(exit_code.cast_unsigned());
 
         self.amend_checkpoint();
 
@@ -203,7 +183,9 @@ impl agent_client_protocol::Client for ClientHandler {
         args: KillTerminalCommandRequest,
     ) -> agent_client_protocol::Result<KillTerminalCommandResponse> {
         let id = args.terminal_id.0.as_ref();
-        self.terminals.kill(id).map_err(to_acp_error)?;
+        self.terminals
+            .kill(id)
+            .map_err(|error| to_acp_error(&error))?;
         Ok(KillTerminalCommandResponse::new())
     }
 

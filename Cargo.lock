@@ -366,13 +366,33 @@ dependencies = [
 ]
 
 [[package]]
+name = "concats-acp"
+version = "0.0.0"
+dependencies = [
+ "agent-client-protocol",
+ "async-trait",
+ "concats-core",
+ "git2",
+ "miette",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "time",
+ "tokio",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
 name = "concats-cli"
 version = "0.0.0"
 dependencies = [
  "agent-client-protocol",
  "clap",
+ "concats-acp",
  "concats-config",
  "concats-core",
+ "concats-hooks",
  "concats-registry",
  "crossterm",
  "git2",
@@ -382,9 +402,12 @@ dependencies = [
  "ratatui-textarea",
  "serde_json",
  "tempfile",
+ "throbber-widgets-tui",
+ "time",
  "tokio",
  "tokio-stream",
  "tokio-test",
+ "tokio-util",
  "tracing",
  "tracing-subscriber",
  "tui-widget-list",
@@ -407,9 +430,6 @@ dependencies = [
 name = "concats-core"
 version = "0.0.0"
 dependencies = [
- "agent-client-protocol",
- "async-trait",
- "futures-util",
  "git2",
  "ignore",
  "miette",
@@ -419,8 +439,20 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror 2.0.18",
- "tokio",
- "tokio-util",
+ "time",
+ "tracing",
+]
+
+[[package]]
+name = "concats-hooks"
+version = "0.0.0"
+dependencies = [
+ "concats-core",
+ "git2",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "time",
  "tracing",
 ]
 
@@ -582,6 +614,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7cd812cc2bc1d69d4764bd80df88b4317eaef9e773c75226407d9bc0876b211c"
 dependencies = [
  "powerfmt",
+ "serde_core",
 ]
 
 [[package]]
@@ -2943,18 +2976,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "throbber-widgets-tui"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f1e6941f74491a80911cb8821cb1f55f7e13bca867b28a2b14e5a1daaf691eb3"
+dependencies = [
+ "ratatui",
+]
+
+[[package]]
 name = "time"
 version = "0.3.47"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "743bd48c283afc0388f9b8827b976905fb217ad9e647fae3a379a9283c4def2c"
 dependencies = [
  "deranged",
+ "itoa",
  "libc",
  "num-conv",
  "num_threads",
  "powerfmt",
  "serde_core",
  "time-core",
+ "time-macros",
 ]
 
 [[package]]
@@ -2962,6 +3006,16 @@ name = "time-core"
 version = "0.1.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7694e1cfe791f8d31026952abf09c69ca6f6fa4e1a1229e18988f06a04a12dca"
+
+[[package]]
+name = "time-macros"
+version = "0.2.27"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2e70e4c5a0e0a8a4823ad65dfe1a6930e4f4d756dcd9dd7939022b5e8c501215"
+dependencies = [
+ "num-conv",
+ "time-core",
+]
 
 [[package]]
 name = "tinystr"
