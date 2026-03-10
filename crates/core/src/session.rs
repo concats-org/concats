@@ -1,300 +1,324 @@
-use std::{cell::RefCell, collections::HashMap, path::PathBuf, rc::Rc};
+use std::path::{Path, PathBuf};
 
-use agent_client_protocol::{
-    Agent, ClientCapabilities, ClientSideConnection, ContentBlock, FileSystemCapability,
-    InitializeRequest, NewSessionRequest, PromptRequest, ProtocolVersion, SessionNotification,
-    SessionUpdate, StopReason,
-};
-use tokio::{
-    io::{AsyncBufReadExt, BufReader},
-    sync::mpsc,
-    task::LocalSet,
-};
+use time::{OffsetDateTime, UtcOffset};
 
 use crate::{
-    agent_process::AgentProcess,
-    checkpoint::CheckpointStore,
-    client::ClientHandler,
+    checkpoint::{self, Checkpoint, Draft},
     error::{Error, Result},
-    fs::FileSystem,
-    git::Oid,
-    notification::NotificationSender,
-    permission::PermissionHandler,
-    terminal::TerminalManager,
+    git::{self, Oid},
+    transcript::decode_commit_message,
 };
 
-/// Configuration for starting a new agent session.
-pub struct SessionConfig {
-    pub agent_command: String,
-    pub agent_args: Vec<String>,
-    pub workspace_root: PathBuf,
-    /// Extra environment variables to set for the agent process.
-    #[allow(clippy::zero_sized_map_values)]
-    pub env: HashMap<String, String>,
-    /// When set, the new session forks from this commit OID instead of HEAD.
-    pub fork_from: Option<git2::Oid>,
-    /// When true, automatically push the session ref to the remote after each checkpoint.
-    pub auto_push: bool,
-    /// Git remote name to push to (e.g. "origin").
-    pub push_remote: String,
+const SESSION_REF_PREFIX: &str = "refs/agent/sessions/";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Session {
+    pub id: String,
+    pub name: Option<String>,
+    pub repo_path: PathBuf,
 }
 
-/// Events emitted by a running session.
-pub enum SessionEvent {
-    /// Initial session config metadata from `session/new` response.
-    SessionConfigured {
-        mode: Option<String>,
-        config_options: Vec<agent_client_protocol::SessionConfigOption>,
-    },
-    /// Agent streamed a notification (content chunk, tool call, etc.).
-    Notification(Box<SessionNotification>),
-    /// A prompt turn completed.
-    TurnComplete {
-        stop_reason: StopReason,
-        commit_oid: Option<Oid>,
-    },
-    /// A line of stderr output from the agent process.
-    Stderr(String),
-    /// A push to the remote failed (non-fatal).
-    PushFailed { ref_name: String, error: String },
-    /// An error occurred.
-    Error(Error),
-}
-
-/// Send-safe handle for interacting with a running session from the TUI thread.
-pub struct SessionHandle {
-    pub prompt_tx: mpsc::Sender<String>,
-    pub event_rx: mpsc::Receiver<SessionEvent>,
-    pub cancel_tx: mpsc::Sender<()>,
-}
-
-/// Start a new agent session on a dedicated thread.
+/// Create a new session ref rooted at the given base commit.
 ///
-/// Returns a `SessionHandle` that can send prompts and receive events.
-/// Each session gets its own thread with a single-threaded tokio runtime + `LocalSet`
-/// to satisfy the `!Send` requirements of ACP's `ClientSideConnection`.
-pub fn start_session(config: SessionConfig) -> Result<SessionHandle> {
-    let (prompt_tx, prompt_rx) = mpsc::channel::<String>(16);
-    let (event_tx, event_rx) = mpsc::channel::<SessionEvent>(1024);
-    let (cancel_tx, cancel_rx) = mpsc::channel::<()>(1);
+/// # Errors
+///
+/// Returns an error if the repository cannot be opened, the session already
+/// exists, the base commit cannot be loaded, or the session ref cannot be
+/// written.
+pub fn create(repo_path: &Path, session_id: &str, base: Oid) -> Result<Session> {
+    let repo = git2::Repository::open(repo_path)?;
+    let ref_name = ref_name(session_id);
+    if repo.find_reference(&ref_name).is_ok() {
+        return Err(Error::session(format!(
+            "session already exists: {session_id}"
+        )));
+    }
 
-    let handle = SessionHandle {
-        prompt_tx,
-        event_rx,
-        cancel_tx,
+    let base_commit = repo.find_commit(base.as_git())?;
+    repo.reference(&ref_name, base_commit.id(), true, "session")?;
+    build_session(repo_path.to_path_buf(), session_id)
+}
+
+/// Open an existing session by its identifier.
+///
+/// # Errors
+///
+/// Returns an error if the repository cannot be opened, the session ref does
+/// not exist, or the session metadata cannot be loaded.
+pub fn open(repo_path: &Path, session_id: &str) -> Result<Session> {
+    let repo = git2::Repository::open(repo_path)?;
+    resolve_ref(&repo, &ref_name(session_id))
+        .ok_or_else(|| Error::session(format!("session not found: {session_id}")))?;
+    build_session(repo_path.to_path_buf(), session_id)
+}
+
+/// List all sessions stored in the repository, newest first.
+///
+/// # Errors
+///
+/// Returns an error if the repository cannot be opened, the session refs
+/// cannot be enumerated, or a discovered session cannot be loaded.
+pub fn list(repo_path: &Path) -> Result<Vec<Session>> {
+    let repo = git2::Repository::open(repo_path)?;
+    let refs = repo.references_glob(&format!("{SESSION_REF_PREFIX}*"))?;
+    let mut sessions = Vec::new();
+
+    for reference in refs.filter_map(std::result::Result::ok) {
+        let Some(name) = reference.name() else {
+            continue;
+        };
+        let Some(session_id) = name.strip_prefix(SESSION_REF_PREFIX) else {
+            continue;
+        };
+        let Ok(tip) = reference.peel_to_commit() else {
+            continue;
+        };
+
+        sessions.push((
+            build_session(repo_path.to_path_buf(), session_id)?,
+            commit_time(tip.time())?,
+        ));
+    }
+
+    sessions.sort_by(|left, right| right.1.cmp(&left.1));
+    Ok(sessions.into_iter().map(|(session, _)| session).collect())
+}
+
+/// Push the session ref to the named remote.
+///
+/// # Errors
+///
+/// Returns an error if the session ref cannot be pushed to the remote.
+pub fn push(session: &Session, remote: &str) -> Result<()> {
+    crate::git::push_ref(&session.repo_path, remote, &ref_name(&session.id))?;
+    Ok(())
+}
+
+/// Resolve the current session tip commit ID.
+///
+/// # Errors
+///
+/// Returns an error if the repository cannot be opened or the session ref does
+/// not resolve to a commit.
+pub fn tip(session: &Session) -> Result<Oid> {
+    let repo = git2::Repository::open(&session.repo_path)?;
+    let tip = resolve_tip(&repo, session)?;
+    Ok(Oid::from(tip.id()))
+}
+
+/// Resolve the timestamp of the current session tip commit.
+///
+/// # Errors
+///
+/// Returns an error if the repository cannot be opened or the session ref does
+/// not resolve to a commit.
+pub fn modified_at(session: &Session) -> Result<OffsetDateTime> {
+    let repo = git2::Repository::open(&session.repo_path)?;
+    let tip = resolve_tip(&repo, session)?;
+    commit_time(tip.time())
+}
+
+/// Create a new checkpoint commit and advance the session tip to it.
+///
+/// # Errors
+///
+/// Returns an error if the repository cannot be opened, the session ref is
+/// missing, the draft transcript is invalid, the working tree snapshot cannot
+/// be captured, or the checkpoint commit cannot be written.
+pub fn commit(session: &Session, draft: &Draft) -> Result<Checkpoint> {
+    let repo = git2::Repository::open(&session.repo_path)?;
+    let tip = resolve_tip(&repo, session)?;
+    write_checkpoint(&repo, session, draft, std::slice::from_ref(&tip))
+}
+
+/// Amend the current session-tip checkpoint and advance the session tip.
+///
+/// # Errors
+///
+/// Returns an error if the repository cannot be opened, the session ref is
+/// missing, the current tip is not a checkpoint commit, the draft transcript is
+/// invalid, the working tree snapshot cannot be captured, or the amended
+/// checkpoint cannot be written.
+pub fn amend(session: &Session, draft: &Draft) -> Result<Checkpoint> {
+    let repo = git2::Repository::open(&session.repo_path)?;
+    let tip = resolve_tip(&repo, session)?;
+    if decode_commit_message(tip.message().unwrap_or("")).is_none() {
+        return Err(Error::session("no checkpoint to amend"));
+    }
+
+    let parents = tip.parents().collect::<Vec<_>>();
+    write_checkpoint(&repo, session, draft, &parents)
+}
+
+pub(crate) fn ref_name(session_id: &str) -> String {
+    format!("{SESSION_REF_PREFIX}{session_id}")
+}
+
+pub(crate) fn resolve_ref<'repo>(
+    repo: &'repo git2::Repository,
+    ref_name: &str,
+) -> Option<git2::Commit<'repo>> {
+    repo.find_reference(ref_name)
+        .ok()
+        .and_then(|reference| reference.peel_to_commit().ok())
+}
+
+pub(crate) fn signature(repo: &git2::Repository) -> Result<git2::Signature<'static>> {
+    Ok(repo
+        .signature()
+        .or_else(|_| git2::Signature::now("concats", "concats@checkpoint"))?)
+}
+
+pub(crate) fn commit_time(time: git2::Time) -> Result<OffsetDateTime> {
+    let timestamp = OffsetDateTime::from_unix_timestamp(time.seconds())
+        .map_err(|error| Error::session(format!("invalid git commit timestamp: {error}")))?;
+    let offset =
+        UtcOffset::from_whole_seconds(time.offset_minutes() * 60).unwrap_or(UtcOffset::UTC);
+    Ok(timestamp.to_offset(offset))
+}
+
+fn build_session(repo_path: PathBuf, session_id: &str) -> Result<Session> {
+    let base = Session {
+        id: session_id.to_string(),
+        name: None,
+        repo_path,
     };
 
-    std::thread::Builder::new()
-        .name("session".into())
-        .spawn(move || {
-            let rt = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .expect("failed to build session runtime");
+    let name = checkpoint::list(&base)?
+        .first()
+        .and_then(|checkpoint| checkpoint.transcript.label(None));
 
-            let local = LocalSet::new();
-            local.block_on(&rt, session_loop(config, prompt_rx, event_tx, cancel_rx));
-        })
-        .map_err(|e| Error::session(format!("failed to spawn session thread: {e}")))?;
-
-    Ok(handle)
+    Ok(Session { name, ..base })
 }
 
-async fn session_loop(
-    config: SessionConfig,
-    mut prompt_rx: mpsc::Receiver<String>,
-    event_tx: mpsc::Sender<SessionEvent>,
-    mut cancel_rx: mpsc::Receiver<()>,
-) {
-    if let Err(e) = session_loop_inner(&config, &mut prompt_rx, &event_tx, &mut cancel_rx).await {
-        let _ = event_tx.send(SessionEvent::Error(e)).await;
-    }
+fn resolve_tip<'repo>(
+    repo: &'repo git2::Repository,
+    session: &Session,
+) -> Result<git2::Commit<'repo>> {
+    resolve_ref(repo, &ref_name(&session.id))
+        .ok_or_else(|| Error::session(format!("session not found: {}", session.id)))
 }
 
-async fn session_loop_inner(
-    config: &SessionConfig,
-    prompt_rx: &mut mpsc::Receiver<String>,
-    event_tx: &mpsc::Sender<SessionEvent>,
-    _cancel_rx: &mut mpsc::Receiver<()>,
-) -> Result<()> {
-    // 1. Spawn agent process.
-    let mut agent = AgentProcess::spawn(
-        &config.agent_command,
-        &config.agent_args,
-        &config.workspace_root,
-        &config.env,
-    )?;
-    let streams = agent.take_streams()?;
+fn write_checkpoint(
+    repo: &git2::Repository,
+    session: &Session,
+    draft: &Draft,
+    parents: &[git2::Commit<'_>],
+) -> Result<Checkpoint> {
+    draft.transcript.validate()?;
 
-    // 2. Prepare checkpoint holder (populated after ACP session is created).
-    let checkpoint: Rc<RefCell<Option<CheckpointStore>>> = Rc::new(RefCell::new(None));
+    let tree_oid = git::snapshot_workdir(repo)?;
+    let tree = repo.find_tree(tree_oid)?;
+    let signature = signature(repo)?;
+    let message = crate::transcript::encode_commit_message(&draft.transcript)?;
+    let parent_refs = parents.iter().collect::<Vec<_>>();
 
-    // 3. Build the ClientHandler (shares the checkpoint store via Rc<RefCell>).
-    let (notification_tx, mut notification_rx) = mpsc::channel::<SessionNotification>(1024);
-    let handler = ClientHandler::new(
-        FileSystem::new(config.workspace_root.clone()),
-        TerminalManager::new(),
-        PermissionHandler::new(),
-        NotificationSender::new(notification_tx),
-        Rc::clone(&checkpoint),
-    );
+    let oid = repo.commit(None, &signature, &signature, &message, &tree, &parent_refs)?;
+    repo.reference(&ref_name(&session.id), oid, true, "session")?;
+    checkpoint::load_from_commit(&repo.find_commit(oid)?, &session.id, &session.repo_path)
+}
 
-    // 4. Create the ACP connection.
-    use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
-    let stdin_compat = streams.stdin.compat_write();
-    let stdout_compat = streams.stdout.compat();
+#[cfg(test)]
+#[allow(clippy::disallowed_methods)]
+mod tests {
+    use super::*;
+    use crate::{
+        checkpoint::{self, Draft, TranscriptEntry, TranscriptEntryKind},
+        testutil::init_repo_with_commit,
+    };
 
-    let (conn, io_future) =
-        ClientSideConnection::new(handler, stdin_compat, stdout_compat, |fut| {
-            tokio::task::spawn_local(fut);
-        });
+    #[test]
+    fn create_session_without_checkpoints() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = init_repo_with_commit(dir.path());
+        let head = Oid::from(repo.head().unwrap().target().unwrap());
 
-    // 5. Spawn the IO driver as a local task.
-    tokio::task::spawn_local(async move {
-        if let Err(e) = io_future.await {
-            tracing::error!("ACP IO error: {e}");
-        }
-    });
+        let session = create(dir.path(), "session-a", head).unwrap();
 
-    // 5b. Forward agent stderr lines to the event channel.
-    let stderr_event_tx = event_tx.clone();
-    tokio::task::spawn_local(async move {
-        let mut reader = BufReader::new(streams.stderr).lines();
-        while let Ok(Some(line)) = reader.next_line().await {
-            if stderr_event_tx.send(SessionEvent::Stderr(line)).await.is_err() {
-                break;
-            }
-        }
-    });
-
-    // 6. Forward notifications from the handler to the event channel,
-    //    accumulating agent response text for checkpoint messages.
-    let response_text: Rc<RefCell<String>> = Rc::new(RefCell::new(String::new()));
-    let response_text_clone = Rc::clone(&response_text);
-    let event_tx_clone = event_tx.clone();
-    tokio::task::spawn_local(async move {
-        while let Some(notification) = notification_rx.recv().await {
-            // Accumulate agent text chunks for the checkpoint summary.
-            if let SessionUpdate::AgentMessageChunk(ref chunk) = notification.update
-                && let ContentBlock::Text(ref t) = chunk.content
-            {
-                response_text_clone.borrow_mut().push_str(&t.text);
-            }
-            let _ = event_tx_clone.send(SessionEvent::Notification(Box::new(notification))).await;
-        }
-    });
-
-    // 7. Initialize the ACP connection.
-    let _init_response = conn
-        .initialize(
-            InitializeRequest::new(ProtocolVersion::LATEST).client_capabilities(
-                ClientCapabilities::new()
-                    .fs(FileSystemCapability::new()
-                        .read_text_file(true)
-                        .write_text_file(true))
-                    .terminal(true),
-            ),
-        )
-        .await
-        .map_err(|e| Error::protocol(format!("initialize failed: {e}")))?;
-
-    // 8. Create a new ACP session and use its ID for checkpoints.
-    let session_response = conn
-        .new_session(NewSessionRequest::new(config.workspace_root.clone()))
-        .await
-        .map_err(|e| Error::protocol(format!("new_session failed: {e}")))?;
-    let acp_session_id = session_response.session_id;
-    let initial_mode = session_response
-        .modes
-        .as_ref()
-        .map(|modes| modes.current_mode_id.to_string());
-    let initial_config_options = session_response.config_options.unwrap_or_default();
-    let _ = event_tx.send(SessionEvent::SessionConfigured {
-        mode: initial_mode,
-        config_options: initial_config_options,
-    }).await;
-
-    // 9. Create the checkpoint store using the ACP session ID.
-    {
-        let checkpoint_store = if let Some(fork_oid) = config.fork_from {
-            CheckpointStore::new_forked(
-                config.workspace_root.clone(),
-                acp_session_id.to_string(),
-                fork_oid,
-            )
-        } else {
-            CheckpointStore::new(config.workspace_root.clone(), acp_session_id.to_string())
-        };
-        *checkpoint.borrow_mut() = Some(checkpoint_store);
+        assert_eq!(session.id, "session-a");
+        assert_eq!(session.name, None);
+        assert!(checkpoint::list(&session).unwrap().is_empty());
     }
 
-    // 10. Prompt loop: receive prompts, send to agent, checkpoint on completion.
-    while let Some(prompt_text) = prompt_rx.recv().await {
-        // Clear the response accumulator for this turn.
-        response_text.borrow_mut().clear();
+    #[test]
+    fn open_and_list_include_empty_sessions() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = init_repo_with_commit(dir.path());
+        let head = Oid::from(repo.head().unwrap().target().unwrap());
 
-        // Create initial checkpoint before sending the prompt.
-        if let Some(store) = checkpoint.borrow().as_ref()
-            && let Err(e) = store.create_checkpoint(&prompt_text)
-        {
-            tracing::warn!("checkpoint create failed: {e}");
-        }
+        create(dir.path(), "session-a", head).unwrap();
 
-        let prompt_blocks = vec![ContentBlock::from(prompt_text.clone())];
-        let request = PromptRequest::new(acp_session_id.clone(), prompt_blocks);
+        let loaded = open(dir.path(), "session-a").unwrap();
+        assert_eq!(loaded.name, None);
 
-        match conn.prompt(request).await {
-            Ok(response) => {
-                // Finalize checkpoint with the accumulated response text.
-                let summary = response_text.borrow().clone();
-                let (commit_oid, finalized_ref_name) =
-                    match checkpoint.borrow_mut().as_mut().map(|store| {
-                        let ref_name = store.ref_name().to_owned();
-                        store
-                            .finalize_checkpoint(&prompt_text, &summary)
-                            .map(|oid| (oid, ref_name))
-                    }) {
-                        Some(Ok((oid, ref_name))) => (Some(oid), Some(ref_name)),
-                        Some(Err(e)) => {
-                            tracing::warn!("checkpoint finalize failed: {e}");
-                            (None, None)
-                        }
-                        None => (None, None),
-                    };
-
-                // Auto-push the session ref in a background thread if enabled.
-                if config.auto_push
-                    && let Some(ref_name) = finalized_ref_name
-                {
-                    let repo_path = config.workspace_root.clone();
-                    let remote = config.push_remote.clone();
-                    let push_event_tx = event_tx.clone();
-                    std::thread::Builder::new()
-                        .name("push-ref".into())
-                        .spawn(move || {
-                            if let Err(e) = crate::git::push_ref(&repo_path, &remote, &ref_name) {
-                                tracing::warn!("auto-push failed for {ref_name}: {e}");
-                                let _ = push_event_tx.try_send(SessionEvent::PushFailed {
-                                    ref_name,
-                                    error: e.to_string(),
-                                });
-                            }
-                        })
-                        .ok();
-                }
-
-                let _ = event_tx.send(SessionEvent::TurnComplete {
-                    stop_reason: response.stop_reason,
-                    commit_oid,
-                }).await;
-            }
-            Err(e) => {
-                let _ = event_tx.send(SessionEvent::Error(Error::protocol(format!(
-                    "prompt failed: {e}"
-                )))).await;
-            }
-        }
+        let sessions = list(dir.path()).unwrap();
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].id, "session-a");
     }
 
-    Ok(())
+    #[test]
+    fn tip_and_modified_at_follow_committed_checkpoint() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = init_repo_with_commit(dir.path());
+        let head = Oid::from(repo.head().unwrap().target().unwrap());
+        let session = create(dir.path(), "session-a", head).unwrap();
+
+        let mut draft = Draft::new();
+        draft
+            .transcript
+            .append(TranscriptEntry::prompt_now("prompt"))
+            .unwrap();
+
+        let checkpoint = commit(&session, &draft).unwrap();
+
+        assert_eq!(tip(&session).unwrap(), checkpoint.oid);
+        assert_eq!(modified_at(&session).unwrap(), checkpoint.created_at);
+    }
+
+    #[test]
+    fn amend_rewrites_tip_checkpoint() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = init_repo_with_commit(dir.path());
+        let head = Oid::from(repo.head().unwrap().target().unwrap());
+        let session = create(dir.path(), "session-a", head).unwrap();
+
+        let mut draft = Draft::new();
+        draft
+            .transcript
+            .append(TranscriptEntry::prompt_now("prompt"))
+            .unwrap();
+        let checkpoint = commit(&session, &draft).unwrap();
+
+        std::fs::write(dir.path().join("next.txt"), "next").unwrap();
+
+        let mut amended = Draft::from_checkpoint(&checkpoint);
+        amended
+            .transcript
+            .append(TranscriptEntry::response_now("done"))
+            .unwrap();
+        let updated = amend(&session, &amended).unwrap();
+
+        assert_ne!(updated.oid, checkpoint.oid);
+        assert_eq!(tip(&session).unwrap(), updated.oid);
+        assert_eq!(updated.transcript.len(), 2);
+        assert!(matches!(
+            updated.transcript.iter().nth(0).unwrap().kind,
+            TranscriptEntryKind::Prompt { .. }
+        ));
+        assert!(matches!(
+            updated.transcript.iter().nth(1).unwrap().kind,
+            TranscriptEntryKind::Response { .. }
+        ));
+    }
+
+    #[test]
+    fn amend_requires_checkpoint_tip() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = init_repo_with_commit(dir.path());
+        let head = Oid::from(repo.head().unwrap().target().unwrap());
+        let session = create(dir.path(), "session-a", head).unwrap();
+
+        let error = amend(&session, &Draft::new()).unwrap_err();
+        assert!(error.to_string().contains("no checkpoint to amend"));
+    }
 }

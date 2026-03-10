@@ -1,7 +1,21 @@
 [workspace]
 resolver = "3"
-members = [ "crates/config", "crates/core", "crates/registry", "crates/cli"]
-default-members = ["crates/config", "crates/core", "crates/registry", "crates/cli"]
+members = [
+    "crates/config",
+    "crates/core",
+    "crates/acp",
+    "crates/hooks",
+    "crates/registry",
+    "crates/cli",
+]
+default-members = [
+    "crates/config",
+    "crates/core",
+    "crates/acp",
+    "crates/hooks",
+    "crates/registry",
+    "crates/cli",
+]
 
 [workspace.package]
 publish = false
@@ -9,9 +23,21 @@ edition = "2024"
 version = "0.0.0"
 
 
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = "warn"
+style = "warn"
+complexity = "warn"
+cognitive_complexity = "warn"
+pedantic = "warn"
+
 [workspace.dependencies]
 concats_config = { package = "concats-config", path = "crates/config" }
 concats_core = { package = "concats-core", path = "crates/core" }
+concats_acp = { package = "concats-acp", path = "crates/acp" }
+concats_hooks = { package = "concats-hooks", path = "crates/hooks" }
 concats_registry = { package = "concats-registry", path = "crates/registry" }
 concats_cli = { package = "concats-cli", path = "crates/cli" }
 async-trait = "0.1"
@@ -35,6 +61,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tempfile = "3.20.0"
 thiserror = "2.0.12"
+time = { version = "0.3.39", features = ["formatting", "parsing", "serde"] }
 tokio = { version = "1.43.0", features = [
     "fs",
     "macros",

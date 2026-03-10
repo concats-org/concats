@@ -8,6 +8,7 @@ pub struct FileSystem {
 }
 
 impl FileSystem {
+    #[must_use]
     pub fn new(workspace_root: PathBuf) -> Self {
         Self { workspace_root }
     }
@@ -54,12 +55,24 @@ impl FileSystem {
         Ok(canonical_path)
     }
 
+    /// Read a UTF-8 text file inside the workspace root.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the path escapes the workspace root or the file
+    /// cannot be read as text.
     pub async fn read_text_file(&self, path: &Path) -> Result<String> {
         let validated = self.validate_path(path)?;
         let content = tokio::fs::read_to_string(&validated).await?;
         Ok(content)
     }
 
+    /// Write a UTF-8 text file inside the workspace root.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the path escapes the workspace root, parent
+    /// directories cannot be created, or the file cannot be written.
     pub async fn write_text_file(&self, path: &Path, content: &str) -> Result<()> {
         let validated = self.validate_path(path)?;
         if let Some(parent) = validated.parent() {

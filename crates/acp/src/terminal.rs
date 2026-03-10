@@ -4,7 +4,10 @@ use std::{
     rc::Rc,
 };
 
-use tokio::{io::AsyncReadExt, process::Command};
+use tokio::{
+    io::{AsyncRead, AsyncReadExt},
+    process::Command,
+};
 
 use crate::error::{Error, Result};
 
@@ -28,6 +31,7 @@ impl Default for TerminalManager {
 }
 
 impl TerminalManager {
+    #[must_use]
     pub fn new() -> Self {
         Self {
             terminals: RefCell::new(HashMap::new()),
@@ -36,12 +40,11 @@ impl TerminalManager {
     }
 
     /// Create a new terminal running the given command.
-    pub async fn create(
-        &self,
-        command: &str,
-        args: &[String],
-        cwd: Option<&str>,
-    ) -> Result<String> {
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the command cannot be spawned.
+    pub fn create(&self, command: &str, args: &[String], cwd: Option<&str>) -> Result<String> {
         let id = self.next_id.get();
         self.next_id.set(id + 1);
         let terminal_id = format!("term-{id}");
@@ -61,40 +64,12 @@ impl TerminalManager {
 
         let output = Rc::new(RefCell::new(String::new()));
 
-        // Spawn a local task to continuously read stdout into the shared buffer.
-        if let Some(mut stdout) = child.stdout.take() {
-            let output_clone = Rc::clone(&output);
-            tokio::task::spawn_local(async move {
-                let mut buf = vec![0u8; 4096];
-                loop {
-                    match stdout.read(&mut buf).await {
-                        Ok(0) => break, // EOF
-                        Ok(n) => {
-                            let text = String::from_utf8_lossy(&buf[..n]);
-                            output_clone.borrow_mut().push_str(&text);
-                        }
-                        Err(_) => break,
-                    }
-                }
-            });
+        if let Some(stdout) = child.stdout.take() {
+            spawn_output_drain(Rc::clone(&output), stdout);
         }
 
-        // Also drain stderr into the same buffer.
-        if let Some(mut stderr) = child.stderr.take() {
-            let output_clone = Rc::clone(&output);
-            tokio::task::spawn_local(async move {
-                let mut buf = vec![0u8; 4096];
-                loop {
-                    match stderr.read(&mut buf).await {
-                        Ok(0) => break,
-                        Ok(n) => {
-                            let text = String::from_utf8_lossy(&buf[..n]);
-                            output_clone.borrow_mut().push_str(&text);
-                        }
-                        Err(_) => break,
-                    }
-                }
-            });
+        if let Some(stderr) = child.stderr.take() {
+            spawn_output_drain(Rc::clone(&output), stderr);
         }
 
         self.terminals
@@ -105,7 +80,11 @@ impl TerminalManager {
     }
 
     /// Read available output from a terminal.
-    pub async fn read_output(&self, terminal_id: &str) -> Result<String> {
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the terminal ID is unknown.
+    pub fn read_all_output(&self, terminal_id: &str) -> Result<String> {
         let terminals = self.terminals.borrow();
         let state = terminals
             .get(terminal_id)
@@ -114,6 +93,11 @@ impl TerminalManager {
     }
 
     /// Kill a terminal's process.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the terminal ID is unknown or the process cannot be
+    /// signaled.
     pub fn kill(&self, terminal_id: &str) -> Result<()> {
         let mut terminals = self.terminals.borrow_mut();
         let state = terminals
@@ -127,6 +111,11 @@ impl TerminalManager {
     }
 
     /// Wait for a terminal process to exit and return its exit code.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the terminal ID is unknown or waiting on the
+    /// process fails.
     pub async fn wait_for_exit(&self, terminal_id: &str) -> Result<i32> {
         // Take the child out so we can await it without holding the borrow.
         let mut child = self
@@ -145,6 +134,10 @@ impl TerminalManager {
     }
 
     /// Release (remove) a terminal.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the terminal ID is unknown.
     pub fn release(&self, terminal_id: &str) -> Result<()> {
         self.terminals
             .borrow_mut()
@@ -152,4 +145,22 @@ impl TerminalManager {
             .ok_or_else(|| Error::terminal(format!("unknown terminal: {terminal_id}")))?;
         Ok(())
     }
+}
+
+fn spawn_output_drain<R>(output: Rc<RefCell<String>>, mut reader: R)
+where
+    R: AsyncRead + Unpin + 'static,
+{
+    tokio::task::spawn_local(async move {
+        let mut buf = vec![0_u8; 4096];
+        loop {
+            match reader.read(&mut buf).await {
+                Ok(0) | Err(_) => break,
+                Ok(n) => {
+                    let text = String::from_utf8_lossy(&buf[..n]);
+                    output.borrow_mut().push_str(&text);
+                }
+            }
+        }
+    });
 }

@@ -18,6 +18,11 @@ use crate::provider::CliArgs;
 /// 2. TOML config file (`~/.config/concats/config.toml`)
 /// 3. Environment variables (`CONCATS_*`)
 /// 4. CLI arguments (final overrides)
+///
+/// # Errors
+///
+/// Returns an error if the layered configuration cannot be deserialized into
+/// [`Config`].
 pub fn load_config(cli: &CliArgs) -> miette::Result<Config> {
     let config_path = config_dir().join("config.toml");
 
@@ -32,6 +37,11 @@ pub fn load_config(cli: &CliArgs) -> miette::Result<Config> {
 }
 
 /// Save configuration to the TOML config file.
+///
+/// # Errors
+///
+/// Returns an error if the configuration directory cannot be created, the
+/// config cannot be serialized to TOML, or the config file cannot be written.
 pub fn save_config(config: &Config) -> miette::Result<()> {
     let dir = config_dir();
     std::fs::create_dir_all(&dir)
@@ -49,6 +59,7 @@ pub fn save_config(config: &Config) -> miette::Result<()> {
 }
 
 /// Return the configuration directory (`~/.config/concats`).
+#[must_use]
 pub fn config_dir() -> PathBuf {
     dirs::config_dir()
         .unwrap_or_else(|| PathBuf::from("."))

@@ -1,5 +1,5 @@
 [package]
-name = "concats-registry"
+name = "concats-hooks"
 publish.workspace = true
 edition.workspace = true
 version.workspace = true
@@ -9,12 +9,16 @@ license = "Apache-2.0"
 workspace = true
 
 [lib]
-name = "concats_registry"
+name = "concats_hooks"
 path = "src/lib.rs"
 
 [dependencies]
-concats_config = { workspace = true }
-miette = { workspace = true }
-reqwest = { workspace = true }
+concats_core = { workspace = true }
+git2 = { workspace = true }
 serde = { workspace = true }
+serde_json = { workspace = true }
+time = { workspace = true }
 tracing = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

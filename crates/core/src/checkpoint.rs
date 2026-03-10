@@ -1,661 +1,261 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-use crate::{error::Result, git::Oid};
+use serde::{Deserialize, Serialize};
+use time::OffsetDateTime;
 
-/// Session-scoped checkpoint store that writes commits to a per-session ref
-/// (`refs/agent/sessions/<session-id>`) without touching the user's branch,
-/// index, or working tree state.
-///
-/// Trees are built with an in-memory index — the on-disk `.git/index` is never
-/// read or written by this code.
-pub struct CheckpointStore {
-    repo_path: PathBuf,
-    session_id: String,
-    ref_name: String,
-    turn_count: u32,
-    /// When forking, the first checkpoint uses this as its parent instead of HEAD.
-    fork_parent: Option<git2::Oid>,
+pub use crate::transcript::{Transcript, TranscriptEntry, TranscriptEntryKind};
+use crate::{
+    error::{Error, Result},
+    git::Oid,
+    session::{self, Session},
+    transcript::decode_commit_message,
+};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Snapshot {
+    pub tree: Oid,
 }
 
-impl CheckpointStore {
-    /// Create a new checkpoint store for the given session.
-    pub fn new(repo_path: PathBuf, session_id: String) -> Self {
-        let ref_name = format!("refs/agent/sessions/{session_id}");
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Checkpoint {
+    pub session_id: String,
+    pub repo_path: PathBuf,
+    pub oid: Oid,
+    pub created_at: OffsetDateTime,
+    pub transcript: Transcript,
+    pub snapshot: Snapshot,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Draft {
+    pub transcript: Transcript,
+}
+
+impl Draft {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    #[must_use]
+    pub fn from_checkpoint(checkpoint: &Checkpoint) -> Self {
         Self {
-            repo_path,
-            session_id,
-            ref_name,
-            turn_count: 0,
-            fork_parent: None,
+            transcript: checkpoint.transcript.clone(),
         }
     }
+}
 
-    /// Create a checkpoint store with a specific turn count.
-    ///
-    /// Used by hook handlers to reconstruct state from a persisted turn count
-    /// across separate process invocations.
-    pub fn new_with_turn_count(repo_path: PathBuf, session_id: String, turn_count: u32) -> Self {
-        let ref_name = format!("refs/agent/sessions/{session_id}");
-        Self {
-            repo_path,
-            session_id,
-            ref_name,
-            turn_count,
-            fork_parent: None,
+/// List all checkpoints for a session in creation order.
+///
+/// # Errors
+///
+/// Returns an error if the repository cannot be opened, the session ref is
+/// missing, or any checkpoint commit cannot be loaded.
+pub fn list(session: &Session) -> Result<Vec<Checkpoint>> {
+    let repo = git2::Repository::open(&session.repo_path)?;
+    let tip = session::resolve_ref(&repo, &session::ref_name(&session.id))
+        .ok_or_else(|| Error::session(format!("session not found: {}", session.id)))?;
+    load_from_tip(&repo, &session.repo_path, &session.id, &tip)
+}
+
+/// Load a single checkpoint by object ID.
+///
+/// # Errors
+///
+/// Returns an error if checkpoint listing fails or the requested checkpoint is
+/// not present in the session history.
+pub fn get(session: &Session, oid: Oid) -> Result<Checkpoint> {
+    let repo = git2::Repository::open(&session.repo_path)?;
+    let tip = session::resolve_ref(&repo, &session::ref_name(&session.id))
+        .ok_or_else(|| Error::session(format!("session not found: {}", session.id)))?;
+    let checkpoint_oid = oid.as_git();
+    let commit = repo
+        .find_commit(checkpoint_oid)
+        .map_err(|_| Error::session(format!("checkpoint not found: {oid}")))?;
+
+    if tip.id() != checkpoint_oid && !repo.graph_descendant_of(tip.id(), checkpoint_oid)? {
+        return Err(Error::session(format!("checkpoint not found: {oid}")));
+    }
+
+    load_from_commit(&commit, &session.id, &session.repo_path)
+        .map_err(|_| Error::session(format!("checkpoint not found: {oid}")))
+}
+
+/// Restore the checkpoint snapshot into the repository working tree.
+///
+/// # Errors
+///
+/// Returns an error if the repository cannot be opened, the snapshot tree
+/// cannot be loaded, or the checkout fails.
+pub fn restore(checkpoint: &Checkpoint) -> Result<()> {
+    let repo = git2::Repository::open(&checkpoint.repo_path)?;
+    let tree = repo.find_tree(checkpoint.snapshot.tree.as_git())?;
+    repo.checkout_tree(
+        tree.as_object(),
+        Some(git2::build::CheckoutBuilder::new().force()),
+    )?;
+    Ok(())
+}
+
+fn load_from_tip(
+    repo: &git2::Repository,
+    repo_path: &Path,
+    session_id: &str,
+    tip: &git2::Commit<'_>,
+) -> Result<Vec<Checkpoint>> {
+    let mut revwalk = repo.revwalk()?;
+    revwalk.push(tip.id())?;
+    revwalk.simplify_first_parent()?;
+
+    let mut checkpoints = Vec::new();
+    for oid_result in revwalk {
+        let oid = oid_result?;
+        let commit = repo.find_commit(oid)?;
+        if decode_commit_message(commit.message().unwrap_or("")).is_none() {
+            break;
         }
+        checkpoints.push(load_from_commit(&commit, session_id, repo_path)?);
     }
 
-    /// Create a checkpoint store that forks from an existing commit.
-    ///
-    /// The first checkpoint will be parented from `fork_from_oid` instead of HEAD.
-    pub fn new_forked(repo_path: PathBuf, session_id: String, fork_from_oid: git2::Oid) -> Self {
-        let ref_name = format!("refs/agent/sessions/{session_id}");
-        Self {
-            repo_path,
-            session_id,
-            ref_name,
-            turn_count: 0,
-            fork_parent: Some(fork_from_oid),
-        }
-    }
+    checkpoints.reverse();
+    Ok(checkpoints)
+}
 
-    /// Return the session ID.
-    pub fn session_id(&self) -> &str {
-        &self.session_id
-    }
-
-    /// Return the full ref name (e.g. `refs/agent/sessions/<session-id>`).
-    pub fn ref_name(&self) -> &str {
-        &self.ref_name
-    }
-
-    /// Create the initial checkpoint commit for a new turn.
-    ///
-    /// Captures the full working directory state into a tree and writes a
-    /// commit on the session ref.
-    pub fn create_checkpoint(&self, prompt: &str) -> Result<Oid> {
-        self.create_checkpoint_sync(prompt)
-    }
-
-    /// Amend the current checkpoint: rebuild the tree from the working
-    /// directory and create a new commit with the same parent, then
-    /// force-update the ref. The previous tip becomes unreferenced.
-    pub fn amend_checkpoint(&self) -> Result<Oid> {
-        self.amend_checkpoint_sync()
-    }
-
-    /// Finalize the checkpoint for the completed turn. Writes the full commit
-    /// message with prompt and response summary, then increments the turn
-    /// counter.
-    pub fn finalize_checkpoint(
-        &mut self,
-        prompt: &str,
-        response_summary: &str,
-    ) -> Result<Oid> {
-        let oid = self.finalize_checkpoint_sync(prompt, response_summary)?;
-        self.turn_count += 1;
-        Ok(oid)
-    }
-
-    // ── sync implementations ──────────────────────────────────────────
-
-    fn create_checkpoint_sync(&self, prompt: &str) -> Result<Oid> {
-        let repo = git2::Repository::open(&self.repo_path)?;
-        let tree_oid = self.build_tree_from_workdir(&repo)?;
-        let tree = repo.find_tree(tree_oid)?;
-        let sig = self.signature(&repo)?;
-
-        let message = self.initial_message(prompt);
-        // Chain from the previous turn's finalized commit. For the very first
-        // turn, use the fork parent (if forking) or HEAD.
-        let fork_commit = self.fork_parent.and_then(|oid| repo.find_commit(oid).ok());
-        let parent = self
-            .current_tip(&repo)
-            .or(fork_commit)
-            .or_else(|| self.head_commit(&repo));
-        let parents: Vec<&git2::Commit<'_>> = parent.iter().collect();
-
-        let oid = repo.commit(None, &sig, &sig, &message, &tree, &parents)?;
-        self.update_ref(&repo, oid)?;
-
-        Ok(Oid::from(oid))
-    }
-
-    fn amend_checkpoint_sync(&self) -> Result<Oid> {
-        let repo = git2::Repository::open(&self.repo_path)?;
-
-        let tip = self
-            .current_tip(&repo)
-            .ok_or_else(|| crate::error::Error::session("no checkpoint to amend"))?;
-
-        let tree_oid = self.build_tree_from_workdir(&repo)?;
-        let tree = repo.find_tree(tree_oid)?;
-        let sig = self.signature(&repo)?;
-
-        // Reuse the existing commit message.
-        let message = tip.message().unwrap_or("checkpoint").to_string();
-
-        // Same parent(s) as the current tip (amend semantics).
-        let parents = self.tip_parents_or_head(&repo);
-        let parent_refs: Vec<&git2::Commit<'_>> = parents.iter().collect();
-
-        let oid = repo.commit(None, &sig, &sig, &message, &tree, &parent_refs)?;
-        self.update_ref(&repo, oid)?;
-
-        Ok(Oid::from(oid))
-    }
-
-    fn finalize_checkpoint_sync(
-        &self,
-        prompt: &str,
-        response_summary: &str,
-    ) -> Result<Oid> {
-        let repo = git2::Repository::open(&self.repo_path)?;
-        let tree_oid = self.build_tree_from_workdir(&repo)?;
-        let tree = repo.find_tree(tree_oid)?;
-        let sig = self.signature(&repo)?;
-
-        let message = self.final_message(prompt, response_summary);
-
-        // Amend semantics: reuse the current tip's parents so we replace
-        // it rather than chaining from it. Falls back to HEAD if no tip
-        // exists (e.g. create_checkpoint was never called).
-        let parents = self.tip_parents_or_head(&repo);
-        let parent_refs: Vec<&git2::Commit<'_>> = parents.iter().collect();
-
-        let oid = repo.commit(None, &sig, &sig, &message, &tree, &parent_refs)?;
-        self.update_ref(&repo, oid)?;
-
-        Ok(Oid::from(oid))
-    }
-
-    // ── helpers ───────────────────────────────────────────────────────
-
-    /// Build a tree object from the working directory state.
-    ///
-    /// Walk the working directory, respecting `.gitignore`, `.git/info/exclude`,
-    /// and global gitignore rules. Dotfiles are included so that configs
-    /// like `.eslintrc`, `.prettierrc`, `.editorconfig` are captured.
-    /// NOTE: `.claude/worktrees/` is explicitly filtered out as it may contain nested
-    /// git state and may be modified by other agents which leads to trouble.
-    ///
-    /// NOTE: Never call `index.write()`, so the on-disk index (the user's staged
-    /// changes) is left untouched.
-    fn build_tree_from_workdir(&self, repo: &git2::Repository) -> Result<git2::Oid> {
-        let mut index = repo.index()?;
-        index.clear()?;
-
-        let workdir = repo
-            .workdir()
-            .ok_or_else(|| crate::error::Error::session("bare repository not supported"))?;
-
-        let walker = ignore::WalkBuilder::new(workdir)
-            .hidden(false)
-            .git_ignore(true)
-            .git_exclude(true)
-            .git_global(true)
-            .filter_entry(|entry| {
-                !entry
-                    .path()
-                    .ancestors()
-                    .any(|a| a.ends_with(".claude/worktrees"))
-            })
-            .build();
-
-        for result in walker {
-            let entry = match result {
-                Ok(e) => e,
-                Err(_) => continue, // vanished mid-walk, skip
-            };
-            // Skip directories — only add files
-            if entry.file_type().is_none_or(|ft| !ft.is_file()) {
-                continue;
-            }
-            if let Ok(rel) = entry.path().strip_prefix(workdir) {
-                // Silently skip individual failures (e.g. file vanished)
-                let _ = index.add_path(rel);
-            }
-        }
-
-        let oid = index.write_tree()?;
-        Ok(oid)
-    }
-
-    /// Resolve the session ref to its tip commit.
-    fn current_tip<'r>(&self, repo: &'r git2::Repository) -> Option<git2::Commit<'r>> {
-        repo.find_reference(&self.ref_name)
-            .ok()
-            .and_then(|r| r.peel_to_commit().ok())
-    }
-
-    /// Resolve HEAD to a commit.
-    fn head_commit<'r>(&self, repo: &'r git2::Repository) -> Option<git2::Commit<'r>> {
-        repo.head().ok().and_then(|h| h.peel_to_commit().ok())
-    }
-
-    /// Return the current tip's parents (amend semantics). If there is no
-    /// session ref yet, fall back to HEAD so the first commit is parented
-    /// from the user's branch.
-    fn tip_parents_or_head<'r>(&self, repo: &'r git2::Repository) -> Vec<git2::Commit<'r>> {
-        if let Some(tip) = self.current_tip(repo) {
-            (0..tip.parent_count())
-                .filter_map(|i| tip.parent(i).ok())
-                .collect()
-        } else {
-            self.head_commit(repo).into_iter().collect()
-        }
-    }
-
-    /// Force-update the session ref to point at the given OID.
-    fn update_ref(&self, repo: &git2::Repository, oid: git2::Oid) -> Result<()> {
-        repo.reference(&self.ref_name, oid, true, "checkpoint")?;
-        Ok(())
-    }
-
-    fn signature(&self, repo: &git2::Repository) -> Result<git2::Signature<'static>> {
-        let sig = repo
-            .signature()
-            .or_else(|_| git2::Signature::now("concats", "concats@checkpoint"))?;
-        Ok(sig)
-    }
-
-    fn initial_message(&self, prompt: &str) -> String {
-        let subject: String = prompt.chars().take(72).collect();
-        format!(
-            "checkpoint: {subject}\n\n\
-             <prompt>\n{prompt}\n</prompt>"
-        )
-    }
-
-    fn final_message(&self, prompt: &str, response_summary: &str) -> String {
-        let subject: String = prompt.chars().take(72).collect();
-        let trimmed_response: String = response_summary.chars().take(500).collect();
-        format!(
-            "checkpoint: {subject}\n\n\
-             <prompt>\n{prompt}\n</prompt>\n\
-             <response>\n{trimmed_response}\n</response>"
-        )
-    }
+pub(crate) fn load_from_commit(
+    commit: &git2::Commit<'_>,
+    session_id: &str,
+    repo_path: &Path,
+) -> Result<Checkpoint> {
+    let transcript = decode_commit_message(commit.message().unwrap_or(""))
+        .ok_or_else(|| Error::session("invalid checkpoint commit"))?;
+    Ok(Checkpoint {
+        session_id: session_id.to_string(),
+        repo_path: repo_path.to_path_buf(),
+        oid: Oid::from(commit.id()),
+        created_at: session::commit_time(commit.time())?,
+        transcript,
+        snapshot: Snapshot {
+            tree: Oid::from(commit.tree_id()),
+        },
+    })
 }
 
 #[cfg(test)]
 #[allow(clippy::disallowed_methods)]
 mod tests {
-    use std::fs;
-
     use super::*;
-
-    /// Helper: create a temp git repo with an initial commit so HEAD exists.
-    fn init_repo_with_commit(dir: &std::path::Path) -> git2::Repository {
-        let repo = git2::Repository::init(dir).unwrap();
-        {
-            let mut index = repo.index().unwrap();
-            // Write an initial file so we have something to commit.
-            fs::write(dir.join("init.txt"), "init").unwrap();
-            index
-                .add_all(["*"], git2::IndexAddOption::DEFAULT, None)
-                .unwrap();
-            index.write().unwrap();
-            let tree_oid = index.write_tree().unwrap();
-            let tree = repo.find_tree(tree_oid).unwrap();
-            let sig = git2::Signature::now("test", "test@test").unwrap();
-            repo.commit(Some("HEAD"), &sig, &sig, "initial", &tree, &[])
-                .unwrap();
-        }
-        repo
-    }
+    use crate::{diff, session, testutil::init_repo_with_commit};
 
     #[test]
-    fn create_checkpoint_writes_ref() {
-        let dir = tempfile::tempdir().unwrap();
-        init_repo_with_commit(dir.path());
-
-        let store = CheckpointStore::new(dir.path().to_path_buf(), "test-session".into());
-        let oid = store.create_checkpoint("hello world").unwrap();
-
-        // The ref should exist and point to our commit.
-        let repo = git2::Repository::open(dir.path()).unwrap();
-        let r = repo
-            .find_reference("refs/agent/sessions/test-session")
-            .unwrap();
-        assert_eq!(
-            r.peel_to_commit().unwrap().id().to_string(),
-            oid.to_string()
-        );
-    }
-
-    #[test]
-    fn amend_checkpoint_updates_ref() {
-        let dir = tempfile::tempdir().unwrap();
-        init_repo_with_commit(dir.path());
-
-        let store = CheckpointStore::new(dir.path().to_path_buf(), "test-session".into());
-        let oid1 = store.create_checkpoint("prompt").unwrap();
-
-        // Write a new file and amend.
-        fs::write(dir.path().join("new.txt"), "content").unwrap();
-        let oid2 = store.amend_checkpoint().unwrap();
-
-        assert_ne!(oid1.to_string(), oid2.to_string());
-    }
-
-    #[test]
-    fn finalize_checkpoint_includes_trailers() {
-        let dir = tempfile::tempdir().unwrap();
-        init_repo_with_commit(dir.path());
-
-        let mut store = CheckpointStore::new(dir.path().to_path_buf(), "test-session".into());
-        store.create_checkpoint("fix the bug").unwrap();
-        store
-            .finalize_checkpoint("fix the bug", "I fixed the bug by...")
-            .unwrap();
-
-        let repo = git2::Repository::open(dir.path()).unwrap();
-        let r = repo
-            .find_reference("refs/agent/sessions/test-session")
-            .unwrap();
-        let commit = r.peel_to_commit().unwrap();
-        let msg = commit.message().unwrap();
-
-        assert!(msg.contains("<prompt>"));
-        assert!(msg.contains("<response>"));
-        assert!(msg.contains("I fixed the bug by..."));
-    }
-
-    #[test]
-    fn finalize_increments_turn_count() {
-        let dir = tempfile::tempdir().unwrap();
-        init_repo_with_commit(dir.path());
-
-        let mut store = CheckpointStore::new(dir.path().to_path_buf(), "test-session".into());
-
-        store.create_checkpoint("turn 0").unwrap();
-        store
-            .finalize_checkpoint("turn 0", "resp 0")
-            .unwrap();
-
-        store.create_checkpoint("turn 1").unwrap();
-        store
-            .finalize_checkpoint("turn 1", "resp 1")
-            .unwrap();
-
-        let repo = git2::Repository::open(dir.path()).unwrap();
-        let r = repo
-            .find_reference("refs/agent/sessions/test-session")
-            .unwrap();
-        let commit = r.peel_to_commit().unwrap();
-        let msg = commit.message().unwrap();
-        // Turn 1 finalized message contains "turn 1" in the prompt.
-        assert!(msg.contains("turn 1"));
-        assert!(msg.contains("<response>"));
-    }
-
-    #[test]
-    fn empty_commit_allowed() {
-        let dir = tempfile::tempdir().unwrap();
-        init_repo_with_commit(dir.path());
-
-        let mut store = CheckpointStore::new(dir.path().to_path_buf(), "test-session".into());
-
-        // Create + finalize without any file changes — should succeed (empty commit).
-        let oid = store.create_checkpoint("just talking").unwrap();
-        assert!(!oid.to_string().is_empty());
-
-        let oid2 = store
-            .finalize_checkpoint("just talking", "response")
-            .unwrap();
-        assert!(!oid2.to_string().is_empty());
-    }
-
-    #[test]
-    fn head_and_index_untouched() {
+    fn list_and_get_checkpoints() {
         let dir = tempfile::tempdir().unwrap();
         let repo = init_repo_with_commit(dir.path());
+        let base = Oid::from(repo.head().unwrap().target().unwrap());
+        let session = session::create(dir.path(), "session-a", base).unwrap();
 
-        let head_before = repo.head().unwrap().peel_to_commit().unwrap().id();
-
-        let mut store = CheckpointStore::new(dir.path().to_path_buf(), "test-session".into());
-        fs::write(dir.path().join("changed.txt"), "data").unwrap();
-        store.create_checkpoint("test").unwrap();
-        store
-            .finalize_checkpoint("test", "resp")
+        let mut draft = Draft::new();
+        draft
+            .transcript
+            .append(TranscriptEntry::prompt_now("prompt"))
             .unwrap();
+        draft
+            .transcript
+            .append(TranscriptEntry::response_now("done"))
+            .unwrap();
+        let checkpoint = session::commit(&session, &draft).unwrap();
 
-        // HEAD should not have moved.
-        let repo = git2::Repository::open(dir.path()).unwrap();
-        let head_after = repo.head().unwrap().peel_to_commit().unwrap().id();
-        assert_eq!(head_before, head_after);
+        let checkpoints = list(&session).unwrap();
+        assert_eq!(checkpoints.len(), 1);
+        assert_eq!(get(&session, checkpoint.oid).unwrap().oid, checkpoint.oid);
     }
 
     #[test]
-    fn finalize_amends_instead_of_chaining() {
+    fn checkpoint_draft_copies_checkpoint_transcript() {
         let dir = tempfile::tempdir().unwrap();
         let repo = init_repo_with_commit(dir.path());
-        let head_oid = repo.head().unwrap().peel_to_commit().unwrap().id();
+        let base = Oid::from(repo.head().unwrap().target().unwrap());
+        let session = session::create(dir.path(), "session-a", base).unwrap();
 
-        let mut store = CheckpointStore::new(dir.path().to_path_buf(), "test-session".into());
-
-        // Turn 0: create + finalize.
-        store.create_checkpoint("turn 0").unwrap();
-        store
-            .finalize_checkpoint("turn 0", "resp 0")
+        let mut draft = Draft::new();
+        draft
+            .transcript
+            .append(TranscriptEntry::prompt_now("prompt"))
             .unwrap();
-
-        // Turn 1: create + finalize.
-        store.create_checkpoint("turn 1").unwrap();
-        store
-            .finalize_checkpoint("turn 1", "resp 1")
+        draft
+            .transcript
+            .append(TranscriptEntry::response_now("first"))
             .unwrap();
+        let checkpoint = session::commit(&session, &draft).unwrap();
 
-        // Walk the ref: tip should be turn 1, its parent should be turn 0,
-        // turn 0's parent should be HEAD. Total chain length = 2 (not 4).
-        let repo = git2::Repository::open(dir.path()).unwrap();
-        let tip = repo
-            .find_reference("refs/agent/sessions/test-session")
-            .unwrap()
-            .peel_to_commit()
-            .unwrap();
-        assert!(
-            tip.message().unwrap().contains("turn 1"),
-            "tip should be turn 1"
-        );
-        assert_eq!(tip.parent_count(), 1);
-
-        let turn0 = tip.parent(0).unwrap();
-        assert!(
-            turn0.message().unwrap().contains("turn 0"),
-            "parent should be turn 0"
-        );
-        assert_eq!(turn0.parent_count(), 1);
-        assert_eq!(
-            turn0.parent(0).unwrap().id(),
-            head_oid,
-            "turn 0's parent should be HEAD"
-        );
+        let copied = Draft::from_checkpoint(&checkpoint);
+        assert_eq!(copied.transcript.len(), 2);
+        assert!(matches!(
+            copied.transcript.iter().nth(0).unwrap().kind,
+            TranscriptEntryKind::Prompt { .. }
+        ));
+        assert!(matches!(
+            copied.transcript.iter().nth(1).unwrap().kind,
+            TranscriptEntryKind::Response { .. }
+        ));
     }
 
     #[test]
-    fn amend_preserves_parent() {
+    fn diff_for_checkpoint_uses_parent_relative_patch() {
         let dir = tempfile::tempdir().unwrap();
         let repo = init_repo_with_commit(dir.path());
-        let head_oid = repo.head().unwrap().peel_to_commit().unwrap().id();
+        let base = Oid::from(repo.head().unwrap().target().unwrap());
+        let session = session::create(dir.path(), "session-a", base).unwrap();
 
-        let store = CheckpointStore::new(dir.path().to_path_buf(), "test-session".into());
-        store.create_checkpoint("prompt").unwrap();
+        let checkpoint = session::commit(&session, &Draft::new()).unwrap();
+        std::fs::write(dir.path().join("src.txt"), "hello").unwrap();
+        let checkpoint = session::amend(&session, &Draft::from_checkpoint(&checkpoint)).unwrap();
 
-        fs::write(dir.path().join("file.txt"), "data").unwrap();
-        store.amend_checkpoint().unwrap();
-
-        // After amend, the tip's parent should still be HEAD (not the
-        // initial create commit).
-        let repo = git2::Repository::open(dir.path()).unwrap();
-        let tip = repo
-            .find_reference("refs/agent/sessions/test-session")
-            .unwrap()
-            .peel_to_commit()
-            .unwrap();
-        assert_eq!(tip.parent_count(), 1);
-        assert_eq!(tip.parent(0).unwrap().id(), head_oid);
+        let diffs = diff::for_checkpoint(&checkpoint).unwrap();
+        assert_eq!(diffs.len(), 1);
+        assert_eq!(diffs[0].path, "src.txt");
     }
 
     #[test]
-    fn first_checkpoint_parents_from_head() {
+    fn snapshot_ignores_nested_git_roots() {
         let dir = tempfile::tempdir().unwrap();
         let repo = init_repo_with_commit(dir.path());
-        let head_oid = repo.head().unwrap().peel_to_commit().unwrap().id();
+        let base = Oid::from(repo.head().unwrap().target().unwrap());
+        let session = session::create(dir.path(), "session-a", base).unwrap();
 
-        let store = CheckpointStore::new(dir.path().to_path_buf(), "test-session".into());
-        store.create_checkpoint("first").unwrap();
+        let checkpoint = session::commit(&session, &Draft::new()).unwrap();
+        std::fs::write(dir.path().join("src.txt"), "hello").unwrap();
+        let nested = dir.path().join("vendor/nested-repo");
+        std::fs::create_dir_all(&nested).unwrap();
+        git2::Repository::init(&nested).unwrap();
+        std::fs::write(nested.join("ignored.txt"), "ignore me").unwrap();
 
-        let repo = git2::Repository::open(dir.path()).unwrap();
-        let tip = repo
-            .find_reference("refs/agent/sessions/test-session")
-            .unwrap()
-            .peel_to_commit()
-            .unwrap();
-        assert_eq!(tip.parent_count(), 1);
-        assert_eq!(
-            tip.parent(0).unwrap().id(),
-            head_oid,
-            "first checkpoint should be parented from HEAD"
-        );
+        let checkpoint = session::amend(&session, &Draft::from_checkpoint(&checkpoint)).unwrap();
+        let diffs = diff::for_checkpoint(&checkpoint).unwrap();
+
+        assert!(diffs.iter().any(|diff| diff.path == "src.txt"));
+        assert!(diffs.iter().all(|diff| !diff.path.starts_with("vendor/")));
     }
 
     #[test]
-    fn concurrent_sessions_dont_collide() {
+    fn snapshot_includes_symlinks() {
         let dir = tempfile::tempdir().unwrap();
-        init_repo_with_commit(dir.path());
+        let repo = init_repo_with_commit(dir.path());
+        let base = Oid::from(repo.head().unwrap().target().unwrap());
+        let session = session::create(dir.path(), "session-a", base).unwrap();
 
-        let store_a = CheckpointStore::new(dir.path().to_path_buf(), "session-a".into());
-        let store_b = CheckpointStore::new(dir.path().to_path_buf(), "session-b".into());
+        let checkpoint = session::commit(&session, &Draft::new()).unwrap();
+        std::fs::write(dir.path().join("src.txt"), "hello").unwrap();
 
-        store_a.create_checkpoint("prompt a").unwrap();
-        store_b.create_checkpoint("prompt b").unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink("src.txt", dir.path().join("link.txt")).unwrap();
 
-        // Both refs should exist independently.
-        let repo = git2::Repository::open(dir.path()).unwrap();
-        assert!(repo.find_reference("refs/agent/sessions/session-a").is_ok());
-        assert!(repo.find_reference("refs/agent/sessions/session-b").is_ok());
-    }
+        #[cfg(windows)]
+        std::os::windows::fs::symlink_file("src.txt", dir.path().join("link.txt")).unwrap();
 
-    #[test]
-    fn gitignored_files_excluded_from_tree() {
-        let dir = tempfile::tempdir().unwrap();
-        init_repo_with_commit(dir.path());
+        let checkpoint = session::amend(&session, &Draft::from_checkpoint(&checkpoint)).unwrap();
+        let diffs = diff::for_checkpoint(&checkpoint).unwrap();
 
-        // Create a .gitignore that excludes target/ and *.log
-        fs::write(dir.path().join(".gitignore"), "target/\n*.log\n").unwrap();
-        fs::create_dir_all(dir.path().join("target/debug")).unwrap();
-        fs::write(dir.path().join("target/debug/binary"), "ELF").unwrap();
-        fs::write(dir.path().join("build.log"), "some log output").unwrap();
-
-        // Also add a normal file that should be included.
-        fs::write(dir.path().join("src.rs"), "fn main() {}").unwrap();
-
-        let store = CheckpointStore::new(dir.path().to_path_buf(), "ignore-test".into());
-        store.create_checkpoint("test gitignore exclusion").unwrap();
-
-        let repo = git2::Repository::open(dir.path()).unwrap();
-        let tip = repo
-            .find_reference("refs/agent/sessions/ignore-test")
-            .unwrap()
-            .peel_to_commit()
-            .unwrap();
-        let tree = tip.tree().unwrap();
-
-        // src.rs should be present
-        assert!(
-            tree.get_name("src.rs").is_some(),
-            "src.rs should be in the tree"
-        );
-
-        // .gitignore itself is a dotfile but should be captured
-        assert!(
-            tree.get_name(".gitignore").is_some(),
-            ".gitignore should be in the tree"
-        );
-
-        // target/ and *.log should be excluded by .gitignore
-        assert!(
-            tree.get_name("target").is_none(),
-            "target/ should be excluded by .gitignore"
-        );
-        assert!(
-            tree.get_name("build.log").is_none(),
-            "build.log should be excluded by .gitignore"
-        );
-    }
-
-    #[test]
-    fn dotfiles_included_in_tree() {
-        let dir = tempfile::tempdir().unwrap();
-        init_repo_with_commit(dir.path());
-
-        // Create dotfiles that are typically tracked
-        fs::write(dir.path().join(".eslintrc"), "{}").unwrap();
-        fs::write(dir.path().join(".prettierrc"), "{}").unwrap();
-
-        let store = CheckpointStore::new(dir.path().to_path_buf(), "dotfile-test".into());
-        store.create_checkpoint("test dotfile inclusion").unwrap();
-
-        let repo = git2::Repository::open(dir.path()).unwrap();
-        let tip = repo
-            .find_reference("refs/agent/sessions/dotfile-test")
-            .unwrap()
-            .peel_to_commit()
-            .unwrap();
-        let tree = tip.tree().unwrap();
-
-        assert!(
-            tree.get_name(".eslintrc").is_some(),
-            ".eslintrc should be in the tree"
-        );
-        assert!(
-            tree.get_name(".prettierrc").is_some(),
-            ".prettierrc should be in the tree"
-        );
-    }
-
-    #[test]
-    fn worktree_paths_excluded_from_tree() {
-        let dir = tempfile::tempdir().unwrap();
-        init_repo_with_commit(dir.path());
-
-        // Simulate a Claude Code worktree with a nested .git file.
-        let wt_dir = dir.path().join(".claude/worktrees/some-worktree");
-        fs::create_dir_all(&wt_dir).unwrap();
-        fs::write(wt_dir.join(".git"), "gitdir: /tmp/fake").unwrap();
-        fs::write(wt_dir.join("file.txt"), "worktree file").unwrap();
-
-        // Also add a normal file that should be included.
-        fs::write(dir.path().join("real.txt"), "real content").unwrap();
-
-        let store = CheckpointStore::new(dir.path().to_path_buf(), "wt-test".into());
-        store.create_checkpoint("test worktree exclusion").unwrap();
-
-        // Verify the tree: real.txt should be present, worktree files should not.
-        let repo = git2::Repository::open(dir.path()).unwrap();
-        let tip = repo
-            .find_reference("refs/agent/sessions/wt-test")
-            .unwrap()
-            .peel_to_commit()
-            .unwrap();
-        let tree = tip.tree().unwrap();
-
-        assert!(
-            tree.get_name("real.txt").is_some(),
-            "real.txt should be in the tree"
-        );
-        // Walk the full tree to ensure no worktree paths leaked in.
-        let mut found_worktree = false;
-        tree.walk(git2::TreeWalkMode::PreOrder, |root, _entry| {
-            if root.contains("worktrees") {
-                found_worktree = true;
-                return git2::TreeWalkResult::Abort;
-            }
-            git2::TreeWalkResult::Ok
-        })
-        .unwrap();
-        assert!(!found_worktree, ".claude/worktrees/ should be excluded");
+        assert!(diffs.iter().any(|diff| diff.path == "src.txt"));
+        assert!(diffs.iter().any(|diff| diff.path == "link.txt"));
     }
 }

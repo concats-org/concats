@@ -10,6 +10,7 @@ pub struct NotificationSender {
 }
 
 impl NotificationSender {
+    #[must_use]
     pub fn new(tx: mpsc::Sender<SessionNotification>) -> Self {
         Self { tx }
     }

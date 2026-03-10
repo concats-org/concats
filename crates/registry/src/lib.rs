@@ -49,7 +49,29 @@ pub struct UvxDist {
     pub env: HashMap<String, String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AgentConfigConversionError {
+    UnsupportedDistribution { agent_id: String },
+}
+
+impl std::fmt::Display for AgentConfigConversionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::UnsupportedDistribution { agent_id } => {
+                write!(f, "agent '{agent_id}' has no supported distribution")
+            }
+        }
+    }
+}
+
+impl std::error::Error for AgentConfigConversionError {}
+
 /// Fetch the ACP agent registry from the CDN.
+///
+/// # Errors
+///
+/// Returns an error if the registry cannot be fetched from the CDN or the
+/// response body cannot be parsed.
 pub async fn fetch_registry() -> miette::Result<Registry> {
     let response = reqwest::get(REGISTRY_URL)
         .await
@@ -64,7 +86,7 @@ pub async fn fetch_registry() -> miette::Result<Registry> {
 }
 
 impl TryFrom<&Agent> for AgentConfig {
-    type Error = ();
+    type Error = AgentConfigConversionError;
 
     fn try_from(agent: &Agent) -> Result<Self, Self::Error> {
         if let Some(npx) = &agent.distribution.npx {
@@ -89,7 +111,9 @@ impl TryFrom<&Agent> for AgentConfig {
             });
         }
 
-        Err(())
+        Err(AgentConfigConversionError::UnsupportedDistribution {
+            agent_id: agent.id.clone(),
+        })
     }
 }
 

@@ -1,7 +1,8 @@
+pub mod action;
 pub mod app;
-pub mod event;
-pub mod handler;
-pub mod sessions_ui;
+pub mod cli;
+pub mod commands;
+pub mod components;
+pub mod launch;
 pub mod tabs;
 pub mod tui;
-pub mod ui;

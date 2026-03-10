@@ -1,5 +1,5 @@
 [package]
-name = "concats-core"
+name = "concats-acp"
 publish.workspace = true
 edition.workspace = true
 version.workspace = true
@@ -9,20 +9,21 @@ license = "Apache-2.0"
 workspace = true
 
 [lib]
-name = "concats_core"
+name = "concats_acp"
 path = "src/lib.rs"
 
 [dependencies]
+agent-client-protocol = "0.9.4"
+async-trait = { workspace = true }
+concats_core = { workspace = true }
 git2 = { workspace = true }
-ignore = { workspace = true }
 miette = { workspace = true }
-thiserror = { workspace = true }
-serde = { workspace = true }
 serde_json = { workspace = true }
+thiserror = { workspace = true }
 time = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
-mockall = { workspace = true }
-proptest = { workspace = true }
 tempfile = { workspace = true }
