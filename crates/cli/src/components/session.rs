@@ -189,13 +189,13 @@ impl SessionComponent {
         }
     }
 
-    pub fn queue_fork_message(&mut self, source_session_id: &str, commit_oid: concats_core::Oid) {
-        let commit = commit_oid.to_string();
-        let short_commit: String = commit.chars().take(12).collect();
+    pub fn queue_fork_message(&mut self, source_session_id: &str, turn_oid: concats_core::Oid) {
+        let turn = turn_oid.to_string();
+        let short_turn: String = turn.chars().take(12).collect();
         let ref_path = format!("refs/agent/sessions/{source_session_id}");
         self.model.pending_fork_message = Some(format!(
             "<session_context>\n\
-             Forked from session {source_session_id} at checkpoint {short_commit}.\n\
+             Forked from session {source_session_id} at turn {short_turn}.\n\
              Prior conversation and file changes: {ref_path}\n\
              </session_context>"
         ));
@@ -246,14 +246,14 @@ impl SessionComponent {
             }
             SessionEvent::TurnComplete {
                 stop_reason,
-                commit_oid,
+                turn_oid,
             } => {
                 self.model.waiting = false;
                 self.model.status = format!("done ({stop_reason:?})");
-                if let Some(oid) = commit_oid {
+                if let Some(oid) = turn_oid {
                     self.model
                         .messages
-                        .push(Message::System(format!("Checkpoint: {}", oid.short())));
+                        .push(Message::System(format!("Turn: {}", oid.short())));
                 }
             }
             SessionEvent::Stderr(line) => {

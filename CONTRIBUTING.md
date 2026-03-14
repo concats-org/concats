@@ -5,7 +5,7 @@ This guide will help you understand the overall organization of the project. It'
 > [!NOTE]
 > The key words "MUST", "MUST NOT", "REQUIRED", "SHALL", "SHALL NOT", "SHOULD","SHOULD NOT", "RECOMMENDED", "MAY", and "OPTIONAL" in this document are to be interpreted as described in [RFC 2119](https://tools.ietf.org/html/rfc2119).
 
-The project focuses on preserving intentm, automatic checkpointing to enable rollbacks, and enabling collaboration, while staying compatible with existing developer tooling.
+The project focuses on preserving intent, automatic turn recording to enable rollbacks, and enabling collaboration, while staying compatible with existing developer tooling.
 
 ## Principles
 
@@ -13,7 +13,7 @@ These principles guide design and implementation decisions:
 
 1. **Collaborative**
 
-Design for human-human, human-machine, and machine-machine collaboration with clear checkpointing, handoff paths, and branchable session histories.
+Design for human-human, human-machine, and machine-machine collaboration with clear turn recording, handoff paths, and branchable session histories.
 
 2. **Compatible**
 
@@ -28,14 +28,14 @@ Prefer designs that reduce cognitive load and make collaboration flows clear.
 
 Concats is built around a core-plus-interfaces model:
 
-- **Core runtime (Rust-first)**: agent protocol integration, checkpointing/session persistence, automation.
+- **Core runtime (Rust-first)**: agent protocol integration, session/turn persistence, automation.
 - **Interfaces (language-flexible)**: CLI/TUI/GUI/Web clients that consume core APIs.
 - **Boundary rule**: interface-specific concerns SHOULD stay out of the core unless explicitly approved.
 
 Session/code coupling rule:
 
 - Code snapshots and session context SHOULD be linkable as one artifact.
-- Contributors SHOULD preserve the ability to branch from checkpoints instead of forcing linear histories.
+- Contributors SHOULD preserve the ability to fork from turns instead of forcing linear histories.
 
 ## Setup
 

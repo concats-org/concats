@@ -10,8 +10,8 @@ use agent_client_protocol::{
 use serde_json::value::RawValue;
 
 use crate::{
-    checkpoint_recorder::CheckpointRecorder, error::Error, fs::FileSystem,
-    notification::NotificationSender, terminal::TerminalManager,
+    error::Error, fs::FileSystem, notification::NotificationSender, terminal::TerminalManager,
+    turn_recorder::TurnRecorder,
 };
 
 /// Implements the ACP `Client` trait by delegating to owned tool modules.
@@ -21,7 +21,7 @@ pub struct ClientHandler {
     fs: FileSystem,
     terminals: TerminalManager,
     notifications: NotificationSender,
-    checkpoint_recorder: CheckpointRecorder,
+    turn_recorder: TurnRecorder,
 }
 
 impl ClientHandler {
@@ -30,19 +30,21 @@ impl ClientHandler {
         fs: FileSystem,
         terminals: TerminalManager,
         notifications: NotificationSender,
-        checkpoint_recorder: CheckpointRecorder,
+        turn_recorder: TurnRecorder,
     ) -> Self {
         Self {
             fs,
             terminals,
             notifications,
-            checkpoint_recorder,
+            turn_recorder,
         }
     }
 
-    /// Amend the current checkpoint after a tool call that may have changed files.
-    fn amend_checkpoint(&self) {
-        self.checkpoint_recorder.snapshot_after_tool_write();
+    /// Amend the current turn after a tool call that may have changed files.
+    fn amend_turn(&self) {
+        if let Err(error) = self.turn_recorder.snapshot_after_tool_write() {
+            tracing::warn!("turn snapshot amend failed: {error}");
+        }
     }
 }
 
@@ -120,7 +122,7 @@ impl agent_client_protocol::Client for ClientHandler {
             .await
             .map_err(|error| to_acp_error(&error))?;
 
-        self.amend_checkpoint();
+        self.amend_turn();
 
         Ok(WriteTextFileResponse::new())
     }
@@ -173,7 +175,7 @@ impl agent_client_protocol::Client for ClientHandler {
             .map_err(|error| to_acp_error(&error))?;
         let status = TerminalExitStatus::new().exit_code(exit_code.cast_unsigned());
 
-        self.amend_checkpoint();
+        self.amend_turn();
 
         Ok(WaitForTerminalExitResponse::new(status))
     }

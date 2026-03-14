@@ -3,7 +3,7 @@ use std::{fs, path::Path};
 use concats_core::error::{Error, Result};
 use serde::Deserialize;
 
-use crate::{handler, state::find_repo_root};
+use crate::{handler, state::find_worktree_root};
 
 #[derive(Debug, Deserialize)]
 pub struct SessionStartPayload {
@@ -38,36 +38,40 @@ pub struct StopPayload {
     pub last_assistant_message: Option<String>,
 }
 
-/// Dispatch a Claude hook event to the matching checkpoint handler.
+/// Dispatch a Claude hook event to the matching turn handler.
 ///
 /// # Errors
 ///
-/// Returns an error if the payload cannot be parsed, the repository root
-/// cannot be resolved, or the underlying checkpoint handler fails.
+/// Returns an error if the payload cannot be parsed, the worktree root cannot
+/// be resolved, or the underlying turn handler fails.
 pub fn dispatch(event: &str, payload_json: &str) -> Result<()> {
     match event {
         "SessionStart" => {
-            let payload: SessionStartPayload = serde_json::from_str(payload_json)
-                .map_err(|e| Error::session(format!("invalid SessionStart payload: {e}")))?;
-            let repo_path = find_repo_root(payload.cwd.as_deref())?;
-            handler::on_session_started(&repo_path, &payload.session_id)
+            let payload: SessionStartPayload =
+                serde_json::from_str(payload_json).map_err(|error| {
+                    Error::session(format!("invalid SessionStart payload: {error}"))
+                })?;
+            let worktree_root = find_worktree_root(payload.cwd.as_deref())?;
+            handler::on_session_started(&worktree_root, &payload.session_id)
         }
         "UserPromptSubmit" => {
-            let payload: UserPromptSubmitPayload = serde_json::from_str(payload_json)
-                .map_err(|e| Error::session(format!("invalid UserPromptSubmit payload: {e}")))?;
-            let repo_path = find_repo_root(payload.cwd.as_deref())?;
-            handler::on_prompt_submitted(&repo_path, &payload.session_id, &payload.prompt)
+            let payload: UserPromptSubmitPayload =
+                serde_json::from_str(payload_json).map_err(|error| {
+                    Error::session(format!("invalid UserPromptSubmit payload: {error}"))
+                })?;
+            let worktree_root = find_worktree_root(payload.cwd.as_deref())?;
+            handler::on_prompt_submitted(&worktree_root, &payload.session_id, &payload.prompt)
         }
         "PostToolUse" => {
             let payload: PostToolUsePayload = serde_json::from_str(payload_json)
-                .map_err(|e| Error::session(format!("invalid PostToolUse payload: {e}")))?;
-            let repo_path = find_repo_root(payload.cwd.as_deref())?;
-            handler::on_files_changed(&repo_path, &payload.session_id)
+                .map_err(|error| Error::session(format!("invalid PostToolUse payload: {error}")))?;
+            let worktree_root = find_worktree_root(payload.cwd.as_deref())?;
+            handler::on_files_changed(&worktree_root, &payload.session_id)
         }
         "Stop" => {
             let payload: StopPayload = serde_json::from_str(payload_json)
-                .map_err(|e| Error::session(format!("invalid Stop payload: {e}")))?;
-            let repo_path = find_repo_root(payload.cwd.as_deref())?;
+                .map_err(|error| Error::session(format!("invalid Stop payload: {error}")))?;
+            let worktree_root = find_worktree_root(payload.cwd.as_deref())?;
             let transcript_response = payload
                 .transcript_path
                 .as_deref()
@@ -77,7 +81,7 @@ pub fn dispatch(event: &str, payload_json: &str) -> Result<()> {
                 .as_deref()
                 .or(transcript_response.as_deref())
                 .unwrap_or("(response not captured)");
-            handler::on_stop(&repo_path, &payload.session_id, response)
+            handler::on_stop(&worktree_root, &payload.session_id, response)
         }
         _ => Err(Error::session(format!(
             "unknown Claude hook event: {event}"
@@ -101,7 +105,7 @@ pub fn install(project_root: &Path, binary_name: &str) -> Result<()> {
     let mut settings = if settings_path.exists() {
         let data = fs::read_to_string(&settings_path)?;
         serde_json::from_str::<serde_json::Value>(&data)
-            .map_err(|e| Error::session(format!("invalid settings.json: {e}")))?
+            .map_err(|error| Error::session(format!("invalid settings.json: {error}")))?
     } else {
         serde_json::json!({})
     };
@@ -134,7 +138,7 @@ pub fn install(project_root: &Path, binary_name: &str) -> Result<()> {
     }
 
     let output = serde_json::to_string_pretty(&settings)
-        .map_err(|e| Error::session(format!("failed to serialize settings: {e}")))?;
+        .map_err(|error| Error::session(format!("failed to serialize settings: {error}")))?;
     fs::write(settings_path, output)?;
     Ok(())
 }
@@ -167,9 +171,24 @@ fn extract_last_response(transcript_path: &str) -> Result<String> {
 #[cfg(test)]
 #[allow(clippy::disallowed_methods)]
 mod tests {
-    use concats_core::testutil::init_repo_with_commit;
+    use concats_core::turn::{TurnEntry, TurnEntryKind};
 
     use super::*;
+
+    fn init_repo_with_commit(dir: &std::path::Path) {
+        let repo = git2::Repository::init(dir).unwrap();
+        let mut index = repo.index().unwrap();
+        std::fs::write(dir.join("init.txt"), "init").unwrap();
+        index
+            .add_all(["*"], git2::IndexAddOption::DEFAULT, None)
+            .unwrap();
+        index.write().unwrap();
+        let tree_oid = index.write_tree().unwrap();
+        let tree = repo.find_tree(tree_oid).unwrap();
+        let sig = git2::Signature::now("test", "test@test").unwrap();
+        repo.commit(Some("HEAD"), &sig, &sig, "initial", &tree, &[])
+            .unwrap();
+    }
 
     #[test]
     fn install_creates_settings() {
@@ -179,9 +198,9 @@ mod tests {
     }
 
     #[test]
-    fn dispatch_creates_checkpoint_lifecycle() {
+    fn dispatch_creates_turn_lifecycle() {
         let dir = tempfile::tempdir().unwrap();
-        let _ = init_repo_with_commit(dir.path());
+        init_repo_with_commit(dir.path());
 
         dispatch(
             "UserPromptSubmit",
@@ -213,19 +232,30 @@ mod tests {
         )
         .unwrap();
 
-        let sessions = concats_core::session::list(dir.path()).unwrap();
-        let checkpoints = concats_core::checkpoint::list(&sessions[0]).unwrap();
-        assert_eq!(checkpoints.len(), 1);
-        assert_eq!(checkpoints[0].transcript.len(), 2);
+        let repo = std::rc::Rc::new(concats_core::Repository::open(dir.path()).unwrap());
+        let sessions = concats_core::session::list(&repo).unwrap();
+        let turns = concats_core::turn::list(&sessions[0]).unwrap();
+        assert_eq!(turns.len(), 1);
+        assert!(matches!(
+            turns[0].entries(),
+            [
+                TurnEntry {
+                    kind: TurnEntryKind::Prompt { text: prompt }
+                },
+                TurnEntry {
+                    kind: TurnEntryKind::Response { text: response }
+                }
+            ] if prompt == "hello" && response == "done"
+        ));
     }
 
     #[test]
-    fn find_repo_root_discovers_repo() {
+    fn find_worktree_root_discovers_repo() {
         let dir = tempfile::tempdir().unwrap();
-        let _ = init_repo_with_commit(dir.path());
+        init_repo_with_commit(dir.path());
         let sub = dir.path().join("nested/dir");
         std::fs::create_dir_all(&sub).unwrap();
-        let root = find_repo_root(Some(sub.to_str().unwrap())).unwrap();
+        let root = find_worktree_root(Some(sub.to_str().unwrap())).unwrap();
         assert_eq!(
             root.canonicalize().unwrap(),
             dir.path().canonicalize().unwrap()

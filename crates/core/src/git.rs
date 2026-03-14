@@ -1,4 +1,6 @@
-use std::{ffi::OsStr, path::Path};
+use std::ffi::OsStr;
+
+use time::{OffsetDateTime, UtcOffset};
 
 use crate::error::{Error, Result};
 
@@ -16,7 +18,6 @@ impl Oid {
     pub fn as_git(self) -> git2::Oid {
         self.0
     }
-
 }
 
 impl From<git2::Oid> for Oid {
@@ -64,13 +65,57 @@ impl<'de> serde::Deserialize<'de> for Oid {
 ///
 /// Returns an error if the repository cannot be opened, `HEAD` cannot be
 /// resolved, or `HEAD` does not point to a commit.
-pub fn current_head_oid(repo_path: &Path) -> Result<Oid> {
-    let repo = git2::Repository::open(repo_path)?;
+pub fn current_head_oid(repo: &git2::Repository) -> Result<Oid> {
     let head = repo.head()?;
     let oid = head
         .target()
         .ok_or_else(|| Error::session("HEAD does not point to a commit"))?;
     Ok(Oid::from(oid))
+}
+
+pub(crate) fn commit_time(time: git2::Time) -> Result<OffsetDateTime> {
+    let timestamp = OffsetDateTime::from_unix_timestamp(time.seconds())
+        .map_err(|error| Error::session(format!("invalid git commit timestamp: {error}")))?;
+    let offset =
+        UtcOffset::from_whole_seconds(time.offset_minutes() * 60).unwrap_or(UtcOffset::UTC);
+    Ok(timestamp.to_offset(offset))
+}
+
+pub(crate) fn empty_tree(repo: &git2::Repository) -> Result<git2::Oid> {
+    let mut index = repo.index()?;
+    index.clear()?;
+    Ok(index.write_tree()?)
+}
+
+pub(crate) fn resolve_ref<'repo>(
+    repo: &'repo git2::Repository,
+    ref_name: &str,
+) -> Option<git2::Commit<'repo>> {
+    repo.find_reference(ref_name)
+        .ok()
+        .and_then(|reference| reference.peel_to_commit().ok())
+}
+
+pub(crate) fn signature(
+    repo: &git2::Repository,
+    minimum_time_seconds: Option<i64>,
+) -> Result<git2::Signature<'static>> {
+    let fallback = git2::Signature::now("concats", "concats@turn")?;
+    let base = repo.signature().unwrap_or(fallback);
+    let name = base.name().unwrap_or("concats");
+    let email = base.email().unwrap_or("concats@turn");
+    let mut seconds = base.when().seconds();
+    if let Some(minimum_time_seconds) = minimum_time_seconds
+        && seconds <= minimum_time_seconds
+    {
+        seconds = minimum_time_seconds + 1;
+    }
+
+    Ok(git2::Signature::new(
+        name,
+        email,
+        &git2::Time::new(seconds, base.when().offset_minutes()),
+    )?)
 }
 
 pub(crate) fn snapshot_workdir(repo: &git2::Repository) -> Result<git2::Oid> {
@@ -131,20 +176,15 @@ pub(crate) fn snapshot_workdir(repo: &git2::Repository) -> Result<git2::Oid> {
         })
         .build();
 
-    for relative_path in walker.filter_map(|entry| {
-        let entry = entry.ok()?;
-
-        // NOTE: Ignore directories, which the walker yields alongside files.
-        entry.file_type().filter(|file_type| !file_type.is_dir())?;
-
-        entry
-            .path()
-            .strip_prefix(&workdir)
-            .ok()
-            .map(Path::to_path_buf)
-    }) {
-        if let Err(error) = index.add_path(&relative_path) {
-            tracing::warn!("failed to add {relative_path:?} to checkpoint tree: {error}");
+    for entry in walker.flatten() {
+        if entry.file_type().is_some_and(|ft| ft.is_dir()) {
+            continue;
+        }
+        let Ok(relative) = entry.path().strip_prefix(&workdir) else {
+            continue;
+        };
+        if let Err(error) = index.add_path(relative) {
+            tracing::warn!("failed to add {relative:?} to snapshot tree: {error}");
         }
     }
 
@@ -157,11 +197,10 @@ pub(crate) fn snapshot_workdir(repo: &git2::Repository) -> Result<git2::Oid> {
 /// since only concats writes to them. Credentials are resolved via the SSH
 /// agent, git credential helpers, or defaults.
 pub fn push_ref(
-    repo_path: &Path,
+    repo: &git2::Repository,
     remote_name: &str,
     ref_name: &str,
 ) -> std::result::Result<(), git2::Error> {
-    let repo = git2::Repository::open(repo_path)?;
     let mut remote = repo.find_remote(remote_name)?;
 
     let refspec = format!("+{ref_name}:{ref_name}");

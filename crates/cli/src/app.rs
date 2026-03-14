@@ -25,7 +25,7 @@ use crate::{
 };
 
 pub struct ForkRequest {
-    pub commit_oid: concats_core::Oid,
+    pub turn_oid: concats_core::Oid,
     pub source_session_id: String,
 }
 
@@ -435,9 +435,9 @@ impl App {
     }
 
     fn fork_from_selected(&self) -> Option<ForkRequest> {
-        let (source_session_id, commit_oid) = self.sessions_browser.selected_fork_info()?;
+        let (source_session_id, turn_oid) = self.sessions_browser.selected_fork_info()?;
         Some(ForkRequest {
-            commit_oid,
+            turn_oid,
             source_session_id,
         })
     }
@@ -449,7 +449,7 @@ impl App {
         };
 
         self.warn_if_fork_will_overwrite_changes();
-        if let Err(error) = self.restore_fork_checkpoint(&fork_request) {
+        if let Err(error) = self.restore_fork_turn(&fork_request) {
             self.push_active_session_message(format!(
                 "Failed to restore working directory: {error}"
             ));
@@ -467,17 +467,14 @@ impl App {
             &agent_config,
             auto_push,
             &push_remote,
-            Some(fork_request.commit_oid),
+            Some(fork_request.turn_oid),
             Some(fork_tab_label(&fork_request.source_session_id)),
         );
 
         match self.start_session_tab(launch) {
             Ok(new_id) => {
                 if let Some(tab) = self.session_tabs.iter_mut().find(|tab| tab.id() == new_id) {
-                    tab.queue_fork_message(
-                        &fork_request.source_session_id,
-                        fork_request.commit_oid,
-                    );
+                    tab.queue_fork_message(&fork_request.source_session_id, fork_request.turn_oid);
                 }
                 self.active_tab = ActiveTab::Session(new_id);
             }
@@ -607,14 +604,11 @@ impl App {
         }
     }
 
-    fn restore_fork_checkpoint(
-        &self,
-        fork_request: &ForkRequest,
-    ) -> concats_core::error::Result<()> {
-        let session =
-            concats_core::session::open(&self.workspace_root, &fork_request.source_session_id)?;
-        let checkpoint = concats_core::checkpoint::get(&session, fork_request.commit_oid)?;
-        concats_core::checkpoint::restore(&checkpoint)
+    fn restore_fork_turn(&self, fork_request: &ForkRequest) -> concats_core::error::Result<()> {
+        let repo = std::rc::Rc::new(git2::Repository::open(&self.workspace_root)?);
+        let session = concats_core::session::open(repo, &fork_request.source_session_id)?;
+        let turn = concats_core::turn::get(&session, fork_request.turn_oid)?;
+        concats_core::turn::restore(&session, &turn)
     }
 
     fn fork_agent_context(&self) -> Option<(String, concats_config::AgentConfig, bool, String)> {

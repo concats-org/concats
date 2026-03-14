@@ -15,12 +15,47 @@ pub enum Error {
 
     #[error("session error: {message}")]
     Session { message: String },
+
+    #[error("session not found: {session_id}")]
+    SessionNotFound { session_id: String },
+
+    #[error("turn error: {message}")]
+    Turn { message: String },
+
+    #[error("snapshot error: {message}")]
+    Snapshot { message: String },
 }
 
 impl Error {
     pub fn session(message: impl Into<String>) -> Self {
         Self::Session {
             message: message.into(),
+        }
+    }
+
+    pub fn turn(message: impl Into<String>) -> Self {
+        Self::Turn {
+            message: message.into(),
+        }
+    }
+
+    pub fn session_not_found(session_id: impl Into<String>) -> Self {
+        Self::SessionNotFound {
+            session_id: session_id.into(),
+        }
+    }
+
+    pub fn snapshot(message: impl Into<String>) -> Self {
+        Self::Snapshot {
+            message: message.into(),
+        }
+    }
+}
+
+impl From<concats_message::Error> for Error {
+    fn from(error: concats_message::Error) -> Self {
+        Self::Turn {
+            message: error.to_string(),
         }
     }
 }

@@ -17,7 +17,7 @@ pub struct Config {
     #[serde(default)]
     pub workspace: Option<PathBuf>,
 
-    /// Sync settings (auto-push checkpoints to remote).
+    /// Sync settings (auto-push session turn refs to remote).
     #[serde(default)]
     pub sync: SyncConfig,
 }
@@ -26,10 +26,10 @@ fn default_remote() -> String {
     "origin".into()
 }
 
-/// Configuration for syncing session checkpoints to a remote.
+/// Configuration for syncing session turn refs to a remote.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SyncConfig {
-    /// When true, automatically push the session ref after each checkpoint.
+    /// When true, automatically push the session ref after each turn.
     #[serde(default)]
     pub auto_push: bool,
     /// Git remote name to push to.

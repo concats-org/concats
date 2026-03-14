@@ -2,9 +2,9 @@
 
 ## Project
 
-Concats is a Git-native session checkpoint system for AI coding agents. It records the back-and-forth between humans and agents — prompts, responses, and tool calls — as structured Git commits on dedicated refs. Sesssions are stored in the repository itself using standard Git objects, transportable with `git push`/`git fetch`, and inspectable with normal Git tooling.
+Concats is a Git-native session recording system for AI coding agents. It records the back-and-forth between humans and agents — prompts, responses, and tool calls — as structured Git commits on dedicated refs. Sessions are stored in the repository itself using standard Git objects, transportable with `git push`/`git fetch`, and inspectable with normal Git tooling.
 
-The core concepts are **sessions** (identified by a ref under `refs/agent/sessions/`), **checkpoints** (commits on that ref carrying a structured transcript in their message), and **entries** (prompt, response, and tool-call records within a checkpoint).
+The core concepts are **sessions** (identified by a ref under `refs/agent/sessions/`), **turns** (lightweight session commits carrying a structured transcript in their message), **snapshots** (full repository state commits under `refs/agent/snapshots/`), and **entries** (prompt, response, and tool-call records within a turn).
 
 ## Required Checks
 
@@ -35,7 +35,7 @@ Transitioning from proof-of-concept to product. Breaking changes are acceptable 
 - Do NOT add error handling, fallbacks, or validation for scenarios that cannot occur in practice.
 - Do NOT suppress dead code with `#[allow(dead_code)]` or rename unused items with `_` prefixes. Delete them!
 - Do NOT add comments, docstrings, or type annotations to code you did not change.
-- Do NOT invent vocabulary. Use Git-native terms (`commit`, `tree`, `ref`, `parent`) and project terms (`session`, `checkpoint`, `entry`) consistently.
+- Do NOT invent vocabulary. Use Git-native terms (`commit`, `tree`, `ref`, `parent`) and project terms (`session`, `turn`, `snapshot`, `entry`) consistently.
 
 ## Design Principles
 
@@ -45,7 +45,7 @@ Transitioning from proof-of-concept to product. Breaking changes are acceptable 
 
 **Immutability by default.** Add `mut` only when clearly needed. Treat writes as copy-modify-return.
 
-**Direct representation.** When two concepts are directly related (e.g. a `Checkpoint` derived from a Git commit), make that relationship transparent. Do not introduce intermediate types to hide it.
+**Direct representation.** When two concepts are directly related (e.g. a `Turn` derived from a Git commit), make that relationship transparent. Do not introduce intermediate types to hide it.
 
 **Parameterize the varying part.** When repeated code differs in one place, make that place a parameter. When it differs in behavior, pass a function.
 
@@ -62,6 +62,19 @@ Transitioning from proof-of-concept to product. Breaking changes are acceptable 
 ## Error Handling
 
 Structured errors with actionable context. Do not silently swallow errors. When intentionally ignoring a fallible operation, log a diagnostic and add a `NOTE:` comment. Exception: fire-and-forget channel sends on shutdown paths.
+
+```rust
+// BAD: duplicate turn decoding logic in multiple constructors
+impl Turn {
+    fn from_commit(commit: &git2::Commit<'_>) -> Result<Self> { ... }
+    fn from_message(message: &str, oid: Oid, created_at: OffsetDateTime) -> Result<Self> { ... }
+}
+
+// GOOD: one constructor for the action boundary, one parser per data type
+impl TryFrom<&git2::Commit<'_>> for Turn { ... }
+impl std::str::FromStr for Transcript { ... }
+impl std::str::FromStr for SessionId { ... }
+```
 
 ## Dependencies
 

@@ -31,15 +31,15 @@ Concats also ships a terminal UI that connects to agents via the [Agent Client P
 concats run
 ```
 
-This gives you an interactive session with an agent while recording everything in the background. You can also browse past sessions, inspect individual checkpoints, and fork from any point to try a different approach.
+This gives you an interactive session with an agent while recording everything in the background. You can also browse past sessions, inspect individual turns, and fork from any point to try a different approach.
 
 ## How Recording Works
 
-At each checkpoint, Concats captures a full repository snapshot (respecting `.gitignore`) alongside the agent conversation — the prompt, the response, and what changed on disk.
+At each turn, Concats records the transcript as a lightweight session commit and stores the full repository state as a separate snapshot commit (respecting `.gitignore`).
 
-Everything is stored under a dedicated Git ref per session (`refs/agent/sessions/<session-id>`), where each checkpoint is a commit. Concats **never touches your working branch**. It doesn't stage files, it doesn't commit to your branch. Your branches, your PRs, your commits — all yours. 
+Turns live under `refs/agent/sessions/<session-id>`. Snapshots live under `refs/agent/snapshots/<session-id>`. The two histories are parent-linked so normal Git graph tooling can traverse from user commits to turns to snapshots. Concats **never touches your working branch**. It doesn't stage files, it doesn't commit to your branch. Your branches, your PRs, your commits — all yours.
 
-When you fork from a checkpoint, Concats restores the working directory to that point, starts a new session, and appends a short note linking back to the original when you prompt the agent. That's enough for an agent to look up what happened before, so you can say "continue, but watch out for X" and it picks up where things left off.
+When you fork from a turn, Concats restores the working directory from that turn's snapshot, starts a new session, and appends a short note linking back to the original when you prompt the agent. That's enough for an agent to look up what happened before, so you can say "continue, but watch out for X" and it picks up where things left off.
 
 ## Status
 

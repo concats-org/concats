@@ -372,6 +372,7 @@ dependencies = [
  "agent-client-protocol",
  "async-trait",
  "concats-core",
+ "concats-message",
  "git2",
  "miette",
  "serde_json",
@@ -430,13 +431,13 @@ dependencies = [
 name = "concats-core"
 version = "0.0.0"
 dependencies = [
+ "concats-message",
  "git2",
  "ignore",
  "miette",
  "mockall",
  "proptest",
  "serde",
- "serde_json",
  "tempfile",
  "thiserror 2.0.18",
  "time",
@@ -448,12 +449,22 @@ name = "concats-hooks"
 version = "0.0.0"
 dependencies = [
  "concats-core",
+ "concats-message",
  "git2",
  "serde",
  "serde_json",
  "tempfile",
  "time",
  "tracing",
+]
+
+[[package]]
+name = "concats-message"
+version = "0.0.0"
+dependencies = [
+ "pest",
+ "pest_derive",
+ "thiserror 2.0.18",
 ]
 
 [[package]]

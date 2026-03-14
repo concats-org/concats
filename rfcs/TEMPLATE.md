@@ -26,7 +26,7 @@ Link to relevant issues where possible.
 The core of the RFC. Provide enough detail that someone could implement
 this without guessing at your intent.
 
-For format/storage specifications (e.g. session checkpoint layout, git
+For format/storage specifications (e.g. session turn layout, git
 object structure), aim for byte-level or field-level precision:
 - Describe the data model and its serialization
 - Include diagrams (mermaid), pseudocode, or example payloads

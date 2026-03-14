@@ -1,0 +1,24 @@
+NEWLINE = _{ "\r\n" | "\n" }
+hspace = _{ " " | "\t" }
+
+commit_message = {
+    SOI ~ subject ~ NEWLINE ~ NEWLINE ~ (transcript ~ NEWLINE ~ NEWLINE)? ~ session ~ (NEWLINE ~ agent)? ~ NEWLINE* ~ EOI
+}
+
+subject = @{ (!NEWLINE ~ ANY)+ }
+
+transcript = { entry ~ ((hspace | NEWLINE)+ ~ entry)* }
+entry = _{ prompt | response | tool }
+
+prompt = { "<prompt>" ~ body ~ "</prompt>" }
+response = { "<response>" ~ body ~ "</response>" }
+tool = { "<tool" ~ hspace+ ~ "kind=\"" ~ kind ~ "\"" ~ hspace* ~ "/>" }
+
+body = @{ (!"<" ~ ANY)* }
+
+kind = @{ (!("\"" | NEWLINE) ~ ANY)+ }
+
+session = { "Session: " ~ value }
+agent = { "Agent: " ~ value }
+
+value = @{ (!NEWLINE ~ ANY)+ }

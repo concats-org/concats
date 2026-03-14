@@ -1,4 +1,4 @@
-use std::{collections::HashMap, path::PathBuf};
+use std::{collections::HashMap, path::PathBuf, rc::Rc};
 
 use agent_client_protocol::{
     Agent, CancelNotification, ClientCapabilities, ClientSideConnection, ContentBlock,
@@ -18,19 +18,19 @@ use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
 use crate::{
     agent::{AgentProcess, AgentStreams},
-    checkpoint_recorder::CheckpointRecorder,
     client::ClientHandler,
     error::{Error, Result},
     fs::FileSystem,
     notification::NotificationSender,
     terminal::TerminalManager,
+    turn_recorder::TurnRecorder,
 };
 
 struct ActiveSession {
     acp_session_id: SessionId,
     conn: ClientSideConnection,
     agent: AgentProcess,
-    recorder: CheckpointRecorder,
+    recorder: TurnRecorder,
     session_ref: Session,
 }
 
@@ -41,6 +41,7 @@ enum PromptOutcome {
 
 /// Configuration for starting a new agent session.
 pub struct SessionConfig {
+    pub agent_name: String,
     pub agent_command: String,
     pub agent_args: Vec<String>,
     pub workspace_root: PathBuf,
@@ -60,7 +61,7 @@ pub enum SessionEvent {
     Notification(Box<SessionNotification>),
     TurnComplete {
         stop_reason: StopReason,
-        commit_oid: Option<Oid>,
+        turn_oid: Option<Oid>,
     },
     Stderr(String),
     PushFailed {
@@ -158,7 +159,7 @@ async fn session_loop_inner(
                     return Ok(());
                 };
 
-                active.recorder.start_prompt(&active.session_ref, &prompt_text);
+                let _ = active.recorder.start_prompt(&active.session_ref, &prompt_text);
                 if run_prompt_turn(config, event_tx, &mut active, prompt_text, cancel_rx).await? {
                     return Ok(());
                 }
@@ -183,7 +184,7 @@ async fn connect_session(
         stderr,
     } = agent.take_streams()?;
 
-    let recorder = CheckpointRecorder::new();
+    let recorder = TurnRecorder::new(config.agent_name.clone());
     let (notification_tx, notification_rx) = mpsc::channel::<SessionNotification>(1024);
     let handler = ClientHandler::new(
         FileSystem::new(config.workspace_root.clone()),
@@ -207,7 +208,11 @@ async fn connect_session(
     spawn_notification_forwarder(recorder.clone(), event_tx.clone(), notification_rx);
 
     let (acp_session_id, session_id) = initialize_connection(config, event_tx, &conn).await?;
-    let session_ref = session::create(&config.workspace_root, &session_id, resolve_base(config)?)?;
+    let repo = Rc::new(
+        git2::Repository::open(&config.workspace_root).map_err(concats_core::error::Error::from)?,
+    );
+    let base = resolve_base(config, &repo)?;
+    let session_ref = session::create(repo, &session_id, base)?;
 
     Ok(ActiveSession {
         acp_session_id,
@@ -233,7 +238,7 @@ fn spawn_stderr_forwarder(
 }
 
 fn spawn_notification_forwarder(
-    recorder: CheckpointRecorder,
+    recorder: TurnRecorder,
     event_tx: mpsc::Sender<SessionEvent>,
     mut notification_rx: mpsc::Receiver<SessionNotification>,
 ) {
@@ -285,10 +290,10 @@ async fn initialize_connection(
     Ok((acp_session_id, session_id))
 }
 
-fn resolve_base(config: &SessionConfig) -> Result<Oid> {
+fn resolve_base(config: &SessionConfig, repo: &git2::Repository) -> Result<Oid> {
     Ok(config
         .fork_from
-        .map_or_else(|| current_head_oid(&config.workspace_root), Ok)?)
+        .map_or_else(|| current_head_oid(repo), Ok)?)
 }
 
 async fn run_prompt_turn(
@@ -306,13 +311,15 @@ async fn run_prompt_turn(
 
     match outcome {
         PromptOutcome::Completed(Ok(response)) => {
-            active.recorder.finish_response();
-            let commit_oid = active.recorder.current_oid();
-            maybe_spawn_auto_push(config, event_tx, active.session_ref.clone());
+            if let Err(error) = active.recorder.finish_response() {
+                tracing::warn!("turn response amend failed: {error}");
+            }
+            let turn_oid = active.recorder.current_oid();
+            maybe_spawn_auto_push(config, event_tx, &active.session_ref);
             let _ = event_tx
                 .send(SessionEvent::TurnComplete {
                     stop_reason: response.stop_reason,
-                    commit_oid,
+                    turn_oid,
                 })
                 .await;
         }
@@ -358,20 +365,35 @@ async fn execute_prompt_request(
 fn maybe_spawn_auto_push(
     config: &SessionConfig,
     event_tx: &mpsc::Sender<SessionEvent>,
-    session_ref: Session,
+    session: &Session,
 ) {
     if !config.auto_push {
         return;
     }
 
+    let session_id = session.id.clone();
+    let workspace_root = config.workspace_root.clone();
     let push_remote = config.push_remote.clone();
     let push_event_tx = event_tx.clone();
     std::thread::Builder::new()
         .name("push-ref".into())
         .spawn(move || {
-            if let Err(error) = session::push(&session_ref, &push_remote) {
-                let error: concats_core::error::Error = error;
-                let ref_name = format!("refs/agent/sessions/{}", session_ref.id);
+            let repo = match git2::Repository::open(&workspace_root) {
+                Ok(r) => r,
+                Err(e) => {
+                    tracing::warn!("auto-push: failed to open repo: {e}");
+                    return;
+                }
+            };
+            let session = match session::open(Rc::new(repo), session_id.as_ref()) {
+                Ok(s) => s,
+                Err(e) => {
+                    tracing::warn!("auto-push: failed to open session: {e}");
+                    return;
+                }
+            };
+            if let Err(error) = session::push(&session, &push_remote) {
+                let ref_name = format!("refs/agent/sessions/{}", session.id);
                 tracing::warn!("auto-push failed for {ref_name}: {error}");
                 let _ = push_event_tx.try_send(SessionEvent::PushFailed {
                     ref_name,
@@ -383,7 +405,9 @@ fn maybe_spawn_auto_push(
 }
 
 async fn shutdown_active_session(active: &mut ActiveSession) {
-    active.recorder.finish_response();
+    if let Err(error) = active.recorder.finish_response() {
+        tracing::warn!("turn response amend failed: {error}");
+    }
 
     if let Err(error) = active.agent.kill().await {
         tracing::debug!("agent kill during shutdown failed: {error}");

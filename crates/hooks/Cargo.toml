@@ -14,6 +14,7 @@ path = "src/lib.rs"
 
 [dependencies]
 concats_core = { workspace = true }
+concats_message = { workspace = true }
 git2 = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

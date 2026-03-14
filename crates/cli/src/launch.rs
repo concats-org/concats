@@ -37,6 +37,7 @@ impl SessionLaunchSpec {
         Self {
             label: label.unwrap_or_else(|| agent_label.clone()),
             session_config: SessionConfig {
+                agent_name: agent_label.clone(),
                 agent_command: agent_config.command.clone(),
                 agent_args: agent_config.args.clone(),
                 workspace_root,

@@ -2,9 +2,9 @@ use std::path::PathBuf;
 
 use concats_core::{
     Oid,
-    checkpoint::{self, Checkpoint, TranscriptEntry, TranscriptEntryKind},
     diff::{DiffLineKind, DiffStatus, FileDiff},
     session::{self, Session},
+    turn::{self, Turn, TurnEntry, TurnEntryKind},
 };
 use crossterm::event::{KeyCode, KeyEvent, MouseEvent, MouseEventKind};
 use ratatui::{
@@ -29,11 +29,11 @@ pub enum SessionsPanelFocus {
 
 pub struct DetailPanel {
     pub session_index: usize,
-    pub rows: Vec<CheckpointRow>,
+    pub rows: Vec<TurnRow>,
     pub list_state: tui_widget_list::ListState,
 }
 
-pub struct CheckpointRow {
+pub struct TurnRow {
     pub lines: Vec<Line<'static>>,
     pub height: u16,
 }
@@ -74,7 +74,7 @@ impl SessionsBrowserComponent {
     #[must_use]
     pub fn selected_fork_info(&self) -> Option<(String, Oid)> {
         let item = self.sessions.get(self.selected_session_index())?;
-        Some((item.session.id.clone(), item.tip))
+        Some((item.session.id.to_string(), item.tip))
     }
 
     #[must_use]
@@ -89,7 +89,14 @@ impl SessionsBrowserComponent {
     }
 
     fn refresh(&mut self) {
-        match session::list(&self.repo_path) {
+        let repo = match git2::Repository::open(&self.repo_path) {
+            Ok(r) => std::rc::Rc::new(r),
+            Err(error) => {
+                tracing::warn!("failed to open repository: {error}");
+                return;
+            }
+        };
+        match session::list(&repo) {
             Ok(sessions) => {
                 self.sessions = sessions
                     .into_iter()
@@ -153,18 +160,21 @@ impl SessionsBrowserComponent {
             return;
         };
 
-        match checkpoint::list(&item.session) {
-            Ok(checkpoints) => {
+        match turn::list(&item.session) {
+            Ok(turns) => {
                 self.detail = Some(DetailPanel {
                     session_index: index,
-                    rows: checkpoints.iter().map(build_checkpoint_row).collect(),
+                    rows: turns
+                        .iter()
+                        .map(|turn| build_turn_row(&item.session, turn))
+                        .collect(),
                     list_state: tui_widget_list::ListState::default(),
                 });
                 self.focus = SessionsPanelFocus::Detail;
             }
             Err(error) => {
                 tracing::warn!(
-                    "failed to load checkpoints for session {}: {error}",
+                    "failed to load turns for session {}: {error}",
                     item.session.id
                 );
             }
@@ -310,10 +320,7 @@ fn render_detail_panel(frame: &mut Frame, state: &mut SessionsBrowserComponent, 
         .sessions
         .get(detail.session_index)
         .and_then(|item| item.session.name.as_deref())
-        .map_or_else(
-            || "Checkpoints".into(),
-            |name| format!("Checkpoints - {name}"),
-        );
+        .map_or_else(|| "Turns".into(), |name| format!("Turns - {name}"));
     let block = sessions_block(&title, focused);
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -321,7 +328,7 @@ fn render_detail_panel(frame: &mut Frame, state: &mut SessionsBrowserComponent, 
     if detail.rows.is_empty() {
         frame.render_widget(
             Paragraph::new(Span::styled(
-                "  No checkpoints found.",
+                "  No turns found.",
                 Style::default().fg(Color::DarkGray),
             )),
             inner,
@@ -333,7 +340,7 @@ fn render_detail_panel(frame: &mut Frame, state: &mut SessionsBrowserComponent, 
     let builder = ListBuilder::new(move |context| {
         let row = &rows[context.index];
         (
-            CheckpointWidget {
+            TurnWidget {
                 lines: row.lines.clone(),
             },
             row.height,
@@ -352,12 +359,12 @@ fn load_session_item(session: Session) -> concats_core::error::Result<SessionLis
     })
 }
 
-fn build_checkpoint_row(checkpoint: &Checkpoint) -> CheckpointRow {
+fn build_turn_row(session: &Session, turn: &Turn) -> TurnRow {
     let mut lines = Vec::new();
-    let short_oid = checkpoint.oid.short();
+    let short_oid = turn.oid.short();
     lines.push(Line::from(vec![
         Span::styled(
-            "  checkpoint ",
+            "  turn ",
             Style::default()
                 .fg(Color::White)
                 .add_modifier(Modifier::BOLD),
@@ -368,18 +375,18 @@ fn build_checkpoint_row(checkpoint: &Checkpoint) -> CheckpointRow {
         ),
     ]));
 
-    if checkpoint.transcript.is_empty() {
+    if turn.is_empty() {
         lines.push(Line::from(Span::styled(
             "  (no transcript captured)",
             Style::default().fg(Color::DarkGray),
         )));
     } else {
-        for entry in &checkpoint.transcript {
+        for entry in turn.entries() {
             render_transcript_entry(entry, &mut lines);
         }
     }
 
-    match concats_core::diff::for_checkpoint(checkpoint) {
+    match concats_core::diff::for_turn(session, turn) {
         Ok(diffs) => render_file_diffs(&diffs, &mut lines),
         Err(error) => lines.push(Line::from(Span::styled(
             format!("  failed to load diff: {error}"),
@@ -389,7 +396,7 @@ fn build_checkpoint_row(checkpoint: &Checkpoint) -> CheckpointRow {
 
     lines.push(Line::from(""));
 
-    CheckpointRow {
+    TurnRow {
         height: u16::try_from(lines.len()).unwrap_or(u16::MAX),
         lines,
     }
@@ -401,9 +408,9 @@ fn format_timestamp(value: time::OffsetDateTime) -> String {
         .unwrap_or_else(|_| value.unix_timestamp().to_string())
 }
 
-fn render_transcript_entry(entry: &TranscriptEntry, lines: &mut Vec<Line<'static>>) {
+fn render_transcript_entry(entry: &TurnEntry, lines: &mut Vec<Line<'static>>) {
     match &entry.kind {
-        TranscriptEntryKind::Prompt { text } => {
+        TurnEntryKind::Prompt { text } => {
             let preview: String = text.chars().take(120).collect();
             let display = if text.len() > 120 {
                 format!("{preview}...")
@@ -420,7 +427,7 @@ fn render_transcript_entry(entry: &TranscriptEntry, lines: &mut Vec<Line<'static
                 Span::styled(display, Style::default().fg(Color::Green)),
             ]));
         }
-        TranscriptEntryKind::Response { text } => {
+        TurnEntryKind::Response { text } => {
             let preview: String = text.chars().take(200).collect();
             let display = if text.len() > 200 {
                 format!("{preview}...")
@@ -434,11 +441,11 @@ fn render_transcript_entry(entry: &TranscriptEntry, lines: &mut Vec<Line<'static
                 )));
             }
         }
-        TranscriptEntryKind::ToolCall { name, .. } => {
+        TurnEntryKind::ToolCall { kind } => {
             lines.push(Line::from(vec![
                 Span::styled("  tool ", Style::default().fg(Color::Yellow)),
                 Span::styled(
-                    name.clone(),
+                    kind.to_string(),
                     Style::default()
                         .fg(Color::White)
                         .add_modifier(Modifier::BOLD),
@@ -546,11 +553,11 @@ impl Widget for SessionItemWidget<'_> {
     }
 }
 
-struct CheckpointWidget {
+struct TurnWidget {
     lines: Vec<Line<'static>>,
 }
 
-impl Widget for CheckpointWidget {
+impl Widget for TurnWidget {
     fn render(self, area: Rect, buf: &mut Buffer) {
         Paragraph::new(self.lines)
             .wrap(Wrap { trim: false })
