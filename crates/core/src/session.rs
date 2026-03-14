@@ -6,7 +6,7 @@ use crate::{
     checkpoint::{self, Checkpoint, Draft},
     error::{Error, Result},
     git::{self, Oid},
-    transcript::decode_commit_message,
+    transcript::{self, decode_commit_message},
 };
 
 const SESSION_REF_PREFIX: &str = "refs/agent/sessions/";
@@ -120,6 +120,10 @@ pub fn modified_at(session: &Session) -> Result<OffsetDateTime> {
 
 /// Create a new checkpoint commit and advance the session tip to it.
 ///
+/// Parent 0 is the current session tip (session chain). Parent 1 is the
+/// current branch HEAD when it differs from parent 0, linking the checkpoint
+/// to ordinary branch history.
+///
 /// # Errors
 ///
 /// Returns an error if the repository cannot be opened, the session ref is
@@ -128,10 +132,14 @@ pub fn modified_at(session: &Session) -> Result<OffsetDateTime> {
 pub fn commit(session: &Session, draft: &Draft) -> Result<Checkpoint> {
     let repo = git2::Repository::open(&session.repo_path)?;
     let tip = resolve_tip(&repo, session)?;
-    write_checkpoint(&repo, session, draft, std::slice::from_ref(&tip))
+    let parents = parents_with_head(&repo, &tip);
+    write_checkpoint(&repo, session, draft, &parents)
 }
 
 /// Amend the current session-tip checkpoint and advance the session tip.
+///
+/// Preserves parent 0 (the session lineage) and refreshes parent 1 to the
+/// current branch HEAD if HEAD has changed.
 ///
 /// # Errors
 ///
@@ -146,7 +154,18 @@ pub fn amend(session: &Session, draft: &Draft) -> Result<Checkpoint> {
         return Err(Error::session("no checkpoint to amend"));
     }
 
-    let parents = tip.parents().collect::<Vec<_>>();
+    // Preserve parent 0 (session lineage), refresh parent 1 to current HEAD.
+    let mut parents: Vec<git2::Commit<'_>> = Vec::new();
+    if let Ok(first_parent) = tip.parent(0) {
+        parents.push(first_parent);
+    }
+    // Refresh parent 1: add current HEAD if it differs from parent 0.
+    if let Ok(head_ref) = repo.head()
+        && let Ok(head) = head_ref.peel_to_commit()
+        && !parents.iter().any(|p| p.id() == head.id())
+    {
+        parents.push(head);
+    }
     write_checkpoint(&repo, session, draft, &parents)
 }
 
@@ -199,6 +218,22 @@ fn resolve_tip<'repo>(
         .ok_or_else(|| Error::session(format!("session not found: {}", session.id)))
 }
 
+/// Build the parent list for a new checkpoint: session tip as parent 0, and
+/// current branch HEAD as parent 1 when it differs from the tip.
+fn parents_with_head<'repo>(
+    repo: &'repo git2::Repository,
+    tip: &git2::Commit<'repo>,
+) -> Vec<git2::Commit<'repo>> {
+    let mut parents = vec![tip.clone()];
+    if let Ok(head_ref) = repo.head()
+        && let Ok(head) = head_ref.peel_to_commit()
+        && head.id() != tip.id()
+    {
+        parents.push(head);
+    }
+    parents
+}
+
 fn write_checkpoint(
     repo: &git2::Repository,
     session: &Session,
@@ -210,7 +245,8 @@ fn write_checkpoint(
     let tree_oid = git::snapshot_workdir(repo)?;
     let tree = repo.find_tree(tree_oid)?;
     let signature = signature(repo)?;
-    let message = crate::transcript::encode_commit_message(&draft.transcript)?;
+    let message =
+        transcript::encode_commit_message(&draft.transcript, &session.id, draft.agent_name())?;
     let parent_refs = parents.iter().collect::<Vec<_>>();
 
     let oid = repo.commit(None, &signature, &signature, &message, &tree, &parent_refs)?;

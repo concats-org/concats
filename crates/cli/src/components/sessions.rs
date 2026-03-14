@@ -434,11 +434,11 @@ fn render_transcript_entry(entry: &TranscriptEntry, lines: &mut Vec<Line<'static
                 )));
             }
         }
-        TranscriptEntryKind::ToolCall { name, .. } => {
+        TranscriptEntryKind::ToolCall { kind, .. } => {
             lines.push(Line::from(vec![
                 Span::styled("  tool ", Style::default().fg(Color::Yellow)),
                 Span::styled(
-                    name.clone(),
+                    kind.clone(),
                     Style::default()
                         .fg(Color::White)
                         .add_modifier(Modifier::BOLD),

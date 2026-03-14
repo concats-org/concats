@@ -16,7 +16,6 @@ impl Oid {
     pub fn as_git(self) -> git2::Oid {
         self.0
     }
-
 }
 
 impl From<git2::Oid> for Oid {

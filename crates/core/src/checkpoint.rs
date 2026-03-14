@@ -29,6 +29,7 @@ pub struct Checkpoint {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Draft {
     pub transcript: Transcript,
+    agent_name: Option<String>,
 }
 
 impl Draft {
@@ -38,10 +39,21 @@ impl Draft {
     }
 
     #[must_use]
+    pub fn with_agent_name(mut self, name: impl Into<String>) -> Self {
+        self.agent_name = Some(name.into());
+        self
+    }
+
+    #[must_use]
     pub fn from_checkpoint(checkpoint: &Checkpoint) -> Self {
         Self {
             transcript: checkpoint.transcript.clone(),
+            agent_name: None,
         }
+    }
+
+    pub(crate) fn agent_name(&self) -> Option<&str> {
+        self.agent_name.as_deref()
     }
 }
 
@@ -111,10 +123,13 @@ fn load_from_tip(
     for oid_result in revwalk {
         let oid = oid_result?;
         let commit = repo.find_commit(oid)?;
-        if decode_commit_message(commit.message().unwrap_or("")).is_none() {
-            break;
+        // Session boundary: keep only commits whose Session trailer matches.
+        match decode_commit_message(commit.message().unwrap_or("")) {
+            Some(decoded) if decoded.session_id == session_id => {
+                checkpoints.push(load_from_commit(&commit, session_id, repo_path)?);
+            }
+            _ => break,
         }
-        checkpoints.push(load_from_commit(&commit, session_id, repo_path)?);
     }
 
     checkpoints.reverse();
@@ -126,14 +141,14 @@ pub(crate) fn load_from_commit(
     session_id: &str,
     repo_path: &Path,
 ) -> Result<Checkpoint> {
-    let transcript = decode_commit_message(commit.message().unwrap_or(""))
+    let decoded = decode_commit_message(commit.message().unwrap_or(""))
         .ok_or_else(|| Error::session("invalid checkpoint commit"))?;
     Ok(Checkpoint {
         session_id: session_id.to_string(),
         repo_path: repo_path.to_path_buf(),
         oid: Oid::from(commit.id()),
         created_at: session::commit_time(commit.time())?,
-        transcript,
+        transcript: decoded.transcript,
         snapshot: Snapshot {
             tree: Oid::from(commit.tree_id()),
         },

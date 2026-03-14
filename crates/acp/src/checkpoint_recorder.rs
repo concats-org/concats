@@ -9,7 +9,6 @@ use concats_core::{
     error::Result as CoreResult,
     session::{self, Session},
 };
-use serde_json::Value;
 
 #[derive(Clone)]
 struct ActiveCheckpoint {
@@ -100,16 +99,15 @@ impl CheckpointRecorder {
     fn record_tool_call(&self, tool_call: &AcpToolCall) {
         self.finish_response();
 
-        let name = if tool_call.title.is_empty() {
-            format!("{:?}", tool_call.kind)
-        } else {
-            tool_call.title.clone()
-        };
-        let payload = serde_json::to_value(tool_call).unwrap_or(Value::Null);
+        // Record only the ACP tool kind as required by the session-storage RFC.
+        let kind = serde_json::to_value(tool_call.kind)
+            .ok()
+            .and_then(|v| v.as_str().map(String::from))
+            .unwrap_or_else(|| format!("{:?}", tool_call.kind).to_lowercase());
         self.amend_active("checkpoint tool-call amend failed", |draft| {
             draft
                 .transcript
-                .append(TranscriptEntry::tool_call_now(name, payload))
+                .append(TranscriptEntry::tool_call_now(kind))
         });
     }
 
