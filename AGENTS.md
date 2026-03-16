@@ -1,5 +1,11 @@
 # AGENTS.md
 
+## Project
+
+Concats is a Git-native session checkpoint system for AI coding agents. It records the back-and-forth between humans and agents — prompts, responses, and tool calls — as structured Git commits on dedicated refs. Sesssions are stored in the repository itself using standard Git objects, transportable with `git push`/`git fetch`, and inspectable with normal Git tooling.
+
+The core concepts are **sessions** (identified by a ref under `refs/agent/sessions/`), **checkpoints** (commits on that ref carrying a structured transcript in their message), and **entries** (prompt, response, and tool-call records within a checkpoint).
+
 ## Required Checks
 
 All code must pass the project's formatter, linter, and test suite before committing.
