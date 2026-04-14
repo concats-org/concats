@@ -38,3 +38,15 @@ __pycache__/
 
 # Build Artifacts
 target
+node_modules/
+dist/
+packages/message/src/wasm/
+*.tsbuildinfo
+packages/*/bun.lock
+
+# Indexers
+index.scip
+.uncode/
+
+# Agent local settings
+.claude/settings.local.json

@@ -1,0 +1,16 @@
+{
+  "name": "@concats/github",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@concats/core": "workspace:*",
+    "octokit": "^5.0.5"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.3.10"
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "name": "@concats/core",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@concats/message": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.3.10"
+  }
+}

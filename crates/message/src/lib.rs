@@ -2,6 +2,9 @@ mod session_id;
 mod snapshot;
 mod turn;
 
+#[cfg(feature = "wasm")]
+mod wasm;
+
 pub use session_id::SessionId;
 pub use snapshot::{Snapshot, SnapshotReason};
 pub use turn::{Turn, TurnEntry, TurnEntryKind, TurnToolKind};

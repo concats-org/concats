@@ -14,6 +14,8 @@ const AGENT_TRAILER_PREFIX: &str = "Agent: ";
 struct TurnParser;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct Turn {
     subject: String,
     session_id: SessionId,
@@ -214,11 +216,15 @@ impl Display for Turn {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[cfg_attr(feature = "serde", serde(transparent))]
 pub struct TurnEntry {
     pub kind: TurnEntryKind,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
 pub enum TurnToolKind {
     Read,
     Edit,
@@ -304,10 +310,15 @@ impl TurnEntry {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[cfg_attr(feature = "serde", serde(tag = "kind", rename_all = "snake_case"))]
 pub enum TurnEntryKind {
     Prompt { text: String },
     Response { text: String },
-    ToolCall { kind: TurnToolKind },
+    ToolCall {
+        #[cfg_attr(feature = "serde", serde(rename = "toolKind"))]
+        kind: TurnToolKind,
+    },
 }
 
 impl TurnEntryKind {

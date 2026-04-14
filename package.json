@@ -1,0 +1,17 @@
+{
+  "private": true,
+  "workspaces": ["packages/*"],
+  "scripts": {
+    "build:wasm": "bun --filter @concats/message build:wasm",
+    "build": "bun run build:wasm && bun --filter concat-me build",
+    "dev": "bun run build:wasm && bun --filter concat-me dev",
+    "typecheck": "tsc -p packages/core --noEmit && tsc -p packages/github --noEmit && tsc -p packages/app --noEmit",
+    "lint": "oxlint packages/*/src",
+    "format": "oxlint packages/*/src --fix",
+    "test": "bun test"
+  },
+  "devDependencies": {
+    "oxlint": "^1.51.0",
+    "typescript": "~5.9.3"
+  }
+}

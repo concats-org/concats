@@ -11,8 +11,16 @@ workspace = true
 [lib]
 name = "concats_message"
 path = "src/lib.rs"
+crate-type = ["rlib", "cdylib"]
+
+[features]
+serde = ["dep:serde"]
+wasm = ["serde", "dep:wasm-bindgen", "dep:serde-wasm-bindgen"]
 
 [dependencies]
 pest = { workspace = true }
 pest_derive = { workspace = true }
+serde = { workspace = true, optional = true }
+serde-wasm-bindgen = { version = "0.6", optional = true }
 thiserror = { workspace = true }
+wasm-bindgen = { version = "0.2", optional = true }

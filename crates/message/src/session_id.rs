@@ -4,6 +4,8 @@ use crate::{Error, Result};
 
 #[repr(transparent)]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[cfg_attr(feature = "serde", serde(transparent))]
 pub struct SessionId(String);
 
 impl SessionId {

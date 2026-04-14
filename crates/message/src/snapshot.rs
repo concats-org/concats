@@ -7,6 +7,8 @@ const SESSION_TRAILER_PREFIX: &str = "Session: ";
 const REASON_TRAILER_PREFIX: &str = "Reason: ";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
 pub enum SnapshotReason {
     TurnCommit,
     TurnAmend,
@@ -49,6 +51,8 @@ impl FromStr for SnapshotReason {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct Snapshot {
     session_id: SessionId,
     reason: Option<SnapshotReason>,
