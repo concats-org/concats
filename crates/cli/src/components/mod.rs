@@ -6,6 +6,7 @@ use crate::action::Action;
 
 pub mod agent_picker;
 pub mod chrome;
+pub(crate) mod list_navigation;
 pub mod session;
 pub mod sessions;
 pub mod static_page;

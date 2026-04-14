@@ -19,7 +19,11 @@ use time::format_description::well_known::Rfc3339;
 use tokio::sync::mpsc;
 use tui_widget_list::{ListBuilder, ListView};
 
-use crate::{action::Action, components::Component, tabs::ActiveTab};
+use crate::{
+    action::Action,
+    components::{Component, list_navigation::scroll_list},
+    tabs::ActiveTab,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SessionsPanelFocus {
@@ -31,6 +35,7 @@ pub struct DetailPanel {
     pub session_index: usize,
     pub rows: Vec<TurnRow>,
     pub list_state: tui_widget_list::ListState,
+    pub viewport: Rect,
 }
 
 pub struct TurnRow {
@@ -150,7 +155,7 @@ impl SessionsBrowserComponent {
 
     fn scroll_detail(&mut self, delta: i16) {
         if let Some(detail) = &mut self.detail {
-            detail.list_state.scroll_by(delta);
+            scroll_list(&mut detail.list_state, detail.viewport, delta);
         }
     }
 
@@ -169,6 +174,7 @@ impl SessionsBrowserComponent {
                         .map(|turn| build_turn_row(&item.session, turn))
                         .collect(),
                     list_state: tui_widget_list::ListState::default(),
+                    viewport: Rect::default(),
                 });
                 self.focus = SessionsPanelFocus::Detail;
             }
@@ -324,6 +330,7 @@ fn render_detail_panel(frame: &mut Frame, state: &mut SessionsBrowserComponent, 
     let block = sessions_block(&title, focused);
     let inner = block.inner(area);
     frame.render_widget(block, area);
+    detail.viewport = inner;
 
     if detail.rows.is_empty() {
         frame.render_widget(
@@ -578,6 +585,7 @@ mod tests {
             session_index: 0,
             rows: vec![],
             list_state: tui_widget_list::ListState::default(),
+            viewport: Rect::default(),
         });
         component.focus = SessionsPanelFocus::Detail;
 

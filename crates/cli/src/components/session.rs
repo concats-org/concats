@@ -22,7 +22,11 @@ use ratatui_textarea::TextArea;
 use tokio::sync::{mpsc, mpsc::error::TrySendError};
 use tui_widget_list::{ListBuilder, ListView};
 
-use crate::{action::Action, components::Component, launch::SessionTabConfig};
+use crate::{
+    action::Action,
+    components::{Component, list_navigation::scroll_list},
+    launch::SessionTabConfig,
+};
 
 pub const AGENT_INPUT_HEIGHT: u16 = 4;
 pub const FORK_HINT_MIN_BLOCK_HEIGHT: u16 = 3;
@@ -66,6 +70,7 @@ pub struct SessionModel {
 pub struct SessionViewState {
     pub textarea: TextArea<'static>,
     pub conversation_list: tui_widget_list::ListState,
+    pub conversation_viewport: Rect,
     pub stderr_lines: Vec<String>,
     pub stderr_scroll: u16,
     pub show_stderr: bool,
@@ -109,6 +114,7 @@ impl SessionComponent {
             view: SessionViewState {
                 textarea: new_textarea(),
                 conversation_list: tui_widget_list::ListState::default(),
+                conversation_viewport: Rect::default(),
                 stderr_lines: Vec::new(),
                 stderr_scroll: 0,
                 show_stderr: false,
@@ -376,6 +382,8 @@ impl SessionComponent {
 
     fn render_output_panels(&mut self, frame: &mut Frame, layout: &SessionLayout) {
         if let Some(stderr) = layout.stderr {
+            self.view.conversation_viewport =
+                layout.conversation_panel.expect("conversation panel");
             render_conversation_list(
                 frame,
                 &self.model.messages,
@@ -424,6 +432,7 @@ impl SessionComponent {
                 &mut scrollbar_state,
             );
         } else {
+            self.view.conversation_viewport = layout.conversation;
             render_conversation_list(
                 frame,
                 &self.model.messages,
@@ -642,7 +651,11 @@ impl Component for SessionComponent {
                 self.view.focused_panel = FocusedPanel::Stderr;
             }
             Action::SessionScrollConversation { delta, .. } => {
-                self.view.conversation_list.scroll_by(*delta);
+                scroll_list(
+                    &mut self.view.conversation_list,
+                    self.view.conversation_viewport,
+                    *delta,
+                );
             }
             Action::SessionScrollStderr { delta, .. } => {
                 self.view.stderr_scroll = apply_scroll_delta(self.view.stderr_scroll, *delta);
