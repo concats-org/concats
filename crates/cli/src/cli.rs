@@ -21,14 +21,20 @@ pub enum Commands {
         workspace: Option<PathBuf>,
     },
 
-    /// Handle a Claude Code hook event (reads JSON from stdin).
+    /// Handle an agent hook event (reads JSON from stdin unless --payload is given).
     Hook {
-        /// The hook event name (`SessionStart`, `UserPromptSubmit`,
-        /// `PostToolUse`, `Stop`).
-        event: String,
+        /// The agent (claude, codex, cursor, windsurf, gemini, copilot, droid, amp, opencode).
+        agent: String,
+
+        /// Hook event name (agent-specific). Optional for single-event agents like Codex.
+        event: Option<String>,
+
+        /// JSON payload as CLI argument (used by Codex instead of stdin).
+        #[arg(long)]
+        payload: Option<String>,
     },
 
-    /// Manage Claude Code hook integration.
+    /// Manage hook integrations for coding agents.
     Hooks {
         #[command(subcommand)]
         action: HooksAction,
@@ -37,10 +43,42 @@ pub enum Commands {
 
 #[derive(Subcommand)]
 pub enum HooksAction {
-    /// Install concats hooks into .claude/settings.json.
+    /// Install concats hooks for detected agents.
     Install {
-        /// Project root directory (defaults to current directory).
+        /// Agents to install for (default: auto-detect installed agents).
+        agents: Vec<String>,
+
+        /// Project root for Claude project-level hooks (defaults to current directory).
         #[arg(short, long)]
         path: Option<PathBuf>,
+
+        /// Install Claude hooks at user-level (~/.claude/settings.json).
+        #[arg(long)]
+        global: bool,
+    },
+
+    /// Remove concats hooks from agent configurations.
+    Uninstall {
+        /// Agents to uninstall for (default: all with hooks installed).
+        agents: Vec<String>,
+
+        /// Project root for Claude project-level hooks (defaults to current directory).
+        #[arg(short, long)]
+        path: Option<PathBuf>,
+
+        /// Target user-level Claude hooks (~/.claude/settings.json).
+        #[arg(long)]
+        global: bool,
+    },
+
+    /// Show which agents have concats hooks installed.
+    Status {
+        /// Project root for Claude project-level hooks (defaults to current directory).
+        #[arg(short, long)]
+        path: Option<PathBuf>,
+
+        /// Check user-level Claude hooks (~/.claude/settings.json).
+        #[arg(long)]
+        global: bool,
     },
 }

@@ -2,6 +2,7 @@ use std::{io, path::PathBuf};
 
 use concats_acp::start_session;
 use concats_config::{ConfigCliArgs, load_config, save_config};
+use concats_hooks::{Agent, InstallScope};
 use concats_registry::{fetch_registry, install_agents};
 
 use crate::{
@@ -17,32 +18,38 @@ use crate::{
 /// Returns an error if the selected subcommand fails.
 pub async fn run(cli: Cli) -> miette::Result<()> {
     match cli.command {
-        Some(Commands::Hook { event }) => run_hook_command(&event),
+        Some(Commands::Hook {
+            agent,
+            event,
+            payload,
+        }) => run_hook_command(&agent, event.as_deref(), payload),
         Some(Commands::Hooks { action }) => run_hooks_action(action),
         Some(Commands::Run { agent, workspace }) => run_tui_command(agent, workspace).await,
         None => run_tui_command(None, None).await,
     }
 }
 
-/// Read a Claude hook payload from stdin and dispatch it.
+/// Read an agent hook payload and dispatch it to the matching handler.
 ///
 /// # Errors
 ///
-/// Returns an error if stdin cannot be read, the hook event name is unknown, or
-/// hook dispatch fails.
-pub fn run_hook_command(event: &str) -> miette::Result<()> {
-    let stdin = io::read_to_string(io::stdin())
-        .map_err(|error| miette::miette!("failed to read stdin: {error}"))?;
+/// Returns an error if the payload cannot be read, the agent or event is
+/// unknown, or hook dispatch fails.
+pub fn run_hook_command(
+    agent: &str,
+    event: Option<&str>,
+    payload: Option<String>,
+) -> miette::Result<()> {
+    let payload_json = match payload {
+        Some(p) => p,
+        None => io::read_to_string(io::stdin())
+            .map_err(|error| miette::miette!("failed to read stdin: {error}"))?,
+    };
 
-    match event {
-        "SessionStart" | "UserPromptSubmit" | "PostToolUse" | "Stop" => {
-            concats_hooks::claude::dispatch(event, &stdin)
-                .map_err(|error| miette::miette!("{error}"))
-        }
-        _ => Err(miette::miette!(
-            "unknown hook event: {event}. Expected one of: SessionStart, UserPromptSubmit, PostToolUse, Stop"
-        )),
-    }
+    let agent: Agent = agent.parse().map_err(|e: String| miette::miette!("{e}"))?;
+    agent
+        .dispatch(event, &payload_json)
+        .map_err(|error| miette::miette!("{error}"))
 }
 
 /// Execute a hook-management subcommand.
@@ -50,28 +57,118 @@ pub fn run_hook_command(event: &str) -> miette::Result<()> {
 /// # Errors
 ///
 /// Returns an error if the project root cannot be resolved or the hook
-/// settings cannot be installed.
+/// settings cannot be installed/removed.
 pub fn run_hooks_action(action: HooksAction) -> miette::Result<()> {
     match action {
-        HooksAction::Install { path } => {
-            let project_root = path
-                .map_or_else(std::env::current_dir, Ok)
-                .map_err(|error| miette::miette!("cannot determine cwd: {error}"))?;
-            let binary_name = std::env::current_exe()
-                .ok()
-                .and_then(|path| {
-                    path.file_name()
-                        .map(|name| name.to_string_lossy().into_owned())
-                })
-                .unwrap_or_else(|| "concats".into());
-            concats_hooks::claude::install(&project_root, &binary_name)
-                .map_err(|error| miette::miette!("{error}"))?;
-            eprintln!(
-                "hooks installed in {}",
-                project_root.join(".claude/settings.json").display()
-            );
+        HooksAction::Install {
+            agents,
+            path,
+            global,
+        } => run_hooks_install(&agents, &resolve_scope(path, global)?),
+        HooksAction::Uninstall {
+            agents,
+            path,
+            global,
+        } => run_hooks_uninstall(&agents, &resolve_scope(path, global)?),
+        HooksAction::Status { path, global } => {
+            run_hooks_status(&resolve_scope(path, global)?);
             Ok(())
         }
+    }
+}
+
+fn run_hooks_install(agents: &[String], scope: &InstallScope) -> miette::Result<()> {
+    let binary = concats_hooks::install::binary_path();
+    let targets = resolve_agents(agents)?;
+    let mut installed = Vec::new();
+
+    for agent in &targets {
+        match agent.install(&binary, scope) {
+            Ok(()) => installed.push(agent.cli_name()),
+            Err(error) => eprintln!("warning: failed to install hooks for {agent}: {error}"),
+        }
+    }
+
+    if installed.is_empty() {
+        eprintln!("no agents were installed");
+    } else {
+        eprintln!("hooks installed for: {}", installed.join(", "));
+    }
+    Ok(())
+}
+
+fn run_hooks_uninstall(agents: &[String], scope: &InstallScope) -> miette::Result<()> {
+    let targets: Vec<Agent> = if agents.is_empty() {
+        Agent::ALL.to_vec()
+    } else {
+        agents
+            .iter()
+            .map(|s| s.parse::<Agent>().map_err(|e| miette::miette!("{e}")))
+            .collect::<miette::Result<Vec<_>>>()?
+    };
+
+    let mut removed = Vec::new();
+    for agent in &targets {
+        match agent.uninstall(scope) {
+            Ok(()) => removed.push(agent.cli_name()),
+            Err(error) => eprintln!("warning: failed to uninstall hooks for {agent}: {error}"),
+        }
+    }
+
+    if removed.is_empty() {
+        eprintln!("no hooks were removed");
+    } else {
+        eprintln!("hooks removed for: {}", removed.join(", "));
+    }
+    Ok(())
+}
+
+fn run_hooks_status(scope: &InstallScope) {
+    eprintln!("{:<12} {:<10} Installed", "Agent", "Detected");
+    eprintln!("{:<12} {:<10} ---------", "-----", "--------");
+
+    for agent in Agent::ALL {
+        let detected_str = if agent.is_detected() { "yes" } else { "no" };
+        let installed_str = if agent.is_installed(scope) {
+            "yes"
+        } else {
+            "no"
+        };
+        eprintln!(
+            "{:<12} {detected_str:<10} {installed_str}",
+            agent.cli_name()
+        );
+    }
+}
+
+fn resolve_scope(path: Option<PathBuf>, global: bool) -> miette::Result<InstallScope> {
+    if global {
+        return Ok(InstallScope::User);
+    }
+    let root = path
+        .map_or_else(std::env::current_dir, Ok)
+        .map_err(|error| miette::miette!("cannot determine cwd: {error}"))?;
+    Ok(InstallScope::Project { root })
+}
+
+/// Resolve agent names from CLI args, defaulting to auto-detected agents.
+fn resolve_agents(args: &[String]) -> miette::Result<Vec<Agent>> {
+    if args.is_empty() {
+        let detected: Vec<Agent> = Agent::ALL
+            .iter()
+            .copied()
+            .filter(|a| a.is_detected())
+            .collect();
+        if detected.is_empty() {
+            return Err(miette::miette!(
+                "no agents detected. Specify agents explicitly: concats hooks install claude codex ..."
+            ));
+        }
+        Ok(detected)
+    } else {
+        args.iter()
+            .map(|s| s.parse::<Agent>().map_err(|e| miette::miette!("{e}")))
+            .collect()
     }
 }
 

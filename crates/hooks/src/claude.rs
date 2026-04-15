@@ -1,9 +1,35 @@
-use std::{fs, path::Path};
+use std::path::Path;
 
 use concats_core::error::{Error, Result};
 use serde::Deserialize;
 
-use crate::{handler, state::find_worktree_root};
+use crate::{
+    handler,
+    install::{self, JsonHookSpec},
+    state::find_worktree_root,
+};
+
+const SPEC: JsonHookSpec = JsonHookSpec {
+    marker: "concats hook claude",
+    events: &["SessionStart", "UserPromptSubmit", "PostToolUse", "Stop"],
+    prepare_root: None,
+    entry: build_entry,
+};
+
+fn build_entry(binary: &Path, event: &str) -> serde_json::Value {
+    let matcher = if event == "PostToolUse" {
+        "Write|Edit"
+    } else {
+        ""
+    };
+    serde_json::json!({
+        "matcher": matcher,
+        "hooks": [{
+            "type": "command",
+            "command": format!("{} hook claude {event}", binary.display())
+        }]
+    })
+}
 
 #[derive(Debug, Deserialize)]
 pub struct SessionStartPayload {
@@ -44,7 +70,7 @@ pub struct StopPayload {
 ///
 /// Returns an error if the payload cannot be parsed, the worktree root cannot
 /// be resolved, or the underlying turn handler fails.
-pub fn dispatch(event: &str, payload_json: &str) -> Result<()> {
+pub(crate) fn dispatch(event: &str, payload_json: &str) -> Result<()> {
     match event {
         "SessionStart" => {
             let payload: SessionStartPayload =
@@ -89,88 +115,62 @@ pub fn dispatch(event: &str, payload_json: &str) -> Result<()> {
     }
 }
 
-#[allow(clippy::disallowed_methods)]
-/// Install Claude hook commands into `.claude/settings.json`.
+/// Install Claude hook commands into the given `settings.json` path.
 ///
 /// # Errors
 ///
 /// Returns an error if the settings directory cannot be created, the existing
 /// settings file cannot be read or parsed, or the updated settings cannot be
 /// serialized and written.
-pub fn install(project_root: &Path, binary_name: &str) -> Result<()> {
-    let settings_dir = project_root.join(".claude");
-    fs::create_dir_all(&settings_dir)?;
+pub(crate) fn install(settings_path: &Path, binary: &Path) -> Result<()> {
+    install::install_json_hooks(settings_path, &SPEC, binary)
+}
 
-    let settings_path = settings_dir.join("settings.json");
-    let mut settings = if settings_path.exists() {
-        let data = fs::read_to_string(&settings_path)?;
-        serde_json::from_str::<serde_json::Value>(&data)
-            .map_err(|error| Error::session(format!("invalid settings.json: {error}")))?
-    } else {
-        serde_json::json!({})
-    };
+/// Remove concats hooks from the given Claude `settings.json` path.
+///
+/// # Errors
+///
+/// Returns an error if the settings cannot be read, parsed, or written.
+pub(crate) fn uninstall(settings_path: &Path) -> Result<()> {
+    install::uninstall_json_hooks(settings_path, SPEC.marker)
+}
 
-    let hooks = settings
-        .as_object_mut()
-        .ok_or_else(|| Error::session("settings.json root is not an object"))?
-        .entry("hooks")
-        .or_insert_with(|| serde_json::json!({}));
-    let hooks_obj = hooks
-        .as_object_mut()
-        .ok_or_else(|| Error::session("hooks is not an object"))?;
-
-    for (event, matcher) in [
-        ("SessionStart", ""),
-        ("UserPromptSubmit", ""),
-        ("PostToolUse", "Write|Edit"),
-        ("Stop", ""),
-    ] {
-        hooks_obj.insert(
-            event.to_string(),
-            serde_json::json!([{
-                "matcher": matcher,
-                "hooks": [{
-                    "type": "command",
-                    "command": format!("{binary_name} hook {event}")
-                }]
-            }]),
-        );
-    }
-
-    let output = serde_json::to_string_pretty(&settings)
-        .map_err(|error| Error::session(format!("failed to serialize settings: {error}")))?;
-    fs::write(settings_path, output)?;
-    Ok(())
+/// Check whether concats hooks are installed at the given `settings.json` path.
+#[must_use]
+pub(crate) fn is_installed(settings_path: &Path) -> bool {
+    install::is_json_hooks_installed(settings_path, SPEC.marker)
 }
 
 fn extract_last_response(transcript_path: &str) -> Result<String> {
-    let data = fs::read_to_string(transcript_path)?;
-    for line in data.lines().rev() {
-        if let Ok(entry) = serde_json::from_str::<serde_json::Value>(line)
-            && entry.get("role").and_then(|role| role.as_str()) == Some("assistant")
-            && let Some(content) = entry.get("content")
-        {
+    let data = std::fs::read_to_string(transcript_path)?;
+    data.lines()
+        .rev()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .filter(|entry| entry.get("role").and_then(|r| r.as_str()) == Some("assistant"))
+        .find_map(|entry| {
+            let content = entry.get("content")?;
             if let Some(text) = content.as_str() {
-                return Ok(text.to_string());
+                return Some(text.to_string());
             }
-            if let Some(array) = content.as_array() {
-                let text = array
-                    .iter()
-                    .filter_map(|block| block.get("text").and_then(|text| text.as_str()))
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                if !text.is_empty() {
-                    return Ok(text);
-                }
+            let parts: Vec<_> = content
+                .as_array()?
+                .iter()
+                .filter_map(|block| block.get("text")?.as_str())
+                .collect();
+            if parts.is_empty() {
+                None
+            } else {
+                Some(parts.join("\n"))
             }
-        }
-    }
-    Err(Error::session("no assistant message found in transcript"))
+        })
+        .ok_or_else(|| Error::session("no assistant message found in transcript"))
 }
 
 #[cfg(test)]
 #[allow(clippy::disallowed_methods)]
 mod tests {
+    use std::path::Path;
+
     use concats_core::turn::{TurnEntry, TurnEntryKind};
 
     use super::*;
@@ -193,8 +193,31 @@ mod tests {
     #[test]
     fn install_creates_settings() {
         let dir = tempfile::tempdir().unwrap();
-        install(dir.path(), "concats").unwrap();
-        assert!(dir.path().join(".claude/settings.json").exists());
+        let settings_path = dir.path().join(".claude/settings.json");
+        install(&settings_path, Path::new("concats")).unwrap();
+        assert!(settings_path.exists());
+        let data = std::fs::read_to_string(&settings_path).unwrap();
+        assert!(data.contains("concats hook claude SessionStart"));
+        assert!(data.contains("concats hook claude PostToolUse"));
+    }
+
+    #[test]
+    fn install_merges_with_existing_hooks() {
+        let dir = tempfile::tempdir().unwrap();
+        let settings_dir = dir.path().join(".claude");
+        std::fs::create_dir_all(&settings_dir).unwrap();
+        let settings_path = settings_dir.join("settings.json");
+        std::fs::write(
+            &settings_path,
+            r#"{"hooks":{"PostToolUse":[{"matcher":"","hooks":[{"type":"command","command":"other-tool hook"}]}]}}"#,
+        )
+        .unwrap();
+
+        install(&settings_path, Path::new("concats")).unwrap();
+        let data = std::fs::read_to_string(&settings_path).unwrap();
+        // Both the existing and new hooks should be present
+        assert!(data.contains("other-tool hook"));
+        assert!(data.contains("concats hook claude PostToolUse"));
     }
 
     #[test]

@@ -72,7 +72,6 @@ impl ClaudeSessionLifecycle {
             state,
         })
     }
-
     fn start_prompt(mut self, prompt: &str) -> Result<()> {
         let message = self
             .new_message()?
@@ -85,7 +84,6 @@ impl ClaudeSessionLifecycle {
         let _ = snapshot::capture(&self.session, turn.oid, SnapshotReason::TurnCommit)?;
         self.save_state(ClaudeLifecycleState::ActiveTurn { turn_oid: turn.oid })
     }
-
     fn record_files_changed(mut self) -> Result<()> {
         let turn = self.active_turn()?;
         let turn = if let Some(turn) = turn {
@@ -99,7 +97,6 @@ impl ClaudeSessionLifecycle {
         };
         self.save_state(ClaudeLifecycleState::ActiveTurn { turn_oid: turn.oid })
     }
-
     fn finish_response(mut self, response: &str) -> Result<()> {
         let turn = self.active_turn()?;
         if let Some(turn) = turn {
@@ -122,7 +119,6 @@ impl ClaudeSessionLifecycle {
         }
         self.save_state(ClaudeLifecycleState::Idle)
     }
-
     fn active_turn(&self) -> Result<Option<Turn>> {
         match &self.state {
             ClaudeLifecycleState::Idle => Ok(None),
@@ -131,11 +127,9 @@ impl ClaudeSessionLifecycle {
             }
         }
     }
-
     fn new_message(&self) -> Result<TurnMessage> {
         Ok(TurnMessage::new(self.session.id.clone()).with_agent_name(CLAUDE_AGENT_NAME)?)
     }
-
     fn save_state(&mut self, state: ClaudeLifecycleState) -> Result<()> {
         self.state_store.save(self.session.id.as_ref(), &state)?;
         self.state = state;
