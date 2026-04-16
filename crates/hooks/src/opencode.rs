@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use concats_core::error::{Error, Result};
 
-use crate::{ install, state::find_worktree_root, HandlerAction};
+use crate::{ install, HandlerAction, find_worktree_root};
 
 const PLUGIN_TEMPLATE: &str = include_str!("../plugins/opencode.ts");
 

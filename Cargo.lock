@@ -455,9 +455,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
- "time",
  "toml",
- "tracing",
 ]
 
 [[package]]

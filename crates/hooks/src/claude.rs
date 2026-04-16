@@ -4,9 +4,8 @@ use concats_core::error::{Error, Result};
 use serde::Deserialize;
 
 use crate::{
-    handler,
+    find_worktree_root, handler,
     install::{self, JsonHookSpec},
-    state::find_worktree_root,
 };
 
 const SPEC: JsonHookSpec = JsonHookSpec {

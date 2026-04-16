@@ -2,7 +2,7 @@ use std::path::Path;
 
 use concats_core::error::{Error, Result};
 
-use crate::{ install, state::find_worktree_root, HandlerAction};
+use crate::{ install, HandlerAction, find_worktree_root};
 
 pub(crate) fn dispatch(event: &str, payload_json: &str) -> Result<()> {
     crate::dispatch_simple(

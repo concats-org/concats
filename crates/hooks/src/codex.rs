@@ -3,7 +3,7 @@ use std::path::Path;
 use concats_core::error::{Error, Result};
 use serde::Deserialize;
 
-use crate::{handler, install, state::find_worktree_root};
+use crate::{find_worktree_root, handler, install};
 
 #[derive(Debug, Deserialize)]
 struct Payload {
@@ -36,7 +36,7 @@ pub(crate) fn dispatch(payload_json: &str) -> Result<()> {
         match std::fs::read_to_string(transcript) {
             Ok(response) => handler::on_stop(&worktree_root, session_id, &response)?,
             Err(error) => {
-                tracing::warn!("failed to read codex transcript at {transcript}: {error}");
+                eprintln!("warning: failed to read codex transcript at {transcript}: {error}");
             }
         }
     }

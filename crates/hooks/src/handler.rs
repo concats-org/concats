@@ -5,22 +5,20 @@ use concats_core::{
     error::{Error, Result},
     session::{self, Session},
     snapshot::{self, SnapshotReason},
-    turn::{self, Turn, TurnEntry},
+    turn::{self, Turn, TurnEntry, TurnEntryKind},
 };
 use concats_message::Turn as TurnMessage;
 
-use crate::state::{ClaudeLifecycleState, ClaudeStateStore};
-
 const CLAUDE_AGENT_NAME: &str = "Claude";
 
-/// Ensure a session and Claude lifecycle state exist when Claude starts a session.
+/// Ensure a session exists when Claude starts a session.
 ///
 /// # Errors
 ///
-/// Returns an error if the session cannot be opened or created, or the Claude
-/// lifecycle state cannot be loaded or initialized.
+/// Returns an error if the session cannot be opened or created.
 pub fn on_session_started(worktree_root: &Path, session_id: &str) -> Result<()> {
-    let _ = ClaudeSessionLifecycle::load(worktree_root, session_id)?;
+    let repo = Rc::new(Repository::open(worktree_root)?);
+    let _ = load_or_create_session(repo, session_id)?;
     Ok(())
 }
 
@@ -28,10 +26,19 @@ pub fn on_session_started(worktree_root: &Path, session_id: &str) -> Result<()> 
 ///
 /// # Errors
 ///
-/// Returns an error if the session cannot be opened or created, the turn
-/// cannot be committed, or the Claude lifecycle state cannot be saved.
+/// Returns an error if the session cannot be opened or created, or the turn
+/// cannot be committed.
 pub fn on_prompt_submitted(worktree_root: &Path, session_id: &str, prompt: &str) -> Result<()> {
-    ClaudeSessionLifecycle::load(worktree_root, session_id)?.start_prompt(prompt)
+    let repo = Rc::new(Repository::open(worktree_root)?);
+    let session = load_or_create_session(repo, session_id)?;
+    let message = new_message(&session)?.with_entry(TurnEntry::prompt_now(prompt));
+    let subject = message
+        .suggest_subject()
+        .unwrap_or_else(|| "files changed".to_string());
+    let message = message.with_subject(subject)?;
+    let turn = session::commit(&session, &message)?;
+    let _ = snapshot::capture(&session, turn.oid, SnapshotReason::TurnCommit)?;
+    Ok(())
 }
 
 /// Update the open turn snapshot after file changes.
@@ -39,102 +46,70 @@ pub fn on_prompt_submitted(worktree_root: &Path, session_id: &str, prompt: &str)
 /// # Errors
 ///
 /// Returns an error if the current turn cannot be loaded, the snapshot
-/// commit or amendment fails, or the Claude lifecycle state cannot be saved.
+/// commit or amendment fails.
 pub fn on_files_changed(worktree_root: &Path, session_id: &str) -> Result<()> {
-    ClaudeSessionLifecycle::load(worktree_root, session_id)?.record_files_changed()
+    let repo = Rc::new(Repository::open(worktree_root)?);
+    let session = load_or_create_session(repo, session_id)?;
+    let turn = open_turn(&session)?;
+    if let Some(turn) = turn {
+        let _ = snapshot::capture(&session, turn.oid, SnapshotReason::FilesChanged)?;
+    } else {
+        let message = new_message(&session)?.with_subject("files changed")?;
+        let turn = session::commit(&session, &message)?;
+        let _ = snapshot::capture(&session, turn.oid, SnapshotReason::FilesChanged)?;
+    }
+    Ok(())
 }
 
 /// Append the assistant response and close the open turn.
 ///
 /// # Errors
 ///
-/// Returns an error if the current turn cannot be loaded, the response
-/// commit or amendment fails, or the Claude lifecycle state cannot be saved.
+/// Returns an error if the current turn cannot be loaded, or the response
+/// commit or amendment fails.
 pub fn on_stop(worktree_root: &Path, session_id: &str, response: &str) -> Result<()> {
-    ClaudeSessionLifecycle::load(worktree_root, session_id)?.finish_response(response)
-}
-
-struct ClaudeSessionLifecycle {
-    session: Session,
-    state_store: ClaudeStateStore,
-    state: ClaudeLifecycleState,
-}
-
-impl ClaudeSessionLifecycle {
-    fn load(worktree_root: &Path, session_id: &str) -> Result<Self> {
-        let repo = Rc::new(Repository::open(worktree_root)?);
-        let session = load_or_create_session(repo, session_id)?;
-        let state_store = ClaudeStateStore::new(worktree_root);
-        let state = state_store.load_or_init(session_id)?;
-        Ok(Self {
-            session,
-            state_store,
-            state,
-        })
-    }
-    fn start_prompt(mut self, prompt: &str) -> Result<()> {
-        let message = self
-            .new_message()?
-            .with_entry(TurnEntry::prompt_now(prompt));
+    let repo = Rc::new(Repository::open(worktree_root)?);
+    let session = load_or_create_session(repo, session_id)?;
+    let turn = open_turn(&session)?;
+    if let Some(turn) = turn {
+        let message = turn
+            .message()
+            .clone()
+            .with_entry(TurnEntry::response_now(response));
+        let updated = session::amend(&session, &message)?;
+        let _ = snapshot::capture(&session, updated.oid, SnapshotReason::TurnAmend)?;
+    } else {
+        let message = new_message(&session)?.with_entry(TurnEntry::response_now(response));
         let subject = message
             .suggest_subject()
             .unwrap_or_else(|| "files changed".to_string());
         let message = message.with_subject(subject)?;
-        let turn = session::commit(&self.session, &message)?;
-        let _ = snapshot::capture(&self.session, turn.oid, SnapshotReason::TurnCommit)?;
-        self.save_state(ClaudeLifecycleState::ActiveTurn { turn_oid: turn.oid })
+        let turn = session::commit(&session, &message)?;
+        let _ = snapshot::capture(&session, turn.oid, SnapshotReason::TurnCommit)?;
     }
-    fn record_files_changed(mut self) -> Result<()> {
-        let turn = self.active_turn()?;
-        let turn = if let Some(turn) = turn {
-            let _ = snapshot::capture(&self.session, turn.oid, SnapshotReason::FilesChanged)?;
-            turn
-        } else {
-            let message = self.new_message()?.with_subject("files changed")?;
-            let turn = session::commit(&self.session, &message)?;
-            let _ = snapshot::capture(&self.session, turn.oid, SnapshotReason::FilesChanged)?;
-            turn
-        };
-        self.save_state(ClaudeLifecycleState::ActiveTurn { turn_oid: turn.oid })
-    }
-    fn finish_response(mut self, response: &str) -> Result<()> {
-        let turn = self.active_turn()?;
-        if let Some(turn) = turn {
-            let message = turn
-                .message()
-                .clone()
-                .with_entry(TurnEntry::response_now(response));
-            let updated = session::amend(&self.session, &message)?;
-            let _ = snapshot::capture(&self.session, updated.oid, SnapshotReason::TurnAmend)?;
-        } else {
-            let message = self
-                .new_message()?
-                .with_entry(TurnEntry::response_now(response));
-            let subject = message
-                .suggest_subject()
-                .unwrap_or_else(|| "files changed".to_string());
-            let message = message.with_subject(subject)?;
-            let turn = session::commit(&self.session, &message)?;
-            let _ = snapshot::capture(&self.session, turn.oid, SnapshotReason::TurnCommit)?;
-        }
-        self.save_state(ClaudeLifecycleState::Idle)
-    }
-    fn active_turn(&self) -> Result<Option<Turn>> {
-        match &self.state {
-            ClaudeLifecycleState::Idle => Ok(None),
-            ClaudeLifecycleState::ActiveTurn { turn_oid } => {
-                turn::get(&self.session, *turn_oid).map(Some)
+    Ok(())
+}
+
+fn open_turn(session: &Session) -> Result<Option<Turn>> {
+    let tip_oid = session::tip(session)?;
+    match turn::get(session, tip_oid) {
+        Ok(turn) => {
+            let has_response = turn
+                .entries()
+                .iter()
+                .any(|e| matches!(e.kind, TurnEntryKind::Response { .. }));
+            if has_response {
+                Ok(None)
+            } else {
+                Ok(Some(turn))
             }
         }
+        Err(_) => Ok(None),
     }
-    fn new_message(&self) -> Result<TurnMessage> {
-        Ok(TurnMessage::new(self.session.id.clone()).with_agent_name(CLAUDE_AGENT_NAME)?)
-    }
-    fn save_state(&mut self, state: ClaudeLifecycleState) -> Result<()> {
-        self.state_store.save(self.session.id.as_ref(), &state)?;
-        self.state = state;
-        Ok(())
-    }
+}
+
+fn new_message(session: &Session) -> Result<TurnMessage> {
+    Ok(TurnMessage::new(session.id.clone()).with_agent_name(CLAUDE_AGENT_NAME)?)
 }
 
 fn load_or_create_session(repo: Rc<Repository>, session_id: &str) -> Result<Session> {
@@ -155,7 +130,7 @@ mod tests {
 
     use concats_core::{
         session, snapshot,
-        turn::{TurnEntry, TurnEntryKind},
+        turn::{self, TurnEntry, TurnEntryKind},
     };
 
     use super::*;
@@ -176,17 +151,14 @@ mod tests {
     }
 
     #[test]
-    fn session_start_initializes_idle_state() {
+    fn session_start_creates_session() {
         let dir = tempfile::tempdir().unwrap();
         init_repo_with_commit(dir.path());
 
         on_session_started(dir.path(), "session-a").unwrap();
 
-        let store = ClaudeStateStore::new(dir.path());
-        assert_eq!(
-            store.load("session-a").unwrap(),
-            Some(ClaudeLifecycleState::Idle)
-        );
+        let repo = Rc::new(Repository::open(dir.path()).unwrap());
+        assert!(session::open(repo, "session-a").is_ok());
     }
 
     #[test]
@@ -214,26 +186,20 @@ mod tests {
     }
 
     #[test]
-    fn prompt_starts_active_turn() {
+    fn prompt_starts_turn() {
         let dir = tempfile::tempdir().unwrap();
         init_repo_with_commit(dir.path());
 
         on_prompt_submitted(dir.path(), "session-a", "hello").unwrap();
 
         let repo = Rc::new(Repository::open(dir.path()).unwrap());
-        let store = ClaudeStateStore::new(dir.path());
-        let state = store.load("session-a").unwrap().unwrap();
-        let turn_oid = match state {
-            ClaudeLifecycleState::ActiveTurn { turn_oid } => turn_oid,
-            ClaudeLifecycleState::Idle => panic!("expected active Claude turn"),
-        };
         let session = session::open(repo, "session-a").unwrap();
-        let turn = turn::get(&session, turn_oid).unwrap();
-        let snapshot = snapshot::get(&session, turn_oid).unwrap();
-        assert_eq!(turn.subject(), "hello");
+        let turns = turn::list(&session).unwrap();
+        let snapshot = snapshot::get(&session, turns[0].oid).unwrap();
+        assert_eq!(turns[0].subject(), "hello");
         assert_eq!(snapshot.reason(), Some(SnapshotReason::TurnCommit));
         assert!(matches!(
-            turn.entries(),
+            turns[0].entries(),
             [TurnEntry {
                 kind: TurnEntryKind::Prompt { text }
             }] if text == "hello"
@@ -246,25 +212,15 @@ mod tests {
         init_repo_with_commit(dir.path());
 
         on_prompt_submitted(dir.path(), "session-a", "hello").unwrap();
-        let store = ClaudeStateStore::new(dir.path());
-        let initial_oid = match store.load("session-a").unwrap().unwrap() {
-            ClaudeLifecycleState::ActiveTurn { turn_oid } => turn_oid,
-            ClaudeLifecycleState::Idle => panic!("expected active Claude turn"),
-        };
 
         std::fs::write(dir.path().join("changed.txt"), "updated").unwrap();
         on_files_changed(dir.path(), "session-a").unwrap();
 
         let repo = Rc::new(Repository::open(dir.path()).unwrap());
-        let updated_oid = match store.load("session-a").unwrap().unwrap() {
-            ClaudeLifecycleState::ActiveTurn { turn_oid } => turn_oid,
-            ClaudeLifecycleState::Idle => panic!("expected active Claude turn"),
-        };
         let session = session::open(repo, "session-a").unwrap();
         let turns = turn::list(&session).unwrap();
         let snapshots = snapshot::list(&session).unwrap();
 
-        assert_eq!(updated_oid, initial_oid);
         assert_eq!(turns.len(), 1);
         assert_eq!(snapshots.len(), 2);
         assert_eq!(
@@ -282,15 +238,10 @@ mod tests {
         on_stop(dir.path(), "session-a", "done").unwrap();
 
         let repo = Rc::new(Repository::open(dir.path()).unwrap());
-        let store = ClaudeStateStore::new(dir.path());
         let session = session::open(repo, "session-a").unwrap();
         let turns = turn::list(&session).unwrap();
         let snapshot = snapshot::get(&session, turns[0].oid).unwrap();
 
-        assert_eq!(
-            store.load("session-a").unwrap(),
-            Some(ClaudeLifecycleState::Idle)
-        );
         assert_eq!(snapshot.reason(), Some(SnapshotReason::TurnAmend));
         assert!(matches!(
             turns[0].entries(),

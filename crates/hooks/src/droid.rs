@@ -3,9 +3,8 @@ use std::path::{Path, PathBuf};
 use concats_core::error::{Error, Result};
 
 use crate::{
-    HandlerAction,
+    HandlerAction, find_worktree_root,
     install::{self, JsonHookSpec},
-    state::find_worktree_root,
 };
 
 const SPEC: JsonHookSpec = JsonHookSpec {

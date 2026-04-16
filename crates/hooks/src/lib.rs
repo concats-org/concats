@@ -80,6 +80,18 @@ impl InstallScope {
     }
 }
 
+pub(crate) fn find_worktree_root(cwd: Option<&str>) -> Result<PathBuf> {
+    let start = match cwd {
+        Some(dir) => PathBuf::from(dir),
+        None => std::env::current_dir()?,
+    };
+    let repo = git2::Repository::discover(&start)?;
+    let workdir = repo
+        .workdir()
+        .ok_or_else(|| Error::session("bare repository not supported"))?;
+    Ok(workdir.to_path_buf())
+}
+
 pub mod amp;
 pub mod claude;
 pub mod codex;
@@ -90,9 +102,7 @@ pub mod gemini;
 pub mod handler;
 pub mod install;
 pub mod opencode;
-pub mod state;
 pub mod windsurf;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Agent {
     Claude,
@@ -105,7 +115,6 @@ pub enum Agent {
     Amp,
     OpenCode,
 }
-
 impl Agent {
     pub const ALL: &[Self] = &[
         Self::Claude,
@@ -237,7 +246,6 @@ impl Agent {
         }
     }
 }
-
 impl FromStr for Agent {
     type Err = String;
 
@@ -262,7 +270,6 @@ impl FromStr for Agent {
         }
     }
 }
-
 impl fmt::Display for Agent {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.cli_name())
