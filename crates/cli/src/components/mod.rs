@@ -4,9 +4,7 @@ use tokio::sync::mpsc;
 
 use crate::action::Action;
 
-pub mod agent_picker;
 pub mod chrome;
-pub mod session;
 pub mod sessions;
 pub mod static_page;
 

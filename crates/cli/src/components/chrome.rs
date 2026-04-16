@@ -126,8 +126,7 @@ impl Component for ChromeComponent {
         if let Some(target) = self.hit_test(mouse.column) {
             match target {
                 ClickTarget::SwitchTab(tab) => self.send_action(Action::SwitchTab(tab)),
-                ClickTarget::CloseSession(id) => self.send_action(Action::CloseSession(id)),
-                ClickTarget::NewSession => self.send_action(Action::OpenAgentPicker),
+                ClickTarget::CloseSession(_) | ClickTarget::NewSession => {}
             }
         }
         Ok(())

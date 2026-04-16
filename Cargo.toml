@@ -4,7 +4,6 @@ members = [
     "crates/config",
     "crates/message",
     "crates/core",
-    "crates/acp",
     "crates/hooks",
     "crates/registry",
     "crates/cli",
@@ -13,7 +12,6 @@ default-members = [
     "crates/config",
     "crates/message",
     "crates/core",
-    "crates/acp",
     "crates/hooks",
     "crates/registry",
     "crates/cli",
@@ -39,7 +37,6 @@ pedantic = "warn"
 concats_config = { package = "concats-config", path = "crates/config" }
 concats_message = { package = "concats-message", path = "crates/message" }
 concats_core = { package = "concats-core", path = "crates/core" }
-concats_acp = { package = "concats-acp", path = "crates/acp" }
 concats_hooks = { package = "concats-hooks", path = "crates/hooks" }
 concats_registry = { package = "concats-registry", path = "crates/registry" }
 concats_cli = { package = "concats-cli", path = "crates/cli" }

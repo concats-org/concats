@@ -1,6 +1,5 @@
 use std::{io, path::PathBuf};
 
-use concats_acp::start_session;
 use concats_config::{ConfigCliArgs, load_config, save_config};
 use concats_hooks::{Agent, InstallScope};
 use concats_registry::{fetch_registry, install_agents};
@@ -8,7 +7,7 @@ use concats_registry::{fetch_registry, install_agents};
 use crate::{
     app::App,
     cli::{Cli, Commands, HooksAction},
-    launch::SessionLaunchSpec,
+    launch,
 };
 
 /// Run the CLI command selected by the parsed arguments.
@@ -24,8 +23,14 @@ pub async fn run(cli: Cli) -> miette::Result<()> {
             payload,
         }) => run_hook_command(&agent, event.as_deref(), payload),
         Some(Commands::Hooks { action }) => run_hooks_action(action),
-        Some(Commands::Run { agent, workspace }) => run_tui_command(agent, workspace).await,
-        None => run_tui_command(None, None).await,
+        Some(Commands::Run {
+            agent,
+            workspace,
+            print,
+            extra_args,
+        }) => run_agent_command(agent, workspace, print, extra_args).await,
+        Some(Commands::Sessions { workspace }) => run_sessions_tui(workspace).await,
+        None => run_sessions_tui(None).await,
     }
 }
 
@@ -172,20 +177,21 @@ fn resolve_agents(args: &[String]) -> miette::Result<Vec<Agent>> {
     }
 }
 
-/// Start the TUI with the selected agent and workspace.
+/// Resolve an agent and either exec into it or print the command.
 ///
 /// # Errors
 ///
 /// Returns an error if configuration cannot be loaded, the agent cannot be
-/// resolved, the registry sync fails, the initial session cannot be started,
-/// or the TUI exits with an error.
-pub async fn run_tui_command(
+/// resolved, or the exec syscall fails.
+async fn run_agent_command(
     agent: Option<String>,
     workspace: Option<PathBuf>,
+    print: bool,
+    extra_args: Vec<String>,
 ) -> miette::Result<()> {
     let cli_args = ConfigCliArgs {
         default_agent: agent.clone(),
-        workspace: workspace.clone(),
+        workspace,
     };
     let mut config = load_config(&cli_args)?;
 
@@ -194,7 +200,7 @@ pub async fn run_tui_command(
         .ok_or_else(|| miette::miette!("no agent specified. Usage: concats run <agent-name>"))?;
 
     if resolve_agent_id(&agent_id, &config).is_none() {
-        eprintln!("agent '{agent_id}' not found in config, fetching from ACP registry...");
+        eprintln!("agent '{agent_id}' not found in config, fetching from registry...");
         sync_registry(&mut config).await?;
     }
 
@@ -202,48 +208,34 @@ pub async fn run_tui_command(
         let mut available: Vec<_> = config.agents.keys().cloned().collect();
         available.sort();
         miette::miette!(
-            "agent '{agent_id}' not found in the ACP registry.\n\
+            "agent '{agent_id}' not found in the registry.\n\
              Available agents: {}",
             available.join(", ")
         )
     })?;
 
-    let workspace_root = config
-        .workspace
-        .clone()
+    let agent_config = &config.agents[&resolved_id];
+
+    if print {
+        launch::print_agent_command(agent_config, &extra_args);
+        Ok(())
+    } else {
+        launch::exec_agent(agent_config, &extra_args)
+    }
+}
+
+/// Launch the TUI for browsing recorded sessions.
+///
+/// # Errors
+///
+/// Returns an error if the workspace directory cannot be resolved or the TUI
+/// exits with an error.
+async fn run_sessions_tui(workspace: Option<PathBuf>) -> miette::Result<()> {
+    let workspace_root = workspace
         .map_or_else(std::env::current_dir, Ok)
         .map_err(|error| miette::miette!("could not determine current directory: {error}"))?;
 
-    let mut available_agents: Vec<(String, concats_config::AgentConfig)> = config
-        .agents
-        .iter()
-        .map(|(id, cfg)| (id.clone(), cfg.clone()))
-        .collect();
-    available_agents.sort_by(|left, right| left.0.cmp(&right.0));
-
-    let launch = SessionLaunchSpec::new(
-        workspace_root.clone(),
-        &resolved_id,
-        &config.agents[&resolved_id],
-        config.sync.auto_push,
-        &config.sync.remote,
-        None,
-        None,
-    );
-    let SessionLaunchSpec {
-        label,
-        session_config,
-        tab_config,
-    } = launch;
-    let session = start_session(session_config).map_err(|error| miette::miette!("{error}"))?;
-
-    let mut app = App::new(workspace_root, available_agents);
-    app.auto_push = config.sync.auto_push;
-    app.push_remote = config.sync.remote.clone();
-
-    let initial_id = app.add_session(session, &label, tab_config);
-    app.set_active_tab(crate::tabs::ActiveTab::Session(initial_id));
-
+    let mut app = App::new(workspace_root);
     app.run().await
 }
 

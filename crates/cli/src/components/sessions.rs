@@ -200,7 +200,6 @@ impl Component for SessionsBrowserComponent {
                 self.send_action(Action::SessionsOpenDetail);
             }
             KeyCode::Left | KeyCode::Char('h') => self.send_action(Action::SessionsCloseDetail),
-            KeyCode::Char('f') => self.send_action(Action::ForkSelected),
             KeyCode::Char('r') => self.send_action(Action::SessionsRefresh),
             KeyCode::Esc => self.send_action(Action::SessionsBack),
             _ => {}
@@ -264,7 +263,7 @@ impl Component for SessionsBrowserComponent {
         if hint_area.width > 0 && hint_area.height > 0 {
             frame.render_widget(
                 Paragraph::new(Line::from(Span::styled(
-                    " [f: fork | ←/→: switch panel | r: refresh]",
+                    " [←/→: switch panel | r: refresh]",
                     Style::default()
                         .fg(Color::DarkGray)
                         .add_modifier(Modifier::DIM),

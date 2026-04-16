@@ -16,8 +16,6 @@ path = "src/main.rs"
 path = "src/lib.rs"
 
 [dependencies]
-agent-client-protocol = "0.9.4"
-concats_acp = { workspace = true }
 concats_config = { workspace = true }
 concats_core = { workspace = true }
 concats_hooks = { workspace = true }
@@ -27,8 +25,6 @@ crossterm = { version = "0.29", features = ["event-stream"] }
 git2 = { workspace = true }
 miette = { workspace = true }
 ratatui = "0.30"
-ratatui-textarea = { version = "0.8", features = ["crossterm"] }
-serde_json = { workspace = true }
 throbber-widgets-tui = "0.11"
 time = { workspace = true }
 tokio = { workspace = true }

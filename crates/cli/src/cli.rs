@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
-#[command(about = "Concats – git-native session history for coding agents")]
+#[command(about = "Concats \u{2013} git-native session history for coding agents")]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Option<Commands>,
@@ -11,11 +11,26 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Commands {
-    /// Launch the TUI for interacting with an ACP-compatible coding agent.
+    /// Launch an agent, replacing the current process via exec.
     Run {
-        /// Agent to use (name from config or ACP registry).
+        /// Agent to use (name from config or registry).
         agent: Option<String>,
 
+        /// Workspace root directory (defaults to current directory).
+        #[arg(short, long)]
+        workspace: Option<PathBuf>,
+
+        /// Print the resolved command instead of executing it.
+        #[arg(long)]
+        print: bool,
+
+        /// Extra arguments passed through to the agent command.
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        extra_args: Vec<String>,
+    },
+
+    /// Browse recorded sessions in a TUI.
+    Sessions {
         /// Workspace root directory (defaults to current directory).
         #[arg(short, long)]
         workspace: Option<PathBuf>,
