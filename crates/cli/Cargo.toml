@@ -19,7 +19,6 @@ path = "src/lib.rs"
 concats_config = { workspace = true }
 concats_core = { workspace = true }
 concats_hooks = { workspace = true }
-concats_registry = { workspace = true }
 clap = { workspace = true }
 crossterm = { version = "0.29", features = ["event-stream"] }
 git2 = { workspace = true }

@@ -3,14 +3,14 @@ use std::{collections::HashMap, path::PathBuf};
 use serde::{Deserialize, Serialize};
 
 /// Top-level application configuration.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     /// Default agent ID to use when none specified.
-    #[serde(default)]
+    #[serde(default = "default_agent")]
     pub default_agent: Option<String>,
 
     /// Known agent definitions, keyed by ID.
-    #[serde(default)]
+    #[serde(default = "default_agents")]
     pub agents: HashMap<String, AgentConfig>,
 
     /// Default workspace root (overridden by CLI --workspace).
@@ -20,6 +20,45 @@ pub struct Config {
     /// Sync settings (auto-push session turn refs to remote).
     #[serde(default)]
     pub sync: SyncConfig,
+}
+
+#[allow(clippy::unnecessary_wraps)]
+fn default_agent() -> Option<String> {
+    Some("claude".into())
+}
+
+fn default_agents() -> HashMap<String, AgentConfig> {
+    HashMap::from([
+        (
+            "claude".into(),
+            AgentConfig {
+                name: "Claude".into(),
+                command: "claude".into(),
+                args: vec![],
+                env: HashMap::new(),
+            },
+        ),
+        (
+            "codex".into(),
+            AgentConfig {
+                name: "Codex".into(),
+                command: "codex".into(),
+                args: vec![],
+                env: HashMap::new(),
+            },
+        ),
+    ])
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            default_agent: default_agent(),
+            agents: default_agents(),
+            workspace: None,
+            sync: SyncConfig::default(),
+        }
+    }
 }
 
 fn default_remote() -> String {
@@ -115,8 +154,49 @@ mod tests {
         let toml_str = "";
         let decoded: Config = toml::from_str(toml_str).expect("should deserialize empty config");
 
-        assert_eq!(decoded.default_agent, None);
+        assert_eq!(decoded.default_agent, Some("claude".to_string()));
         assert_eq!(decoded.workspace, None);
-        assert!(decoded.agents.is_empty());
+        assert_eq!(decoded.agents.len(), 2);
+        assert_eq!(decoded.agents["claude"].command, "claude");
+        assert_eq!(decoded.agents["claude"].name, "Claude");
+        assert_eq!(decoded.agents["codex"].command, "codex");
+        assert_eq!(decoded.agents["codex"].name, "Codex");
+    }
+
+    #[test]
+    fn test_user_overrides_default_agent() {
+        let toml_str = r#"
+[agents.claude]
+name = "My Claude"
+command = "claude"
+args = ["--verbose"]
+"#;
+        let decoded: Config = toml::from_str(toml_str).expect("should deserialize config");
+
+        assert_eq!(decoded.agents["claude"].name, "My Claude");
+        assert_eq!(decoded.agents["claude"].args, vec!["--verbose"]);
+    }
+
+    #[test]
+    fn test_custom_agent_coexists_with_defaults_via_figment() {
+        use figment::{
+            Figment,
+            providers::{Format, Serialized, Toml},
+        };
+
+        let toml_str = r#"
+[agents.custom]
+name = "Custom Agent"
+command = "my-agent"
+"#;
+        let config: Config = Figment::from(Serialized::defaults(Config::default()))
+            .merge(Toml::string(toml_str))
+            .extract()
+            .expect("should merge config");
+
+        assert!(config.agents.contains_key("custom"));
+        assert_eq!(config.agents["custom"].command, "my-agent");
+        assert!(config.agents.contains_key("claude"));
+        assert!(config.agents.contains_key("codex"));
     }
 }

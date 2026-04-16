@@ -1,8 +1,7 @@
 use std::{io, path::PathBuf};
 
-use concats_config::{ConfigCliArgs, load_config, save_config};
+use concats_config::{ConfigCliArgs, load_config};
 use concats_hooks::{Agent, InstallScope};
-use concats_registry::{fetch_registry, install_agents};
 
 use crate::{
     app::App,
@@ -28,7 +27,7 @@ pub async fn run(cli: Cli) -> miette::Result<()> {
             workspace,
             print,
             extra_args,
-        }) => run_agent_command(agent, workspace, print, extra_args).await,
+        }) => run_agent_command(agent, workspace, print, &extra_args),
         Some(Commands::Sessions { workspace }) => run_sessions_tui(workspace).await,
         None => run_sessions_tui(None).await,
     }
@@ -183,32 +182,27 @@ fn resolve_agents(args: &[String]) -> miette::Result<Vec<Agent>> {
 ///
 /// Returns an error if configuration cannot be loaded, the agent cannot be
 /// resolved, or the exec syscall fails.
-async fn run_agent_command(
+fn run_agent_command(
     agent: Option<String>,
     workspace: Option<PathBuf>,
     print: bool,
-    extra_args: Vec<String>,
+    extra_args: &[String],
 ) -> miette::Result<()> {
     let cli_args = ConfigCliArgs {
         default_agent: agent.clone(),
         workspace,
     };
-    let mut config = load_config(&cli_args)?;
+    let config = load_config(&cli_args)?;
 
     let agent_id = agent
         .or(config.default_agent.clone())
         .ok_or_else(|| miette::miette!("no agent specified. Usage: concats run <agent-name>"))?;
 
-    if resolve_agent_id(&agent_id, &config).is_none() {
-        eprintln!("agent '{agent_id}' not found in config, fetching from registry...");
-        sync_registry(&mut config).await?;
-    }
-
     let resolved_id = resolve_agent_id(&agent_id, &config).ok_or_else(|| {
         let mut available: Vec<_> = config.agents.keys().cloned().collect();
         available.sort();
         miette::miette!(
-            "agent '{agent_id}' not found in the registry.\n\
+            "agent '{agent_id}' not found.\n\
              Available agents: {}",
             available.join(", ")
         )
@@ -217,10 +211,10 @@ async fn run_agent_command(
     let agent_config = &config.agents[&resolved_id];
 
     if print {
-        launch::print_agent_command(agent_config, &extra_args);
+        launch::print_agent_command(agent_config, extra_args);
         Ok(())
     } else {
-        launch::exec_agent(agent_config, &extra_args)
+        launch::exec_agent(agent_config, extra_args)
     }
 }
 
@@ -261,11 +255,4 @@ fn resolve_agent_id(input: &str, config: &concats_config::Config) -> Option<Stri
         return Some(contains_matches[0].clone());
     }
     None
-}
-
-async fn sync_registry(config: &mut concats_config::model::Config) -> miette::Result<()> {
-    let registry = fetch_registry().await?;
-    install_agents(&registry, config);
-    save_config(config)?;
-    Ok(())
 }
