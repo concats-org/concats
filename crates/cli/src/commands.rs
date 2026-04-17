@@ -1,6 +1,5 @@
 use std::{io, path::PathBuf, rc::Rc};
 
-use concats_config::{ConfigCliArgs, load_config};
 use concats_core::{
     Repository,
     diff::{self, DiffStatus},
@@ -9,10 +8,7 @@ use concats_core::{
 };
 use concats_hooks::{Agent, InstallScope};
 
-use crate::{
-    cli::{Cli, Commands, HooksAction},
-    launch,
-};
+use crate::cli::{Cli, Commands, HooksAction};
 
 /// Run the CLI command selected by the parsed arguments.
 ///
@@ -27,12 +23,6 @@ pub fn run(cli: Cli) -> miette::Result<()> {
             payload,
         }) => run_hook_command(&agent, event.as_deref(), payload),
         Some(Commands::Hooks { action }) => run_hooks_action(action),
-        Some(Commands::Run {
-            agent,
-            workspace,
-            print,
-            extra_args,
-        }) => run_agent_command(agent, workspace, print, &extra_args),
         Some(Commands::Log {
             session_ref,
             count,
@@ -194,48 +184,6 @@ fn resolve_agents(args: &[String]) -> miette::Result<Vec<Agent>> {
         args.iter()
             .map(|s| s.parse::<Agent>().map_err(|e| miette::miette!("{e}")))
             .collect()
-    }
-}
-
-/// Resolve an agent and either exec into it or print the command.
-///
-/// # Errors
-///
-/// Returns an error if configuration cannot be loaded, the agent cannot be
-/// resolved, or the exec syscall fails.
-fn run_agent_command(
-    agent: Option<String>,
-    workspace: Option<PathBuf>,
-    print: bool,
-    extra_args: &[String],
-) -> miette::Result<()> {
-    let cli_args = ConfigCliArgs {
-        default_agent: agent.clone(),
-        workspace,
-    };
-    let config = load_config(&cli_args)?;
-
-    let agent_id = agent
-        .or(config.default_agent.clone())
-        .ok_or_else(|| miette::miette!("no agent specified. Usage: concats run <agent-name>"))?;
-
-    let resolved_id = resolve_agent_id(&agent_id, &config).ok_or_else(|| {
-        let mut available: Vec<_> = config.agents.keys().cloned().collect();
-        available.sort();
-        miette::miette!(
-            "agent '{agent_id}' not found.\n\
-             Available agents: {}",
-            available.join(", ")
-        )
-    })?;
-
-    let agent_config = &config.agents[&resolved_id];
-
-    if print {
-        launch::print_agent_command(agent_config, extra_args);
-        Ok(())
-    } else {
-        launch::exec_agent(agent_config, extra_args)
     }
 }
 
@@ -476,28 +424,4 @@ fn open_repo(workspace: Option<PathBuf>) -> miette::Result<Rc<Repository>> {
         .map_err(|e| miette::miette!("cannot determine cwd: {e}"))?;
     let repo = Repository::open(&root).map_err(|e| miette::miette!("{e}"))?;
     Ok(Rc::new(repo))
-}
-
-fn resolve_agent_id(input: &str, config: &concats_config::Config) -> Option<String> {
-    if config.agents.contains_key(input) {
-        return Some(input.to_string());
-    }
-    let input_lower = input.to_lowercase();
-    let prefix_matches: Vec<_> = config
-        .agents
-        .keys()
-        .filter(|id| id.to_lowercase().starts_with(&input_lower))
-        .collect();
-    if prefix_matches.len() == 1 {
-        return Some(prefix_matches[0].clone());
-    }
-    let contains_matches: Vec<_> = config
-        .agents
-        .keys()
-        .filter(|id| id.to_lowercase().contains(&input_lower))
-        .collect();
-    if contains_matches.len() == 1 {
-        return Some(contains_matches[0].clone());
-    }
-    None
 }

@@ -236,7 +236,6 @@ name = "concats-cli"
 version = "0.0.0"
 dependencies = [
  "clap",
- "concats-config",
  "concats-core",
  "concats-hooks",
  "git2",

@@ -14,24 +14,6 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Commands {
-    /// Launch an agent, replacing the current process via exec.
-    Run {
-        /// Agent to use (name from config or registry).
-        agent: Option<String>,
-
-        /// Workspace root directory (defaults to current directory).
-        #[arg(short, long)]
-        workspace: Option<PathBuf>,
-
-        /// Print the resolved command instead of executing it.
-        #[arg(long)]
-        print: bool,
-
-        /// Extra arguments passed through to the agent command.
-        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
-        extra_args: Vec<String>,
-    },
-
     /// Show the turn history of a session.
     Log {
         /// Session ref (e.g. session-a, session-a~3, abc1234).

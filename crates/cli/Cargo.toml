@@ -16,7 +16,6 @@ path = "src/main.rs"
 path = "src/lib.rs"
 
 [dependencies]
-concats_config = { workspace = true }
 concats_core = { workspace = true }
 concats_hooks = { workspace = true }
 clap = { workspace = true }
