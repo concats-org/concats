@@ -29,6 +29,40 @@ pub enum Commands {
         extra_args: Vec<String>,
     },
 
+    /// Show the turn history of a session.
+    Log {
+        /// Session ref (e.g. session-a, session-a~3, abc1234).
+        #[arg(name = "ref")]
+        session_ref: String,
+
+        /// Show only the last N turns.
+        #[arg(short = 'n', long)]
+        count: Option<usize>,
+
+        /// Workspace root directory (defaults to current directory).
+        #[arg(short, long)]
+        workspace: Option<PathBuf>,
+    },
+
+    /// Restore the working tree to a session turn's snapshot.
+    Checkout {
+        /// Session ref (e.g. session-a, session-a~3, abc1234).
+        #[arg(name = "ref")]
+        session_ref: String,
+
+        /// Force checkout even if the worktree has uncommitted changes.
+        #[arg(short, long)]
+        force: bool,
+
+        /// Suppress human-readable output.
+        #[arg(short, long)]
+        quiet: bool,
+
+        /// Workspace root directory (defaults to current directory).
+        #[arg(short, long)]
+        workspace: Option<PathBuf>,
+    },
+
     /// Browse recorded sessions in a TUI.
     Sessions {
         /// Workspace root directory (defaults to current directory).

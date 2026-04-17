@@ -1,6 +1,12 @@
-use std::{io, path::PathBuf};
+use std::{io, path::PathBuf, rc::Rc};
 
 use concats_config::{ConfigCliArgs, load_config};
+use concats_core::{
+    Repository,
+    diff::{self, DiffStatus},
+    session::{self, Session},
+    turn::{self, Turn, TurnEntryKind},
+};
 use concats_hooks::{Agent, InstallScope};
 
 use crate::{
@@ -28,6 +34,17 @@ pub async fn run(cli: Cli) -> miette::Result<()> {
             print,
             extra_args,
         }) => run_agent_command(agent, workspace, print, &extra_args),
+        Some(Commands::Log {
+            session_ref,
+            count,
+            workspace,
+        }) => run_log(&session_ref, count, workspace),
+        Some(Commands::Checkout {
+            session_ref,
+            force,
+            quiet,
+            workspace,
+        }) => run_checkout(&session_ref, force, quiet, workspace),
         Some(Commands::Sessions { workspace }) => run_sessions_tui(workspace).await,
         None => run_sessions_tui(None).await,
     }
@@ -231,6 +248,226 @@ async fn run_sessions_tui(workspace: Option<PathBuf>) -> miette::Result<()> {
 
     let mut app = App::new(workspace_root);
     app.run().await
+}
+
+// ---------------------------------------------------------------------------
+// concats log
+// ---------------------------------------------------------------------------
+
+fn run_log(
+    session_ref: &str,
+    count: Option<usize>,
+    workspace: Option<PathBuf>,
+) -> miette::Result<()> {
+    let repo = open_repo(workspace)?;
+    let resolved = resolve_session_ref(&repo, session_ref)?;
+    let turns = turn::list(&resolved.session).map_err(|e| miette::miette!("{e}"))?;
+
+    // Slice: up to the resolved turn (inclusive), then optionally tail by -n.
+    let end = turns.len() - resolved.offset_from_tip;
+    let visible = &turns[..end];
+    let visible = match count {
+        Some(n) => &visible[visible.len().saturating_sub(n)..],
+        None => visible,
+    };
+
+    println!("session {} ({} turns)\n", resolved.session.id, turns.len());
+
+    for turn in visible {
+        print_turn(&resolved.session, turn);
+    }
+
+    Ok(())
+}
+
+fn print_turn(session: &Session, turn: &Turn) {
+    let ts = turn
+        .created_at
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap_or_else(|_| turn.created_at.unix_timestamp().to_string());
+    println!("turn {} {ts}", turn.oid.short());
+
+    for entry in turn.entries() {
+        match &entry.kind {
+            TurnEntryKind::Prompt { text } => {
+                println!("  > {text}");
+            }
+            TurnEntryKind::Response { text } => {
+                for line in text.lines() {
+                    println!("  {line}");
+                }
+            }
+            TurnEntryKind::ToolCall { kind } => {
+                println!("  tool {kind}");
+            }
+        }
+    }
+
+    if let Ok(diffs) = diff::for_turn(session, turn)
+        && !diffs.is_empty()
+    {
+        println!();
+        for file in &diffs {
+            let icon = match &file.status {
+                DiffStatus::Added => "A",
+                DiffStatus::Modified => "M",
+                DiffStatus::Deleted => "D",
+                DiffStatus::Renamed { .. } => "R",
+            };
+            let path = match &file.status {
+                DiffStatus::Renamed { old_path } => format!("{old_path} -> {}", file.path),
+                _ => file.path.clone(),
+            };
+            println!("  {icon} {path}");
+        }
+    }
+
+    println!();
+}
+
+// ---------------------------------------------------------------------------
+// concats checkout
+// ---------------------------------------------------------------------------
+
+fn run_checkout(
+    session_ref: &str,
+    force: bool,
+    quiet: bool,
+    workspace: Option<PathBuf>,
+) -> miette::Result<()> {
+    let repo = open_repo(workspace)?;
+    let resolved = resolve_session_ref(&repo, session_ref)?;
+
+    if !force {
+        let statuses = repo
+            .statuses(None)
+            .map_err(|e| miette::miette!("failed to read worktree status: {e}"))?;
+        let dirty: Vec<_> = statuses
+            .iter()
+            .filter(|entry| {
+                !entry
+                    .status()
+                    .intersects(git2::Status::IGNORED | git2::Status::CURRENT)
+            })
+            .filter_map(|entry| entry.path().map(String::from))
+            .collect();
+        if !dirty.is_empty() {
+            let listing = dirty
+                .iter()
+                .take(10)
+                .map(|p| format!("  {p}"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            let suffix = if dirty.len() > 10 {
+                format!("\n  ... and {} more", dirty.len() - 10)
+            } else {
+                String::new()
+            };
+            return Err(miette::miette!(
+                "worktree has uncommitted changes:\n{listing}{suffix}\n\nuse --force to override"
+            ));
+        }
+    }
+
+    turn::restore(&resolved.session, &resolved.turn).map_err(|e| miette::miette!("{e}"))?;
+
+    if !quiet {
+        let ref_display = if resolved.offset_from_tip > 0 {
+            format!("{}~{}", resolved.session.id, resolved.offset_from_tip)
+        } else {
+            resolved.session.id.to_string()
+        };
+        println!(
+            "Checked out turn {} (from session {}).\n\n\
+             Continue from this point. To see the full conversation up to here:\n  \
+             concats log {ref_display}\n\n\
+             The working tree has been restored to the state at this turn.",
+            resolved.turn.oid.short(),
+            resolved.session.id,
+        );
+    }
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// session ref resolution
+// ---------------------------------------------------------------------------
+
+struct ResolvedRef {
+    session: Session,
+    turn: Turn,
+    offset_from_tip: usize,
+}
+
+fn resolve_session_ref(repo: &Rc<Repository>, input: &str) -> miette::Result<ResolvedRef> {
+    let (name, offset) = parse_tilde_suffix(input);
+
+    // Try session-name resolution first.
+    if let Ok(session) = session::open(Rc::clone(repo), name) {
+        let turns = turn::list(&session).map_err(|e| miette::miette!("{e}"))?;
+        if turns.is_empty() {
+            return Err(miette::miette!("session '{name}' has no turns"));
+        }
+        let index = turns.len().checked_sub(1 + offset).ok_or_else(|| {
+            miette::miette!(
+                "offset ~{offset} out of range; session '{name}' has {} turns",
+                turns.len()
+            )
+        })?;
+        let turn = turns[index].clone();
+        return Ok(ResolvedRef {
+            session,
+            turn,
+            offset_from_tip: offset,
+        });
+    }
+
+    // Bare SHA prefix — search across all sessions.
+    if offset > 0 {
+        return Err(miette::miette!(
+            "session '{name}' not found (tilde suffix only works with session names)"
+        ));
+    }
+
+    let sessions = session::list(repo).map_err(|e| miette::miette!("{e}"))?;
+    for session in &sessions {
+        let Ok(turns) = turn::list(session) else {
+            continue;
+        };
+        for (i, turn) in turns.iter().enumerate() {
+            if turn.oid.to_string().starts_with(input) {
+                return Ok(ResolvedRef {
+                    session: session.clone(),
+                    turn: turn.clone(),
+                    offset_from_tip: turns.len() - 1 - i,
+                });
+            }
+        }
+    }
+
+    Err(miette::miette!("no session or turn matching '{input}'"))
+}
+
+/// Parse "session-a~3" → ("session-a", 3), "session-a~2~1" → ("session-a", 3).
+fn parse_tilde_suffix(input: &str) -> (&str, usize) {
+    let mut total_offset = 0usize;
+    let mut name = input;
+    while let Some(pos) = name.rfind('~') {
+        let suffix = &name[pos + 1..];
+        let n: usize = suffix.parse().unwrap_or(1);
+        total_offset += n;
+        name = &name[..pos];
+    }
+    (name, total_offset)
+}
+
+fn open_repo(workspace: Option<PathBuf>) -> miette::Result<Rc<Repository>> {
+    let root = workspace
+        .map_or_else(std::env::current_dir, Ok)
+        .map_err(|e| miette::miette!("cannot determine cwd: {e}"))?;
+    let repo = Repository::open(&root).map_err(|e| miette::miette!("{e}"))?;
+    Ok(Rc::new(repo))
 }
 
 fn resolve_agent_id(input: &str, config: &concats_config::Config) -> Option<String> {
