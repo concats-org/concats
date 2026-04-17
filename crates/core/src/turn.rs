@@ -120,18 +120,43 @@ pub fn get(session: &Session, oid: Oid) -> Result<Turn> {
 
 /// Restore the turn snapshot into the repository working tree.
 ///
+/// When `force` is false, the checkout collects conflicting paths and returns
+/// them as a [`RestoreConflict`] error. When true, local changes are discarded.
+///
 /// # Errors
 ///
-/// Returns an error if the turn snapshot cannot be loaded, or the checkout
-/// fails.
-pub fn restore(session: &Session, turn: &Turn) -> Result<()> {
+/// Returns an error if the turn snapshot cannot be loaded, the checkout
+/// would overwrite local changes (safe mode), or the checkout fails.
+pub fn restore(session: &Session, turn: &Turn, force: bool) -> Result<()> {
     let repo = session.repo();
     let snapshot = snapshot::get(session, turn.oid)?;
     let commit = repo.find_commit(snapshot.oid.as_git())?;
     let tree = commit.tree()?;
-    repo.checkout_tree(
-        tree.as_object(),
-        Some(git2::build::CheckoutBuilder::new().force()),
-    )?;
+    let mut builder = git2::build::CheckoutBuilder::new();
+    if force {
+        builder.force();
+    } else {
+        builder.safe();
+        let conflicts: std::rc::Rc<std::cell::RefCell<Vec<String>>> =
+            std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let conflicts_cb = std::rc::Rc::clone(&conflicts);
+        builder.notify_on(git2::CheckoutNotificationType::CONFLICT);
+        builder.notify(move |_why, path, _a, _b, _c| {
+            if let Some(p) = path {
+                conflicts_cb
+                    .borrow_mut()
+                    .push(p.to_string_lossy().into_owned());
+            }
+            true
+        });
+        let result = repo.checkout_tree(tree.as_object(), Some(&mut builder));
+        let paths = conflicts.borrow();
+        if !paths.is_empty() {
+            return Err(Error::restore_conflict(paths.clone()));
+        }
+        result?;
+        return Ok(());
+    }
+    repo.checkout_tree(tree.as_object(), Some(&mut builder))?;
     Ok(())
 }

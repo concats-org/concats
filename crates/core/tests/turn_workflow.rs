@@ -64,7 +64,7 @@ fn restore_uses_turn_snapshot_tree() {
     let _ = snapshot::capture(&session, created.oid, SnapshotReason::TurnCommit).unwrap();
 
     std::fs::remove_file(dir.path().join("src.txt")).unwrap();
-    turn::restore(&session, &created).unwrap();
+    turn::restore(&session, &created, true).unwrap();
 
     assert_eq!(
         std::fs::read_to_string(dir.path().join("src.txt")).unwrap(),
@@ -88,7 +88,7 @@ fn restore_rejects_turns_from_other_sessions() {
         snapshot::capture(&source_session, source_turn.oid, SnapshotReason::TurnCommit).unwrap();
 
     let fork_session = session::create(repo.clone(), "session-b", source_turn.oid).unwrap();
-    let error = turn::restore(&fork_session, &source_turn).unwrap_err();
+    let error = turn::restore(&fork_session, &source_turn, true).unwrap_err();
 
     assert!(error.to_string().contains("snapshot not found"));
 }

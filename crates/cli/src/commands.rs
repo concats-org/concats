@@ -355,38 +355,29 @@ fn run_checkout(
     let repo = open_repo(workspace)?;
     let resolved = resolve_session_ref(&repo, session_ref)?;
 
-    if !force {
-        let statuses = repo
-            .statuses(None)
-            .map_err(|e| miette::miette!("failed to read worktree status: {e}"))?;
-        let dirty: Vec<_> = statuses
-            .iter()
-            .filter(|entry| {
-                !entry
-                    .status()
-                    .intersects(git2::Status::IGNORED | git2::Status::CURRENT)
-            })
-            .filter_map(|entry| entry.path().map(String::from))
-            .collect();
-        if !dirty.is_empty() {
-            let listing = dirty
+    if let Err(e) = turn::restore(&resolved.session, &resolved.turn, force) {
+        if let concats_core::error::Error::RestoreConflict { paths } = &e {
+            let listing = paths
                 .iter()
-                .take(10)
+                .take(20)
                 .map(|p| format!("  {p}"))
                 .collect::<Vec<_>>()
                 .join("\n");
-            let suffix = if dirty.len() > 10 {
-                format!("\n  ... and {} more", dirty.len() - 10)
+            let suffix = if paths.len() > 20 {
+                format!("\n  ... and {} more", paths.len() - 20)
             } else {
                 String::new()
             };
             return Err(miette::miette!(
-                "worktree has uncommitted changes:\n{listing}{suffix}\n\nuse --force to override"
+                "checkout would overwrite local changes in {} file{}:\n\
+                 {listing}{suffix}\n\n\
+                 use --force to discard these changes",
+                paths.len(),
+                if paths.len() == 1 { "" } else { "s" },
             ));
         }
+        return Err(miette::miette!("{e}"));
     }
-
-    turn::restore(&resolved.session, &resolved.turn).map_err(|e| miette::miette!("{e}"))?;
 
     if !quiet {
         let ref_display = if resolved.offset_from_tip > 0 {

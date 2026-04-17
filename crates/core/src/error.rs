@@ -24,6 +24,9 @@ pub enum Error {
 
     #[error("snapshot error: {message}")]
     Snapshot { message: String },
+
+    #[error("checkout would overwrite local changes")]
+    RestoreConflict { paths: Vec<String> },
 }
 
 impl Error {
@@ -49,6 +52,11 @@ impl Error {
         Self::Snapshot {
             message: message.into(),
         }
+    }
+
+    #[must_use]
+    pub fn restore_conflict(paths: Vec<String>) -> Self {
+        Self::RestoreConflict { paths }
     }
 }
 
