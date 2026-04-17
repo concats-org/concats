@@ -4,5 +4,4 @@ pub mod cli;
 pub mod commands;
 pub mod components;
 pub mod launch;
-pub mod tabs;
 pub mod tui;

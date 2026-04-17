@@ -19,7 +19,7 @@ use time::format_description::well_known::Rfc3339;
 use tokio::sync::mpsc;
 use tui_widget_list::{ListBuilder, ListView};
 
-use crate::{action::Action, components::Component, tabs::ActiveTab};
+use crate::{action::Action, components::Component};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SessionsPanelFocus {
@@ -199,9 +199,10 @@ impl Component for SessionsBrowserComponent {
             KeyCode::Right | KeyCode::Char('l') | KeyCode::Enter => {
                 self.send_action(Action::SessionsOpenDetail);
             }
-            KeyCode::Left | KeyCode::Char('h') => self.send_action(Action::SessionsCloseDetail),
+            KeyCode::Left | KeyCode::Char('h') | KeyCode::Esc => {
+                self.send_action(Action::SessionsCloseDetail);
+            }
             KeyCode::Char('r') => self.send_action(Action::SessionsRefresh),
-            KeyCode::Esc => self.send_action(Action::SessionsBack),
             _ => {}
         }
         Ok(())
@@ -219,7 +220,7 @@ impl Component for SessionsBrowserComponent {
 
     fn update(&mut self, action: &Action) -> miette::Result<()> {
         match action {
-            Action::SwitchTab(ActiveTab::Sessions) | Action::SessionsRefresh => self.refresh(),
+            Action::SessionsRefresh => self.refresh(),
             Action::SessionsSelectNext => self.select_next(),
             Action::SessionsSelectPrev => self.select_prev(),
             Action::SessionsOpenDetail => {

@@ -4,9 +4,7 @@ use tokio::sync::mpsc;
 
 use crate::action::Action;
 
-pub mod chrome;
 pub mod sessions;
-pub mod static_page;
 
 pub trait Component {
     fn register_action_handler(&mut self, tx: mpsc::UnboundedSender<Action>);
