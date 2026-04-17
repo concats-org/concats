@@ -63,7 +63,7 @@ pub enum Commands {
         workspace: Option<PathBuf>,
     },
 
-    /// Browse recorded sessions in a TUI.
+    /// List recorded sessions.
     Sessions {
         /// Workspace root directory (defaults to current directory).
         #[arg(short, long)]

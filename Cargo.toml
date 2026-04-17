@@ -77,9 +77,6 @@ tracing = "0.1.41"
 tracing-indicatif = "0.3.6"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
 
-[patch.crates-io]
-tui-widget-list = { git = "https://github.com/concats-org/tui-widget-list.git", branch = "scrolling" }
-
 [profile.profiling]
 inherits = "release"
 debug = true

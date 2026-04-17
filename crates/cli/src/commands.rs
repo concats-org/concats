@@ -10,7 +10,6 @@ use concats_core::{
 use concats_hooks::{Agent, InstallScope};
 
 use crate::{
-    app::App,
     cli::{Cli, Commands, HooksAction},
     launch,
 };
@@ -20,7 +19,7 @@ use crate::{
 /// # Errors
 ///
 /// Returns an error if the selected subcommand fails.
-pub async fn run(cli: Cli) -> miette::Result<()> {
+pub fn run(cli: Cli) -> miette::Result<()> {
     match cli.command {
         Some(Commands::Hook {
             agent,
@@ -45,8 +44,8 @@ pub async fn run(cli: Cli) -> miette::Result<()> {
             quiet,
             workspace,
         }) => run_checkout(&session_ref, force, quiet, workspace),
-        Some(Commands::Sessions { workspace }) => run_sessions_tui(workspace).await,
-        None => run_sessions_tui(None).await,
+        Some(Commands::Sessions { workspace }) => run_sessions_list(workspace),
+        None => run_sessions_list(None),
     }
 }
 
@@ -235,19 +234,32 @@ fn run_agent_command(
     }
 }
 
-/// Launch the TUI for browsing recorded sessions.
-///
-/// # Errors
-///
-/// Returns an error if the workspace directory cannot be resolved or the TUI
-/// exits with an error.
-async fn run_sessions_tui(workspace: Option<PathBuf>) -> miette::Result<()> {
-    let workspace_root = workspace
-        .map_or_else(std::env::current_dir, Ok)
-        .map_err(|error| miette::miette!("could not determine current directory: {error}"))?;
+fn run_sessions_list(workspace: Option<PathBuf>) -> miette::Result<()> {
+    let repo = open_repo(workspace)?;
+    let sessions = session::list(&repo).map_err(|e| miette::miette!("{e}"))?;
 
-    let mut app = App::new(workspace_root);
-    app.run().await
+    if sessions.is_empty() {
+        println!("no sessions");
+        return Ok(());
+    }
+
+    for session in &sessions {
+        let turns = turn::list(session).map_err(|e| miette::miette!("{e}"))?;
+        let modified = session::modified_at(session)
+            .ok()
+            .map(|t| {
+                t.format(&time::format_description::well_known::Rfc3339)
+                    .unwrap_or_else(|_| t.unix_timestamp().to_string())
+            })
+            .unwrap_or_default();
+        let name = session
+            .name
+            .as_deref()
+            .unwrap_or_else(|| session.id.as_ref());
+        println!("{:<40} {:>3} turns  {modified}", name, turns.len(),);
+    }
+
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
