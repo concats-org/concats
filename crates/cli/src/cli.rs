@@ -3,7 +3,10 @@ use std::path::PathBuf;
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
-#[command(name = "concats", about = "Concats \u{2013} git-native session history for coding agents")]
+#[command(
+    name = "concats",
+    about = "Concats \u{2013} git-native session history for coding agents"
+)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Option<Commands>,

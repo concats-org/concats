@@ -257,11 +257,11 @@ fn run_sessions_list(workspace: Option<PathBuf>) -> miette::Result<()> {
                     .unwrap_or_else(|_| t.unix_timestamp().to_string())
             })
             .unwrap_or_default();
-        let name = session
-            .name
-            .as_deref()
-            .unwrap_or_else(|| session.id.as_ref());
-        println!("{:<40} {:>3} turns  {modified}", name, turns.len(),);
+        println!(
+            "{:<40} {:>3} turns  {modified}",
+            session.id.as_ref(),
+            turns.len(),
+        );
     }
 
     Ok(())
