@@ -45,7 +45,12 @@ pub fn run(cli: Cli) -> miette::Result<()> {
             workspace,
         }) => run_checkout(&session_ref, force, quiet, workspace),
         Some(Commands::Sessions { workspace }) => run_sessions_list(workspace),
-        None => run_sessions_list(None),
+        None => {
+            use clap::CommandFactory;
+            Cli::command()
+                .print_help()
+                .map_err(|e| miette::miette!("{e}"))
+        }
     }
 }
 
