@@ -1,4 +1,8 @@
-use std::{io, path::PathBuf, rc::Rc};
+use std::{
+    io,
+    path::{Path, PathBuf},
+    rc::Rc,
+};
 
 use concats_core::{
     Repository,
@@ -19,6 +23,7 @@ type HookAgent = &'static dyn concats_hooks::Agent;
 /// Returns an error if the selected subcommand fails.
 pub fn run(cli: Cli) -> miette::Result<()> {
     match cli.command {
+        Some(Commands::Init { path }) => run_init(path.as_deref()),
         Some(Commands::Hook {
             agent,
             event,
@@ -94,13 +99,42 @@ pub fn run_hooks_action(action: HooksAction) -> miette::Result<()> {
     }
 }
 
+fn run_init(path: Option<&Path>) -> miette::Result<()> {
+    let root = concats_hooks::find_worktree_root(path)
+        .map_err(|error| miette::miette!("not inside a git repository: {error}"))?;
+    let binary = concats_hooks::helpers::binary_path().map_err(|e| miette::miette!("{e}"))?;
+
+    let detected: Vec<HookAgent> = all_agents()
+        .iter()
+        .copied()
+        .filter(|agent| agent.is_detected())
+        .collect();
+
+    if detected.is_empty() {
+        return Err(miette::miette!(
+            "no coding agents detected. Install an agent (claude, codex, cursor, ...) \
+             or use `concats hooks install <agent>` to wire up hooks explicitly."
+        ));
+    }
+
+    install_hooks(&detected, &InstallScope::Project { root }, &binary);
+    Ok(())
+}
+
 fn run_hooks_install(agents: &[String], scope: &InstallScope) -> miette::Result<()> {
     let binary = concats_hooks::helpers::binary_path()?;
-    let targets = resolve_agents(agents)?;
-    let mut installed = Vec::new();
+    let targets = agents
+        .iter()
+        .map(|name| resolve_agent(name))
+        .collect::<miette::Result<Vec<_>>>()?;
+    install_hooks(&targets, scope, &binary);
+    Ok(())
+}
 
-    for agent in targets {
-        match agent.install(&binary, scope) {
+fn install_hooks(targets: &[HookAgent], scope: &InstallScope, binary: &Path) {
+    let mut installed = Vec::new();
+    for &agent in targets {
+        match agent.install(binary, scope) {
             Ok(()) => installed.push(agent.name()),
             Err(error) => eprintln!("warning: failed to install hooks for {agent}: {error}"),
         }
@@ -111,7 +145,6 @@ fn run_hooks_install(agents: &[String], scope: &InstallScope) -> miette::Result<
     } else {
         eprintln!("hooks installed for: {}", installed.join(", "));
     }
-    Ok(())
 }
 
 fn run_hooks_uninstall(agents: &[String], scope: &InstallScope) -> miette::Result<()> {
@@ -163,25 +196,6 @@ fn resolve_scope(path: Option<PathBuf>, global: bool) -> miette::Result<InstallS
         .map_or_else(std::env::current_dir, Ok)
         .map_err(|error| miette::miette!("cannot determine cwd: {error}"))?;
     Ok(InstallScope::Project { root })
-}
-
-/// Resolve agent names from CLI args, defaulting to auto-detected agents.
-fn resolve_agents(args: &[String]) -> miette::Result<Vec<HookAgent>> {
-    if args.is_empty() {
-        let detected: Vec<HookAgent> = all_agents()
-            .iter()
-            .copied()
-            .filter(|a| a.is_detected())
-            .collect();
-        if detected.is_empty() {
-            return Err(miette::miette!(
-                "no agents detected. Specify agents explicitly: concats hooks install claude codex ..."
-            ));
-        }
-        Ok(detected)
-    } else {
-        args.iter().map(|name| resolve_agent(name)).collect()
-    }
 }
 
 fn resolve_agent(name: &str) -> miette::Result<HookAgent> {
@@ -443,12 +457,5 @@ mod tests {
     #[test]
     fn resolve_agent_uses_registry_case_insensitively() {
         assert_eq!(resolve_agent("ClAuDe").unwrap().name(), "claude");
-    }
-
-    #[test]
-    fn resolve_agents_preserves_explicit_order() {
-        let agents = resolve_agents(&["copilot".to_string(), "claude".to_string()]).unwrap();
-        let names: Vec<_> = agents.iter().map(|agent| agent.name()).collect();
-        assert_eq!(names, vec!["copilot", "claude"]);
     }
 }
