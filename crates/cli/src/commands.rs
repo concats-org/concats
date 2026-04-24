@@ -6,9 +6,11 @@ use concats_core::{
     session::{self, Session},
     turn::{self, Turn, TurnEntryKind},
 };
-use concats_hooks::{Agent, InstallScope};
+use concats_hooks::{InstallScope, all_agents, find_agent};
 
 use crate::cli::{Cli, Commands, HooksAction};
+
+type HookAgent = &'static dyn concats_hooks::Agent;
 
 /// Run the CLI command selected by the parsed arguments.
 ///
@@ -61,7 +63,7 @@ pub fn run_hook_command(
             .map_err(|error| miette::miette!("failed to read stdin: {error}"))?,
     };
 
-    let agent: Agent = agent.parse().map_err(|e: String| miette::miette!("{e}"))?;
+    let agent = resolve_agent(agent)?;
     agent
         .dispatch(event, &payload_json)
         .map_err(|error| miette::miette!("{error}"))
@@ -93,13 +95,13 @@ pub fn run_hooks_action(action: HooksAction) -> miette::Result<()> {
 }
 
 fn run_hooks_install(agents: &[String], scope: &InstallScope) -> miette::Result<()> {
-    let binary = concats_hooks::install::binary_path();
+    let binary = concats_hooks::helpers::binary_path()?;
     let targets = resolve_agents(agents)?;
     let mut installed = Vec::new();
 
-    for agent in &targets {
+    for agent in targets {
         match agent.install(&binary, scope) {
-            Ok(()) => installed.push(agent.cli_name()),
+            Ok(()) => installed.push(agent.name()),
             Err(error) => eprintln!("warning: failed to install hooks for {agent}: {error}"),
         }
     }
@@ -113,19 +115,19 @@ fn run_hooks_install(agents: &[String], scope: &InstallScope) -> miette::Result<
 }
 
 fn run_hooks_uninstall(agents: &[String], scope: &InstallScope) -> miette::Result<()> {
-    let targets: Vec<Agent> = if agents.is_empty() {
-        Agent::ALL.to_vec()
+    let targets: Vec<HookAgent> = if agents.is_empty() {
+        all_agents().to_vec()
     } else {
         agents
             .iter()
-            .map(|s| s.parse::<Agent>().map_err(|e| miette::miette!("{e}")))
+            .map(|name| resolve_agent(name))
             .collect::<miette::Result<Vec<_>>>()?
     };
 
     let mut removed = Vec::new();
-    for agent in &targets {
+    for agent in targets {
         match agent.uninstall(scope) {
-            Ok(()) => removed.push(agent.cli_name()),
+            Ok(()) => removed.push(agent.name()),
             Err(error) => eprintln!("warning: failed to uninstall hooks for {agent}: {error}"),
         }
     }
@@ -142,17 +144,14 @@ fn run_hooks_status(scope: &InstallScope) {
     eprintln!("{:<12} {:<10} Installed", "Agent", "Detected");
     eprintln!("{:<12} {:<10} ---------", "-----", "--------");
 
-    for agent in Agent::ALL {
+    for &agent in all_agents() {
         let detected_str = if agent.is_detected() { "yes" } else { "no" };
         let installed_str = if agent.is_installed(scope) {
             "yes"
         } else {
             "no"
         };
-        eprintln!(
-            "{:<12} {detected_str:<10} {installed_str}",
-            agent.cli_name()
-        );
+        eprintln!("{:<12} {detected_str:<10} {installed_str}", agent.name());
     }
 }
 
@@ -167,9 +166,9 @@ fn resolve_scope(path: Option<PathBuf>, global: bool) -> miette::Result<InstallS
 }
 
 /// Resolve agent names from CLI args, defaulting to auto-detected agents.
-fn resolve_agents(args: &[String]) -> miette::Result<Vec<Agent>> {
+fn resolve_agents(args: &[String]) -> miette::Result<Vec<HookAgent>> {
     if args.is_empty() {
-        let detected: Vec<Agent> = Agent::ALL
+        let detected: Vec<HookAgent> = all_agents()
             .iter()
             .copied()
             .filter(|a| a.is_detected())
@@ -181,10 +180,20 @@ fn resolve_agents(args: &[String]) -> miette::Result<Vec<Agent>> {
         }
         Ok(detected)
     } else {
-        args.iter()
-            .map(|s| s.parse::<Agent>().map_err(|e| miette::miette!("{e}")))
-            .collect()
+        args.iter().map(|name| resolve_agent(name)).collect()
     }
+}
+
+fn resolve_agent(name: &str) -> miette::Result<HookAgent> {
+    find_agent(name).ok_or_else(|| unknown_agent_error(name))
+}
+
+fn unknown_agent_error(name: &str) -> miette::Report {
+    let names: Vec<_> = all_agents().iter().map(|agent| agent.name()).collect();
+    miette::miette!(
+        "unknown agent: {name}. Expected one of: {}",
+        names.join(", ")
+    )
 }
 
 fn run_sessions_list(workspace: Option<PathBuf>) -> miette::Result<()> {
@@ -424,4 +433,22 @@ fn open_repo(workspace: Option<PathBuf>) -> miette::Result<Rc<Repository>> {
         .map_err(|e| miette::miette!("cannot determine cwd: {e}"))?;
     let repo = Repository::open(&root).map_err(|e| miette::miette!("{e}"))?;
     Ok(Rc::new(repo))
+}
+
+#[cfg(test)]
+#[allow(clippy::disallowed_methods)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resolve_agent_uses_registry_case_insensitively() {
+        assert_eq!(resolve_agent("ClAuDe").unwrap().name(), "claude");
+    }
+
+    #[test]
+    fn resolve_agents_preserves_explicit_order() {
+        let agents = resolve_agents(&["copilot".to_string(), "claude".to_string()]).unwrap();
+        let names: Vec<_> = agents.iter().map(|agent| agent.name()).collect();
+        assert_eq!(names, vec!["copilot", "claude"]);
+    }
 }
