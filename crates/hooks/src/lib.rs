@@ -99,6 +99,7 @@ pub mod copilot;
 pub mod cursor;
 pub mod droid;
 pub mod gemini;
+pub mod git_hook;
 pub mod handler;
 pub mod helpers;
 pub mod json_config;

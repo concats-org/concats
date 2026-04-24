@@ -5,7 +5,7 @@ use time::{OffsetDateTime, UtcOffset};
 use crate::error::{Error, Result};
 
 /// An opaque commit identifier.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Oid(git2::Oid);
 
 impl Oid {
