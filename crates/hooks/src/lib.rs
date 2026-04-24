@@ -7,6 +7,7 @@ use std::{
 use concats_core::{
     Repository,
     error::{Error, Result},
+    turn::TurnEntry,
 };
 use serde::Deserialize;
 
@@ -55,7 +56,12 @@ fn dispatch_simple(
                 .response
                 .as_deref()
                 .unwrap_or("(response not captured)");
-            handler::on_stop(repo, session_id, agent_name, response)
+            handler::on_stop(
+                repo,
+                session_id,
+                agent_name,
+                &[TurnEntry::response_now(response)],
+            )
         }
         HandlerAction::Ignore => Ok(()),
     }
