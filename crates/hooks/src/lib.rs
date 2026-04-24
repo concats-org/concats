@@ -55,7 +55,7 @@ fn dispatch_simple(
                 .response
                 .as_deref()
                 .unwrap_or("(response not captured)");
-            handler::on_stop(repo, session_id, agent_name, response)
+            handler::on_stop(repo, session_id, agent_name, &[response])
         }
         HandlerAction::Ignore => Ok(()),
     }

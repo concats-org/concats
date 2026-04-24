@@ -32,7 +32,7 @@ impl crate::Agent for CodexAgent {
 
         if let Some(transcript) = &payload.transcript_path {
             match std::fs::read_to_string(transcript) {
-                Ok(response) => handler::on_stop(repo, session_id, "Codex", &response)?,
+                Ok(response) => handler::on_stop(repo, session_id, "Codex", &[&response])?,
                 Err(error) => {
                     eprintln!("warning: failed to read codex transcript at {transcript}: {error}");
                 }
