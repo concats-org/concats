@@ -2,7 +2,7 @@ use std::path::Path;
 
 use concats_core::error::{Error, Result};
 
-use crate::{ install, HandlerAction, InstallScope, find_worktree_root, json_config};
+use crate::{HandlerAction, InstallScope, json_config};
 
 const AGENT: &str = "copilot";
 

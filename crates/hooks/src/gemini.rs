@@ -5,7 +5,7 @@ use std::{
 
 use concats_core::error::{Error, Result};
 
-use crate::{HandlerAction, find_worktree_root, InstallScope, json_config};
+use crate::{HandlerAction, InstallScope, json_config};
 
 const AGENT: &str = "gemini";
 const MATCHER: &str = "write_file|replace";
