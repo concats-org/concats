@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use concats_core::error::{Error, Result};
 
-use crate::{HandlerAction, InstallScope, find_worktree_root, plugin};
+use crate::{HandlerAction, InstallScope, plugin};
 
 const AGENT: &str = "amp";
 const PLUGIN_TEMPLATE: &str = include_str!("../plugins/amp.ts");
