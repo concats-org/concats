@@ -33,7 +33,7 @@ impl crate::Agent for ClaudeAgent {
                     serde_json::from_str(payload_json).map_err(|error| {
                         Error::session(format!("invalid SessionStart payload: {error}"))
                     })?;
-                let worktree_root = find_worktree_root(payload.cwd.as_deref())?;
+                let worktree_root = find_worktree_root(payload.cwd.as_deref().map(Path::new))?;
                 let repo = Rc::new(Repository::open(&worktree_root)?);
                 handler::on_session_started(repo, &payload.session_id)
             }
@@ -42,7 +42,7 @@ impl crate::Agent for ClaudeAgent {
                     serde_json::from_str(payload_json).map_err(|error| {
                         Error::session(format!("invalid UserPromptSubmit payload: {error}"))
                     })?;
-                let worktree_root = find_worktree_root(payload.cwd.as_deref())?;
+                let worktree_root = find_worktree_root(payload.cwd.as_deref().map(Path::new))?;
                 let repo = Rc::new(Repository::open(&worktree_root)?);
                 handler::on_prompt_submitted(repo, &payload.session_id, "Claude", &payload.prompt)
             }
@@ -51,14 +51,14 @@ impl crate::Agent for ClaudeAgent {
                     serde_json::from_str(payload_json).map_err(|error| {
                         Error::session(format!("invalid PostToolUse payload: {error}"))
                     })?;
-                let worktree_root = find_worktree_root(payload.cwd.as_deref())?;
+                let worktree_root = find_worktree_root(payload.cwd.as_deref().map(Path::new))?;
                 let repo = Rc::new(Repository::open(&worktree_root)?);
                 handler::on_files_changed(repo, &payload.session_id, "Claude")
             }
             "Stop" => {
                 let payload: StopPayload = serde_json::from_str(payload_json)
                     .map_err(|error| Error::session(format!("invalid Stop payload: {error}")))?;
-                let worktree_root = find_worktree_root(payload.cwd.as_deref())?;
+                let worktree_root = find_worktree_root(payload.cwd.as_deref().map(Path::new))?;
                 let repo = Rc::new(Repository::open(&worktree_root)?);
                 let transcript_response = payload
                     .transcript_path
@@ -407,7 +407,7 @@ mod tests {
             init_repo_with_commit(dir.path());
             let sub = dir.path().join("nested/dir");
             std::fs::create_dir_all(&sub).unwrap();
-            let root = crate::find_worktree_root(Some(sub.to_str().unwrap())).unwrap();
+            let root = crate::find_worktree_root(Some(sub.as_path())).unwrap();
             assert_eq!(
                 root.canonicalize().unwrap(),
                 dir.path().canonicalize().unwrap()

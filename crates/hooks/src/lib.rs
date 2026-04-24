@@ -40,7 +40,7 @@ fn dispatch_simple(
     let payload: HookPayload = serde_json::from_str(payload_json)
         .map_err(|error| Error::session(format!("invalid {agent_name} payload: {error}")))?;
     let session_id = payload.session_id.as_deref().unwrap_or(default_session_id);
-    let worktree_root = find_worktree_root(payload.cwd.as_deref())?;
+    let worktree_root = find_worktree_root(payload.cwd.as_deref().map(Path::new))?;
     let repo = Rc::new(Repository::open(&worktree_root)?);
 
     match resolve(event)? {
@@ -73,9 +73,16 @@ pub enum InstallScope {
     Project { root: PathBuf },
 }
 
-pub(crate) fn find_worktree_root(cwd: Option<&str>) -> Result<PathBuf> {
+/// Resolve the git worktree root from an optional starting directory,
+/// falling back to the process's current directory.
+///
+/// # Errors
+///
+/// Returns an error if the current directory cannot be read, no enclosing
+/// git repository is found, or the repository is bare.
+pub fn find_worktree_root(cwd: Option<&Path>) -> Result<PathBuf> {
     let start = match cwd {
-        Some(dir) => PathBuf::from(dir),
+        Some(dir) => dir.to_path_buf(),
         None => std::env::current_dir()?,
     };
     let repo = git2::Repository::discover(&start)?;

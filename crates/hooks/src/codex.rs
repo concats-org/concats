@@ -25,7 +25,7 @@ impl crate::Agent for CodexAgent {
         let payload: Payload = serde_json::from_str(payload_json)
             .map_err(|error| Error::session(format!("invalid Codex payload: {error}")))?;
         let session_id = payload.session_id.as_deref().unwrap_or("codex-default");
-        let worktree_root = find_worktree_root(payload.cwd.as_deref())?;
+        let worktree_root = find_worktree_root(payload.cwd.as_deref().map(Path::new))?;
         let repo = Rc::new(Repository::open(&worktree_root)?);
 
         handler::on_files_changed(repo.clone(), session_id, "Codex")?;

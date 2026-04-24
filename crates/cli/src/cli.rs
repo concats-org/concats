@@ -14,6 +14,14 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Commands {
+    /// Set up concats in the current repository: install hooks for every
+    /// detected agent at the project level.
+    Init {
+        /// Project root (defaults to the enclosing git worktree).
+        #[arg(short, long)]
+        path: Option<PathBuf>,
+    },
+
     /// Show the turn history of a session.
     Log {
         /// Session ref (e.g. session-a, session-a~3, abc1234).
@@ -77,9 +85,12 @@ pub enum Commands {
 
 #[derive(Subcommand)]
 pub enum HooksAction {
-    /// Install concats hooks for detected agents.
+    /// Install concats hooks for one or more named agents.
+    ///
+    /// To install for every detected agent at once, use `concats init`.
     Install {
-        /// Agents to install for (default: auto-detect installed agents).
+        /// Agents to install for.
+        #[arg(required = true)]
         agents: Vec<String>,
 
         /// Project root for Claude project-level hooks (defaults to current directory).
