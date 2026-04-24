@@ -1,10 +1,13 @@
 use std::{
     fmt,
     path::{Path, PathBuf},
-    str::FromStr,
+    rc::Rc,
 };
 
-use concats_core::error::{Error, Result};
+use concats_core::{
+    Repository,
+    error::{Error, Result},
+};
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
@@ -38,20 +41,21 @@ fn dispatch_simple(
         .map_err(|error| Error::session(format!("invalid {agent_name} payload: {error}")))?;
     let session_id = payload.session_id.as_deref().unwrap_or(default_session_id);
     let worktree_root = find_worktree_root(payload.cwd.as_deref())?;
+    let repo = Rc::new(Repository::open(&worktree_root)?);
 
     match resolve(event)? {
-        HandlerAction::SessionStarted => handler::on_session_started(&worktree_root, session_id),
+        HandlerAction::SessionStarted => handler::on_session_started(repo, session_id),
         HandlerAction::PromptSubmitted => match payload.prompt.as_deref() {
-            Some(prompt) => handler::on_prompt_submitted(&worktree_root, session_id, prompt),
+            Some(prompt) => handler::on_prompt_submitted(repo, session_id, agent_name, prompt),
             None => Ok(()),
         },
-        HandlerAction::FilesChanged => handler::on_files_changed(&worktree_root, session_id),
+        HandlerAction::FilesChanged => handler::on_files_changed(repo, session_id, agent_name),
         HandlerAction::Stop => {
             let response = payload
                 .response
                 .as_deref()
                 .unwrap_or("(response not captured)");
-            handler::on_stop(&worktree_root, session_id, response)
+            handler::on_stop(repo, session_id, agent_name, response)
         }
         HandlerAction::Ignore => Ok(()),
     }
@@ -67,17 +71,6 @@ pub enum InstallScope {
     User,
     /// Project-level settings (e.g. `<project_root>/.claude/settings.json`).
     Project { root: PathBuf },
-}
-
-impl InstallScope {
-    fn claude_settings_path(&self) -> Result<PathBuf> {
-        match self {
-            Self::User => dirs::home_dir()
-                .map(|h| h.join(".claude").join("settings.json"))
-                .ok_or_else(|| Error::session("cannot determine home directory")),
-            Self::Project { root } => Ok(root.join(".claude").join("settings.json")),
-        }
-    }
 }
 
 pub(crate) fn find_worktree_root(cwd: Option<&str>) -> Result<PathBuf> {
@@ -100,178 +93,146 @@ pub mod cursor;
 pub mod droid;
 pub mod gemini;
 pub mod handler;
-pub mod install;
+pub mod helpers;
+pub mod json_config;
 pub mod opencode;
+pub mod plugin;
+pub mod toml_config;
 pub mod windsurf;
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Agent {
-    Claude,
-    Codex,
-    Cursor,
-    Windsurf,
-    Gemini,
-    Copilot,
-    Droid,
-    Amp,
-    OpenCode,
-}
-impl Agent {
-    pub const ALL: &[Self] = &[
-        Self::Claude,
-        Self::Codex,
-        Self::Cursor,
-        Self::Windsurf,
-        Self::Gemini,
-        Self::Copilot,
-        Self::Droid,
-        Self::Amp,
-        Self::OpenCode,
-    ];
+
+pub trait Agent: Sync {
+    #[must_use]
+    fn name(&self) -> &'static str;
 
     #[must_use]
-    pub fn cli_name(self) -> &'static str {
-        match self {
-            Self::Claude => "claude",
-            Self::Codex => "codex",
-            Self::Cursor => "cursor",
-            Self::Windsurf => "windsurf",
-            Self::Gemini => "gemini",
-            Self::Copilot => "copilot",
-            Self::Droid => "droid",
-            Self::Amp => "amp",
-            Self::OpenCode => "opencode",
-        }
-    }
+    fn is_detected(&self) -> bool;
 
-    #[must_use]
-    pub fn is_detected(self) -> bool {
-        let Some(home) = dirs::home_dir() else {
-            return false;
-        };
-        match self {
-            Self::Claude => home.join(".claude").is_dir(),
-            Self::Codex => home.join(".codex").is_dir(),
-            Self::Cursor => home.join(".cursor").is_dir(),
-            Self::Windsurf => home.join(".codeium").join("windsurf").is_dir(),
-            Self::Gemini => home.join(".gemini").is_dir(),
-            // Copilot CLI requires the gh CLI (~/.config/gh).
-            Self::Copilot => home.join(".config").join("gh").is_dir(),
-            Self::Droid => home.join(".factory").is_dir(),
-            Self::Amp => home.join(".config").join("amp").is_dir(),
-            Self::OpenCode => home.join(".config").join("opencode").is_dir(),
-        }
-    }
-
-    /// Dispatch a hook event to the agent-specific handler.
+    /// Dispatch an incoming hook payload for this agent.
     ///
     /// # Errors
     ///
-    /// Returns an error if the event is missing when required, the payload
-    /// cannot be parsed, or the underlying handler fails.
-    pub fn dispatch(self, event: Option<&str>, payload: &str) -> Result<()> {
-        if self == Self::Codex {
-            return codex::dispatch(payload);
-        }
-        let event =
-            event.ok_or_else(|| Error::session(format!("{self} requires an event name")))?;
-        match self {
-            Self::Claude => claude::dispatch(event, payload),
-            Self::Codex => unreachable!(),
-            Self::Cursor => cursor::dispatch(event, payload),
-            Self::Windsurf => windsurf::dispatch(event, payload),
-            Self::Gemini => gemini::dispatch(event, payload),
-            Self::Copilot => copilot::dispatch(event, payload),
-            Self::Droid => droid::dispatch(event, payload),
-            Self::Amp => amp::dispatch(event, payload),
-            Self::OpenCode => opencode::dispatch(event, payload),
-        }
-    }
+    /// Returns an error if the event is missing when required, the payload is
+    /// invalid, or the underlying handler fails.
+    fn dispatch(&self, event: Option<&str>, payload: &str) -> Result<()>;
 
-    /// Install concats hooks for this agent.
-    ///
-    /// `scope` is only consulted by Claude; other agents always install at
-    /// the user level.
+    /// Install concats integration for this agent.
     ///
     /// # Errors
     ///
     /// Returns an error if the agent configuration cannot be read or written.
-    pub fn install(self, binary: &Path, scope: &InstallScope) -> Result<()> {
-        match self {
-            Self::Claude => claude::install(&scope.claude_settings_path()?, binary),
-            Self::Codex => codex::install(binary),
-            Self::Cursor => cursor::install(binary),
-            Self::Windsurf => windsurf::install(binary),
-            Self::Gemini => gemini::install(binary),
-            Self::Copilot => copilot::install(binary),
-            Self::Droid => droid::install(binary),
-            Self::Amp => amp::install(binary),
-            Self::OpenCode => opencode::install(binary),
-        }
-    }
+    fn install(&self, binary: &Path, scope: &InstallScope) -> Result<()>;
 
-    /// Remove concats hooks for this agent.
+    /// Remove concats integration for this agent.
     ///
     /// # Errors
     ///
     /// Returns an error if the agent configuration cannot be read or written.
-    pub fn uninstall(self, scope: &InstallScope) -> Result<()> {
-        match self {
-            Self::Claude => claude::uninstall(&scope.claude_settings_path()?),
-            Self::Codex => codex::uninstall(),
-            Self::Cursor => cursor::uninstall(),
-            Self::Windsurf => windsurf::uninstall(),
-            Self::Gemini => gemini::uninstall(),
-            Self::Copilot => copilot::uninstall(),
-            Self::Droid => droid::uninstall(),
-            Self::Amp => amp::uninstall(),
-            Self::OpenCode => opencode::uninstall(),
-        }
-    }
+    fn uninstall(&self, scope: &InstallScope) -> Result<()>;
 
-    /// Check whether concats hooks are installed for this agent.
     #[must_use]
-    pub fn is_installed(self, scope: &InstallScope) -> bool {
-        match self {
-            Self::Claude => scope
-                .claude_settings_path()
-                .is_ok_and(|p| claude::is_installed(&p)),
-            Self::Codex => codex::is_installed(),
-            Self::Cursor => cursor::is_installed(),
-            Self::Windsurf => windsurf::is_installed(),
-            Self::Gemini => gemini::is_installed(),
-            Self::Copilot => copilot::is_installed(),
-            Self::Droid => droid::is_installed(),
-            Self::Amp => amp::is_installed(),
-            Self::OpenCode => opencode::is_installed(),
-        }
-    }
+    fn is_installed(&self, scope: &InstallScope) -> bool;
 }
-impl FromStr for Agent {
-    type Err = String;
 
-    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
-        match s.to_lowercase().as_str() {
-            "claude" => Ok(Self::Claude),
-            "codex" => Ok(Self::Codex),
-            "cursor" => Ok(Self::Cursor),
-            "windsurf" => Ok(Self::Windsurf),
-            "gemini" => Ok(Self::Gemini),
-            "copilot" => Ok(Self::Copilot),
-            "droid" => Ok(Self::Droid),
-            "amp" => Ok(Self::Amp),
-            "opencode" => Ok(Self::OpenCode),
-            _ => {
-                let names: Vec<_> = Self::ALL.iter().map(|a| a.cli_name()).collect();
-                Err(format!(
-                    "unknown agent: {s}. Expected one of: {}",
-                    names.join(", ")
-                ))
-            }
-        }
-    }
-}
-impl fmt::Display for Agent {
+impl fmt::Display for dyn Agent + '_ {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.cli_name())
+        f.write_str(self.name())
+    }
+}
+
+static ALL_AGENTS: [&'static dyn Agent; 9] = [
+    &claude::ClaudeAgent,
+    &codex::CodexAgent,
+    &cursor::CursorAgent,
+    &windsurf::WindsurfAgent,
+    &gemini::GeminiAgent,
+    &copilot::CopilotAgent,
+    &droid::DroidAgent,
+    &amp::AmpAgent,
+    &opencode::OpenCodeAgent,
+];
+
+#[must_use]
+pub fn all_agents() -> &'static [&'static dyn Agent] {
+    &ALL_AGENTS
+}
+
+#[must_use]
+pub fn find_agent(name: &str) -> Option<&'static dyn Agent> {
+    all_agents()
+        .iter()
+        .copied()
+        .find(|agent| agent.name().eq_ignore_ascii_case(name))
+}
+
+#[cfg(test)]
+#[allow(clippy::disallowed_methods)]
+mod tests {
+    use std::rc::Rc;
+
+    use concats_core::{Repository, session};
+
+    use super::*;
+
+    fn init_repo_with_commit(dir: &std::path::Path) {
+        let repo = git2::Repository::init(dir).unwrap();
+        let mut index = repo.index().unwrap();
+        std::fs::write(dir.join("init.txt"), "init").unwrap();
+        index
+            .add_all(["*"], git2::IndexAddOption::DEFAULT, None)
+            .unwrap();
+        index.write().unwrap();
+        let tree_oid = index.write_tree().unwrap();
+        let tree = repo.find_tree(tree_oid).unwrap();
+        let sig = git2::Signature::now("test", "test@test").unwrap();
+        repo.commit(Some("HEAD"), &sig, &sig, "initial", &tree, &[])
+            .unwrap();
+    }
+
+    mod find_agent {
+        use super::*;
+
+        #[test]
+        fn resolves_names_case_insensitively() {
+            assert_eq!(super::find_agent("ClAuDe").unwrap().name(), "claude");
+            assert_eq!(super::find_agent("cOdEx").unwrap().name(), "codex");
+            assert!(super::find_agent("missing").is_none());
+        }
+
+        #[test]
+        fn dispatches_claude_session_start() {
+            let dir = tempfile::tempdir().unwrap();
+            init_repo_with_commit(dir.path());
+
+            super::find_agent("claude")
+                .unwrap()
+                .dispatch(
+                    Some("SessionStart"),
+                    &format!(
+                        r#"{{"session_id":"session-a","cwd":"{}"}}"#,
+                        dir.path().display()
+                    ),
+                )
+                .unwrap();
+
+            let repo = Rc::new(Repository::open(dir.path()).unwrap());
+            assert!(session::open(repo, "session-a").is_ok());
+        }
+    }
+
+    mod all_agents {
+        #[test]
+        fn preserve_current_order() {
+            let names: Vec<_> = super::super::all_agents()
+                .iter()
+                .map(|agent| agent.name())
+                .collect();
+            assert_eq!(
+                names,
+                vec![
+                    "claude", "codex", "cursor", "windsurf", "gemini", "copilot", "droid", "amp",
+                    "opencode"
+                ]
+            );
+        }
     }
 }

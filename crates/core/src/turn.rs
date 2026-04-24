@@ -28,6 +28,13 @@ impl Turn {
     }
 
     #[must_use]
+    pub fn has_response(&self) -> bool {
+        self.entries()
+            .iter()
+            .any(|e| matches!(e.kind, TurnEntryKind::Response { .. }))
+    }
+
+    #[must_use]
     pub fn entries(&self) -> &[TurnEntry] {
         self.message.entries()
     }
