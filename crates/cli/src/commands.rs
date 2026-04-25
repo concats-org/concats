@@ -137,7 +137,11 @@ fn install_post_rewrite_hook(worktree_root: &Path, binary: &Path) {
         eprintln!("warning: could not locate git directory for post-rewrite hook");
         return;
     };
-    match git_hook::install(repo.path(), binary) {
+    // NOTE: For linked worktrees, repo.path() returns
+    // .git/worktrees/<name>/, but git executes hooks from the common gitdir.
+    // commondir() points at the shared directory in both regular and linked
+    // worktrees.
+    match git_hook::install(repo.commondir(), binary) {
         Ok(git_hook::HookStatus::Managed) => {
             eprintln!("post-rewrite hook installed");
         }
