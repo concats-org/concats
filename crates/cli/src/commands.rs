@@ -509,22 +509,9 @@ fn resolve_session_ref(repo: &Rc<Repository>, input: &str) -> miette::Result<Res
         ));
     }
 
-    // Try git revparse (branch, tag, HEAD-ish, full SHA) — if it resolves and
-    // a session reaches it, use the newest such session.
-    if let Ok(oid) = revparse_oid(repo, input)
-        && let Ok(sessions) = session::containing(repo, oid)
-        && let Some(session) = sessions.into_iter().next()
-        && let Ok(turns) = turn::list(&session)
-        && let Some(turn) = turns.last().cloned()
-    {
-        return Ok(ResolvedRef {
-            session,
-            turn,
-            offset_from_tip: 0,
-        });
-    }
-
-    // Bare SHA prefix — search across all sessions.
+    // Bare SHA prefix — search across all sessions. Runs before the revparse
+    // fallback so an explicit turn SHA always resolves to the requested turn,
+    // not to its enclosing session's tip.
     let sessions = session::list(repo).map_err(|e| miette::miette!("{e}"))?;
     for session in &sessions {
         let Ok(turns) = turn::list(session) else {
@@ -539,6 +526,21 @@ fn resolve_session_ref(repo: &Rc<Repository>, input: &str) -> miette::Result<Res
                 });
             }
         }
+    }
+
+    // Try git revparse (branch, tag, HEAD-ish, full non-turn SHA) — if it
+    // resolves and a session reaches it, use the newest such session's tip.
+    if let Ok(oid) = revparse_oid(repo, input)
+        && let Ok(sessions) = session::containing(repo, oid)
+        && let Some(session) = sessions.into_iter().next()
+        && let Ok(turns) = turn::list(&session)
+        && let Some(turn) = turns.last().cloned()
+    {
+        return Ok(ResolvedRef {
+            session,
+            turn,
+            offset_from_tip: 0,
+        });
     }
 
     Err(miette::miette!("no session or turn matching '{input}'"))
