@@ -4,6 +4,11 @@ Thumbs.db
 desktop.ini
 *dc_store*
 
+# Agents/Tools
+.agents
+.claude
+.kiro
+
 # Editors
 *.swp
 *~
