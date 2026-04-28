@@ -1,16 +1,19 @@
 use std::{
-    io,
+    collections::HashMap,
+    io::{self, BufRead},
     path::{Path, PathBuf},
     rc::Rc,
 };
 
 use concats_core::{
-    Repository,
+    Oid, Repository,
     diff::{self, DiffStatus},
+    rewrite,
     session::{self, Session},
+    snapshot,
     turn::{self, Turn, TurnEntryKind},
 };
-use concats_hooks::{InstallScope, all_agents, find_agent};
+use concats_hooks::{InstallScope, all_agents, find_agent, git_hook};
 
 use crate::cli::{Cli, Commands, HooksAction};
 
@@ -41,7 +44,15 @@ pub fn run(cli: Cli) -> miette::Result<()> {
             quiet,
             workspace,
         }) => run_checkout(&session_ref, force, quiet, workspace),
-        Some(Commands::Sessions { workspace }) => run_sessions_list(workspace),
+        Some(Commands::Sessions {
+            session_ref,
+            workspace,
+        }) => run_sessions_list(session_ref.as_deref(), workspace),
+        Some(Commands::Rewrite { kind, workspace }) => run_rewrite(kind.as_deref(), workspace),
+        Some(Commands::CommitLink { workspace }) => {
+            run_commit_link(workspace);
+            Ok(())
+        }
         None => {
             use clap::CommandFactory;
             Cli::command()
@@ -117,8 +128,43 @@ fn run_init(path: Option<&Path>) -> miette::Result<()> {
         ));
     }
 
-    install_hooks(&detected, &InstallScope::Project { root }, &binary);
+    install_hooks(
+        &detected,
+        &InstallScope::Project { root: root.clone() },
+        &binary,
+    );
+    install_git_hook(&root, git_hook::Hook::PostRewrite, &binary);
+    install_git_hook(&root, git_hook::Hook::PostCommit, &binary);
     Ok(())
+}
+
+fn install_git_hook(worktree_root: &Path, hook: git_hook::Hook, binary: &Path) {
+    let Ok(repo) = git2::Repository::discover(worktree_root) else {
+        eprintln!("warning: could not locate git directory for git hook");
+        return;
+    };
+    // NOTE: For linked worktrees, repo.path() returns
+    // .git/worktrees/<name>/, but git executes hooks from the common gitdir.
+    // commondir() points at the shared directory in both regular and linked
+    // worktrees.
+    let (file_name, subcommand) = match hook {
+        git_hook::Hook::PostRewrite => ("post-rewrite", "rewrite"),
+        git_hook::Hook::PostCommit => ("post-commit", "commit-link"),
+    };
+    match git_hook::install(repo.commondir(), hook, binary) {
+        Ok(git_hook::HookStatus::Managed) => {
+            eprintln!("{file_name} hook installed");
+        }
+        Ok(git_hook::HookStatus::Foreign) => {
+            eprintln!(
+                "warning: .git/hooks/{file_name} exists and is not managed by concats;\n  \
+                 add `exec {} {subcommand} \"$@\"` to it",
+                binary.display()
+            );
+        }
+        Ok(git_hook::HookStatus::Missing) => {}
+        Err(error) => eprintln!("warning: failed to install {file_name} hook: {error}"),
+    }
 }
 
 fn run_hooks_install(agents: &[String], scope: &InstallScope) -> miette::Result<()> {
@@ -210,12 +256,22 @@ fn unknown_agent_error(name: &str) -> miette::Report {
     )
 }
 
-fn run_sessions_list(workspace: Option<PathBuf>) -> miette::Result<()> {
+fn run_sessions_list(filter_ref: Option<&str>, workspace: Option<PathBuf>) -> miette::Result<()> {
     let repo = open_repo(workspace)?;
-    let sessions = session::list(&repo).map_err(|e| miette::miette!("{e}"))?;
+    let sessions = match filter_ref {
+        Some(input) => {
+            let oid = revparse_oid(&repo, input)?;
+            session::containing(&repo, oid).map_err(|e| miette::miette!("{e}"))?
+        }
+        None => session::list(&repo).map_err(|e| miette::miette!("{e}"))?,
+    };
 
     if sessions.is_empty() {
-        println!("no sessions");
+        if filter_ref.is_some() {
+            println!("no sessions reaching the given ref");
+        } else {
+            println!("no sessions");
+        }
         return Ok(());
     }
 
@@ -236,6 +292,162 @@ fn run_sessions_list(workspace: Option<PathBuf>) -> miette::Result<()> {
     }
 
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// concats rewrite (post-rewrite hook)
+// ---------------------------------------------------------------------------
+
+fn run_rewrite(_kind: Option<&str>, workspace: Option<PathBuf>) -> miette::Result<()> {
+    let rewrites = parse_rewrite_pairs(io::stdin().lock())?;
+    if rewrites.is_empty() {
+        return Ok(());
+    }
+
+    let repo = open_repo(workspace)?;
+    let report = rewrite::apply(&repo, &rewrites).map_err(|e| miette::miette!("{e}"))?;
+
+    for update in &report.sessions {
+        eprintln!(
+            "rewrote {} ({} -> {})",
+            update.name,
+            update.old_tip.short(),
+            update.new_tip.short()
+        );
+    }
+    for update in &report.snapshots {
+        eprintln!(
+            "rewrote {} ({} -> {})",
+            update.name,
+            update.old_tip.short(),
+            update.new_tip.short()
+        );
+    }
+    for dropped in &report.dropped_anchors {
+        eprintln!(
+            "warning: turn {} still anchors on orphaned commit {}",
+            dropped.turn.short(),
+            dropped.parent.short()
+        );
+    }
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// concats commit-link (post-commit hook)
+// ---------------------------------------------------------------------------
+
+fn run_commit_link(workspace: Option<PathBuf>) {
+    if let Err(error) = try_commit_link(workspace) {
+        eprintln!("warning: commit-link skipped: {error}");
+    }
+}
+
+fn try_commit_link(workspace: Option<PathBuf>) -> miette::Result<()> {
+    let repo = open_repo(workspace)?;
+    let head = repo
+        .head()
+        .map_err(|e| miette::miette!("HEAD not resolvable: {e}"))?;
+    let commit = head
+        .peel_to_commit()
+        .map_err(|e| miette::miette!("HEAD does not point to a commit: {e}"))?;
+
+    if commit.parent_count() != 1 {
+        // Skip root commits (0 parents) and merges (>=2 parents).
+        return Ok(());
+    }
+
+    let parent = commit
+        .parent(0)
+        .map_err(|e| miette::miette!("cannot load parent commit: {e}"))?;
+    let new_tree = commit
+        .tree()
+        .map_err(|e| miette::miette!("cannot load commit tree: {e}"))?;
+    let parent_tree = parent
+        .tree()
+        .map_err(|e| miette::miette!("cannot load parent tree: {e}"))?;
+
+    let diff = repo
+        .diff_tree_to_tree(Some(&parent_tree), Some(&new_tree), None)
+        .map_err(|e| miette::miette!("cannot diff commit: {e}"))?;
+
+    let mut commit_changes: HashMap<std::path::PathBuf, Oid> = HashMap::new();
+    for delta in diff.deltas() {
+        match delta.status() {
+            git2::Delta::Added
+            | git2::Delta::Modified
+            | git2::Delta::Renamed
+            | git2::Delta::Copied
+            | git2::Delta::Typechange => {}
+            _ => continue,
+        }
+        let new_file = delta.new_file();
+        let blob = new_file.id();
+        if blob.is_zero() {
+            continue;
+        }
+        let Some(path) = new_file.path() else {
+            continue;
+        };
+        commit_changes.insert(path.to_path_buf(), Oid::from(blob));
+    }
+
+    if commit_changes.is_empty() {
+        return Ok(());
+    }
+
+    let Some((session, snap)) = snapshot::find_overlapping(&repo, &commit_changes)
+        .map_err(|e| miette::miette!("snapshot overlap lookup failed: {e}"))?
+    else {
+        return Ok(());
+    };
+
+    let new_commit_oid = Oid::from(commit.id());
+    if turn_already_anchored(&repo, snap.turn_oid, new_commit_oid) {
+        return Ok(());
+    }
+
+    let report = session::reanchor_turn(&session, snap.turn_oid, new_commit_oid)
+        .map_err(|e| miette::miette!("reanchor failed: {e}"))?;
+
+    for update in &report.sessions {
+        eprintln!(
+            "linked {} ({} -> {})",
+            update.name,
+            update.old_tip.short(),
+            update.new_tip.short()
+        );
+    }
+    Ok(())
+}
+
+fn turn_already_anchored(repo: &Repository, turn_oid: Oid, expected: Oid) -> bool {
+    let Ok(turn_commit) = repo.find_commit(turn_oid.as_git()) else {
+        return false;
+    };
+    turn_commit
+        .parent_ids()
+        .any(|parent| Oid::from(parent) == expected)
+}
+
+fn parse_rewrite_pairs<R: BufRead>(reader: R) -> miette::Result<HashMap<Oid, Oid>> {
+    let mut pairs = HashMap::new();
+    for line in reader.lines() {
+        let line = line.map_err(|e| miette::miette!("failed to read stdin: {e}"))?;
+        let mut parts = line.split_whitespace();
+        let (Some(old), Some(new)) = (parts.next(), parts.next()) else {
+            continue;
+        };
+        let old_oid: Oid = old
+            .parse()
+            .map_err(|e| miette::miette!("invalid old OID '{old}': {e}"))?;
+        let new_oid: Oid = new
+            .parse()
+            .map_err(|e| miette::miette!("invalid new OID '{new}': {e}"))?;
+        pairs.insert(old_oid, new_oid);
+    }
+    Ok(pairs)
 }
 
 // ---------------------------------------------------------------------------
@@ -402,13 +614,15 @@ fn resolve_session_ref(repo: &Rc<Repository>, input: &str) -> miette::Result<Res
         });
     }
 
-    // Bare SHA prefix — search across all sessions.
     if offset > 0 {
         return Err(miette::miette!(
             "session '{name}' not found (tilde suffix only works with session names)"
         ));
     }
 
+    // Bare SHA prefix — search across all sessions. Runs before the revparse
+    // fallback so an explicit turn SHA always resolves to the requested turn,
+    // not to its enclosing session's tip.
     let sessions = session::list(repo).map_err(|e| miette::miette!("{e}"))?;
     for session in &sessions {
         let Ok(turns) = turn::list(session) else {
@@ -425,7 +639,32 @@ fn resolve_session_ref(repo: &Rc<Repository>, input: &str) -> miette::Result<Res
         }
     }
 
+    // Try git revparse (branch, tag, HEAD-ish, full non-turn SHA) — if it
+    // resolves and a session reaches it, use the newest such session's tip.
+    if let Ok(oid) = revparse_oid(repo, input)
+        && let Ok(sessions) = session::containing(repo, oid)
+        && let Some(session) = sessions.into_iter().next()
+        && let Ok(turns) = turn::list(&session)
+        && let Some(turn) = turns.last().cloned()
+    {
+        return Ok(ResolvedRef {
+            session,
+            turn,
+            offset_from_tip: 0,
+        });
+    }
+
     Err(miette::miette!("no session or turn matching '{input}'"))
+}
+
+fn revparse_oid(repo: &Repository, input: &str) -> miette::Result<Oid> {
+    let object = repo
+        .revparse_single(input)
+        .map_err(|e| miette::miette!("cannot resolve '{input}': {e}"))?;
+    let commit = object
+        .peel_to_commit()
+        .map_err(|e| miette::miette!("'{input}' does not resolve to a commit: {e}"))?;
+    Ok(Oid::from(commit.id()))
 }
 
 /// Parse "session-a~3" → ("session-a", 3), "session-a~2~1" → ("session-a", 3).
@@ -457,5 +696,45 @@ mod tests {
     #[test]
     fn resolve_agent_uses_registry_case_insensitively() {
         assert_eq!(resolve_agent("ClAuDe").unwrap().name(), "claude");
+    }
+
+    #[test]
+    fn parse_rewrite_pairs_accepts_amend_and_rebase_lines() {
+        // post-rewrite emits `old new` for amend and `old new [extra]` for rebase.
+        let input = "\
+            aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n\
+            cccccccccccccccccccccccccccccccccccccccc dddddddddddddddddddddddddddddddddddddddd extra\n\
+        ";
+        let pairs = parse_rewrite_pairs(input.as_bytes()).unwrap();
+        assert_eq!(pairs.len(), 2);
+        assert!(
+            pairs.contains_key(
+                &"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                    .parse::<Oid>()
+                    .unwrap()
+            )
+        );
+        assert!(
+            pairs.contains_key(
+                &"cccccccccccccccccccccccccccccccccccccccc"
+                    .parse::<Oid>()
+                    .unwrap()
+            )
+        );
+    }
+
+    #[test]
+    fn parse_rewrite_pairs_ignores_blank_and_incomplete_lines() {
+        let input = "\n   \nonlyone\n\
+            aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n\
+            ";
+        let pairs = parse_rewrite_pairs(input.as_bytes()).unwrap();
+        assert_eq!(pairs.len(), 1);
+    }
+
+    #[test]
+    fn parse_rewrite_pairs_rejects_malformed_oids() {
+        let input = "not-an-oid also-not-an-oid\n";
+        assert!(parse_rewrite_pairs(input.as_bytes()).is_err());
     }
 }

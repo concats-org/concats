@@ -74,6 +74,19 @@ impl TryFrom<&git2::Commit<'_>> for Turn {
     }
 }
 
+/// Returns true if the commit's message parses as a concats turn message.
+///
+/// Used to distinguish session/snapshot internal commits from regular branch
+/// commits — the latter are the "anchors" that link a turn to the materialized
+/// working-branch state.
+#[must_use]
+pub fn is_turn_commit(commit: &git2::Commit<'_>) -> bool {
+    commit
+        .message_raw()
+        .and_then(|m| m.parse::<concats_message::Turn>().ok())
+        .is_some()
+}
+
 /// List all turns for a session in creation order.
 ///
 /// # Errors

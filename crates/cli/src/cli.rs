@@ -56,8 +56,39 @@ pub enum Commands {
         workspace: Option<PathBuf>,
     },
 
-    /// List recorded sessions.
+    /// List recorded sessions. With a ref, list sessions reaching that ref.
     Sessions {
+        /// Optional commit, branch, tag, or HEAD-ish to filter by.
+        #[arg(name = "ref")]
+        session_ref: Option<String>,
+
+        /// Workspace root directory (defaults to current directory).
+        #[arg(short, long)]
+        workspace: Option<PathBuf>,
+    },
+
+    /// Rewrite session refs in response to a git post-rewrite hook.
+    ///
+    /// Reads `<old> <new>` pairs from stdin and updates every affected session
+    /// and snapshot ref so their parent pointers stay live after rebases.
+    #[command(hide = true)]
+    Rewrite {
+        /// Rewrite kind passed by git (`rebase` or `amend`).
+        kind: Option<String>,
+
+        /// Workspace root directory (defaults to current directory).
+        #[arg(short, long)]
+        workspace: Option<PathBuf>,
+    },
+
+    /// Re-anchor a session turn onto a newly-committed commit.
+    ///
+    /// Invoked by the `post-commit` hook. Finds the session whose latest
+    /// snapshot diff overlaps the new commit's diff, and re-anchors that
+    /// turn so reachability points at the materialized commit. Never fails
+    /// the user's commit — internal errors are logged and exit is 0.
+    #[command(hide = true)]
+    CommitLink {
         /// Workspace root directory (defaults to current directory).
         #[arg(short, long)]
         workspace: Option<PathBuf>,

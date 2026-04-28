@@ -1,5 +1,6 @@
 pub mod diff;
 pub mod error;
+pub mod rewrite;
 pub mod session;
 pub mod snapshot;
 pub mod turn;
