@@ -78,7 +78,7 @@ pub fn apply<S: BuildHasher>(
     Ok(report)
 }
 
-fn rewrite_session(
+pub(crate) fn rewrite_session(
     session: &Session,
     map: &mut HashMap<Oid, Oid>,
     report: &mut RewriteReport,
@@ -97,6 +97,15 @@ fn rewrite_session(
     let mut changed = false;
 
     for turn in &turns {
+        // The caller may have pre-rewritten this turn (e.g.
+        // `session::reanchor_turn` adds a new anchor parent to a turn that
+        // previously had none); the new commit is already in the map.
+        if let Some(&mapped) = map.get(&turn.oid) {
+            new_tip = mapped;
+            changed = true;
+            continue;
+        }
+
         let commit = repo.find_commit(turn.oid.as_git())?;
         let original_parents: Vec<Oid> = commit.parent_ids().map(Oid::from).collect();
         let new_parents: Vec<Oid> = original_parents
@@ -109,7 +118,7 @@ fn rewrite_session(
             continue;
         }
 
-        record_dropped(turn, &original_parents, map, report);
+        record_dropped(repo, turn, &original_parents, map, report);
 
         let new_oid = write_with_parents(repo, &commit, &new_parents)?;
         map.insert(turn.oid, Oid::from(new_oid));
@@ -137,7 +146,7 @@ fn rewrite_session(
     Ok(())
 }
 
-fn rewrite_snapshots(
+pub(crate) fn rewrite_snapshots(
     session: &Session,
     map: &HashMap<Oid, Oid>,
     report: &mut RewriteReport,
@@ -208,7 +217,7 @@ fn rewrite_snapshots(
     Ok(())
 }
 
-fn write_with_parents(
+pub(crate) fn write_with_parents(
     repo: &git2::Repository,
     commit: &git2::Commit<'_>,
     parents: &[Oid],
@@ -232,6 +241,7 @@ fn write_with_parents(
 }
 
 fn record_dropped(
+    repo: &git2::Repository,
     turn: &Turn,
     parents: &[Oid],
     map: &HashMap<Oid, Oid>,
@@ -241,9 +251,15 @@ fn record_dropped(
         if map.contains_key(parent) {
             continue;
         }
-        // NOTE: The parent was not in the rewrite map. When the turn is still
-        // being rewritten (because another parent was remapped), surface this
-        // parent as a potentially-dropped anchor so callers can warn the user.
+        // Skip parents that are themselves turn commits — they are
+        // session-chain or cross-session links, not working-branch anchors.
+        // The "still anchors on orphaned commit" warning is reserved for
+        // genuinely-dangling working-branch parents.
+        if let Ok(commit) = repo.find_commit(parent.as_git())
+            && turn::is_turn_commit(&commit)
+        {
+            continue;
+        }
         report.dropped_anchors.push(DroppedAnchor {
             turn: turn.oid,
             parent: *parent,

@@ -1,4 +1,4 @@
-use std::rc::Rc;
+use std::{collections::HashMap, rc::Rc};
 
 use concats_message::SessionId;
 use time::OffsetDateTime;
@@ -6,6 +6,7 @@ use time::OffsetDateTime;
 use crate::{
     error::{Error, Result},
     git::{self, Oid},
+    rewrite::{self, RewriteReport},
     turn::{self, Turn},
 };
 
@@ -246,6 +247,73 @@ pub fn amend(session: &Session, message: &concats_message::Turn) -> Result<Turn>
 
 pub(crate) fn ref_name(session_id: &SessionId) -> String {
     format!("{SESSION_REF_PREFIX}{session_id}")
+}
+
+/// Re-anchor a turn's working-branch parent onto `new_anchor`, then propagate
+/// the resulting OID change through downstream turns and snapshots in this
+/// session only. Other sessions are not touched.
+///
+/// The "anchor" is the turn parent whose message does not parse as a Turn —
+/// the working-branch commit recorded when the turn ran. If the turn has no
+/// such parent (i.e. HEAD matched the session-chain parent at turn-creation),
+/// `new_anchor` is appended to the parent list. If the turn has more than one
+/// non-turn parent, the operation errors out.
+///
+/// Idempotent at the call site: if the turn already anchors on `new_anchor`,
+/// the caller should skip the call.
+///
+/// # Errors
+///
+/// Returns an error if the turn is not in this session, the turn has multiple
+/// non-turn parents (ambiguous anchor), or any commit/ref write fails.
+pub fn reanchor_turn(
+    session: &Session,
+    turn_oid: Oid,
+    new_anchor: Oid,
+) -> Result<RewriteReport> {
+    let repo = session.repo();
+    let turns = turn::list(session)?;
+    if !turns.iter().any(|turn| turn.oid == turn_oid) {
+        return Err(Error::session(format!(
+            "turn {turn_oid} not found in session {}",
+            session.id
+        )));
+    }
+
+    let target = repo.find_commit(turn_oid.as_git())?;
+    let original_parents: Vec<Oid> = target.parent_ids().map(Oid::from).collect();
+    let non_turn_parent_indices: Vec<usize> = target
+        .parents()
+        .enumerate()
+        .filter(|(_, parent)| !turn::is_turn_commit(parent))
+        .map(|(idx, _)| idx)
+        .collect();
+
+    if non_turn_parent_indices.len() > 1 {
+        return Err(Error::session(format!(
+            "turn {turn_oid} has multiple non-turn parents; cannot identify anchor"
+        )));
+    }
+
+    let new_parents: Vec<Oid> = if non_turn_parent_indices.is_empty() {
+        let mut parents = original_parents.clone();
+        parents.push(new_anchor);
+        parents
+    } else {
+        let anchor_idx = non_turn_parent_indices[0];
+        let mut parents = original_parents.clone();
+        parents[anchor_idx] = new_anchor;
+        parents
+    };
+
+    let new_turn_oid = rewrite::write_with_parents(repo, &target, &new_parents)?;
+    let mut map: HashMap<Oid, Oid> = HashMap::new();
+    map.insert(turn_oid, Oid::from(new_turn_oid));
+
+    let mut report = RewriteReport::default();
+    rewrite::rewrite_session(session, &mut map, &mut report)?;
+    rewrite::rewrite_snapshots(session, &map, &mut report)?;
+    Ok(report)
 }
 
 pub(crate) fn resolve_session_ref<'repo>(

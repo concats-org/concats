@@ -1,3 +1,5 @@
+use std::{collections::HashMap, path::PathBuf, rc::Rc};
+
 use concats_message::SessionId;
 pub use concats_message::SnapshotReason;
 use time::OffsetDateTime;
@@ -5,8 +7,8 @@ use time::OffsetDateTime;
 use crate::{
     error::{Error, Result},
     git::{self, Oid},
-    session::Session,
-    turn::Turn,
+    session::{self, Session},
+    turn::{self, Turn},
 };
 
 const SNAPSHOT_REF_PREFIX: &str = "refs/agent/snapshots/";
@@ -185,6 +187,124 @@ pub fn push(session: &Session, remote: &str) -> Result<()> {
 
 pub(crate) fn ref_name(session_id: &SessionId) -> String {
     format!("{SNAPSHOT_REF_PREFIX}{session_id}")
+}
+
+/// The set of `(path, blob)` pairs the agent introduced in this snapshot.
+///
+/// Computed as the diff between the snapshot's tree and its baseline:
+/// - 2-parent snapshot: baseline = previous snapshot's tree.
+/// - 1-parent snapshot: baseline = the turn's anchor-parent tree (the parent
+///   of the turn commit whose message does not parse as a Turn).
+///
+/// Returns `Ok(None)` when no unambiguous baseline exists (e.g. a turn with
+/// zero or multiple non-turn parents). Only added/modified/renamed/copied
+/// entries are returned; deletions are dropped.
+///
+/// # Errors
+///
+/// Returns an error if the snapshot or its parents cannot be loaded, or the
+/// diff cannot be computed.
+pub fn diff_against_baseline(
+    repo: &git2::Repository,
+    snapshot: &Snapshot,
+) -> Result<Option<HashMap<PathBuf, Oid>>> {
+    let snapshot_commit = repo.find_commit(snapshot.oid.as_git())?;
+    let snapshot_tree = snapshot_commit.tree()?;
+
+    let baseline_tree = match snapshot_commit.parent_count() {
+        2 => snapshot_commit.parent(0)?.tree()?,
+        1 => {
+            let turn_commit = snapshot_commit.parent(0)?;
+            let mut anchors = turn_commit
+                .parents()
+                .filter(|parent| !turn::is_turn_commit(parent));
+            let Some(anchor) = anchors.next() else {
+                return Ok(None);
+            };
+            if anchors.next().is_some() {
+                return Ok(None);
+            }
+            anchor.tree()?
+        }
+        _ => return Ok(None),
+    };
+
+    let diff = repo.diff_tree_to_tree(Some(&baseline_tree), Some(&snapshot_tree), None)?;
+    let mut changes: HashMap<PathBuf, Oid> = HashMap::new();
+    for delta in diff.deltas() {
+        match delta.status() {
+            git2::Delta::Added
+            | git2::Delta::Modified
+            | git2::Delta::Renamed
+            | git2::Delta::Copied
+            | git2::Delta::Typechange => {}
+            _ => continue,
+        }
+        let new_file = delta.new_file();
+        let blob = new_file.id();
+        if blob.is_zero() {
+            continue;
+        }
+        let Some(path) = new_file.path() else {
+            continue;
+        };
+        changes.insert(path.to_path_buf(), Oid::from(blob));
+    }
+    Ok(Some(changes))
+}
+
+/// Find the most-recently-modified session whose latest matching snapshot
+/// shares at least one `(path, blob)` with `commit_changes`.
+///
+/// Sessions are walked newest-first; within each, snapshots are walked
+/// newest-first. The first snapshot whose `diff_against_baseline` shares any
+/// `(path, blob)` with `commit_changes` wins.
+///
+/// # Errors
+///
+/// Returns an error if session enumeration fails. Snapshots that fail to load
+/// or diff are skipped silently.
+pub fn find_overlapping<S: std::hash::BuildHasher>(
+    repo: &Rc<git2::Repository>,
+    commit_changes: &HashMap<PathBuf, Oid, S>,
+) -> Result<Option<(Session, Snapshot)>> {
+    if commit_changes.is_empty() {
+        return Ok(None);
+    }
+
+    for session_candidate in session::list(repo)? {
+        let Ok(snapshots) = list(&session_candidate) else {
+            continue;
+        };
+        for snapshot in snapshots.iter().rev() {
+            let Ok(Some(diff)) = diff_against_baseline(repo, snapshot) else {
+                continue;
+            };
+            if has_overlap(commit_changes, &diff) {
+                return Ok(Some((session_candidate, snapshot.clone())));
+            }
+        }
+    }
+    Ok(None)
+}
+
+fn has_overlap<S1, S2>(
+    left: &HashMap<PathBuf, Oid, S1>,
+    right: &HashMap<PathBuf, Oid, S2>,
+) -> bool
+where
+    S1: std::hash::BuildHasher,
+    S2: std::hash::BuildHasher,
+{
+    // Iterate the smaller map; lookups in the larger one are O(1).
+    if left.len() <= right.len() {
+        left.iter()
+            .any(|(path, blob)| right.get(path).is_some_and(|other| other == blob))
+    } else {
+        right
+            .iter()
+            .any(|(path, blob)| left.get(path).is_some_and(|other| other == blob))
+    }
 }
 
 fn load_from_tip(

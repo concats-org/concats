@@ -10,6 +10,7 @@ use concats_core::{
     diff::{self, DiffStatus},
     rewrite,
     session::{self, Session},
+    snapshot,
     turn::{self, Turn, TurnEntryKind},
 };
 use concats_hooks::{InstallScope, all_agents, find_agent, git_hook};
@@ -48,6 +49,10 @@ pub fn run(cli: Cli) -> miette::Result<()> {
             workspace,
         }) => run_sessions_list(session_ref.as_deref(), workspace),
         Some(Commands::Rewrite { kind, workspace }) => run_rewrite(kind.as_deref(), workspace),
+        Some(Commands::CommitLink { workspace }) => {
+            run_commit_link(workspace);
+            Ok(())
+        }
         None => {
             use clap::CommandFactory;
             Cli::command()
@@ -128,32 +133,37 @@ fn run_init(path: Option<&Path>) -> miette::Result<()> {
         &InstallScope::Project { root: root.clone() },
         &binary,
     );
-    install_post_rewrite_hook(&root, &binary);
+    install_git_hook(&root, git_hook::Hook::PostRewrite, &binary);
+    install_git_hook(&root, git_hook::Hook::PostCommit, &binary);
     Ok(())
 }
 
-fn install_post_rewrite_hook(worktree_root: &Path, binary: &Path) {
+fn install_git_hook(worktree_root: &Path, hook: git_hook::Hook, binary: &Path) {
     let Ok(repo) = git2::Repository::discover(worktree_root) else {
-        eprintln!("warning: could not locate git directory for post-rewrite hook");
+        eprintln!("warning: could not locate git directory for git hook");
         return;
     };
     // NOTE: For linked worktrees, repo.path() returns
     // .git/worktrees/<name>/, but git executes hooks from the common gitdir.
     // commondir() points at the shared directory in both regular and linked
     // worktrees.
-    match git_hook::install(repo.commondir(), binary) {
+    let (file_name, subcommand) = match hook {
+        git_hook::Hook::PostRewrite => ("post-rewrite", "rewrite"),
+        git_hook::Hook::PostCommit => ("post-commit", "commit-link"),
+    };
+    match git_hook::install(repo.commondir(), hook, binary) {
         Ok(git_hook::HookStatus::Managed) => {
-            eprintln!("post-rewrite hook installed");
+            eprintln!("{file_name} hook installed");
         }
         Ok(git_hook::HookStatus::Foreign) => {
             eprintln!(
-                "warning: .git/hooks/post-rewrite exists and is not managed by concats;\n  \
-                 add `exec {} rewrite \"$@\"` to it so rebases update session refs",
+                "warning: .git/hooks/{file_name} exists and is not managed by concats;\n  \
+                 add `exec {} {subcommand} \"$@\"` to it",
                 binary.display()
             );
         }
         Ok(git_hook::HookStatus::Missing) => {}
-        Err(error) => eprintln!("warning: failed to install post-rewrite hook: {error}"),
+        Err(error) => eprintln!("warning: failed to install {file_name} hook: {error}"),
     }
 }
 
@@ -322,6 +332,103 @@ fn run_rewrite(_kind: Option<&str>, workspace: Option<PathBuf>) -> miette::Resul
     }
 
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// concats commit-link (post-commit hook)
+// ---------------------------------------------------------------------------
+
+fn run_commit_link(workspace: Option<PathBuf>) {
+    if let Err(error) = try_commit_link(workspace) {
+        eprintln!("warning: commit-link skipped: {error}");
+    }
+}
+
+fn try_commit_link(workspace: Option<PathBuf>) -> miette::Result<()> {
+    let repo = open_repo(workspace)?;
+    let head = repo
+        .head()
+        .map_err(|e| miette::miette!("HEAD not resolvable: {e}"))?;
+    let commit = head
+        .peel_to_commit()
+        .map_err(|e| miette::miette!("HEAD does not point to a commit: {e}"))?;
+
+    if commit.parent_count() != 1 {
+        // Skip root commits (0 parents) and merges (>=2 parents).
+        return Ok(());
+    }
+
+    let parent = commit
+        .parent(0)
+        .map_err(|e| miette::miette!("cannot load parent commit: {e}"))?;
+    let new_tree = commit
+        .tree()
+        .map_err(|e| miette::miette!("cannot load commit tree: {e}"))?;
+    let parent_tree = parent
+        .tree()
+        .map_err(|e| miette::miette!("cannot load parent tree: {e}"))?;
+
+    let diff = repo
+        .diff_tree_to_tree(Some(&parent_tree), Some(&new_tree), None)
+        .map_err(|e| miette::miette!("cannot diff commit: {e}"))?;
+
+    let mut commit_changes: HashMap<std::path::PathBuf, Oid> = HashMap::new();
+    for delta in diff.deltas() {
+        match delta.status() {
+            git2::Delta::Added
+            | git2::Delta::Modified
+            | git2::Delta::Renamed
+            | git2::Delta::Copied
+            | git2::Delta::Typechange => {}
+            _ => continue,
+        }
+        let new_file = delta.new_file();
+        let blob = new_file.id();
+        if blob.is_zero() {
+            continue;
+        }
+        let Some(path) = new_file.path() else {
+            continue;
+        };
+        commit_changes.insert(path.to_path_buf(), Oid::from(blob));
+    }
+
+    if commit_changes.is_empty() {
+        return Ok(());
+    }
+
+    let Some((session, snap)) = snapshot::find_overlapping(&repo, &commit_changes)
+        .map_err(|e| miette::miette!("snapshot overlap lookup failed: {e}"))?
+    else {
+        return Ok(());
+    };
+
+    let new_commit_oid = Oid::from(commit.id());
+    if turn_already_anchored(&repo, snap.turn_oid, new_commit_oid) {
+        return Ok(());
+    }
+
+    let report = session::reanchor_turn(&session, snap.turn_oid, new_commit_oid)
+        .map_err(|e| miette::miette!("reanchor failed: {e}"))?;
+
+    for update in &report.sessions {
+        eprintln!(
+            "linked {} ({} -> {})",
+            update.name,
+            update.old_tip.short(),
+            update.new_tip.short()
+        );
+    }
+    Ok(())
+}
+
+fn turn_already_anchored(repo: &Repository, turn_oid: Oid, expected: Oid) -> bool {
+    let Ok(turn_commit) = repo.find_commit(turn_oid.as_git()) else {
+        return false;
+    };
+    turn_commit
+        .parent_ids()
+        .any(|parent| Oid::from(parent) == expected)
 }
 
 fn parse_rewrite_pairs<R: BufRead>(reader: R) -> miette::Result<HashMap<Oid, Oid>> {

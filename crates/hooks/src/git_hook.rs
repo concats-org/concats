@@ -1,8 +1,9 @@
 //! Install and manage git hooks that concats writes into `.git/hooks/`.
 //!
 //! Distinct from agent hooks (which live in agent-specific settings files),
-//! git hooks run on ordinary git operations. Today only `post-rewrite` is
-//! managed, so rebases and amends can rewrite session refs automatically.
+//! git hooks run on ordinary git operations. Today `post-rewrite` keeps session
+//! refs in sync after rebases/amends, and `post-commit` re-anchors session
+//! turns onto materialized commits.
 
 use std::{
     fs,
@@ -13,7 +14,31 @@ use std::{
 use concats_core::error::Result;
 
 const MARKER: &str = "# concats: managed";
-const HOOK_NAME: &str = "post-rewrite";
+
+/// A git hook concats can manage.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Hook {
+    /// `post-rewrite` — invokes `concats rewrite`.
+    PostRewrite,
+    /// `post-commit` — invokes `concats commit-link`.
+    PostCommit,
+}
+
+impl Hook {
+    fn file_name(self) -> &'static str {
+        match self {
+            Hook::PostRewrite => "post-rewrite",
+            Hook::PostCommit => "post-commit",
+        }
+    }
+
+    fn subcommand(self) -> &'static str {
+        match self {
+            Hook::PostRewrite => "rewrite",
+            Hook::PostCommit => "commit-link",
+        }
+    }
+}
 
 /// Install status for a managed git hook.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -26,40 +51,38 @@ pub enum HookStatus {
     Foreign,
 }
 
-/// Install the `post-rewrite` hook into the given git directory.
+/// Install a git hook that invokes the concats binary.
 ///
-/// Writes a small shell script that invokes `<binary> rewrite "$@"`. Existing
-/// concats-managed hooks are overwritten in place; foreign hooks are left
-/// alone and the caller is expected to surface a warning.
+/// Writes a small shell script that invokes `<binary> <subcommand> "$@"`.
+/// Existing concats-managed hooks are overwritten in place; foreign hooks are
+/// left alone and the caller is expected to surface a warning.
 ///
 /// # Errors
 ///
 /// Returns an error if the hooks directory cannot be created, the hook file
 /// cannot be written, or its permissions cannot be set.
-pub fn install(gitdir: &Path, binary: &Path) -> Result<HookStatus> {
+pub fn install(gitdir: &Path, hook: Hook, binary: &Path) -> Result<HookStatus> {
     let hooks_dir = hooks_dir(gitdir);
     fs::create_dir_all(&hooks_dir)?;
-    let path = hooks_dir.join(HOOK_NAME);
+    let path = hooks_dir.join(hook.file_name());
 
     match status_at(&path) {
         HookStatus::Foreign => return Ok(HookStatus::Foreign),
         HookStatus::Missing | HookStatus::Managed => {}
     }
 
-    let script = render_script(binary);
+    let script = render_script(hook, binary);
     write_executable(&path, &script)?;
     Ok(HookStatus::Managed)
 }
 
-/// Remove the concats-managed `post-rewrite` hook.
-///
-/// Foreign hooks are left untouched.
+/// Remove a concats-managed git hook. Foreign hooks are left untouched.
 ///
 /// # Errors
 ///
 /// Returns an error if the hook file cannot be removed.
-pub fn uninstall(gitdir: &Path) -> Result<HookStatus> {
-    let path = hooks_dir(gitdir).join(HOOK_NAME);
+pub fn uninstall(gitdir: &Path, hook: Hook) -> Result<HookStatus> {
+    let path = hooks_dir(gitdir).join(hook.file_name());
     match status_at(&path) {
         HookStatus::Managed => {
             fs::remove_file(&path)?;
@@ -71,8 +94,8 @@ pub fn uninstall(gitdir: &Path) -> Result<HookStatus> {
 
 /// Report whether a concats-managed hook is present in the given git directory.
 #[must_use]
-pub fn status(gitdir: &Path) -> HookStatus {
-    status_at(&hooks_dir(gitdir).join(HOOK_NAME))
+pub fn status(gitdir: &Path, hook: Hook) -> HookStatus {
+    status_at(&hooks_dir(gitdir).join(hook.file_name()))
 }
 
 fn hooks_dir(gitdir: &Path) -> PathBuf {
@@ -90,10 +113,11 @@ fn status_at(path: &Path) -> HookStatus {
     }
 }
 
-fn render_script(binary: &Path) -> String {
+fn render_script(hook: Hook, binary: &Path) -> String {
     format!(
-        "#!/bin/sh\n{MARKER}\nexec {} rewrite \"$@\"\n",
-        shell_quote(binary)
+        "#!/bin/sh\n{MARKER}\nexec {} {} \"$@\"\n",
+        shell_quote(binary),
+        hook.subcommand(),
     )
 }
 
@@ -143,20 +167,35 @@ mod tests {
     }
 
     #[test]
-    fn install_creates_executable_hook_with_marker() {
+    fn install_creates_executable_post_rewrite_with_marker() {
         let dir = tempfile::tempdir().unwrap();
         let gitdir = init_git_repo(dir.path());
         let binary = PathBuf::from("/usr/local/bin/concats");
 
-        let result = super::install(&gitdir, &binary).unwrap();
+        let result = super::install(&gitdir, Hook::PostRewrite, &binary).unwrap();
         assert_eq!(result, HookStatus::Managed);
 
-        let hook = gitdir.join("hooks").join(HOOK_NAME);
+        let hook = gitdir.join("hooks").join("post-rewrite");
         let contents = fs::read_to_string(&hook).unwrap();
         assert!(contents.contains(MARKER));
-        assert!(contents.contains("/usr/local/bin/concats"));
+        assert!(contents.contains("/usr/local/bin/concats rewrite"));
         let mode = fs::metadata(&hook).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o755);
+    }
+
+    #[test]
+    fn install_creates_executable_post_commit_with_marker() {
+        let dir = tempfile::tempdir().unwrap();
+        let gitdir = init_git_repo(dir.path());
+        let binary = PathBuf::from("/usr/local/bin/concats");
+
+        let result = super::install(&gitdir, Hook::PostCommit, &binary).unwrap();
+        assert_eq!(result, HookStatus::Managed);
+
+        let hook = gitdir.join("hooks").join("post-commit");
+        let contents = fs::read_to_string(&hook).unwrap();
+        assert!(contents.contains(MARKER));
+        assert!(contents.contains("/usr/local/bin/concats commit-link"));
     }
 
     #[test]
@@ -164,12 +203,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let gitdir = init_git_repo(dir.path());
         let binary = PathBuf::from("/concats");
-        let hook = gitdir.join("hooks").join(HOOK_NAME);
+        let hook = gitdir.join("hooks").join("post-rewrite");
         fs::create_dir_all(hook.parent().unwrap()).unwrap();
 
         // Foreign hook is preserved.
         fs::write(&hook, "#!/bin/sh\necho foreign\n").unwrap();
-        let result = super::install(&gitdir, &binary).unwrap();
+        let result = super::install(&gitdir, Hook::PostRewrite, &binary).unwrap();
         assert_eq!(result, HookStatus::Foreign);
         assert_eq!(
             fs::read_to_string(&hook).unwrap(),
@@ -178,7 +217,7 @@ mod tests {
 
         // Managed hook is overwritten.
         fs::write(&hook, format!("#!/bin/sh\n{MARKER}\nold\n")).unwrap();
-        let result = super::install(&gitdir, &binary).unwrap();
+        let result = super::install(&gitdir, Hook::PostRewrite, &binary).unwrap();
         assert_eq!(result, HookStatus::Managed);
         let contents = fs::read_to_string(&hook).unwrap();
         assert!(contents.contains("exec /concats rewrite"));
@@ -190,16 +229,16 @@ mod tests {
         let gitdir = init_git_repo(dir.path());
         let binary = PathBuf::from("/concats");
 
-        super::install(&gitdir, &binary).unwrap();
-        assert_eq!(status(&gitdir), HookStatus::Managed);
+        super::install(&gitdir, Hook::PostRewrite, &binary).unwrap();
+        assert_eq!(status(&gitdir, Hook::PostRewrite), HookStatus::Managed);
 
-        super::uninstall(&gitdir).unwrap();
-        assert_eq!(status(&gitdir), HookStatus::Missing);
+        super::uninstall(&gitdir, Hook::PostRewrite).unwrap();
+        assert_eq!(status(&gitdir, Hook::PostRewrite), HookStatus::Missing);
 
         // Foreign hook is not removed.
-        let hook = gitdir.join("hooks").join(HOOK_NAME);
+        let hook = gitdir.join("hooks").join("post-rewrite");
         fs::write(&hook, "#!/bin/sh\necho foreign\n").unwrap();
-        let result = super::uninstall(&gitdir).unwrap();
+        let result = super::uninstall(&gitdir, Hook::PostRewrite).unwrap();
         assert_eq!(result, HookStatus::Foreign);
         assert!(hook.exists());
     }
