@@ -61,30 +61,36 @@ pub fn on_files_changed(repo: Rc<Repository>, session_id: &str, agent_name: &str
     Ok(())
 }
 
-/// Append the assistant response and close the open turn.
+/// Append one or more transcript entries and close the open turn.
+///
+/// Accepts a slice so adapters that extract multiple artifacts from a single
+/// agent Stop (e.g. Claude's plan-mode plans plus user feedback) can land them
+/// as separate entries on the same turn.
 ///
 /// # Errors
 ///
-/// Returns an error if the current turn cannot be loaded, or the response
-/// commit or amendment fails.
+/// Returns an error if the current turn cannot be loaded, or the entry commit
+/// or amendment fails.
 pub fn on_stop(
     repo: Rc<Repository>,
     session_id: &str,
     agent_name: &str,
-    response: &str,
+    entries: &[TurnEntry],
 ) -> Result<()> {
     let session = load_or_create_session(repo, session_id)?;
     let turn = open_turn(&session)?;
     if let Some(turn) = turn {
-        let message = turn
-            .message()
-            .clone()
-            .with_entry(TurnEntry::response_now(response));
+        let mut message = turn.message().clone();
+        for entry in entries {
+            message = message.with_entry(entry.clone());
+        }
         let updated = session::amend(&session, &message)?;
         let _ = snapshot::capture(&session, updated.oid, SnapshotReason::TurnAmend)?;
     } else {
-        let message =
-            new_message(&session, agent_name)?.with_entry(TurnEntry::response_now(response));
+        let mut message = new_message(&session, agent_name)?;
+        for entry in entries {
+            message = message.with_entry(entry.clone());
+        }
         let subject = message
             .suggest_subject()
             .unwrap_or_else(|| "files changed".to_string());
@@ -276,7 +282,13 @@ mod tests {
 
             let repo = Rc::new(Repository::open(dir.path()).unwrap());
             super::on_prompt_submitted(repo.clone(), "session-a", "Test", "hello").unwrap();
-            super::on_stop(repo.clone(), "session-a", "Test", "done").unwrap();
+            super::on_stop(
+                repo.clone(),
+                "session-a",
+                "Test",
+                &[TurnEntry::response_now("done")],
+            )
+            .unwrap();
 
             let session = session::open(repo, "session-a").unwrap();
             let turns = turn::list(&session).unwrap();
@@ -297,12 +309,57 @@ mod tests {
         }
 
         #[test]
+        fn closes_active_turn_with_multiple_responses() {
+            let dir = tempfile::tempdir().unwrap();
+            init_repo_with_commit(dir.path());
+
+            let repo = Rc::new(Repository::open(dir.path()).unwrap());
+            super::on_prompt_submitted(repo.clone(), "session-a", "Test", "hello").unwrap();
+            super::on_stop(
+                repo.clone(),
+                "session-a",
+                "Test",
+                &[
+                    TurnEntry::response_now("first"),
+                    TurnEntry::response_now("second"),
+                ],
+            )
+            .unwrap();
+
+            let session = session::open(repo, "session-a").unwrap();
+            let turns = turn::list(&session).unwrap();
+            let snapshot = snapshot::get(&session, turns[0].oid).unwrap();
+
+            assert_eq!(snapshot.reason(), Some(SnapshotReason::TurnAmend));
+            assert!(matches!(
+                turns[0].entries(),
+                [
+                    TurnEntry {
+                        kind: TurnEntryKind::Prompt { text: prompt }
+                    },
+                    TurnEntry {
+                        kind: TurnEntryKind::Response { text: first }
+                    },
+                    TurnEntry {
+                        kind: TurnEntryKind::Response { text: second }
+                    }
+                ] if prompt == "hello" && first == "first" && second == "second"
+            ));
+        }
+
+        #[test]
         fn without_active_turn_uses_response_subject() {
             let dir = tempfile::tempdir().unwrap();
             init_repo_with_commit(dir.path());
 
             let repo = Rc::new(Repository::open(dir.path()).unwrap());
-            super::on_stop(repo.clone(), "session-a", "Test", "done now").unwrap();
+            super::on_stop(
+                repo.clone(),
+                "session-a",
+                "Test",
+                &[TurnEntry::response_now("done now")],
+            )
+            .unwrap();
 
             let session = session::open(repo, "session-a").unwrap();
             let turns = turn::list(&session).unwrap();

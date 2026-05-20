@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     path::{Path, PathBuf},
     rc::Rc,
 };
@@ -6,6 +7,7 @@ use std::{
 use concats_core::{
     Repository,
     error::{Error, Result},
+    turn::TurnEntry,
 };
 use serde::Deserialize;
 
@@ -60,17 +62,15 @@ impl crate::Agent for ClaudeAgent {
                     .map_err(|error| Error::session(format!("invalid Stop payload: {error}")))?;
                 let worktree_root = find_worktree_root(payload.cwd.as_deref().map(Path::new))?;
                 let repo = Rc::new(Repository::open(&worktree_root)?);
-                let transcript_response = payload
+                let transcript = payload
                     .transcript_path
                     .as_deref()
-                    .and_then(|path| std::fs::read_to_string(path).ok())
-                    .and_then(|data| extract_last_response(&data));
-                let response = payload
-                    .last_assistant_message
-                    .as_deref()
-                    .or(transcript_response.as_deref())
-                    .unwrap_or("(response not captured)");
-                handler::on_stop(repo, &payload.session_id, "Claude", response)
+                    .and_then(|path| std::fs::read_to_string(path).ok());
+                let entries = resolve_stop_entries(
+                    transcript.as_deref(),
+                    payload.last_assistant_message.as_deref(),
+                );
+                handler::on_stop(repo, &payload.session_id, "Claude", &entries)
             }
             _ => Err(Error::session(format!(
                 "unknown Claude hook event: {event}"
@@ -210,25 +210,295 @@ fn remove_hooks(mut value: serde_json::Value) -> serde_json::Value {
     value
 }
 
+const APPROVED_PLAN_MARKER: &str = "\n## Approved Plan:";
+
+// Resolve the transcript entries to append on a Claude Stop event.
+// Plan-mode cycles can include user feedback delivered as tool results, so
+// Claude may append both `Prompt` and `Response` entries for a single Stop.
+fn resolve_stop_entries(
+    transcript: Option<&str>,
+    last_assistant_message: Option<&str>,
+) -> Vec<TurnEntry> {
+    if let Some(data) = transcript
+        && let Some(entries) = extract_plan_mode_entries(data)
+    {
+        return entries;
+    }
+    let fallback = last_assistant_message
+        .map(str::to_string)
+        .or_else(|| transcript.and_then(extract_last_response))
+        .unwrap_or_else(|| "(response not captured)".to_string());
+    vec![TurnEntry::response_now(fallback)]
+}
+
 fn extract_last_response(data: &str) -> Option<String> {
     data.lines()
         .rev()
         .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
-        .filter(|entry| entry.get("role").and_then(|r| r.as_str()) == Some("assistant"))
-        .find_map(|entry| {
-            let content = entry.get("content")?;
-            if let Some(text) = content.as_str() {
-                return Some(text.to_string());
+        .find_map(|entry| assistant_text(&entry))
+}
+
+fn extract_plan_mode_entries(data: &str) -> Option<Vec<TurnEntry>> {
+    let entries: Vec<serde_json::Value> = data
+        .lines()
+        .filter_map(|line| serde_json::from_str(line).ok())
+        .collect();
+
+    let start = current_prompt_start(&entries);
+    let turn_entries = &entries[start..];
+    let tool_names = tool_use_names(turn_entries);
+    let mut out = Vec::new();
+    let mut last_plan_path = None;
+    let mut seen_plan_mode = false;
+
+    for entry in turn_entries {
+        if entry_role(entry) == Some("assistant") {
+            collect_assistant_plan_entries(
+                entry,
+                &mut last_plan_path,
+                &mut seen_plan_mode,
+                &mut out,
+            );
+        } else if let Some(feedback) = plan_feedback_text(entry, &tool_names) {
+            out.push(TurnEntry::prompt_now(feedback));
+        }
+    }
+
+    if seen_plan_mode { Some(out) } else { None }
+}
+
+fn collect_assistant_plan_entries(
+    entry: &serde_json::Value,
+    last_plan_path: &mut Option<String>,
+    seen_plan_mode: &mut bool,
+    out: &mut Vec<TurnEntry>,
+) {
+    let Some(blocks) = content_blocks(entry) else {
+        if *seen_plan_mode && let Some(text) = assistant_text(entry) {
+            out.push(TurnEntry::response_now(text));
+        }
+        return;
+    };
+
+    let mut text = Vec::new();
+    for block in blocks {
+        collect_text_after_plan(block, *seen_plan_mode, &mut text);
+        update_plan_write_path(block, last_plan_path);
+        if let Some(plan) = plan_from_exit_block(block, last_plan_path.as_deref()) {
+            push_pending_text(&mut text, out);
+            out.push(TurnEntry::response_now(plan));
+            *seen_plan_mode = true;
+        }
+    }
+    push_pending_text(&mut text, out);
+}
+
+fn collect_text_after_plan<'a>(
+    block: &'a serde_json::Value,
+    seen_plan_mode: bool,
+    text: &mut Vec<&'a str>,
+) {
+    if seen_plan_mode && let Some(part) = block.get("text").and_then(|text| text.as_str()) {
+        text.push(part);
+    }
+}
+
+fn update_plan_write_path(block: &serde_json::Value, last_plan_path: &mut Option<String>) {
+    if is_tool_use(block, "Write")
+        && let Some(path) = plan_write_file_path(block)
+    {
+        *last_plan_path = Some(path);
+    }
+}
+
+fn plan_from_exit_block(block: &serde_json::Value, last_plan_path: Option<&str>) -> Option<String> {
+    if !is_tool_use(block, "ExitPlanMode") {
+        return None;
+    }
+    exit_plan_text(block)
+        .or_else(|| exit_plan_file_path(block).and_then(|path| read_plan_file(&path)))
+        .or_else(|| last_plan_path.and_then(read_plan_file))
+}
+
+fn push_pending_text(text: &mut Vec<&str>, out: &mut Vec<TurnEntry>) {
+    if !text.is_empty() {
+        out.push(TurnEntry::response_now(text.join("\n")));
+        text.clear();
+    }
+}
+
+fn current_prompt_start(entries: &[serde_json::Value]) -> usize {
+    entries
+        .iter()
+        .rposition(is_submitted_user_prompt)
+        .map_or(0, |index| index + 1)
+}
+
+fn is_submitted_user_prompt(entry: &serde_json::Value) -> bool {
+    if entry_role(entry) != Some("user") {
+        return false;
+    }
+    match entry_content(entry) {
+        Some(serde_json::Value::String(_)) => true,
+        Some(serde_json::Value::Array(blocks)) => blocks
+            .iter()
+            .any(|block| block.get("type").and_then(|t| t.as_str()) == Some("text")),
+        _ => false,
+    }
+}
+
+fn tool_use_names(entries: &[serde_json::Value]) -> HashMap<String, String> {
+    let mut names = HashMap::new();
+    for entry in entries {
+        if entry_role(entry) != Some("assistant") {
+            continue;
+        }
+        for block in content_blocks(entry).unwrap_or_default() {
+            if block.get("type").and_then(|t| t.as_str()) == Some("tool_use")
+                && let (Some(id), Some(name)) = (
+                    block.get("id").and_then(|id| id.as_str()),
+                    block.get("name").and_then(|name| name.as_str()),
+                )
+            {
+                names.insert(id.to_string(), name.to_string());
             }
-            let parts: Vec<_> = content
-                .as_array()?
-                .iter()
-                .filter_map(|block| block.get("text")?.as_str())
-                .collect();
-            if parts.is_empty() {
-                None
+        }
+    }
+    names
+}
+
+fn plan_feedback_text(
+    entry: &serde_json::Value,
+    tool_names: &HashMap<String, String>,
+) -> Option<String> {
+    if entry_role(entry) != Some("user") {
+        return None;
+    }
+    for block in content_blocks(entry)? {
+        if block.get("type").and_then(|t| t.as_str()) != Some("tool_result") {
+            continue;
+        }
+        let tool_use_id = block.get("tool_use_id").and_then(|id| id.as_str())?;
+        let tool_name = tool_names.get(tool_use_id)?;
+        if tool_name != "AskUserQuestion" && tool_name != "ExitPlanMode" {
+            continue;
+        }
+        let text = tool_result_text(block)?;
+        let text = text
+            .split_once(APPROVED_PLAN_MARKER)
+            .map_or(text.as_str(), |(head, _)| head)
+            .trim();
+        if !text.is_empty() {
+            return Some(text.to_string());
+        }
+    }
+    None
+}
+
+fn tool_result_text(block: &serde_json::Value) -> Option<String> {
+    let content = block.get("content")?;
+    if let Some(text) = content.as_str() {
+        return Some(text.to_string());
+    }
+    let parts: Vec<_> = content
+        .as_array()?
+        .iter()
+        .filter_map(|block| block.get("text")?.as_str())
+        .collect();
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join("\n"))
+    }
+}
+
+fn exit_plan_text(block: &serde_json::Value) -> Option<String> {
+    block
+        .get("input")?
+        .get("plan")?
+        .as_str()
+        .map(str::to_string)
+}
+
+fn exit_plan_file_path(block: &serde_json::Value) -> Option<String> {
+    block
+        .get("input")?
+        .get("planFilePath")?
+        .as_str()
+        .and_then(plan_file_path)
+}
+
+fn read_plan_file(path: &str) -> Option<String> {
+    std::fs::read_to_string(path).ok()
+}
+
+fn plan_write_file_path(block: &serde_json::Value) -> Option<String> {
+    let path = block.get("input")?.get("file_path")?.as_str()?;
+    plan_file_path(path)
+}
+
+fn plan_file_path(path: &str) -> Option<String> {
+    let is_md = Path::new(path)
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("md"));
+    if path.contains("/.claude/plans/") && is_md {
+        Some(path.to_string())
+    } else {
+        None
+    }
+}
+
+fn assistant_text(entry: &serde_json::Value) -> Option<String> {
+    if entry_role(entry) != Some("assistant") {
+        return None;
+    }
+    let content = entry_content(entry)?;
+    if let Some(text) = content.as_str() {
+        return Some(text.to_string());
+    }
+    let parts: Vec<_> = content
+        .as_array()?
+        .iter()
+        .filter_map(|block| block.get("text")?.as_str())
+        .collect();
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join("\n"))
+    }
+}
+
+fn is_tool_use(block: &serde_json::Value, name: &str) -> bool {
+    block.get("type").and_then(|t| t.as_str()) == Some("tool_use")
+        && block.get("name").and_then(|n| n.as_str()) == Some(name)
+}
+
+fn content_blocks(entry: &serde_json::Value) -> Option<&[serde_json::Value]> {
+    entry_content(entry)?.as_array().map(Vec::as_slice)
+}
+
+fn entry_content(entry: &serde_json::Value) -> Option<&serde_json::Value> {
+    entry
+        .get("content")
+        .or_else(|| entry.get("message")?.get("content"))
+}
+
+fn entry_role(entry: &serde_json::Value) -> Option<&str> {
+    entry
+        .get("role")
+        .and_then(|role| role.as_str())
+        .or_else(|| {
+            entry
+                .get("message")
+                .and_then(|message| message.get("role"))
+                .and_then(|role| role.as_str())
+        })
+        .or_else(|| {
+            let ty = entry.get("type").and_then(|ty| ty.as_str());
+            if matches!(ty, Some("assistant" | "user")) {
+                ty
             } else {
-                Some(parts.join("\n"))
+                None
             }
         })
 }
@@ -394,6 +664,409 @@ mod tests {
                         kind: TurnEntryKind::Response { text: response }
                     }
                 ] if prompt == "hello" && response == "done"
+            ));
+        }
+    }
+
+    mod plan_mode {
+        use super::*;
+
+        // Build a JSONL transcript with an assistant `Write` of `plan_path`
+        // followed by `ExitPlanMode`, plus any additional assistant messages
+        // given in `trailing_texts`.
+        fn build_jsonl(plan_path: &str, trailing_texts: &[&str]) -> String {
+            let mut lines = vec![
+                serde_json::json!({"role": "user", "content": "please plan"}).to_string(),
+                serde_json::json!({
+                    "role": "assistant",
+                    "content": [
+                        {"type": "text", "text": "drafting"},
+                        {
+                            "type": "tool_use",
+                            "name": "Write",
+                            "input": {"file_path": plan_path, "content": "ignored"},
+                        },
+                        {"type": "tool_use", "name": "ExitPlanMode", "input": {}},
+                    ],
+                })
+                .to_string(),
+            ];
+            for text in trailing_texts {
+                lines.push(
+                    serde_json::json!({
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": *text}],
+                    })
+                    .to_string(),
+                );
+            }
+            lines.join("\n")
+        }
+
+        fn dispatch_plan_stop(
+            dir: &std::path::Path,
+            transcript_path: &std::path::Path,
+            last_assistant_message: Option<&str>,
+        ) {
+            let cwd = dir.to_string_lossy().to_string();
+            ClaudeAgent
+                .dispatch(
+                    Some("UserPromptSubmit"),
+                    &serde_json::json!({
+                        "session_id": "session-plan",
+                        "prompt": "please plan",
+                        "cwd": cwd,
+                    })
+                    .to_string(),
+                )
+                .unwrap();
+
+            let mut payload = serde_json::json!({
+                "session_id": "session-plan",
+                "cwd": cwd,
+                "transcript_path": transcript_path.to_string_lossy(),
+            });
+            if let Some(msg) = last_assistant_message {
+                payload["last_assistant_message"] = serde_json::Value::String(msg.to_string());
+            }
+            ClaudeAgent
+                .dispatch(Some("Stop"), &payload.to_string())
+                .unwrap();
+        }
+
+        fn jsonl(entries: impl IntoIterator<Item = serde_json::Value>) -> String {
+            entries
+                .into_iter()
+                .map(|entry| entry.to_string())
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+
+        fn real_user_text(text: &str) -> serde_json::Value {
+            serde_json::json!({
+                "type": "user",
+                "message": {"role": "user", "content": text},
+            })
+        }
+
+        fn real_assistant_text(text: &str) -> serde_json::Value {
+            serde_json::json!({
+                "type": "assistant",
+                "message": {"role": "assistant", "content": text},
+            })
+        }
+
+        fn real_tool_use(id: &str, name: &str, input: serde_json::Value) -> serde_json::Value {
+            serde_json::json!({
+                "type": "assistant",
+                "message": {
+                    "role": "assistant",
+                    "content": [{
+                        "type": "tool_use",
+                        "id": id,
+                        "name": name,
+                        "input": input,
+                    }],
+                },
+            })
+        }
+
+        fn real_tool_result(tool_use_id: &str, content: &str) -> serde_json::Value {
+            serde_json::json!({
+                "type": "user",
+                "message": {
+                    "role": "user",
+                    "content": [{
+                        "type": "tool_result",
+                        "tool_use_id": tool_use_id,
+                        "content": content,
+                    }],
+                },
+            })
+        }
+
+        #[test]
+        fn records_plan_and_post_exit_responses() {
+            let dir = tempfile::tempdir().unwrap();
+            init_repo_with_commit(dir.path());
+
+            let plans_dir = dir.path().join(".claude/plans");
+            std::fs::create_dir_all(&plans_dir).unwrap();
+            let plan_path = plans_dir.join("the-plan.md");
+            std::fs::write(&plan_path, "# Plan\n\nStep one.\n").unwrap();
+
+            let transcript_path = dir.path().join("transcript.jsonl");
+            std::fs::write(
+                &transcript_path,
+                build_jsonl(
+                    plan_path.to_str().unwrap(),
+                    &["Implementing now.", "All done."],
+                ),
+            )
+            .unwrap();
+
+            dispatch_plan_stop(dir.path(), &transcript_path, None);
+
+            let repo = std::rc::Rc::new(concats_core::Repository::open(dir.path()).unwrap());
+            let session = concats_core::session::open(repo, "session-plan").unwrap();
+            let turns = concats_core::turn::list(&session).unwrap();
+            assert!(matches!(
+                turns[0].entries(),
+                [
+                    TurnEntry {
+                        kind: TurnEntryKind::Prompt { .. }
+                    },
+                    TurnEntry {
+                        kind: TurnEntryKind::Response { text: plan }
+                    },
+                    TurnEntry {
+                        kind: TurnEntryKind::Response { text: first }
+                    },
+                    TurnEntry {
+                        kind: TurnEntryKind::Response { text: second }
+                    }
+                ] if plan == "# Plan\n\nStep one.\n" && first == "Implementing now." && second == "All done."
+            ));
+        }
+
+        #[test]
+        fn records_real_transcript_plan_feedback_in_order() {
+            let dir = tempfile::tempdir().unwrap();
+            let plans_dir = dir.path().join(".claude/plans");
+            std::fs::create_dir_all(&plans_dir).unwrap();
+            let plan_path = plans_dir.join("plan.md");
+            let plan_path = plan_path.to_str().unwrap();
+            let jsonl = jsonl([
+                real_user_text("please plan"),
+                real_tool_use(
+                    "ask-1",
+                    "AskUserQuestion",
+                    serde_json::json!({"question": "Which package split?"}),
+                ),
+                real_tool_result("ask-1", "User answered: keep provider packages separate"),
+                real_tool_use(
+                    "write-1",
+                    "Write",
+                    serde_json::json!({"file_path": plan_path, "content": "draft one"}),
+                ),
+                real_tool_use(
+                    "exit-1",
+                    "ExitPlanMode",
+                    serde_json::json!({"plan": "plan one", "planFilePath": plan_path}),
+                ),
+                real_tool_result(
+                    "exit-1",
+                    "User rejected the plan: add the verification commands",
+                ),
+                real_tool_use(
+                    "write-2",
+                    "Write",
+                    serde_json::json!({"file_path": plan_path, "content": "draft two"}),
+                ),
+                real_tool_use(
+                    "exit-2",
+                    "ExitPlanMode",
+                    serde_json::json!({"plan": "plan two", "planFilePath": plan_path}),
+                ),
+                real_tool_result(
+                    "exit-2",
+                    "User has approved your plan.\n## Approved Plan:\nplan two",
+                ),
+                real_assistant_text("implementation done"),
+            ]);
+
+            let entries = resolve_stop_entries(Some(&jsonl), None);
+            assert!(matches!(
+                entries.as_slice(),
+                [
+                    TurnEntry {
+                        kind: TurnEntryKind::Prompt { text: answer }
+                    },
+                    TurnEntry {
+                        kind: TurnEntryKind::Response { text: first_plan }
+                    },
+                    TurnEntry {
+                        kind: TurnEntryKind::Prompt { text: rejection }
+                    },
+                    TurnEntry {
+                        kind: TurnEntryKind::Response { text: second_plan }
+                    },
+                    TurnEntry {
+                        kind: TurnEntryKind::Prompt { text: approval }
+                    },
+                    TurnEntry {
+                        kind: TurnEntryKind::Response { text: done }
+                    }
+                ] if answer == "User answered: keep provider packages separate"
+                    && first_plan == "plan one"
+                    && rejection == "User rejected the plan: add the verification commands"
+                    && second_plan == "plan two"
+                    && approval == "User has approved your plan."
+                    && done == "implementation done"
+            ));
+        }
+
+        #[test]
+        fn later_non_plan_stop_ignores_prior_plan() {
+            let jsonl = jsonl([
+                real_user_text("please plan"),
+                real_tool_use(
+                    "exit-old",
+                    "ExitPlanMode",
+                    serde_json::json!({"plan": "stale plan"}),
+                ),
+                real_user_text("now answer normally"),
+                real_assistant_text("current response"),
+            ]);
+
+            let entries = resolve_stop_entries(Some(&jsonl), Some("fallback response"));
+            assert!(matches!(
+                entries.as_slice(),
+                [TurnEntry {
+                    kind: TurnEntryKind::Response { text }
+                }] if text == "fallback response"
+            ));
+        }
+
+        #[test]
+        fn ask_user_question_without_plan_falls_back() {
+            let jsonl = jsonl([
+                real_user_text("ask then answer"),
+                real_tool_use(
+                    "ask-1",
+                    "AskUserQuestion",
+                    serde_json::json!({"question": "Continue?"}),
+                ),
+                real_tool_result("ask-1", "User answered: yes"),
+                real_assistant_text("normal response"),
+            ]);
+
+            let entries = resolve_stop_entries(Some(&jsonl), Some("normal response"));
+            assert!(matches!(
+                entries.as_slice(),
+                [TurnEntry {
+                    kind: TurnEntryKind::Response { text }
+                }] if text == "normal response"
+            ));
+        }
+
+        #[test]
+        fn exit_uses_nearest_write_before_it() {
+            let dir = tempfile::tempdir().unwrap();
+            let plans_dir = dir.path().join(".claude/plans");
+            std::fs::create_dir_all(&plans_dir).unwrap();
+            let old_path = plans_dir.join("old.md");
+            let nearest_path = plans_dir.join("nearest.md");
+            let after_path = plans_dir.join("after.md");
+            std::fs::write(&old_path, "old").unwrap();
+            std::fs::write(&nearest_path, "nearest").unwrap();
+            std::fs::write(&after_path, "after").unwrap();
+
+            let jsonl = [
+                serde_json::json!({"role": "user", "content": "please plan"}),
+                serde_json::json!({
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "name": "Write",
+                            "input": {"file_path": old_path.to_str().unwrap(), "content": "old"},
+                        },
+                        {
+                            "type": "tool_use",
+                            "name": "Write",
+                            "input": {"file_path": nearest_path.to_str().unwrap(), "content": "nearest"},
+                        },
+                        {"type": "tool_use", "name": "ExitPlanMode", "input": {}},
+                        {
+                            "type": "tool_use",
+                            "name": "Write",
+                            "input": {"file_path": after_path.to_str().unwrap(), "content": "after"},
+                        },
+                    ],
+                }),
+            ]
+            .into_iter()
+            .map(|entry| entry.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+
+            let entries = resolve_stop_entries(Some(&jsonl), None);
+            assert!(matches!(
+                entries.as_slice(),
+                [TurnEntry {
+                    kind: TurnEntryKind::Response { text }
+                }] if text == "nearest"
+            ));
+        }
+
+        #[test]
+        fn plan_only_yields_single_response() {
+            let dir = tempfile::tempdir().unwrap();
+            init_repo_with_commit(dir.path());
+
+            let plans_dir = dir.path().join(".claude/plans");
+            std::fs::create_dir_all(&plans_dir).unwrap();
+            let plan_path = plans_dir.join("the-plan.md");
+            std::fs::write(&plan_path, "plan body").unwrap();
+
+            let transcript_path = dir.path().join("transcript.jsonl");
+            std::fs::write(
+                &transcript_path,
+                build_jsonl(plan_path.to_str().unwrap(), &[]),
+            )
+            .unwrap();
+
+            dispatch_plan_stop(dir.path(), &transcript_path, None);
+
+            let repo = std::rc::Rc::new(concats_core::Repository::open(dir.path()).unwrap());
+            let session = concats_core::session::open(repo, "session-plan").unwrap();
+            let turns = concats_core::turn::list(&session).unwrap();
+            assert!(matches!(
+                turns[0].entries(),
+                [
+                    TurnEntry {
+                        kind: TurnEntryKind::Prompt { .. }
+                    },
+                    TurnEntry {
+                        kind: TurnEntryKind::Response { text }
+                    }
+                ] if text == "plan body"
+            ));
+        }
+
+        #[test]
+        fn missing_plan_file_falls_back_to_last_message() {
+            let dir = tempfile::tempdir().unwrap();
+            init_repo_with_commit(dir.path());
+
+            // Reference a plan path that will not be created on disk.
+            let plans_dir = dir.path().join(".claude/plans");
+            std::fs::create_dir_all(&plans_dir).unwrap();
+            let plan_path = plans_dir.join("ghost.md");
+
+            let transcript_path = dir.path().join("transcript.jsonl");
+            std::fs::write(
+                &transcript_path,
+                build_jsonl(plan_path.to_str().unwrap(), &["done"]),
+            )
+            .unwrap();
+
+            dispatch_plan_stop(dir.path(), &transcript_path, Some("fallback"));
+
+            let repo = std::rc::Rc::new(concats_core::Repository::open(dir.path()).unwrap());
+            let session = concats_core::session::open(repo, "session-plan").unwrap();
+            let turns = concats_core::turn::list(&session).unwrap();
+            assert!(matches!(
+                turns[0].entries(),
+                [
+                    TurnEntry {
+                        kind: TurnEntryKind::Prompt { .. }
+                    },
+                    TurnEntry {
+                        kind: TurnEntryKind::Response { text }
+                    }
+                ] if text == "fallback"
             ));
         }
     }

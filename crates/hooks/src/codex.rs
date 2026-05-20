@@ -3,6 +3,7 @@ use std::{path::Path, rc::Rc};
 use concats_core::{
     Repository,
     error::{Error, Result},
+    turn::TurnEntry,
 };
 use serde::Deserialize;
 
@@ -32,7 +33,12 @@ impl crate::Agent for CodexAgent {
 
         if let Some(transcript) = &payload.transcript_path {
             match std::fs::read_to_string(transcript) {
-                Ok(response) => handler::on_stop(repo, session_id, "Codex", &response)?,
+                Ok(response) => handler::on_stop(
+                    repo,
+                    session_id,
+                    "Codex",
+                    &[TurnEntry::response_now(response)],
+                )?,
                 Err(error) => {
                     eprintln!("warning: failed to read codex transcript at {transcript}: {error}");
                 }
