@@ -182,6 +182,30 @@ When rewriting the active turn:
 - preserve snapshot parent 0 when a previous snapshot exists
 - repoint the snapshot's turn parent to the rewritten turn
 
+## Rebase and Commit Rewriting
+
+When branch history is rewritten (`git rebase`, `git commit --amend`, or any
+other operation that updates `refs/heads/*` with new commit SHAs), Concats
+mirrors the rewrite onto session and snapshot chains through a
+`post-rewrite` git hook. The hook receives a map of old-to-new commit OIDs
+and the `concats rewrite` subcommand rebuilds affected refs.
+
+The rewrite is bottom-up: turns in each session are processed from base to
+tip, so when a turn is reconstructed its previous-turn parent already
+reflects any upstream rewrite performed in the same pass. Trees, authors,
+committers, and commit messages are preserved verbatim; only parents are
+remapped. Sessions whose turns reference none of the rewritten commits are
+left untouched. Running the hook twice with the same input is a no-op.
+
+Dropped anchors — commits absent from the rewrite map, typically the result
+of an interactive rebase that removed a commit outright — are left in place
+as orphans rather than substituted. The turn was authored against that
+exact commit, and silently substituting a nearest ancestor would corrupt
+the recorded diff base. The session ref keeps orphan objects reachable
+(matching the auditability drawback already documented). Callers may emit a
+warning so users know the anchor is no longer reachable from the working
+branch.
+
 ## Loading and Traversal
 
 Turn loading works as follows:
