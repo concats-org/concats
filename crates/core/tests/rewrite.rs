@@ -137,6 +137,7 @@ fn amend_rewrites_only_affected_turns() {
 
     let report = rewrite::apply(&repo, &map).unwrap();
     assert_eq!(report.sessions.len(), 1);
+    assert!(report.dropped_anchors.is_empty());
 
     let reloaded = session::open(repo.clone(), "session-a").unwrap();
     let turns = turn::list(&reloaded).unwrap();

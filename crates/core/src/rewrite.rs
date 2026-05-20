@@ -96,7 +96,7 @@ fn rewrite_session(
     let mut new_tip = original_tip;
     let mut changed = false;
 
-    for turn in &turns {
+    for (i, turn) in turns.iter().enumerate() {
         let commit = repo.find_commit(turn.oid.as_git())?;
         let original_parents: Vec<Oid> = commit.parent_ids().map(Oid::from).collect();
         let new_parents: Vec<Oid> = original_parents
@@ -109,7 +109,10 @@ fn rewrite_session(
             continue;
         }
 
-        record_dropped(turn, &original_parents, map, report);
+        // NOTE: For non-first turns parent[0] is the previous turn commit
+        // (session chain), not a branch anchor — skip it.
+        let anchor_parents = if i == 0 { &original_parents[..] } else { &original_parents[1..] };
+        record_dropped(turn, anchor_parents, map, report);
 
         let new_oid = write_with_parents(repo, &commit, &new_parents)?;
         map.insert(turn.oid, Oid::from(new_oid));
