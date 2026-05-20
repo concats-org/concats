@@ -83,7 +83,7 @@ pub enum Commands {
 
     /// Handle an agent hook event (reads JSON from stdin unless --payload is given).
     Hook {
-        /// The agent (claude, codex, cursor, windsurf, gemini, copilot, droid, amp, opencode).
+        /// The agent (claude, codex, cursor, windsurf, gemini, gemini-antigravity, copilot, droid, amp, opencode).
         agent: String,
 
         /// Hook event name (agent-specific). Optional for single-event agents like Codex.

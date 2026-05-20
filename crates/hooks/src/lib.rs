@@ -99,6 +99,7 @@ pub mod copilot;
 pub mod cursor;
 pub mod droid;
 pub mod gemini;
+pub mod gemini_antigravity;
 pub mod git_hook;
 pub mod handler;
 pub mod helpers;
@@ -147,12 +148,13 @@ impl fmt::Display for dyn Agent + '_ {
     }
 }
 
-static ALL_AGENTS: [&'static dyn Agent; 9] = [
+static ALL_AGENTS: [&'static dyn Agent; 10] = [
     &claude::ClaudeAgent,
     &codex::CodexAgent,
     &cursor::CursorAgent,
     &windsurf::WindsurfAgent,
     &gemini::GeminiAgent,
+    &gemini_antigravity::GeminiAntigravityAgent,
     &copilot::CopilotAgent,
     &droid::DroidAgent,
     &amp::AmpAgent,
@@ -237,7 +239,15 @@ mod tests {
             assert_eq!(
                 names,
                 vec![
-                    "claude", "codex", "cursor", "windsurf", "gemini", "copilot", "droid", "amp",
+                    "claude",
+                    "codex",
+                    "cursor",
+                    "windsurf",
+                    "gemini",
+                    "gemini-antigravity",
+                    "copilot",
+                    "droid",
+                    "amp",
                     "opencode"
                 ]
             );
