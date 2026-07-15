@@ -1,6 +1,7 @@
 use std::{
     io,
     path::{Path, PathBuf},
+    process::ExitCode,
     rc::Rc,
 };
 
@@ -16,12 +17,24 @@ use crate::cli::{Cli, Commands, HooksAction};
 
 type HookAgent = &'static dyn concats_hooks::Agent;
 
-/// Run the CLI command selected by the parsed arguments.
+/// Run the CLI command selected by the parsed arguments, and answer with the
+/// code to exit on.
+///
+/// Most commands are 0-or-error; the review half distinguishes *findings* (1)
+/// from *bad input* (2), which is what makes it usable from a hook or CI.
 ///
 /// # Errors
 ///
 /// Returns an error if the selected subcommand fails.
-pub fn run(cli: Cli) -> miette::Result<()> {
+pub fn run(cli: Cli) -> miette::Result<ExitCode> {
+    #[cfg(feature = "review")]
+    if let Some(Commands::Review(command)) = cli.command {
+        return Ok(crate::review::run(command));
+    }
+    session_command(cli).map(|()| ExitCode::SUCCESS)
+}
+
+fn session_command(cli: Cli) -> miette::Result<()> {
     match cli.command {
         Some(Commands::Init { path }) => run_init(path.as_deref()),
         Some(Commands::Hook {
@@ -42,6 +55,8 @@ pub fn run(cli: Cli) -> miette::Result<()> {
             workspace,
         }) => run_checkout(&session_ref, force, quiet, workspace),
         Some(Commands::Sessions { workspace }) => run_sessions_list(workspace),
+        #[cfg(feature = "review")]
+        Some(Commands::Review(_)) => unreachable!("handled in run"),
         None => {
             use clap::CommandFactory;
             Cli::command()
@@ -234,6 +249,14 @@ fn run_sessions_list(workspace: Option<PathBuf>) -> miette::Result<()> {
             turns.len(),
         );
     }
+    // Sessions travel over plain git; concats deliberately ships no push of
+    // its own. Said here because refs/agent/* are not in default refspecs, so
+    // a bare `git push` never carries them.
+    println!(
+        "
+push a session (and its snapshots) with git:
+           git push <remote> 'refs/agent/sessions/<id>' 'refs/agent/snapshots/<id>'"
+    );
 
     Ok(())
 }
@@ -445,7 +468,7 @@ fn open_repo(workspace: Option<PathBuf>) -> miette::Result<Rc<Repository>> {
     let root = workspace
         .map_or_else(std::env::current_dir, Ok)
         .map_err(|e| miette::miette!("cannot determine cwd: {e}"))?;
-    let repo = Repository::open(&root).map_err(|e| miette::miette!("{e}"))?;
+    let repo = gix::open(&root).map_err(|e| miette::miette!("{e}"))?;
     Ok(Rc::new(repo))
 }
 

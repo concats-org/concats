@@ -1,7 +1,9 @@
+use std::process::ExitCode;
+
 use clap::Parser;
 use concats_cli::{cli::Cli, commands};
 
-fn main() -> miette::Result<()> {
+fn main() -> miette::Result<ExitCode> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()

@@ -5,8 +5,13 @@ desktop.ini
 *dc_store*
 
 # Agents/Tools
-.agents
+# NOTE: .agents is deliberately NOT ignored — it carries the review skills
+# every harness reads (see AGENTS.md). Ignoring it silently drops new skills.
+.antigravitycli
 .claude
+.coland
+# Local coland task skills — present on disk for the tool, never committed.
+.agents/skills/coland*
 .kiro
 
 # Editors
@@ -43,3 +48,4 @@ __pycache__/
 
 # Build Artifacts
 target
+crates/app/dist/

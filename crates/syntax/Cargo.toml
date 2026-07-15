@@ -1,0 +1,17 @@
+[package]
+name = "concats-syntax"
+publish.workspace = true
+edition.workspace = true
+version.workspace = true
+license = "AGPL-3.0-or-later"
+
+[lints]
+workspace = true
+
+[lib]
+name = "concats_syntax"
+path = "src/lib.rs"
+
+# None, on purpose. This crate is a vocabulary both sides of a boundary agree
+# on, and that is worth nothing if agreeing costs a build.
+[dependencies]

@@ -81,6 +81,13 @@ pub enum Commands {
         #[command(subcommand)]
         action: HooksAction,
     },
+
+    /// The review commands — `manifest`, `lint`, `submit`, `comments`, and the
+    /// rest. Flattened, so they read as `concats comments add`, and present
+    /// only in the build that ships beside the app.
+    #[cfg(feature = "review")]
+    #[command(flatten)]
+    Review(crate::review::ReviewCommands),
 }
 
 #[derive(Subcommand)]

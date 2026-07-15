@@ -1,0 +1,99 @@
+[package]
+name = "concats-app"
+publish.workspace = true
+version.workspace = true
+# Ported from the makepad-tree POC as-is; 2024 migration is a follow-up.
+edition = "2021"
+# License intentionally unset (crate is never published): whether this app is
+# open source or fair source is still undecided. See README.md.
+
+description = "A desktop review app where a diff is a document an agent has organized"
+
+# Just the binary. The domain it drives — diff, review store, highlighting,
+# themes — lives in the crates below, so the CLI can ship next to the app
+# without linking makepad.
+[[bin]]
+name = "concats-app"
+path = "src/main.rs"
+
+[package.metadata.packager]
+product_name = "Concats"
+identifier = "dev.concats.app"
+category = "DeveloperTool"
+description = "Concat human and AI edits into products — record the collaboration in git, review it as an organized document"
+long_description = """
+Concats records the back-and-forth between humans and AI coding agents as
+commits on dedicated git refs, and reviews the result as a document rather
+than a wall of text: changes grouped by concern instead of by path, each
+group preceded by the rationale that produced it, mined from the transcripts
+the capture layer already wrote into the repository.
+"""
+icons = [
+    "./resources/icon_32.png",
+    "./resources/icon_64.png",
+    "./resources/icon_128.png",
+    "./resources/icon_256.png",
+    "./resources/icon_512.png",
+    "./resources/icon_512@2x.png",
+    "./resources/icon.ico",
+]
+out_dir = "./dist"
+
+resources = [
+    { src = "./dist/resources/makepad_widgets", target = "makepad_widgets" },
+    { src = "./dist/resources/concats-app", target = "concats_app" },
+]
+
+before-each-package-command = """
+robius-packaging-commands before-each-package \
+    --force-makepad \
+    --binary-name concats-app \
+    --path-to-binary ../../target/release/concats-app
+"""
+
+[package.metadata.packager.macos]
+minimum_system_version = "11.0"
+
+[package.metadata.packager.dmg]
+window_size = { width = 660, height = 400 }
+app_position = { x = 180, y = 170 }
+application_folder_position = { x = 480, y = 170 }
+
+[dependencies]
+concats_diff = { workspace = true }
+concats_highlight = { workspace = true }
+concats_config = { workspace = true }
+concats_state = { workspace = true }
+concats_review = { workspace = true }
+concats_sync = { workspace = true }
+concats_syntax = { workspace = true }
+concats_text = { workspace = true }
+concats_theme = { workspace = true }
+
+makepad-service = { workspace = true }
+makepad-widgets = { workspace = true }
+# TODO: Replacet this in-app terminal setup.
+makepad-terminal-core = { workspace = true }
+
+gix = { workspace = true }
+
+# `app.db` next to the config: the range each window has open, and the recents
+# list. The per-repo review store is `concats_review`'s.
+rusqlite = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+# Native folder picker behind the header's repo name.
+rfd = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+# Visual snapshot tests (tests/snapshots.rs) compare PNG captures per pixel to
+# catch rendering regressions.
+image = { version = "0.25", default-features = false, features = ["png"] }
+
+[features]
+# Highlighting is native-only: the grammars are C and do not build for wasm32.
+# Off, the engine answers in unstyled runs.
+default = ["treesitter"]
+treesitter = ["concats_highlight/treesitter"]

@@ -1,0 +1,36 @@
+[package]
+name = "concats-review"
+publish.workspace = true
+edition.workspace = true
+version.workspace = true
+license = "AGPL-3.0-or-later"
+
+[lints]
+workspace = true
+
+[lib]
+name = "concats_review"
+path = "src/lib.rs"
+
+[dependencies]
+concats_diff = { workspace = true }
+# The real turn-message grammar (pest, pure Rust) — the same parser the capture
+# layer writes with, so a review can never drift from the recorded format.
+concats_message = { workspace = true }
+concats_sync = { workspace = true }
+concats_text = { workspace = true }
+gix = { workspace = true }
+# Review state (seen hunks, line comments, guides) in `.git/concats-app/`.
+# SQLite because every table has at least two concurrent writers — GUI instances
+# saving on every action, agent CLIs adding comments — and WAL plus a busy
+# timeout replace the load-merge-save dance a JSON file needed. serde_json is
+# for the wire formats (export/import).
+rusqlite = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+# GitHub stamps its review comments in RFC 3339; the store keeps unix seconds.
+time = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

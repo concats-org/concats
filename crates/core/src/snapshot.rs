@@ -1,15 +1,13 @@
-use concats_message::SessionId;
 pub use concats_message::SnapshotReason;
+use concats_message::{SNAPSHOT_REF_PREFIX, SessionId};
 use time::OffsetDateTime;
 
 use crate::{
     error::{Error, Result},
-    git::{self, Oid},
+    git::{self, CommitParts, Oid},
     session::Session,
     turn::Turn,
 };
-
-const SNAPSHOT_REF_PREFIX: &str = "refs/agent/snapshots/";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Snapshot {
@@ -31,25 +29,20 @@ impl Snapshot {
     }
 }
 
-impl TryFrom<&git2::Commit<'_>> for Snapshot {
+impl TryFrom<&gix::Commit<'_>> for Snapshot {
     type Error = Error;
 
-    fn try_from(commit: &git2::Commit<'_>) -> Result<Self> {
+    fn try_from(commit: &gix::Commit<'_>) -> Result<Self> {
         let message: concats_message::Snapshot = commit
-            .message_raw()
-            .unwrap_or("")
+            .message_raw_sloppy()
+            .to_string()
             .parse()
             .map_err(|error: concats_message::Error| Error::snapshot(error.to_string()))?;
 
-        let turn_oid = match commit.parent_count() {
-            1 => commit
-                .parent_id(0)
-                .map(Oid::from)
-                .map_err(|_| Error::snapshot("snapshot is missing its turn parent")),
-            2 => commit
-                .parent_id(1)
-                .map(Oid::from)
-                .map_err(|_| Error::snapshot("snapshot is missing its turn parent")),
+        let parents: Vec<_> = commit.parent_ids().map(gix::Id::detach).collect();
+        let turn_oid = match parents.len() {
+            1 => Ok(Oid::from(parents[0])),
+            2 => Ok(Oid::from(parents[1])),
             count => Err(Error::snapshot(format!(
                 "snapshot has unsupported parent count: {count}"
             ))),
@@ -58,8 +51,8 @@ impl TryFrom<&git2::Commit<'_>> for Snapshot {
         Ok(Self {
             message,
             turn_oid,
-            oid: Oid::from(commit.id()),
-            created_at: git::commit_time(commit.time())?,
+            oid: Oid::from(commit.id),
+            created_at: git::commit_time(commit.time().map_err(Error::git)?)?,
         })
     }
 }
@@ -95,9 +88,10 @@ pub fn get(session: &Session, turn_oid: Oid) -> Result<Snapshot> {
         if snapshot.turn_oid == turn_oid {
             return Ok(snapshot);
         }
+        let parents: Vec<_> = commit.parent_ids().map(gix::Id::detach).collect();
         current =
-            if commit.parent_count() == 2 {
-                Some(commit.parent(0).map_err(|_| {
+            if parents.len() == 2 {
+                Some(repo.find_commit(parents[0]).map_err(|_| {
                     Error::snapshot("snapshot is missing its previous-snapshot parent")
                 })?)
             } else {
@@ -125,7 +119,7 @@ pub fn capture(
 ) -> Result<Option<Snapshot>> {
     let repo = session.repo();
     let turn = repo
-        .find_commit(turn_oid.as_git())
+        .find_commit(turn_oid.as_gix())
         .map_err(|_| Error::snapshot(format!("turn not found: {turn_oid}")))?;
     let turn_metadata = Turn::try_from(&turn)
         .map_err(|_| Error::snapshot(format!("turn not found: {turn_oid}")))?;
@@ -147,40 +141,33 @@ pub fn capture(
                 session.id
             )));
         }
-        if current_metadata.turn_oid == turn_oid && current_snapshot.tree_id() == tree_oid {
+        if current_metadata.turn_oid == turn_oid
+            && current_snapshot.tree_id().map_err(Error::git)?.detach() == tree_oid
+        {
             return Ok(None);
         }
     }
 
-    let tree = repo.find_tree(tree_oid)?;
-    let signature = git::signature(repo, None)?;
     let snapshot_message = concats_message::Snapshot::new(session.id.clone(), reason);
-
     let parents = match current_snapshot.as_ref() {
-        Some(current_snapshot) => vec![current_snapshot, &turn],
-        None => vec![&turn],
+        Some(current_snapshot) => vec![current_snapshot.id, turn.id],
+        None => vec![turn.id],
     };
 
-    let oid = repo.commit(
-        None,
-        &signature,
-        &signature,
+    let oid = git::commit(
+        repo,
+        &ref_name(&session.id),
         &snapshot_message.to_string(),
-        &tree,
-        &parents,
+        CommitParts {
+            tree: tree_oid,
+            parents,
+            minimum_time_seconds: None,
+            log_message: "snapshot",
+        },
     )?;
-    repo.reference(&ref_name(&session.id), oid, true, "snapshot")?;
-    Ok(Some(Snapshot::try_from(&repo.find_commit(oid)?)?))
-}
-
-/// Push the snapshot ref to the named remote.
-///
-/// # Errors
-///
-/// Returns an error if the snapshot ref cannot be pushed to the remote.
-pub fn push(session: &Session, remote: &str) -> Result<()> {
-    crate::git::push_ref(session.repo(), remote, &ref_name(&session.id))?;
-    Ok(())
+    Ok(Some(Snapshot::try_from(
+        &repo.find_commit(oid).map_err(Error::git)?,
+    )?))
 }
 
 pub(crate) fn ref_name(session_id: &SessionId) -> String {
@@ -188,9 +175,9 @@ pub(crate) fn ref_name(session_id: &SessionId) -> String {
 }
 
 fn load_from_tip(
-    repo: &git2::Repository,
+    repo: &gix::Repository,
     session_id: &SessionId,
-    tip: &git2::Commit<'_>,
+    tip: &gix::Commit<'_>,
 ) -> Result<Vec<Snapshot>> {
     let mut snapshots = Vec::new();
     let first = Snapshot::try_from(tip)?;
@@ -199,20 +186,22 @@ fn load_from_tip(
     }
     snapshots.push(first);
 
-    let mut next_oid = if tip.parent_count() == 2 {
-        tip.parent_id(0).ok()
+    let tip_parents: Vec<_> = tip.parent_ids().map(gix::Id::detach).collect();
+    let mut next_oid = if tip_parents.len() == 2 {
+        Some(tip_parents[0])
     } else {
         None
     };
 
     while let Some(oid) = next_oid {
-        let commit = repo.find_commit(oid)?;
+        let commit = repo.find_commit(oid).map_err(Error::git)?;
         let snapshot = Snapshot::try_from(&commit)?;
         if snapshot.session_id() != session_id {
             break;
         }
-        next_oid = if commit.parent_count() == 2 {
-            commit.parent_id(0).ok()
+        let parents: Vec<_> = commit.parent_ids().map(gix::Id::detach).collect();
+        next_oid = if parents.len() == 2 {
+            Some(parents[0])
         } else {
             None
         };

@@ -1,0 +1,89 @@
+[package]
+name = "concats-languages"
+publish.workspace = true
+edition.workspace = true
+version.workspace = true
+license = "AGPL-3.0-or-later"
+
+[lints]
+workspace = true
+
+[lib]
+name = "concats_languages"
+path = "src/lib.rs"
+
+[dependencies]
+concats_syntax = { workspace = true }
+
+# The grammars are C, and C is why this cannot build for wasm32. Keeping them
+# here lets the highlighting engine compile and test with none of them present,
+# and makes adding a language a change to this crate only.
+tree-sitter = { workspace = true, optional = true }
+tree-sitter-highlight = { workspace = true, optional = true }
+
+tree-sitter-rust = { version = "0.24", optional = true }
+tree-sitter-javascript = { version = "0.23", optional = true }
+tree-sitter-typescript = { version = "0.23", optional = true }
+tree-sitter-python = { version = "0.23", optional = true }
+tree-sitter-go = { version = "0.23", optional = true }
+tree-sitter-c = { version = "0.23", optional = true }
+tree-sitter-cpp = { version = "0.23", optional = true }
+tree-sitter-java = { version = "0.23", optional = true }
+tree-sitter-c-sharp = { version = "0.23", optional = true }
+tree-sitter-ruby = { version = "0.23", optional = true }
+tree-sitter-php = { version = "0.24", optional = true }
+tree-sitter-html = { version = "0.23", optional = true }
+tree-sitter-css = { version = "0.23", optional = true }
+tree-sitter-scala = { version = "0.24", optional = true }
+tree-sitter-haskell = { version = "0.23", optional = true }
+tree-sitter-json = { version = "0.24", optional = true }
+tree-sitter-bash = { version = "0.25", optional = true }
+tree-sitter-md = { version = "0.5", optional = true }
+
+[features]
+# Broad by default — enough to actually compare grammar cost across languages.
+default = ["all"]
+
+# What every language feature turns on. Named so the code can `cfg` the whole
+# registry on "is there a parser at all" without listing eighteen languages.
+grammars = ["dep:tree-sitter", "dep:tree-sitter-highlight"]
+
+all = [
+    "rust",
+    "javascript",
+    "typescript",
+    "python",
+    "go",
+    "c",
+    "cpp",
+    "java",
+    "c-sharp",
+    "ruby",
+    "php",
+    "html",
+    "css",
+    "scala",
+    "haskell",
+    "json",
+    "bash",
+    "markdown",
+]
+
+rust = ["grammars", "dep:tree-sitter-rust"]
+javascript = ["grammars", "dep:tree-sitter-javascript"]
+typescript = ["grammars", "dep:tree-sitter-typescript"]
+python = ["grammars", "dep:tree-sitter-python"]
+go = ["grammars", "dep:tree-sitter-go"]
+c = ["grammars", "dep:tree-sitter-c"]
+cpp = ["grammars", "dep:tree-sitter-cpp"]
+java = ["grammars", "dep:tree-sitter-java"]
+c-sharp = ["grammars", "dep:tree-sitter-c-sharp"]
+ruby = ["grammars", "dep:tree-sitter-ruby"]
+php = ["grammars", "dep:tree-sitter-php"]
+html = ["grammars", "dep:tree-sitter-html"]
+css = ["grammars", "dep:tree-sitter-css"]
+scala = ["grammars", "dep:tree-sitter-scala"]
+haskell = ["grammars", "dep:tree-sitter-haskell"]
+json = ["grammars", "dep:tree-sitter-json"]
+bash = ["grammars", "dep:tree-sitter-bash"]
+markdown = ["grammars", "dep:tree-sitter-md"]

@@ -60,16 +60,16 @@ impl Turn {
     }
 }
 
-impl TryFrom<&git2::Commit<'_>> for Turn {
+impl TryFrom<&gix::Commit<'_>> for Turn {
     type Error = Error;
 
-    fn try_from(commit: &git2::Commit<'_>) -> Result<Self> {
-        let message: concats_message::Turn = commit.message_raw().unwrap_or("").parse()?;
+    fn try_from(commit: &gix::Commit<'_>) -> Result<Self> {
+        let message: concats_message::Turn = commit.message_raw_sloppy().to_string().parse()?;
 
         Ok(Self {
             message,
-            oid: Oid::from(commit.id()),
-            created_at: git::commit_time(commit.time())?,
+            oid: Oid::from(commit.id),
+            created_at: git::commit_time(commit.time().map_err(Error::git)?)?,
         })
     }
 }
@@ -85,13 +85,15 @@ pub fn list(session: &Session) -> Result<Vec<Turn>> {
     let tip = crate::session::resolve_session_ref(repo, &session.id)?;
 
     let mut turns = Vec::new();
-    let mut revwalk = repo.revwalk()?;
-    revwalk.push(tip.id())?;
     // We only want to follow the first parent to reconstruct the linear session history
-    revwalk.simplify_first_parent()?;
+    let revwalk = repo
+        .rev_walk([tip.id])
+        .first_parent_only()
+        .all()
+        .map_err(Error::git)?;
 
-    for oid in revwalk.filter_map(std::result::Result::ok) {
-        let commit = repo.find_commit(oid)?;
+    for info in revwalk.filter_map(std::result::Result::ok) {
+        let commit = repo.find_commit(info.id).map_err(Error::git)?;
         let Ok(turn) = Turn::try_from(&commit) else {
             break;
         };
@@ -114,7 +116,7 @@ pub fn list(session: &Session) -> Result<Vec<Turn>> {
 pub fn get(session: &Session, oid: Oid) -> Result<Turn> {
     let commit = session
         .repo()
-        .find_commit(oid.as_git())
+        .find_commit(oid.as_gix())
         .map_err(|_| Error::session(format!("turn not found: {oid}")))?;
     let turn =
         Turn::try_from(&commit).map_err(|_| Error::session(format!("turn not found: {oid}")))?;
@@ -127,8 +129,9 @@ pub fn get(session: &Session, oid: Oid) -> Result<Turn> {
 
 /// Restore the turn snapshot into the repository working tree.
 ///
-/// When `force` is false, the checkout collects conflicting paths and returns
-/// them as a [`RestoreConflict`] error. When true, local changes are discarded.
+/// When `force` is false, conflicting paths are collected and returned as a
+/// [`RestoreConflict`](Error::RestoreConflict) error. When true, local changes
+/// are discarded.
 ///
 /// # Errors
 ///
@@ -137,33 +140,9 @@ pub fn get(session: &Session, oid: Oid) -> Result<Turn> {
 pub fn restore(session: &Session, turn: &Turn, force: bool) -> Result<()> {
     let repo = session.repo();
     let snapshot = snapshot::get(session, turn.oid)?;
-    let commit = repo.find_commit(snapshot.oid.as_git())?;
-    let tree = commit.tree()?;
-    let mut builder = git2::build::CheckoutBuilder::new();
-    if force {
-        builder.force();
-    } else {
-        builder.safe();
-        let conflicts: std::rc::Rc<std::cell::RefCell<Vec<String>>> =
-            std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
-        let conflicts_cb = std::rc::Rc::clone(&conflicts);
-        builder.notify_on(git2::CheckoutNotificationType::CONFLICT);
-        builder.notify(move |_why, path, _a, _b, _c| {
-            if let Some(p) = path {
-                conflicts_cb
-                    .borrow_mut()
-                    .push(p.to_string_lossy().into_owned());
-            }
-            true
-        });
-        let result = repo.checkout_tree(tree.as_object(), Some(&mut builder));
-        let paths = conflicts.borrow();
-        if !paths.is_empty() {
-            return Err(Error::restore_conflict(paths.clone()));
-        }
-        result?;
-        return Ok(());
-    }
-    repo.checkout_tree(tree.as_object(), Some(&mut builder))?;
-    Ok(())
+    let commit = repo
+        .find_commit(snapshot.oid.as_gix())
+        .map_err(Error::git)?;
+    let tree_id = commit.tree_id().map_err(Error::git)?.detach();
+    git::checkout_tree(repo, tree_id, force)
 }

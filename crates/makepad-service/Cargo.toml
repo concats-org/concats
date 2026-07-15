@@ -1,0 +1,15 @@
+[package]
+name = "makepad-service"
+publish.workspace = true
+version.workspace = true
+edition.workspace = true
+# License intentionally unset while this lives alongside the exploratory review
+# app; it depends on nothing from concats and is meant to be extractable.
+
+[dependencies]
+# Only the platform crate: `notify` is a thin wrapper over `Cx::post_action`,
+# and nothing here draws.
+makepad-platform = { workspace = true }
+
+[lints]
+workspace = true

@@ -1,0 +1,21 @@
+[package]
+name = "concats-theme"
+publish.workspace = true
+edition.workspace = true
+version.workspace = true
+license = "AGPL-3.0-or-later"
+
+[lints]
+workspace = true
+
+[lib]
+name = "concats_theme"
+path = "src/lib.rs"
+
+[dependencies]
+# The vocabulary a palette keys its token colours on, and on purpose the only
+# dependency besides serde: a theme must load and test with no grammar and no
+# renderer, so one can be written for a terminal renderer and a GUI at once.
+concats_syntax = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }

@@ -1,7 +1,6 @@
 use std::{path::Path, rc::Rc};
 
 use concats_core::{
-    Repository,
     error::{Error, Result},
     turn::TurnEntry,
 };
@@ -27,7 +26,7 @@ impl crate::Agent for CodexAgent {
             .map_err(|error| Error::session(format!("invalid Codex payload: {error}")))?;
         let session_id = payload.session_id.as_deref().unwrap_or("codex-default");
         let worktree_root = find_worktree_root(payload.cwd.as_deref().map(Path::new))?;
-        let repo = Rc::new(Repository::open(&worktree_root)?);
+        let repo = Rc::new(gix::open(&worktree_root).map_err(Error::git)?);
 
         handler::on_files_changed(repo.clone(), session_id, "Codex")?;
 

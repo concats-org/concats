@@ -389,7 +389,7 @@ fn validate_trailer_value(label: &str, value: &str) -> Result<()> {
 }
 
 #[cfg(test)]
-#[allow(clippy::disallowed_methods)]
+#[allow(clippy::disallowed_methods, clippy::cognitive_complexity)]
 mod tests {
     use super::*;
 

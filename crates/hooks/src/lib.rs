@@ -5,7 +5,6 @@ use std::{
 };
 
 use concats_core::{
-    Repository,
     error::{Error, Result},
     turn::TurnEntry,
 };
@@ -42,7 +41,7 @@ fn dispatch_simple(
         .map_err(|error| Error::session(format!("invalid {agent_name} payload: {error}")))?;
     let session_id = payload.session_id.as_deref().unwrap_or(default_session_id);
     let worktree_root = find_worktree_root(payload.cwd.as_deref().map(Path::new))?;
-    let repo = Rc::new(Repository::open(&worktree_root)?);
+    let repo = Rc::new(gix::open(&worktree_root).map_err(Error::git)?);
 
     match resolve(event)? {
         HandlerAction::SessionStarted => handler::on_session_started(repo, session_id),
@@ -91,7 +90,7 @@ pub fn find_worktree_root(cwd: Option<&Path>) -> Result<PathBuf> {
         Some(dir) => dir.to_path_buf(),
         None => std::env::current_dir()?,
     };
-    let repo = git2::Repository::discover(&start)?;
+    let repo = gix::discover(&start).map_err(Error::git)?;
     let workdir = repo
         .workdir()
         .ok_or_else(|| Error::session("bare repository not supported"))?;
@@ -182,23 +181,34 @@ pub fn find_agent(name: &str) -> Option<&'static dyn Agent> {
 mod tests {
     use std::rc::Rc;
 
-    use concats_core::{Repository, session};
+    use concats_core::session;
 
     use super::*;
 
     fn init_repo_with_commit(dir: &std::path::Path) {
-        let repo = git2::Repository::init(dir).unwrap();
-        let mut index = repo.index().unwrap();
+        let git = |args: &[&str]| {
+            let status = std::process::Command::new("git")
+                .arg("-C")
+                .arg(dir)
+                .args(args)
+                .envs([
+                    // Hermetic: the user's git config (signing, hooks) must
+                    // not leak into fixtures.
+                    ("GIT_CONFIG_GLOBAL", "/dev/null"),
+                    ("GIT_CONFIG_SYSTEM", "/dev/null"),
+                    ("GIT_AUTHOR_NAME", "test"),
+                    ("GIT_AUTHOR_EMAIL", "test@test"),
+                    ("GIT_COMMITTER_NAME", "test"),
+                    ("GIT_COMMITTER_EMAIL", "test@test"),
+                ])
+                .status()
+                .unwrap();
+            assert!(status.success());
+        };
+        git(&["init", "-q"]);
         std::fs::write(dir.join("init.txt"), "init").unwrap();
-        index
-            .add_all(["*"], git2::IndexAddOption::DEFAULT, None)
-            .unwrap();
-        index.write().unwrap();
-        let tree_oid = index.write_tree().unwrap();
-        let tree = repo.find_tree(tree_oid).unwrap();
-        let sig = git2::Signature::now("test", "test@test").unwrap();
-        repo.commit(Some("HEAD"), &sig, &sig, "initial", &tree, &[])
-            .unwrap();
+        git(&["add", "-A"]);
+        git(&["commit", "-q", "-m", "initial"]);
     }
 
     mod find_agent {
@@ -227,7 +237,7 @@ mod tests {
                 )
                 .unwrap();
 
-            let repo = Rc::new(Repository::open(dir.path()).unwrap());
+            let repo = Rc::new(gix::open(dir.path()).unwrap());
             assert!(session::open(repo, "session-a").is_ok());
         }
     }
