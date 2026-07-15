@@ -1,0 +1,21 @@
+# /address-comments — answer the review comments on a diff, in the review.
+# The skill text is injected below so the model needs zero extra steps to
+# see it; inside the app's terminal the CONCATS_APP_* env picks the range.
+
+description = "Fix and answer the review comments on a diff (concats-app); args: [base] [head]"
+
+prompt = """
+Follow the skill below exactly, especially its Hard rules. Arguments given
+to this command are `[base] [head]` overrides: "{{args}}". If they are
+empty, run every concats command WITHOUT --repo/--base/--head flags:
+while the review app is open, bare commands target the diff its pane shows
+(the app publishes its live range; the terminal env is the fallback), and
+anywhere else the CLI errors and tells you what to pass — relay that and
+ask; never invent a range.
+
+!{concats skill address-comments}
+
+If the skill text above is missing or the command failed, run
+`concats skill address-comments` yourself and follow its output; if
+that also fails, report the error verbatim and stop.
+"""

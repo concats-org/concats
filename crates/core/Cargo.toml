@@ -14,8 +14,9 @@ path = "src/lib.rs"
 
 [dependencies]
 concats_message = { workspace = true }
-git2 = { workspace = true }
+gix = { workspace = true }
 ignore = { workspace = true }
+imara-diff = { workspace = true }
 miette = { workspace = true }
 thiserror = { workspace = true }
 serde = { workspace = true }

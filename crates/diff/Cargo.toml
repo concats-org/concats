@@ -1,0 +1,28 @@
+[package]
+name = "concats-diff"
+publish.workspace = true
+edition.workspace = true
+version.workspace = true
+license = "AGPL-3.0-or-later"
+
+[lints]
+workspace = true
+
+[lib]
+name = "concats_diff"
+path = "src/lib.rs"
+
+[dependencies]
+concats_sync = { workspace = true }
+concats_syntax = { workspace = true }
+concats_text = { workspace = true }
+# Only the name table: a file header gets its language label whether or not
+# anything can highlight it, and you need no grammar to say "rust".
+concats_languages = { workspace = true }
+gix = { workspace = true }
+imara-diff = { workspace = true }
+loro = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

@@ -1,0 +1,25 @@
+[package]
+name = "concats-sync"
+publish.workspace = true
+edition.workspace = true
+version.workspace = true
+license = "AGPL-3.0-or-later"
+
+[lints]
+workspace = true
+
+[lib]
+name = "concats_sync"
+path = "src/lib.rs"
+
+[dependencies]
+concats_text = { workspace = true }
+# Git plumbing, for one thing: a document version is named by the blob oid
+# whose bytes it reproduces, and computing that name here keeps a caller from
+# labelling an import with bytes it does not have.
+gix = { workspace = true }
+# The text CRDT: cursors that ride operations (so a comment, a caret and a
+# selection survive an edit landing under them), checkout/fork to an older
+# version, and a settable peer id, which makes importing a git blob
+# deterministic.
+loro = { workspace = true }

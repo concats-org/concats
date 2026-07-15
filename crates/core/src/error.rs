@@ -9,8 +9,7 @@ pub enum Error {
 
     #[error("git error: {source}")]
     Git {
-        #[from]
-        source: git2::Error,
+        source: Box<dyn std::error::Error + Send + Sync>,
     },
 
     #[error("session error: {message}")]
@@ -30,6 +29,14 @@ pub enum Error {
 }
 
 impl Error {
+    // NOTE: gix has one error type per operation, so the Git variant boxes
+    // its source rather than naming one concrete error type.
+    pub fn git(source: impl std::error::Error + Send + Sync + 'static) -> Self {
+        Self::Git {
+            source: Box::new(source),
+        }
+    }
+
     pub fn session(message: impl Into<String>) -> Self {
         Self::Session {
             message: message.into(),

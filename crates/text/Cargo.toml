@@ -1,0 +1,19 @@
+[package]
+name = "concats-text"
+publish.workspace = true
+edition.workspace = true
+version.workspace = true
+license = "AGPL-3.0-or-later"
+
+[lints]
+workspace = true
+
+[lib]
+name = "concats_text"
+path = "src/lib.rs"
+
+[dependencies]
+# Line diff: histogram rather than Myers, so hunk boundaries land where a human
+# would put them (`postprocess_lines` does slider adjustment and indent
+# heuristics), and it is fast: 54 ms over 395 files on a real changeset.
+imara-diff = { workspace = true }

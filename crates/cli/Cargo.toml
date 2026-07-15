@@ -19,11 +19,32 @@ path = "src/lib.rs"
 concats_core = { workspace = true }
 concats_hooks = { workspace = true }
 clap = { workspace = true }
-git2 = { workspace = true }
+gix = { workspace = true }
 miette = { workspace = true }
 time = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 
+# The review half. Optional so the standalone binary — the one to hand someone
+# who just wants their agent's turns in git — carries none of it.
+concats_diff = { workspace = true, optional = true }
+concats_highlight = { workspace = true, optional = true }
+concats_state = { workspace = true, optional = true }
+concats_review = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
+
 [dev-dependencies]
 tempfile = { workspace = true }
+
+[features]
+# Off: `concats` is session tracking only — no sqlite, no CRDT, no grammars.
+# On: the same binary and arguments plus the review commands. That is the build
+# that ships inside the app bundle, so it must still link no makepad.
+default = []
+review = [
+    "dep:concats_diff",
+    "dep:concats_highlight",
+    "dep:concats_state",
+    "dep:concats_review",
+    "dep:serde_json",
+]

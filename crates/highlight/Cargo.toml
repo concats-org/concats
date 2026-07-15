@@ -1,0 +1,38 @@
+[package]
+name = "concats-highlight"
+publish.workspace = true
+edition.workspace = true
+version.workspace = true
+license = "AGPL-3.0-or-later"
+
+[lints]
+workspace = true
+
+[lib]
+name = "concats_highlight"
+path = "src/lib.rs"
+
+[dependencies]
+concats_syntax = { workspace = true }
+concats_text = { workspace = true }
+# Only the extension table by default; `treesitter` adds the grammars.
+concats_languages = { workspace = true }
+# A retained tree is keyed by the oid of the content it describes, so this rides
+# with the engine that retains them. The workspace `gix` rather than `gix-hash`
+# alone, so the key is the same type the loader hands over and not one that has
+# to stay version-compatible.
+gix = { workspace = true, optional = true }
+
+tree-sitter = { workspace = true, optional = true }
+tree-sitter-highlight = { workspace = true, optional = true }
+
+[features]
+# The native engine. Off, everything falls back to unstyled runs — the shape
+# the web target needs, where syntect slots in behind the same API.
+default = ["treesitter"]
+treesitter = [
+    "dep:gix",
+    "dep:tree-sitter",
+    "dep:tree-sitter-highlight",
+    "concats_languages/all",
+]

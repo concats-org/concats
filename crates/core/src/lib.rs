@@ -8,4 +8,4 @@ mod git;
 
 pub use concats_message::SessionId;
 pub use git::{Oid, current_head_oid};
-pub use git2::Repository;
+pub use gix::Repository;

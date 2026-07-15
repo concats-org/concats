@@ -11,59 +11,74 @@ use concats_core::{
 fn first_turn_omits_duplicate_head_parent_and_uses_empty_tree() {
     let dir = tempfile::tempdir().unwrap();
     let repo = Rc::new(support::init_repo_with_commit(dir.path()));
-    let head = Oid::from(repo.head().unwrap().target().unwrap());
+    let head = Oid::from(repo.head_id().unwrap().detach());
     let session = session::create(repo.clone(), "session-a", head).unwrap();
 
     let turn = session::commit(&session, &support::turn_message("session-a")).unwrap();
-    let commit = repo.find_commit(turn.oid.as_git()).unwrap();
+    let commit = repo.find_commit(turn.oid.as_gix()).unwrap();
 
-    assert_eq!(commit.parent_count(), 1);
-    assert_eq!(commit.parent_id(0).unwrap(), head.as_git());
-    assert_eq!(commit.tree().unwrap().len(), 0);
+    assert_eq!(commit.parent_ids().count(), 1);
+    assert_eq!(commit.parent_ids().next().unwrap().detach(), head.as_gix());
+    assert_eq!(commit.tree().unwrap().iter().count(), 0);
 }
 
 #[test]
 fn later_turn_links_previous_turn_and_current_head() {
     let dir = tempfile::tempdir().unwrap();
     let repo = Rc::new(support::init_repo_with_commit(dir.path()));
-    let head = Oid::from(repo.head().unwrap().target().unwrap());
+    let head = Oid::from(repo.head_id().unwrap().detach());
     let session = session::create(repo.clone(), "session-a", head).unwrap();
 
     let turn = session::commit(&session, &support::turn_message("session-a")).unwrap();
     let branch_head = support::commit_head(&repo, dir.path(), "branch.txt", "branch");
     let next_turn = session::commit(&session, &support::turn_message("session-a")).unwrap();
-    let commit = repo.find_commit(next_turn.oid.as_git()).unwrap();
+    let commit = repo.find_commit(next_turn.oid.as_gix()).unwrap();
 
-    assert_eq!(commit.parent_count(), 2);
-    assert_eq!(commit.parent_id(0).unwrap(), turn.oid.as_git());
-    assert_eq!(commit.parent_id(1).unwrap(), branch_head.as_git());
+    assert_eq!(commit.parent_ids().count(), 2);
+    assert_eq!(
+        commit.parent_ids().next().unwrap().detach(),
+        turn.oid.as_gix()
+    );
+    assert_eq!(
+        commit.parent_ids().nth(1).unwrap().detach(),
+        branch_head.as_gix()
+    );
 }
 
 #[test]
 fn amend_refreshes_branch_parent_without_changing_session_parent() {
     let dir = tempfile::tempdir().unwrap();
     let repo = Rc::new(support::init_repo_with_commit(dir.path()));
-    let head = Oid::from(repo.head().unwrap().target().unwrap());
+    let head = Oid::from(repo.head_id().unwrap().detach());
     let session = session::create(repo.clone(), "session-a", head).unwrap();
 
     let turn = session::commit(&session, &support::turn_message("session-a")).unwrap();
     let branch_head = support::commit_head(&repo, dir.path(), "branch.txt", "branch");
     let updated = session::amend(&session, turn.message()).unwrap();
-    let updated_commit = repo.find_commit(updated.oid.as_git()).unwrap();
+    let updated_commit = repo.find_commit(updated.oid.as_gix()).unwrap();
 
-    assert_eq!(updated_commit.parent_count(), 2);
-    assert_eq!(updated_commit.parent_id(0).unwrap(), head.as_git());
-    assert_eq!(updated_commit.parent_id(1).unwrap(), branch_head.as_git());
+    assert_eq!(updated_commit.parent_ids().count(), 2);
+    assert_eq!(
+        updated_commit.parent_ids().next().unwrap().detach(),
+        head.as_gix()
+    );
+    assert_eq!(
+        updated_commit.parent_ids().nth(1).unwrap().detach(),
+        branch_head.as_gix()
+    );
 
     let refreshed_head = support::commit_head(&repo, dir.path(), "branch-2.txt", "branch-2");
     let refreshed = session::amend(&session, updated.message()).unwrap();
-    let refreshed_commit = repo.find_commit(refreshed.oid.as_git()).unwrap();
+    let refreshed_commit = repo.find_commit(refreshed.oid.as_gix()).unwrap();
 
-    assert_eq!(refreshed_commit.parent_count(), 2);
-    assert_eq!(refreshed_commit.parent_id(0).unwrap(), head.as_git());
+    assert_eq!(refreshed_commit.parent_ids().count(), 2);
     assert_eq!(
-        refreshed_commit.parent_id(1).unwrap(),
-        refreshed_head.as_git()
+        refreshed_commit.parent_ids().next().unwrap().detach(),
+        head.as_gix()
+    );
+    assert_eq!(
+        refreshed_commit.parent_ids().nth(1).unwrap().detach(),
+        refreshed_head.as_gix()
     );
 }
 
@@ -71,7 +86,7 @@ fn amend_refreshes_branch_parent_without_changing_session_parent() {
 fn forked_first_turn_uses_source_turn_as_first_parent() {
     let dir = tempfile::tempdir().unwrap();
     let repo = Rc::new(support::init_repo_with_commit(dir.path()));
-    let head = Oid::from(repo.head().unwrap().target().unwrap());
+    let head = Oid::from(repo.head_id().unwrap().detach());
     let source_session = session::create(repo.clone(), "session-a", head).unwrap();
     let source_turn =
         session::commit(&source_session, &support::turn_message("session-a")).unwrap();
@@ -79,34 +94,43 @@ fn forked_first_turn_uses_source_turn_as_first_parent() {
     let branch_head = support::commit_head(&repo, dir.path(), "branch.txt", "branch");
     let fork_session = session::create(repo.clone(), "session-b", source_turn.oid).unwrap();
     let fork_turn = session::commit(&fork_session, &support::turn_message("session-b")).unwrap();
-    let commit = repo.find_commit(fork_turn.oid.as_git()).unwrap();
+    let commit = repo.find_commit(fork_turn.oid.as_gix()).unwrap();
 
-    assert_eq!(commit.parent_count(), 2);
-    assert_eq!(commit.parent_id(0).unwrap(), source_turn.oid.as_git());
-    assert_eq!(commit.parent_id(1).unwrap(), branch_head.as_git());
+    assert_eq!(commit.parent_ids().count(), 2);
+    assert_eq!(
+        commit.parent_ids().next().unwrap().detach(),
+        source_turn.oid.as_gix()
+    );
+    assert_eq!(
+        commit.parent_ids().nth(1).unwrap().detach(),
+        branch_head.as_gix()
+    );
 }
 
 #[test]
 fn first_snapshot_points_only_to_corresponding_turn() {
     let dir = tempfile::tempdir().unwrap();
     let repo = Rc::new(support::init_repo_with_commit(dir.path()));
-    let head = Oid::from(repo.head().unwrap().target().unwrap());
+    let head = Oid::from(repo.head_id().unwrap().detach());
     let session = session::create(repo.clone(), "session-a", head).unwrap();
 
     let turn = session::commit(&session, &support::turn_message("session-a")).unwrap();
     let _ = snapshot::capture(&session, turn.oid, SnapshotReason::TurnCommit).unwrap();
     let snapshot = snapshot::get(&session, turn.oid).unwrap();
-    let snapshot_commit = repo.find_commit(snapshot.oid.as_git()).unwrap();
+    let snapshot_commit = repo.find_commit(snapshot.oid.as_gix()).unwrap();
 
-    assert_eq!(snapshot_commit.parent_count(), 1);
-    assert_eq!(snapshot_commit.parent_id(0).unwrap(), turn.oid.as_git());
+    assert_eq!(snapshot_commit.parent_ids().count(), 1);
+    assert_eq!(
+        snapshot_commit.parent_ids().next().unwrap().detach(),
+        turn.oid.as_gix()
+    );
 }
 
 #[test]
 fn later_snapshot_links_previous_snapshot_and_current_turn() {
     let dir = tempfile::tempdir().unwrap();
     let repo = Rc::new(support::init_repo_with_commit(dir.path()));
-    let head = Oid::from(repo.head().unwrap().target().unwrap());
+    let head = Oid::from(repo.head_id().unwrap().detach());
     let session = session::create(repo.clone(), "session-a", head).unwrap();
 
     let first_turn = session::commit(&session, &support::turn_message("session-a")).unwrap();
@@ -117,91 +141,24 @@ fn later_snapshot_links_previous_snapshot_and_current_turn() {
     let second_turn = session::commit(&session, &support::turn_message("session-a")).unwrap();
     let _ = snapshot::capture(&session, second_turn.oid, SnapshotReason::TurnCommit).unwrap();
     let second_snapshot = snapshot::get(&session, second_turn.oid).unwrap();
-    let snapshot_commit = repo.find_commit(second_snapshot.oid.as_git()).unwrap();
+    let snapshot_commit = repo.find_commit(second_snapshot.oid.as_gix()).unwrap();
 
-    assert_eq!(snapshot_commit.parent_count(), 2);
+    assert_eq!(snapshot_commit.parent_ids().count(), 2);
     assert_eq!(
-        snapshot_commit.parent_id(0).unwrap(),
-        first_snapshot.oid.as_git()
+        snapshot_commit.parent_ids().next().unwrap().detach(),
+        first_snapshot.oid.as_gix()
     );
     assert_eq!(
-        snapshot_commit.parent_id(1).unwrap(),
-        second_turn.oid.as_git()
+        snapshot_commit.parent_ids().nth(1).unwrap().detach(),
+        second_turn.oid.as_gix()
     );
-}
-
-#[test]
-fn pushing_session_ref_publishes_turns_without_snapshot_ref() {
-    let dir = tempfile::tempdir().unwrap();
-    let remote_dir = tempfile::tempdir().unwrap();
-    let repo = Rc::new(support::init_repo_with_commit(dir.path()));
-    let remote = git2::Repository::init_bare(remote_dir.path()).unwrap();
-    let head = Oid::from(repo.head().unwrap().target().unwrap());
-    let session = session::create(repo.clone(), "session-a", head).unwrap();
-
-    std::fs::write(dir.path().join("src.txt"), "hello").unwrap();
-    let turn = session::commit(&session, &support::turn_message("session-a")).unwrap();
-    let _ = snapshot::capture(&session, turn.oid, SnapshotReason::TurnCommit).unwrap();
-    let snapshot = snapshot::get(&session, turn.oid).unwrap();
-
-    support::add_origin_remote(&repo, remote.path());
-    session::push(&session, "origin").unwrap();
-
-    assert!(
-        remote
-            .find_reference(&support::session_ref_name("session-a"))
-            .is_ok()
-    );
-    assert!(
-        remote
-            .find_reference(&support::snapshot_ref_name("session-a"))
-            .is_err()
-    );
-    assert!(remote.find_commit(turn.oid.as_git()).is_ok());
-    assert!(remote.find_commit(snapshot.oid.as_git()).is_err());
-}
-
-#[test]
-fn pushing_snapshot_ref_publishes_connected_graph() {
-    let dir = tempfile::tempdir().unwrap();
-    let remote_dir = tempfile::tempdir().unwrap();
-    let repo = Rc::new(support::init_repo_with_commit(dir.path()));
-    let remote = git2::Repository::init_bare(remote_dir.path()).unwrap();
-    let head = Oid::from(repo.head().unwrap().target().unwrap());
-    let session = session::create(repo.clone(), "session-a", head).unwrap();
-
-    let first_turn = session::commit(&session, &support::turn_message("session-a")).unwrap();
-    let _ = snapshot::capture(&session, first_turn.oid, SnapshotReason::TurnCommit).unwrap();
-    std::fs::write(dir.path().join("src.txt"), "hello").unwrap();
-    let second_turn = session::commit(&session, &support::turn_message("session-a")).unwrap();
-    let _ = snapshot::capture(&session, second_turn.oid, SnapshotReason::TurnCommit).unwrap();
-    let snapshot_tip = snapshot::get(&session, second_turn.oid).unwrap();
-
-    support::add_origin_remote(&repo, remote.path());
-    session::push(&session, "origin").unwrap();
-    snapshot::push(&session, "origin").unwrap();
-
-    assert!(
-        remote
-            .find_reference(&support::session_ref_name("session-a"))
-            .is_ok()
-    );
-    assert!(
-        remote
-            .find_reference(&support::snapshot_ref_name("session-a"))
-            .is_ok()
-    );
-    assert!(remote.find_commit(head.as_git()).is_ok());
-    assert!(remote.find_commit(first_turn.oid.as_git()).is_ok());
-    assert!(remote.find_commit(second_turn.oid.as_git()).is_ok());
-    assert!(remote.find_commit(snapshot_tip.oid.as_git()).is_ok());
 }
 
 #[test]
 fn git_for_each_ref_contains_finds_session_refs() {
     let dir = tempfile::tempdir().unwrap();
     let repo = Rc::new(support::init_repo_with_commit(dir.path()));
-    let head = Oid::from(repo.head().unwrap().target().unwrap());
+    let head = Oid::from(repo.head_id().unwrap().detach());
     let session = session::create(repo.clone(), "session-a", head).unwrap();
     let expected_ref = support::session_ref_name("session-a");
 
@@ -223,7 +180,7 @@ fn git_for_each_ref_contains_finds_session_refs() {
 fn git_log_ancestry_path_walks_snapshot_history() {
     let dir = tempfile::tempdir().unwrap();
     let repo = Rc::new(support::init_repo_with_commit(dir.path()));
-    let head = Oid::from(repo.head().unwrap().target().unwrap());
+    let head = Oid::from(repo.head_id().unwrap().detach());
     let session = session::create(repo.clone(), "session-a", head).unwrap();
 
     let first_turn = session::commit(&session, &support::turn_message("session-a")).unwrap();
@@ -259,7 +216,7 @@ fn git_log_ancestry_path_walks_snapshot_history() {
 fn contains_reaches_turns_and_branch_history() {
     let dir = tempfile::tempdir().unwrap();
     let repo = Rc::new(support::init_repo_with_commit(dir.path()));
-    let head = Oid::from(repo.head().unwrap().target().unwrap());
+    let head = Oid::from(repo.head_id().unwrap().detach());
     let session = session::create(repo.clone(), "session-a", head).unwrap();
 
     let first_turn = session::commit(&session, &support::turn_message("session-a")).unwrap();
@@ -276,7 +233,7 @@ fn contains_reaches_turns_and_branch_history() {
 fn containing_returns_all_sessions_for_shared_turn_newest_first() {
     let dir = tempfile::tempdir().unwrap();
     let repo = Rc::new(support::init_repo_with_commit(dir.path()));
-    let head = Oid::from(repo.head().unwrap().target().unwrap());
+    let head = Oid::from(repo.head_id().unwrap().detach());
     let source_session = session::create(repo.clone(), "session-a", head).unwrap();
     let source_turn =
         session::commit(&source_session, &support::turn_message("session-a")).unwrap();

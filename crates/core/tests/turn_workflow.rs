@@ -13,7 +13,7 @@ use concats_core::{
 fn list_and_get_turns() {
     let dir = tempfile::tempdir().unwrap();
     let repo = Rc::new(support::init_repo_with_commit(dir.path()));
-    let base = Oid::from(repo.head().unwrap().target().unwrap());
+    let base = Oid::from(repo.head_id().unwrap().detach());
     let session = session::create(repo.clone(), "session-a", base).unwrap();
 
     let message = support::turn_message("session-a")
@@ -30,7 +30,7 @@ fn list_and_get_turns() {
 fn turn_message_accessor_exposes_composed_message() {
     let dir = tempfile::tempdir().unwrap();
     let repo = Rc::new(support::init_repo_with_commit(dir.path()));
-    let base = Oid::from(repo.head().unwrap().target().unwrap());
+    let base = Oid::from(repo.head_id().unwrap().detach());
     let session = session::create(repo.clone(), "session-a", base).unwrap();
 
     let message = support::turn_message("session-a")
@@ -56,7 +56,7 @@ fn turn_message_accessor_exposes_composed_message() {
 fn restore_uses_turn_snapshot_tree() {
     let dir = tempfile::tempdir().unwrap();
     let repo = Rc::new(support::init_repo_with_commit(dir.path()));
-    let base = Oid::from(repo.head().unwrap().target().unwrap());
+    let base = Oid::from(repo.head_id().unwrap().detach());
     let session = session::create(repo.clone(), "session-a", base).unwrap();
 
     std::fs::write(dir.path().join("src.txt"), "hello").unwrap();
@@ -70,15 +70,15 @@ fn restore_uses_turn_snapshot_tree() {
         std::fs::read_to_string(dir.path().join("src.txt")).unwrap(),
         "hello"
     );
-    let turn_commit = repo.find_commit(created.oid.as_git()).unwrap();
-    assert_eq!(turn_commit.tree().unwrap().len(), 0);
+    let turn_commit = repo.find_commit(created.oid.as_gix()).unwrap();
+    assert_eq!(turn_commit.tree().unwrap().iter().count(), 0);
 }
 
 #[test]
 fn restore_rejects_turns_from_other_sessions() {
     let dir = tempfile::tempdir().unwrap();
     let repo = Rc::new(support::init_repo_with_commit(dir.path()));
-    let base = Oid::from(repo.head().unwrap().target().unwrap());
+    let base = Oid::from(repo.head_id().unwrap().detach());
 
     let source_session = session::create(repo.clone(), "session-a", base).unwrap();
     std::fs::write(dir.path().join("src.txt"), "hello").unwrap();
@@ -97,7 +97,7 @@ fn restore_rejects_turns_from_other_sessions() {
 fn diff_for_turn_uses_parent_relative_snapshot_patch() {
     let dir = tempfile::tempdir().unwrap();
     let repo = Rc::new(support::init_repo_with_commit(dir.path()));
-    let base = Oid::from(repo.head().unwrap().target().unwrap());
+    let base = Oid::from(repo.head_id().unwrap().detach());
     let session = session::create(repo.clone(), "session-a", base).unwrap();
 
     let created = session::commit(&session, &support::turn_message("session-a")).unwrap();
@@ -115,7 +115,7 @@ fn diff_for_turn_uses_parent_relative_snapshot_patch() {
 fn snapshot_ignores_nested_git_roots() {
     let dir = tempfile::tempdir().unwrap();
     let repo = Rc::new(support::init_repo_with_commit(dir.path()));
-    let base = Oid::from(repo.head().unwrap().target().unwrap());
+    let base = Oid::from(repo.head_id().unwrap().detach());
     let session = session::create(repo.clone(), "session-a", base).unwrap();
 
     let created = session::commit(&session, &support::turn_message("session-a")).unwrap();
@@ -123,7 +123,7 @@ fn snapshot_ignores_nested_git_roots() {
     std::fs::write(dir.path().join("src.txt"), "hello").unwrap();
     let nested = dir.path().join("vendor/nested-repo");
     std::fs::create_dir_all(&nested).unwrap();
-    git2::Repository::init(&nested).unwrap();
+    support::run_git(&nested, ["init", "-q"]);
     std::fs::write(nested.join("ignored.txt"), "ignore me").unwrap();
 
     let created = session::amend(&session, created.message()).unwrap();
@@ -138,7 +138,7 @@ fn snapshot_ignores_nested_git_roots() {
 fn snapshot_includes_symlinks() {
     let dir = tempfile::tempdir().unwrap();
     let repo = Rc::new(support::init_repo_with_commit(dir.path()));
-    let base = Oid::from(repo.head().unwrap().target().unwrap());
+    let base = Oid::from(repo.head_id().unwrap().detach());
     let session = session::create(repo.clone(), "session-a", base).unwrap();
 
     let created = session::commit(&session, &support::turn_message("session-a")).unwrap();
@@ -163,7 +163,7 @@ fn snapshot_includes_symlinks() {
 fn forked_session_list_stops_at_mismatched_session_trailers() {
     let dir = tempfile::tempdir().unwrap();
     let repo = Rc::new(support::init_repo_with_commit(dir.path()));
-    let base = Oid::from(repo.head().unwrap().target().unwrap());
+    let base = Oid::from(repo.head_id().unwrap().detach());
 
     let source_session = session::create(repo.clone(), "session-a", base).unwrap();
     let source_turn =
@@ -185,7 +185,7 @@ fn forked_session_list_stops_at_mismatched_session_trailers() {
 fn get_rejects_turns_from_other_sessions_even_when_ancestral() {
     let dir = tempfile::tempdir().unwrap();
     let repo = Rc::new(support::init_repo_with_commit(dir.path()));
-    let base = Oid::from(repo.head().unwrap().target().unwrap());
+    let base = Oid::from(repo.head_id().unwrap().detach());
 
     let source_session = session::create(repo.clone(), "session-a", base).unwrap();
     let source_turn =
@@ -204,7 +204,7 @@ fn get_rejects_turns_from_other_sessions_even_when_ancestral() {
 fn snapshot_lookup_finds_historical_turns() {
     let dir = tempfile::tempdir().unwrap();
     let repo = Rc::new(support::init_repo_with_commit(dir.path()));
-    let base = Oid::from(repo.head().unwrap().target().unwrap());
+    let base = Oid::from(repo.head_id().unwrap().detach());
     let session = session::create(repo.clone(), "session-a", base).unwrap();
 
     let first_turn = session::commit(&session, &support::turn_message("session-a")).unwrap();

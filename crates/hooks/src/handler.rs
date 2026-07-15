@@ -143,18 +143,29 @@ mod tests {
     use super::*;
 
     fn init_repo_with_commit(dir: &std::path::Path) {
-        let repo = git2::Repository::init(dir).unwrap();
-        let mut index = repo.index().unwrap();
+        let git = |args: &[&str]| {
+            let status = std::process::Command::new("git")
+                .arg("-C")
+                .arg(dir)
+                .args(args)
+                .envs([
+                    // Hermetic: the user's git config (signing, hooks) must
+                    // not leak into fixtures.
+                    ("GIT_CONFIG_GLOBAL", "/dev/null"),
+                    ("GIT_CONFIG_SYSTEM", "/dev/null"),
+                    ("GIT_AUTHOR_NAME", "test"),
+                    ("GIT_AUTHOR_EMAIL", "test@test"),
+                    ("GIT_COMMITTER_NAME", "test"),
+                    ("GIT_COMMITTER_EMAIL", "test@test"),
+                ])
+                .status()
+                .unwrap();
+            assert!(status.success());
+        };
+        git(&["init", "-q"]);
         std::fs::write(dir.join("init.txt"), "init").unwrap();
-        index
-            .add_all(["*"], git2::IndexAddOption::DEFAULT, None)
-            .unwrap();
-        index.write().unwrap();
-        let tree_oid = index.write_tree().unwrap();
-        let tree = repo.find_tree(tree_oid).unwrap();
-        let sig = git2::Signature::now("test", "test@test").unwrap();
-        repo.commit(Some("HEAD"), &sig, &sig, "initial", &tree, &[])
-            .unwrap();
+        git(&["add", "-A"]);
+        git(&["commit", "-q", "-m", "initial"]);
     }
 
     mod on_session_started {
@@ -165,7 +176,7 @@ mod tests {
             let dir = tempfile::tempdir().unwrap();
             init_repo_with_commit(dir.path());
 
-            let repo = Rc::new(Repository::open(dir.path()).unwrap());
+            let repo = Rc::new(gix::open(dir.path()).unwrap());
             super::on_session_started(repo.clone(), "session-a").unwrap();
 
             assert!(session::open(repo, "session-a").is_ok());
@@ -180,7 +191,7 @@ mod tests {
             let dir = tempfile::tempdir().unwrap();
             init_repo_with_commit(dir.path());
 
-            let repo = Rc::new(Repository::open(dir.path()).unwrap());
+            let repo = Rc::new(gix::open(dir.path()).unwrap());
             let session = super::load_or_create_session(repo.clone(), "session-a").unwrap();
 
             assert_eq!(session.id, "session-a");
@@ -192,7 +203,7 @@ mod tests {
             let dir = tempfile::tempdir().unwrap();
             init_repo_with_commit(dir.path());
 
-            let repo = Rc::new(Repository::open(dir.path()).unwrap());
+            let repo = Rc::new(gix::open(dir.path()).unwrap());
             let error = super::load_or_create_session(repo.clone(), "bad\nsession").unwrap_err();
 
             assert!(matches!(error, Error::Session { .. }));
@@ -208,7 +219,7 @@ mod tests {
             let dir = tempfile::tempdir().unwrap();
             init_repo_with_commit(dir.path());
 
-            let repo = Rc::new(Repository::open(dir.path()).unwrap());
+            let repo = Rc::new(gix::open(dir.path()).unwrap());
             super::on_prompt_submitted(repo.clone(), "session-a", "Test", "hello").unwrap();
 
             let session = session::open(repo, "session-a").unwrap();
@@ -234,7 +245,7 @@ mod tests {
             let dir = tempfile::tempdir().unwrap();
             init_repo_with_commit(dir.path());
 
-            let repo = Rc::new(Repository::open(dir.path()).unwrap());
+            let repo = Rc::new(gix::open(dir.path()).unwrap());
             super::on_prompt_submitted(repo.clone(), "session-a", "Test", "hello").unwrap();
 
             std::fs::write(dir.path().join("changed.txt"), "updated").unwrap();
@@ -257,7 +268,7 @@ mod tests {
             let dir = tempfile::tempdir().unwrap();
             init_repo_with_commit(dir.path());
 
-            let repo = Rc::new(Repository::open(dir.path()).unwrap());
+            let repo = Rc::new(gix::open(dir.path()).unwrap());
             std::fs::write(dir.path().join("changed.txt"), "updated").unwrap();
             super::on_files_changed(repo.clone(), "session-a", "Test").unwrap();
 
@@ -280,7 +291,7 @@ mod tests {
             let dir = tempfile::tempdir().unwrap();
             init_repo_with_commit(dir.path());
 
-            let repo = Rc::new(Repository::open(dir.path()).unwrap());
+            let repo = Rc::new(gix::open(dir.path()).unwrap());
             super::on_prompt_submitted(repo.clone(), "session-a", "Test", "hello").unwrap();
             super::on_stop(
                 repo.clone(),
@@ -313,7 +324,7 @@ mod tests {
             let dir = tempfile::tempdir().unwrap();
             init_repo_with_commit(dir.path());
 
-            let repo = Rc::new(Repository::open(dir.path()).unwrap());
+            let repo = Rc::new(gix::open(dir.path()).unwrap());
             super::on_prompt_submitted(repo.clone(), "session-a", "Test", "hello").unwrap();
             super::on_stop(
                 repo.clone(),
@@ -352,7 +363,7 @@ mod tests {
             let dir = tempfile::tempdir().unwrap();
             init_repo_with_commit(dir.path());
 
-            let repo = Rc::new(Repository::open(dir.path()).unwrap());
+            let repo = Rc::new(gix::open(dir.path()).unwrap());
             super::on_stop(
                 repo.clone(),
                 "session-a",

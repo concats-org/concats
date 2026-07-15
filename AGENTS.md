@@ -11,9 +11,10 @@ The core concepts are **sessions** (identified by a ref under `refs/agent/sessio
 All code must pass the project's formatter, linter, and test suite before committing.
 
 ```bash
-cargo +nightly fmt --check    # Formatting
-cargo clippy -- -D warnings   # No lint warnings
-cargo test                    # All tests pass
+cargo +nightly fmt --check                     # Formatting
+cargo clippy --all-targets -- -D warnings      # No lint warnings, tests included
+cargo check -p concats-cli --features review   # The CLI shape that ships beside the app
+cargo test                                     # All tests pass
 ```
 
 ## Philosophy

@@ -1,0 +1,19 @@
+[package]
+name = "concats-state"
+publish.workspace = true
+edition.workspace = true
+version.workspace = true
+license = "AGPL-3.0-or-later"
+
+[lints]
+workspace = true
+
+[lib]
+name = "concats_state"
+path = "src/lib.rs"
+
+[dependencies]
+concats_config = { workspace = true }
+# Two processes that never hold the same row at once. WAL plus a busy timeout
+# covers that.
+rusqlite = { workspace = true }
