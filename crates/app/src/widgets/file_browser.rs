@@ -33,7 +33,7 @@ script_mod! {
     use mod.widgets.C_ELEMENT_HOVER
 
     mod.widgets.FileBrowser = #(FileBrowser::register_widget(vm)) {
-        width: 260
+        width: Fill
         height: Fill
         flow: Down
 
