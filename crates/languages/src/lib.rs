@@ -19,7 +19,8 @@
 pub const EXTENSIONS: &[(&str, &[&str])] = &[
     ("rust", &["rs"]),
     ("javascript", &["js", "jsx", "mjs", "cjs"]),
-    ("typescript", &["ts", "tsx", "mts"]),
+    ("typescript", &["ts", "mts"]),
+    ("tsx", &["tsx"]),
     ("python", &["py", "pyi"]),
     ("go", &["go"]),
     ("c", &["c", "h"]),
@@ -108,14 +109,38 @@ mod grammars {
             tree_sitter_javascript::INJECTIONS_QUERY,
             tree_sitter_javascript::LOCALS_QUERY,
         );
+        // NB: tree-sitter-typescript ships only the *delta* over JavaScript —
+        // types, parameters, and the TS-only keywords. Everything a `.ts` file
+        // shares with JavaScript (keywords, strings, calls, comments) is in the
+        // JavaScript queries, so the two concatenate or a `.ts` file comes out
+        // all but uncoloured. TSX is the same queries over the JSX grammar.
         #[cfg(feature = "typescript")]
-        add(
-            "typescript",
-            tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
-            tree_sitter_typescript::HIGHLIGHTS_QUERY,
-            "",
-            tree_sitter_typescript::LOCALS_QUERY,
-        );
+        {
+            let hl = [
+                tree_sitter_javascript::HIGHLIGHT_QUERY,
+                tree_sitter_typescript::HIGHLIGHTS_QUERY,
+            ]
+            .concat();
+            let loc = [
+                tree_sitter_javascript::LOCALS_QUERY,
+                tree_sitter_typescript::LOCALS_QUERY,
+            ]
+            .concat();
+            add(
+                "typescript",
+                tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
+                &hl,
+                tree_sitter_javascript::INJECTIONS_QUERY,
+                &loc,
+            );
+            add(
+                "tsx",
+                tree_sitter_typescript::LANGUAGE_TSX.into(),
+                &hl,
+                tree_sitter_javascript::INJECTIONS_QUERY,
+                &loc,
+            );
+        }
         #[cfg(feature = "python")]
         add(
             "python",

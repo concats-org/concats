@@ -657,6 +657,24 @@ fn main() {
         );
     }
 
+    /// tree-sitter-typescript's query is only the delta over JavaScript, so a
+    /// `.ts` file highlighted from it alone gets types and nothing else — which
+    /// looks like working highlighting until you notice the keywords are grey.
+    #[test]
+    fn typescript_is_coloured_by_more_than_its_own_delta_query() {
+        let src = "const lead: string = block.trimStart(); // why\n";
+        for ext in ["ts", "tsx"] {
+            let mut hl = Highlighter::new();
+            let seen: std::collections::HashSet<_> = hl.compute(ext, src)[0]
+                .iter()
+                .filter_map(|s| s.hl)
+                .collect();
+            for want in [Hl::Keyword, Hl::Type, Hl::Function, Hl::Comment] {
+                assert!(seen.contains(&want), ".{ext} has no {want:?}: {seen:?}");
+            }
+        }
+    }
+
     #[test]
     fn an_unknown_extension_falls_back_to_plain_text() {
         let mut hl = Highlighter::new();
