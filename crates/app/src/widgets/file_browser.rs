@@ -33,7 +33,10 @@ script_mod! {
     use mod.widgets.C_ELEMENT_HOVER
 
     mod.widgets.FileBrowser = #(FileBrowser::register_widget(vm)) {
-        width: 260
+        // Fill, not a fixed width: the pane's width is the splitter's to set,
+        // and a fixed one leaves a dead strip whenever the sidebar is dragged
+        // wider. The 260 default lives on the splitter that opens it.
+        width: Fill
         height: Fill
         flow: Down
 
