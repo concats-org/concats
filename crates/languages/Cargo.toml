@@ -71,7 +71,7 @@ all = [
 
 rust = ["grammars", "dep:tree-sitter-rust"]
 javascript = ["grammars", "dep:tree-sitter-javascript"]
-typescript = ["grammars", "dep:tree-sitter-typescript"]
+typescript = ["grammars", "dep:tree-sitter-typescript", "dep:tree-sitter-javascript"]
 python = ["grammars", "dep:tree-sitter-python"]
 go = ["grammars", "dep:tree-sitter-go"]
 c = ["grammars", "dep:tree-sitter-c"]
