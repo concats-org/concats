@@ -243,11 +243,16 @@ impl DesktopTerminalView {
     /// Which terminal session this widget instance shows: the nearest
     /// enclosing dock tab with a live session (the widget tree path contains
     /// the dock item ids). Same shape as studio's AppData-based resolver.
-    fn terminal_path_for_widget(cx: &Cx, widget_uid: WidgetUid) -> Option<String> {
+    ///
+    /// `window` comes from the scope the pane put there. The tab ids are the
+    /// same in every window, so without it this resolves to whichever window
+    /// opened that tab first.
+    fn terminal_path_for_widget(cx: &Cx, widget_uid: WidgetUid, window: LiveId) -> Option<String> {
         let path = cx.widget_tree().path_to(widget_uid);
         for node in path.iter().rev() {
-            if crate::terminal::is_open(*node) {
-                return Some(crate::terminal::tab_path(*node));
+            let session = crate::terminal::Session { window, tab: *node };
+            if crate::terminal::is_open(session) {
+                return Some(crate::terminal::tab_path(session));
             }
         }
         None
@@ -1016,14 +1021,17 @@ impl DesktopTerminalView {
 }
 
 impl Widget for DesktopTerminalView {
-    fn draw_walk(&mut self, cx: &mut Cx2d, _scope: &mut Scope, walk: Walk) -> DrawStep {
+    fn draw_walk(&mut self, cx: &mut Cx2d, scope: &mut Scope, walk: Walk) -> DrawStep {
         self.scroll_bars.begin(cx, walk, self.layout);
         self.viewport_rect = cx.turtle().rect();
         self.unscrolled_rect = cx.turtle().rect_unscrolled();
         self.refresh_cell_metrics(cx);
         self.ime_pos = Some(dvec2(self.pad_x, self.pad_y + self.cell_height));
 
-        let path = Self::terminal_path_for_widget(cx, self.widget_uid());
+        let window = crate::frame_state(scope)
+            .map(|state| state.id)
+            .unwrap_or_default();
+        let path = Self::terminal_path_for_widget(cx, self.widget_uid(), window);
 
         if path.as_deref() != self.last_path.as_deref() {
             self.last_requested = None;
@@ -1137,7 +1145,10 @@ impl Widget for DesktopTerminalView {
     }
 
     fn handle_event(&mut self, cx: &mut Cx, event: &Event, scope: &mut Scope) {
-        let (path, frame) = Self::terminal_path_for_widget(cx, self.widget_uid())
+        let window = crate::frame_state(scope)
+            .map(|state| state.id)
+            .unwrap_or_default();
+        let (path, frame) = Self::terminal_path_for_widget(cx, self.widget_uid(), window)
             .map(|path| {
                 let frame =
                     crate::terminal::tab_from_path(&path).and_then(crate::terminal::frame_of);

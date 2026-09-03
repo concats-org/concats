@@ -7,7 +7,7 @@
 //! pumps bytes over an mpsc channel and wakes the UI with `SignalToUI`; the UI
 //! thread owns the `Terminal` models, feeds them in [`drain`], and rebuilds the
 //! [`TerminalFramebuffer`] snapshot the copied `DesktopTerminalView` renders.
-//! Sessions are keyed by their dock tab's `LiveId`, where studio keys by a
+//! Sessions are keyed by window and dock tab, where studio keys by a
 //! String path; the copied view still speaks String paths, and
 //! [`tab_path`]/[`tab_from_path`] bridge the two.
 
@@ -86,39 +86,59 @@ pub struct Shell {
     frame_id: u64,
 }
 
-fn sessions() -> &'static Mutex<HashMap<LiveId, Shell>> {
-    static S: OnceLock<Mutex<HashMap<LiveId, Shell>>> = OnceLock::new();
+/// Which shell a view is showing: the window it belongs to, and the dock tab
+/// inside it. Two windows have the same tab ids — both call their first
+/// terminal `terminal_tab` — so a tab alone does not name a session, and
+/// keying by one would have the second window adopt the first one's shell.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct Session {
+    pub window: LiveId,
+    pub tab: LiveId,
+}
+
+fn sessions() -> &'static Mutex<HashMap<Session, Shell>> {
+    static S: OnceLock<Mutex<HashMap<Session, Shell>>> = OnceLock::new();
     S.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 /// Whether this dock tab has a live session — also how the view recognizes
 /// which terminal tab it is nested under.
-pub fn is_open(tab: LiveId) -> bool {
-    sessions().lock().unwrap().contains_key(&tab)
+pub fn is_open(session: Session) -> bool {
+    sessions().lock().unwrap().contains_key(&session)
 }
 
-/// Live session count (the toggle spawns the first shell only when 0).
-pub fn count() -> usize {
-    sessions().lock().unwrap().len()
-}
-
-/// The frame a tab's view renders, or None while it has no live session.
-pub fn frame_of(tab: LiveId) -> Option<TerminalFramebuffer> {
+/// This window's live session count (its toggle spawns the first shell only
+/// when 0 — another window's terminals are not this window's business).
+pub fn count(window: LiveId) -> usize {
     sessions()
         .lock()
         .unwrap()
-        .get(&tab)
+        .keys()
+        .filter(|s| s.window == window)
+        .count()
+}
+
+/// The frame a tab's view renders, or None while it has no live session.
+pub fn frame_of(session: Session) -> Option<TerminalFramebuffer> {
+    sessions()
+        .lock()
+        .unwrap()
+        .get(&session)
         .and_then(|s| s.frame.clone())
 }
 
 /// The copied view still speaks studio's String "path"; ours encodes the
-/// dock tab id.
-pub fn tab_path(tab: LiveId) -> String {
-    tab.0.to_string()
+/// window and the dock tab in it.
+pub fn tab_path(session: Session) -> String {
+    format!("{}.{}", session.window.0, session.tab.0)
 }
 
-pub fn tab_from_path(path: &str) -> Option<LiveId> {
-    path.parse().ok().map(LiveId)
+pub fn tab_from_path(path: &str) -> Option<Session> {
+    let (window, tab) = path.split_once('.')?;
+    Some(Session {
+        window: LiveId(window.parse().ok()?),
+        tab: LiveId(tab.parse().ok()?),
+    })
 }
 
 /// Paint the emulator from a theme: the default fg/bg (so the panel fuses with
@@ -144,9 +164,9 @@ fn apply_theme(terminal: &mut Terminal, theme: &crate::theme::Theme) {
 /// draw path, so a failing shell can't respawn in a loop. `env` goes into the
 /// shell: the app passes the window's identity and open range, so a CLI (or an
 /// agent) started here defaults to the diff on screen.
-pub fn open(tab: LiveId, cwd: &Path, env: &[(&str, &str)]) {
+pub fn open(session: Session, cwd: &Path, env: &[(&str, &str)]) {
     let mut guard = sessions().lock().unwrap();
-    if guard.contains_key(&tab) {
+    if guard.contains_key(&session) {
         return;
     }
     let (cols, rows) = (120u16, 32u16);
@@ -168,7 +188,7 @@ pub fn open(tab: LiveId, cwd: &Path, env: &[(&str, &str)]) {
     apply_theme(&mut terminal, &crate::theme::active_theme());
 
     guard.insert(
-        tab,
+        session,
         Shell {
             terminal,
             control_tx,
@@ -188,14 +208,14 @@ pub fn open(tab: LiveId, cwd: &Path, env: &[(&str, &str)]) {
 
 /// End a session: dropping it closes the control channel, its PTY thread
 /// exits, and the child shell gets hung up on.
-pub fn close(tab: LiveId) {
-    sessions().lock().unwrap().remove(&tab);
+pub fn close(session: Session) {
+    sessions().lock().unwrap().remove(&session);
 }
 
 /// Pump everything the PTY threads queued into the emulation models. Called
 /// on `Event::Signal`; returns the tabs whose frames changed (redraw those).
 /// A dead shell tears its session down — pressing its tab respawns it.
-pub fn drain() -> Vec<LiveId> {
+pub fn drain() -> Vec<Session> {
     let mut guard = sessions().lock().unwrap();
     let mut dirty = Vec::new();
     let mut dead = Vec::new();
@@ -257,12 +277,12 @@ pub fn drain() -> Vec<LiveId> {
 }
 
 /// Keystrokes/paste from the view, already encoded to terminal bytes.
-pub fn input(tab: LiveId, data: Vec<u8>) {
+pub fn input(session: Session, data: Vec<u8>) {
     if data.is_empty() {
         return;
     }
     let guard = sessions().lock().unwrap();
-    if let Some(s) = guard.get(&tab) {
+    if let Some(s) = guard.get(&session) {
         let _ = s.control_tx.send(Control::Input(data));
     }
 }
@@ -270,9 +290,15 @@ pub fn input(tab: LiveId, data: Vec<u8>) {
 /// The view's viewport: rendered size, shell window height, and scroll
 /// position (`usize::MAX` = follow the bottom). Port of studio's
 /// single-subscriber `on_terminal_viewport_request`.
-pub fn request_viewport(tab: LiveId, cols: u16, rows: u16, pty_rows: u16, top_row: usize) -> bool {
+pub fn request_viewport(
+    session: Session,
+    cols: u16,
+    rows: u16,
+    pty_rows: u16,
+    top_row: usize,
+) -> bool {
     let mut guard = sessions().lock().unwrap();
-    let Some(s) = guard.get_mut(&tab) else {
+    let Some(s) = guard.get_mut(&session) else {
         return false;
     };
     let cols = cols.max(1);
@@ -571,12 +597,12 @@ pub fn debug_dump() {
     }
     for (tab, s) in guard.iter() {
         let Some(f) = &s.frame else {
-            eprintln!("term-debug: [{}] no frame", tab.0);
+            eprintln!("term-debug: [{}] no frame", tab.tab.0);
             continue;
         };
         eprintln!(
             "term-debug: [{}] cursor=({},{}) top={} total={} {}x{} text={:?}",
-            tab.0,
+            tab.tab.0,
             f.cursor_col,
             f.cursor_row,
             f.top_row,
@@ -599,7 +625,10 @@ mod tests {
     /// assert its output lands in the framebuffer.
     #[test]
     fn shell_roundtrip() {
-        let tab = LiveId(0xC0FFEE01);
+        let tab = Session {
+            window: LiveId(0),
+            tab: LiveId(0xC0FFEE01),
+        };
         open(tab, Path::new("."), &[]);
         assert!(is_open(tab), "shell failed to spawn");
         input(tab, b"echo concats_ok\r".to_vec());
@@ -623,7 +652,10 @@ mod tests {
     /// it.
     #[test]
     fn env_reaches_the_shell() {
-        let tab = LiveId(0xC0FFEE03);
+        let tab = Session {
+            window: LiveId(0),
+            tab: LiveId(0xC0FFEE03),
+        };
         open(
             tab,
             Path::new("."),
@@ -653,7 +685,10 @@ mod tests {
     /// way redraws fire them. Diagnoses the app-side wiring.
     #[test]
     fn viewport_interplay() {
-        let tab = LiveId(0xC0FFEE02);
+        let tab = Session {
+            window: LiveId(0),
+            tab: LiveId(0xC0FFEE02),
+        };
         open(tab, Path::new("."), &[]);
         assert!(is_open(tab), "shell failed to spawn");
         input(tab, b"echo concats_ok\r".to_vec());
