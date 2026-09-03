@@ -31,13 +31,15 @@
 //! head tree, as picking them in the browser would. CONCATS_APP_TYPE=text types
 //! that text at the caret a tick after CONCATS_APP_CLICK placed one.
 //! CONCATS_APP_SCROLL=N starts the list at row N, which screenshots the sticky
-//! header without a pointer. CONCATS_APP_THEME=name overrides the startup theme
+//! header without a pointer. CONCATS_APP_WINDOWS=N opens N windows on the
+//! range, the way ⌘N does. CONCATS_APP_THEME=name overrides the startup theme
 //! (else the persisted config, else the built-in Concats theme).
 
 use std::{path::PathBuf, sync::Arc};
 
 use concats_diff::LineKind;
 use concats_review::store;
+use concats_state::Target;
 use dock::{create_stream_tab, load_layout, stream_tab_spec};
 use load::{resplice_comments, spawn_load};
 pub use makepad_widgets;
@@ -174,20 +176,26 @@ script_mod! {
     // The window clear color; the full palette lives in widgets/styles.rs.
     use mod.widgets.C_BG
 
+    // Defined once and used twice: the window the app starts on, and the
+    // template ⌘N opens more of. A window declared under `window_templates` is
+    // not a child of Root, so nothing opens it until `open_window` asks.
+    mod.widgets.ReviewWindow = Window {
+        window.inner_size: vec2(1280, 940)
+        window.title: "concats app"
+        show_caption_bar: false
+        pass.clear_color: C_BG
+        body +: {
+            width: Fill
+            height: Fill
+            flow: Down
+            pane_a := ReviewPane {}
+        }
+    }
+
     load_all_resources() do #(App::script_component(vm)) {
         ui: Root {
-            window_a := Window {
-                window.inner_size: vec2(1280, 940)
-                window.title: "concats app"
-                show_caption_bar: false
-                pass.clear_color: C_BG
-                body +: {
-                    width: Fill
-                    height: Fill
-                    flow: Down
-                    pane_a := ReviewPane {}
-                }
-            }
+            window_a := mod.widgets.ReviewWindow {}
+            window_templates: { review := mod.widgets.ReviewWindow {} }
         }
     }
 }
@@ -253,6 +261,13 @@ pub struct App {
     /// the app started on; the dev hooks and the CLI both mean that one.
     #[rust]
     windows: Vec<AppWindow>,
+    /// The window that last took focus — the one ⌘N copies its range from.
+    #[rust]
+    focused: Option<LiveId>,
+    /// The range the app was started on, which ⌘N falls back to while the
+    /// first load is still in flight and no document has a range yet.
+    #[rust]
+    launched_on: Target,
     /// Dev affordance: `CONCATS_APP_SHOT=/path.png` captures the frame
     /// after the first load lands — visual verification without macOS screen
     /// recording permissions. Once per run.
@@ -408,6 +423,37 @@ impl MatchEvent for App {
                 }
             }
         }
+        // The platform installs a menu bar holding nothing but Quit
+        // (`init_quit_menu`), and `update_macos_menu` replaces it whole — so
+        // Quit has to be re-declared here beside what we add. macOS titles the
+        // first submenu from the bundle's CFBundleName whatever we pass; only
+        // the Quit item's own label is ours to keep in step with it.
+        #[cfg(target_os = "macos")]
+        cx.update_macos_menu(MacosMenu::Main {
+            items: vec![
+                MacosMenu::Sub {
+                    name: "Concats".to_string(),
+                    items: vec![MacosMenu::Item {
+                        command: live_id!(quit),
+                        key: KeyCode::KeyQ,
+                        shift: false,
+                        enabled: true,
+                        name: "Quit Concats".to_string(),
+                    }],
+                },
+                MacosMenu::Sub {
+                    name: "File".to_string(),
+                    items: vec![MacosMenu::Item {
+                        command: live_id!(new_window),
+                        key: KeyCode::KeyN,
+                        shift: false,
+                        enabled: true,
+                        name: "New Window".to_string(),
+                    }],
+                },
+            ],
+        });
+
         let argv: Vec<String> = std::env::args().skip(1).collect();
         let guide = argv
             .iter()
@@ -446,7 +492,8 @@ impl MatchEvent for App {
             .unwrap_or_else(|| "HEAD".into());
 
         self.adopt_window(cx, id!(window_a), self.ui.widget(cx, ids!(window_a)));
-        let target = concats_state::Target { repo, base, head };
+        self.launched_on = Target { repo, base, head };
+        let target = self.launched_on.clone();
         let window = &self.windows[0];
         window
             .pane(cx)
@@ -481,8 +528,11 @@ impl MatchEvent for App {
             }
             for window in &self.windows {
                 let dock = window.pane(cx).dock(cx, ids!(dock));
-                for tab in &dirty_terminals {
-                    dock.item(*tab).redraw(cx);
+                for session in dirty_terminals
+                    .iter()
+                    .filter(|s| s.window == window.state.id)
+                {
+                    dock.item(session.tab).redraw(cx);
                 }
             }
             // Pairs with CONCATS_APP_TERM: re-capture on terminal frames
@@ -541,6 +591,58 @@ impl App {
         self.windows.iter_mut().find(|w| w.state.id == id)
     }
 
+    /// The window ⌘N copies from: whichever last had focus, else the newest.
+    fn focused_window(&self) -> Option<&AppWindow> {
+        self.focused
+            .and_then(|id| self.windows.iter().find(|w| w.state.id == id))
+            .or_else(|| self.windows.last())
+    }
+
+    /// ⌘N: another window on the range the focused one is showing, in this
+    /// process. Its document, its load and its terminals are its own; the
+    /// review store underneath is shared, so a tick in one shows in the other.
+    fn open_new_window(&mut self, cx: &mut Cx) {
+        let target = self
+            .focused_window()
+            .map(|w| {
+                w.state.read(|d| Target {
+                    repo: d.repo.clone(),
+                    base: d.base.clone(),
+                    head: d.head.clone(),
+                })
+            })
+            .filter(|t| !t.repo.is_empty())
+            // Nothing loaded yet: the range the app was asked for is the same
+            // answer, and an empty one would open on the process cwd.
+            .unwrap_or_else(|| self.launched_on.clone());
+
+        let id = LiveId::unique();
+        let Some(widget) = self.ui.as_root().open_window(cx, id, live_id!(review)) else {
+            eprintln!("concats-app: could not open another window");
+            return;
+        };
+        self.adopt_window(cx, id, widget);
+        let Some(window) = self.windows.last() else {
+            return;
+        };
+        window
+            .pane(cx)
+            .label(cx, ids!(status_label))
+            .set_text(cx, "loading…");
+        spawn_load(&window.state, target, None);
+        if let Some(mut p) = window.pane(cx).borrow_mut::<ReviewPane>() {
+            p.set_loading(cx, true);
+        }
+    }
+
+    /// A window went away — dismissed by the user, or by the app. `Root` drops
+    /// the widget; this drops what the App knew about it, so nothing keeps
+    /// polling a document nobody can see.
+    fn retire_window(&mut self, window_id: WindowId) {
+        self.windows
+            .retain(|w| w.window.as_window().window_id() != Some(window_id));
+    }
+
     /// The dev/screenshot hooks
     /// (CONCATS_APP_COMBO/SHARE/TAB/SCROLL/TERM/SETTINGS/SHOT) fire once per
     /// run, after a load lands; SHOT_EVERY re-arms them on every load. Each
@@ -577,6 +679,19 @@ impl App {
                 .button(cx, ids!(share_stage))
                 .set_visible(cx, worktree);
             self.ui.view(cx, ids!(share_panel)).set_visible(cx, true);
+        }
+        // CONCATS_APP_WINDOWS=N: open N-1 more windows on the same range, the
+        // way ⌘N does. A menu item cannot be driven headlessly, so this is how
+        // a multi-window run gets captured.
+        if let Ok(n) = std::env::var("CONCATS_APP_WINDOWS") {
+            let n = n.parse::<usize>().unwrap_or(1);
+            while self.windows.len() < n {
+                let before = self.windows.len();
+                self.open_new_window(cx);
+                if self.windows.len() == before {
+                    break;
+                }
+            }
         }
         // CONCATS_APP_TAB=guide|sessions|commits|comments|files: land on a
         // specific tab, so each one can be screenshotted.
@@ -1369,6 +1484,22 @@ impl AppMain for App {
             {
                 dq.response.set(WindowDragQueryResponse::Caption);
             }
+        }
+        if let Event::MacosMenuCommand(command) = event {
+            if *command == live_id!(new_window) {
+                self.open_new_window(cx);
+            }
+        }
+        // After `Root` has dropped the widget, so the window is gone from both.
+        if let Event::WindowClosed(e) = event {
+            self.retire_window(e.window_id);
+        }
+        if let Event::WindowGotFocus(window_id) = event {
+            self.focused = self
+                .windows
+                .iter()
+                .find(|w| w.window.as_window().window_id() == Some(*window_id))
+                .map(|w| w.state.id);
         }
         self.match_event(cx, event);
         // `Root` hands every window the same scope, so the per-window one is
