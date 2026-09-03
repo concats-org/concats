@@ -14,7 +14,7 @@
 use std::{
     collections::{HashMap, HashSet},
     path::{Path, PathBuf},
-    sync::{Arc, OnceLock},
+    sync::{Arc, Mutex, OnceLock},
 };
 
 use concats_highlight::Highlighter;
@@ -85,10 +85,14 @@ pub(crate) enum ReviewCmd {
         /// The pane's guide key and the guide it already applied — absent
         /// while an explicit `--guide` overrides the store.
         guide: Option<GuideProbe>,
+        /// The window that asked; echoed back so only it reloads.
+        window: LiveId,
     },
     /// Is a WORKTREE review's diff still current? `last` is the fingerprint
     /// the pane has; a different one comes back as `WorktreeChanged`.
     WorktreeProbe {
+        /// The window that asked; echoed back so only it reloads.
+        window: LiveId,
         workdir: PathBuf,
         last: u64,
     },
@@ -149,9 +153,14 @@ pub(crate) enum ReviewUpdate {
     State,
     /// A newer guide exists for this range: the pane should reload, which is
     /// the one path that applies a guide.
-    GuideReady,
+    GuideReady {
+        window: LiveId,
+    },
     /// The worktree moved; the payload is the new fingerprint.
-    WorktreeChanged(u64),
+    WorktreeChanged {
+        window: LiveId,
+        fp: u64,
+    },
     /// A staging run finished, or a guide landed for another range — either
     /// way, one line for the status bar.
     Status(String),
@@ -159,6 +168,7 @@ pub(crate) enum ReviewUpdate {
     /// edit counter as it was when the work started — spans computed against
     /// text that has since been typed over are dropped, not drawn.
     HighlightReady {
+        window: LiveId,
         generation: u64,
         blob: u32,
         rev: u64,
@@ -169,6 +179,13 @@ pub(crate) enum ReviewUpdate {
 
 pub(crate) enum HighlightCmd {
     Request {
+        /// The window whose document this blob belongs to; the reply carries
+        /// it back so the spans land in the document they were computed from.
+        window: LiveId,
+        /// The document as it stood when the request went out. Carried rather
+        /// than looked up: the worker has no window to look one up for, and an
+        /// `Arc` clone costs nothing.
+        doc: Arc<crate::review_doc::ReviewDoc>,
         generation: u64,
         blob: u32,
         rev: u64,
@@ -201,6 +218,8 @@ impl Service for HighlightService {
 
     fn handle(&mut self, cmd: HighlightCmd) {
         let HighlightCmd::Request {
+            window,
+            doc,
             generation,
             blob,
             rev,
@@ -213,9 +232,8 @@ impl Service for HighlightService {
             return;
         }
         let Some((ext, text)) = ({
-            let document = crate::docs().read().unwrap();
-            (document.generation == generation)
-                .then(|| document.blobs.get(blob as usize))
+            (doc.generation == generation)
+                .then(|| doc.blobs.get(blob as usize))
                 .flatten()
                 .filter(|blob| blob.edit_rev == rev)
                 .map(|blob| (blob.ext.clone(), blob.text.clone()))
@@ -224,6 +242,7 @@ impl Service for HighlightService {
         };
         let spans = self.highlighter.compute(&ext, &text);
         notify(ReviewUpdate::HighlightReady {
+            window,
             generation,
             blob,
             rev,
@@ -232,11 +251,18 @@ impl Service for HighlightService {
     }
 }
 
-/// The published snapshot. `load()` is one `Arc` clone — safe to call from a
-/// draw.
-pub(crate) fn review_state() -> &'static Shared<ReviewState> {
-    static S: OnceLock<Shared<ReviewState>> = OnceLock::new();
-    S.get_or_init(Shared::default)
+/// The published snapshot for one repo. `load()` is one `Arc` clone — safe to
+/// call from a draw.
+///
+/// Keyed by repo rather than by window because that is what it is: the seen
+/// set and comments of a store. Two windows on one repo share this on purpose
+/// — a tick in one shows in the other. `None` (nothing loaded yet) gets an
+/// empty state of its own.
+pub(crate) fn review_state(git_dir: Option<&Path>) -> Shared<ReviewState> {
+    static S: OnceLock<Mutex<HashMap<PathBuf, Shared<ReviewState>>>> = OnceLock::new();
+    let states = S.get_or_init(Mutex::default);
+    let key = git_dir.map(Path::to_path_buf).unwrap_or_default();
+    states.lock().unwrap().entry(key).or_default().clone()
 }
 
 /// The handle every UI-side mutation goes through.
@@ -245,7 +271,6 @@ pub(crate) fn review() -> &'static Worker<ReviewCmd> {
     W.get_or_init(|| {
         Worker::spawn(ReviewService {
             stores: HashMap::new(),
-            out: review_state().clone(),
             comments_rev: 0,
         })
     })
@@ -255,8 +280,9 @@ pub(crate) fn review() -> &'static Worker<ReviewCmd> {
 /// change now, the service confirms it (and the write reaches disk) next.
 /// Returns the new state, so the caller can update anything derived from it.
 pub(crate) fn toggle_seen(git_dir: &Path, keys: Vec<LineKey>) {
-    let (all, _) = review_state().load().state(&keys);
-    review_state().update(|s| {
+    let out = review_state(Some(git_dir));
+    let (all, _) = out.load().state(&keys);
+    out.update(|s| {
         let mut next = s.clone();
         let seen = Arc::make_mut(&mut next.seen);
         for k in &keys {
@@ -277,7 +303,6 @@ pub(crate) fn toggle_seen(git_dir: &Path, keys: Vec<LineKey>) {
 struct ReviewService {
     /// One store per repo, opened once. The UI never sees these.
     stores: HashMap<PathBuf, Store>,
-    out: Shared<ReviewState>,
     comments_rev: u64,
 }
 
@@ -305,7 +330,7 @@ impl ReviewService {
             commented: Arc::new(commented),
             comments_rev: rev,
         };
-        self.out.publish(state);
+        review_state(Some(git_dir)).publish(state);
         notify(ReviewUpdate::State);
     }
 }
@@ -402,7 +427,11 @@ impl Service for ReviewService {
                 self.comments_rev += 1;
                 self.publish(&git_dir);
             }
-            ReviewCmd::Poll { git_dir, guide } => {
+            ReviewCmd::Poll {
+                git_dir,
+                guide,
+                window,
+            } => {
                 let st = self.store(&git_dir);
                 // Has another connection committed, and did that change
                 // anything we hold?
@@ -415,7 +444,7 @@ impl Service for ReviewService {
                 if let Some(g) = guide {
                     match store::latest_guide(&git_dir, &g.merge_base, &g.head) {
                         Some(rec) if g.applied_at != Some(rec.created_at) => {
-                            notify(ReviewUpdate::GuideReady);
+                            notify(ReviewUpdate::GuideReady { window });
                         }
                         Some(_) => {}
                         // Something was submitted, but not for this range: say
@@ -429,10 +458,14 @@ impl Service for ReviewService {
                     }
                 }
             }
-            ReviewCmd::WorktreeProbe { workdir, last } => {
+            ReviewCmd::WorktreeProbe {
+                window,
+                workdir,
+                last,
+            } => {
                 let fp = concats_diff::stage::worktree_fingerprint(&workdir);
                 if fp != 0 && fp != last {
-                    notify(ReviewUpdate::WorktreeChanged(fp));
+                    notify(ReviewUpdate::WorktreeChanged { window, fp });
                 }
             }
             ReviewCmd::StageSeen {
@@ -479,14 +512,14 @@ mod tests {
         ObjectId::from_hex(format!("{n:040x}").as_bytes()).unwrap()
     }
 
-    /// A service with nowhere to publish but a local slot — no `Cx`, no
-    /// window, no frame to wait for.
+    /// A service publishing into its own repo's slot — no `Cx`, no window, no
+    /// frame to wait for. Each test gets a fresh tempdir, so each gets a slot
+    /// of its own.
     fn service() -> (tempfile::TempDir, ReviewService, Shared<ReviewState>) {
         let tmp = tempfile::tempdir().unwrap();
-        let out = Shared::default();
+        let out = review_state(Some(tmp.path()));
         let svc = ReviewService {
             stores: HashMap::new(),
-            out: out.clone(),
             comments_rev: 0,
         };
         (tmp, svc, out)
@@ -567,6 +600,7 @@ mod tests {
         svc.handle(ReviewCmd::Poll {
             git_dir,
             guide: None,
+            window: LiveId(0),
         });
         assert_eq!(out.load().comments.len(), 1);
     }

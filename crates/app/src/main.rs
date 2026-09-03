@@ -34,10 +34,7 @@
 //! header without a pointer. CONCATS_APP_THEME=name overrides the startup theme
 //! (else the persisted config, else the built-in Concats theme).
 
-use std::{
-    path::PathBuf,
-    sync::{Arc, OnceLock, RwLock},
-};
+use std::{path::PathBuf, sync::Arc};
 
 use concats_diff::LineKind;
 use concats_review::store;
@@ -48,6 +45,7 @@ use makepad_widgets::*;
 use review_doc::{status_line, ReviewDoc, Tab};
 use service::{review, review_state, ReviewCmd, ReviewUpdate};
 use widgets::ReviewPane;
+use window::WindowState;
 
 use crate::theme::paint;
 
@@ -68,6 +66,8 @@ mod terminal_view;
 /// keeps its own.
 mod theme;
 mod widgets;
+/// One window's own state: its document, its load, its identity.
+mod window;
 
 /// `app_main!` always defines `fn main()`. Putting it in a module demotes that to
 /// an ordinary (unused) function, so the crate root can own the real entry point
@@ -130,27 +130,30 @@ fn main() {
     }
 }
 
-/// The published review document. A draw clones its `Arc` and releases the
-/// lock before painting; writers replace or mutate the uniquely held snapshot.
-fn docs() -> &'static RwLock<Arc<ReviewDoc>> {
-    static D: OnceLock<RwLock<Arc<ReviewDoc>>> = OnceLock::new();
-    D.get_or_init(|| RwLock::new(Arc::new(ReviewDoc::default())))
-}
-
-fn with_doc<R>(f: impl FnOnce(&mut ReviewDoc) -> R) -> R {
-    f(Arc::make_mut(&mut docs().write().unwrap()))
-}
-
-fn read_doc<R>(f: impl FnOnce(&ReviewDoc) -> R) -> R {
-    let document = docs().read().unwrap().clone();
-    f(&document)
-}
-
+/// What one window's rows are drawn from, and what its event handlers reach
+/// for. Put in `Scope` by that window's `ReviewPane` — the pane is where a
+/// per-window scope starts, because `Root` hands every window the same one.
 pub(crate) struct FrameData {
     document: Arc<ReviewDoc>,
     review: Arc<service::ReviewState>,
     theme: Arc<theme::Theme>,
     focus_composer: Option<Tab>,
+    /// The window these rows belong to, so a handler that mutates the document
+    /// mutates its own.
+    pub(crate) state: Arc<WindowState>,
+}
+
+/// The event-path counterpart of [`FrameData`]. A draw needs the whole frame;
+/// an event only needs to know whose document it is, and mouse moves are far
+/// too frequent to rebuild the rest for.
+pub(crate) struct WindowScope(pub(crate) Arc<WindowState>);
+
+/// The window behind the rows being handled, or `None` outside a pane.
+pub(crate) fn frame_state(scope: &mut Scope) -> Option<Arc<WindowState>> {
+    if let Some(window) = scope.data.get::<WindowScope>() {
+        return Some(window.0.clone());
+    }
+    scope.data.get::<FrameData>().map(|f| f.state.clone())
 }
 
 pub(crate) struct FrameTheme(Arc<theme::Theme>);
@@ -246,14 +249,10 @@ pub struct App {
     ui: WidgetRef,
     #[rust]
     show_perf: bool,
-    /// The document generation last reflected into the chrome; the reconcile in
-    /// `handle_signal` is a no-op until it changes.
+    /// Every open window, in the order they were opened. The first is the one
+    /// the app started on; the dev hooks and the CLI both mean that one.
     #[rust]
-    seen: Option<u64>,
-    /// Sum of the open buffers' edit counters when they were last cached, so the
-    /// poll writes a snapshot only after something actually changed.
-    #[rust]
-    cached_rev: u64,
+    windows: Vec<AppWindow>,
     /// Dev affordance: `CONCATS_APP_SHOT=/path.png` captures the frame
     /// after the first load lands — visual verification without macOS screen
     /// recording permissions. Once per run.
@@ -264,15 +263,6 @@ pub struct App {
     /// when idle — no git access, no table reads until something changed.
     #[rust]
     poll: Timer,
-    /// WORKTREE reviews only: the stat-only worktree fingerprint as last
-    /// seen. The worktree moves under the review as the user edits (or
-    /// stages); a change here reloads the pane. 0 = not yet baselined.
-    #[rust]
-    worktree_fp: u64,
-    /// The repo whose persisted dock layout is currently applied; layouts
-    /// load once per repo, when its first load lands.
-    #[rust]
-    layout_git_dir: Option<PathBuf>,
     /// Ticks since `CONCATS_APP_CLICK` was seen: the click needs a laid-out
     /// frame to hit, and the capture needs a frame after the click.
     #[rust]
@@ -281,11 +271,46 @@ pub struct App {
     /// until it lands, so each one answers from its own presented frame.
     #[rust]
     shot_pending: Option<PathBuf>,
+}
+
+/// One open window: the document it renders, the widget subtree it renders
+/// into, and what the App remembers about it.
+struct AppWindow {
+    state: Arc<WindowState>,
+    /// This window's `Window` widget. Every widget lookup for this window goes
+    /// through it rather than through the root.
+    window: WidgetRef,
+    /// The document generation last reflected into the chrome; `reconcile` is
+    /// a no-op until it changes.
+    seen: Option<u64>,
+    /// Sum of the open buffers' edit counters when they were last cached, so
+    /// the poll writes a snapshot only after something actually changed.
+    cached_rev: u64,
+    /// WORKTREE reviews only: the stat-only worktree fingerprint as last seen.
+    /// The worktree moves under the review as the user edits (or stages); a
+    /// change here reloads the pane. 0 = not yet baselined.
+    worktree_fp: u64,
+    /// The repo whose persisted dock layout is currently applied; layouts load
+    /// once per repo, when its first load lands.
+    layout_git_dir: Option<PathBuf>,
     /// The comment revision already spliced into the document. A tick box
     /// publishes as often as a comment does, and splicing walks every row of
     /// every stream — so it only runs when this moves.
-    #[rust]
     spliced_rev: u64,
+}
+
+impl AppWindow {
+    fn new(state: Arc<WindowState>, window: WidgetRef) -> Self {
+        Self {
+            state,
+            window,
+            seen: None,
+            cached_rev: 0,
+            worktree_fp: 0,
+            layout_git_dir: None,
+            spliced_rev: 0,
+        }
+    }
 }
 
 impl MatchEvent for App {
@@ -294,25 +319,46 @@ impl MatchEvent for App {
     fn handle_actions(&mut self, cx: &mut Cx, actions: &Actions) {
         for action in actions {
             match action.downcast_ref::<ReviewUpdate>() {
-                Some(ReviewUpdate::State) => self.review_state_changed(cx),
-                Some(ReviewUpdate::GuideReady) => self.guide_ready(cx),
-                Some(ReviewUpdate::WorktreeChanged(fp)) => self.worktree_changed(cx, *fp),
+                // Repo state, not window state: every window on that repo
+                // wants it, and `review_state_changed` no-ops on the rest.
+                Some(ReviewUpdate::State) => {
+                    for window in &mut self.windows {
+                        window.review_state_changed(cx);
+                    }
+                }
+                Some(ReviewUpdate::GuideReady { window }) => {
+                    if let Some(w) = self.window_mut(*window) {
+                        w.guide_ready(cx);
+                    }
+                }
+                Some(ReviewUpdate::WorktreeChanged { window, fp }) => {
+                    if let Some(w) = self.window_mut(*window) {
+                        w.worktree_changed(cx, *fp);
+                    }
+                }
                 Some(ReviewUpdate::Status(msg)) => {
-                    self.ui
-                        .widget(cx, ids!(pane_a))
-                        .label(cx, ids!(status_label))
-                        .set_text(cx, msg);
-                    self.ui.redraw(cx);
+                    for window in &self.windows {
+                        window
+                            .pane(cx)
+                            .label(cx, ids!(status_label))
+                            .set_text(cx, msg);
+                        window.window.redraw(cx);
+                    }
                 }
                 Some(ReviewUpdate::HighlightReady {
+                    window,
                     generation,
                     blob,
                     rev,
                     spans,
                 }) => {
-                    let mut snapshot = docs().write().unwrap();
-                    let document = Arc::make_mut(&mut snapshot);
-                    if document.generation == *generation {
+                    let Some(state) = self.window_mut(*window).map(|w| w.state.clone()) else {
+                        continue;
+                    };
+                    let landed = state.with(|document| {
+                        if document.generation != *generation {
+                            return false;
+                        }
                         // Spans describe the text as it was when the work
                         // started. A keystroke since then moved every byte
                         // after it, so landing these would paint the line in
@@ -325,15 +371,18 @@ impl MatchEvent for App {
                             target.spans = Some(spans.clone());
                             target.spans_rev = *rev;
                         }
-                        drop(snapshot);
+                        true
+                    });
+                    if landed {
                         self.ui.redraw(cx);
                     }
                 }
+                // App-wide, not per-window: the recents list is one list.
                 Some(ReviewUpdate::Recents(recents)) => {
-                    if let Some(mut pane) =
-                        self.ui.widget(cx, ids!(pane_a)).borrow_mut::<ReviewPane>()
-                    {
-                        pane.set_recents(cx, recents.clone());
+                    for window in &self.windows {
+                        if let Some(mut pane) = window.pane(cx).borrow_mut::<ReviewPane>() {
+                            pane.set_recents(cx, recents.clone());
+                        }
                     }
                 }
                 None => {}
@@ -396,13 +445,15 @@ impl MatchEvent for App {
             .or_else(|| it.next())
             .unwrap_or_else(|| "HEAD".into());
 
-        let pane_a = self.ui.widget(cx, ids!(pane_a));
-        pane_a
+        self.adopt_window(cx, id!(window_a), self.ui.widget(cx, ids!(window_a)));
+        let target = concats_state::Target { repo, base, head };
+        let window = &self.windows[0];
+        window
+            .pane(cx)
             .label(cx, ids!(status_label))
             .set_text(cx, "loading…");
-
-        spawn_load(concats_state::Target { repo, base, head }, guide);
-        if let Some(mut p) = pane_a.borrow_mut::<ReviewPane>() {
+        spawn_load(&window.state, target, guide);
+        if let Some(mut p) = window.pane(cx).borrow_mut::<ReviewPane>() {
             p.set_loading(cx, true);
         }
         self.poll = cx.start_interval(1.0);
@@ -411,7 +462,9 @@ impl MatchEvent for App {
     fn handle_timer(&mut self, cx: &mut Cx, e: &TimerEvent) {
         if self.poll.is_timer(e).is_some() {
             self.click_hook(cx);
-            self.poll_tick(cx);
+            for window in &mut self.windows {
+                window.poll_tick(cx);
+            }
         }
     }
 
@@ -426,9 +479,11 @@ impl MatchEvent for App {
             if std::env::var("CONCATS_APP_TERM_DEBUG").is_ok_and(|v| !v.is_empty()) {
                 terminal::debug_dump();
             }
-            let dock = self.ui.widget(cx, ids!(pane_a)).dock(cx, ids!(dock));
-            for tab in dirty_terminals {
-                dock.item(tab).redraw(cx);
+            for window in &self.windows {
+                let dock = window.pane(cx).dock(cx, ids!(dock));
+                for tab in &dirty_terminals {
+                    dock.item(*tab).redraw(cx);
+                }
             }
             // Pairs with CONCATS_APP_TERM: re-capture on terminal frames
             // so the shot shows the shell's actual output, not the pre-spawn
@@ -441,162 +496,11 @@ impl MatchEvent for App {
                 }
             }
         }
-        struct Snap {
-            generation: u64,
-            loading: bool,
-            status: String,
-            repo: String,
-            base: String,
-            head: String,
-            has_guide: bool,
-            has_sessions: bool,
-            has_commits: bool,
-            has_comments: bool,
-            tab: Tab,
-            git_dir: Option<PathBuf>,
-        }
-        let s = {
-            let d = docs().read().unwrap();
-            Snap {
-                generation: d.generation,
-                loading: d.loading,
-                status: status_line(&d),
-                repo: d.repo.clone(),
-                base: d.base.clone(),
-                head: d.head.clone(),
-                has_guide: d.has_guide,
-                has_sessions: d.has_sessions,
-                has_commits: d.has_commits,
-                has_comments: d.has_comments,
-                tab: d.tab,
-                git_dir: d.git_dir.clone(),
-            }
-        };
-        // Spin the header's ↻ whenever a load is in flight. This runs on every
-        // signal (load start and land both signal), not only on a generation
-        // change, so the spinner starts the moment a load begins.
-        if let Some(mut p) = self.ui.widget(cx, ids!(pane_a)).borrow_mut::<ReviewPane>() {
-            p.set_loading(cx, s.loading);
-        }
         let mut dirty = false;
-        // Reconcile the chrome only when the document actually changed
-        // (generation bumps on each landed load), so redraws stay rare.
-        // Generation 0 is the empty document every run starts on: reconciling
-        // it would close the three stream tabs before the first load can say
-        // whether it has them, and they would come back appended — the tab
-        // strip out of stream order for the rest of the session.
-        if s.generation > 0 && self.seen != Some(s.generation) {
-            self.seen = Some(s.generation);
-            let pane = self.ui.widget(cx, ids!(pane_a));
-            pane.label(cx, ids!(status_label)).set_text(cx, &s.status);
-            // The header chips: the repo's dir name and the loaded range. The
-            // canonical path also seeds the picker's recents (so "." resolves
-            // to a stable absolute path the list can dedup on).
-            review().send(ReviewCmd::RecordRecent(s.repo.clone()));
-            let dir = std::path::Path::new(&s.repo)
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_else(|| s.repo.clone());
-            pane.button(cx, ids!(repo_button))
-                .set_text(cx, if dir.is_empty() { "concats app" } else { &dir });
-            pane.button(cx, ids!(range_button))
-                .set_text(cx, &format!("{}…{}", s.base, s.head));
-            // The load rebuilt every stream, so nothing is spliced any more.
-            self.spliced_rev = 0;
-            // Adopt the repo the load landed on: the service opens its store
-            // (sqlite, on its thread) and publishes what is already recorded.
-            if let Some(git_dir) = s.git_dir.clone() {
-                review().send(ReviewCmd::Open(git_dir));
-            }
-            let dock = pane.dock(cx, ids!(dock));
-            // Restore this repo's persisted dock layout, once per repo —
-            // before reconciliation, which then closes any restored tab
-            // whose stream this particular load doesn't have.
-            if s.git_dir.is_some() && self.layout_git_dir != s.git_dir {
-                self.layout_git_dir = s.git_dir.clone();
-                if let Some(layout) = s.git_dir.as_deref().and_then(load_layout) {
-                    let open = matches!(
-                        layout.dock_items.get(&id!(root)),
-                        Some(DockItem::Splitter {
-                            align: SplitterAlign::FromB(h),
-                            ..
-                        }) if *h > 1.0
-                    );
-                    if let Some(mut p) = pane.borrow_mut::<ReviewPane>() {
-                        p.bottom_restore = layout.bottom_restore;
-                        p.sidebar_restore = layout.sidebar_restore;
-                        // Stream tabs absent from the saved layout stay
-                        // closed. (A stream that was merely unavailable at
-                        // save time lands here too — self-healing, its
-                        // status-bar button brings it back.)
-                        for t in [
-                            Tab::Guide,
-                            Tab::Sessions,
-                            Tab::Commits,
-                            Tab::Comments,
-                            Tab::Files,
-                        ] {
-                            let (tab_id, ..) = stream_tab_spec(t);
-                            if !layout.dock_items.contains_key(&tab_id) {
-                                p.user_closed.insert(tab_id);
-                            }
-                        }
-                    }
-                    dock.load_state(cx, layout.dock_items);
-                    if open {
-                        if let Some(mut p) = pane.borrow_mut::<ReviewPane>() {
-                            // A restored-open panel needs its shell running;
-                            // extra session tabs respawn when pressed.
-                            p.open_terminal(cx, id!(terminal_tab));
-                        }
-                    }
-                }
-            }
-            // Tabs that have nothing to show don't exist — and tabs the user
-            // closed stay closed. Reconcile the dock against this load:
-            // close absent streams, (re)create the ones that appeared, keep
-            // the user's layout otherwise.
-            let closed = pane
-                .borrow::<ReviewPane>()
-                .map(|p| p.user_closed.clone())
-                .unwrap_or_default();
-            for (t, available) in [
-                (Tab::Guide, s.has_guide),
-                (Tab::Sessions, s.has_sessions),
-                (Tab::Commits, s.has_commits),
-                (Tab::Comments, s.has_comments),
-                (Tab::Files, true),
-            ] {
-                let (tab_id, ..) = stream_tab_spec(t);
-                let want = available && !closed.contains(&tab_id);
-                let exists = dock.find_tab_bar_of_tab(tab_id).is_some();
-                if want && !exists {
-                    create_stream_tab(cx, &dock, t);
-                } else if !want && exists {
-                    dock.close_tab(cx, tab_id);
-                }
-            }
-            // The view buttons mirror stream availability, like the tabs.
-            pane.button(cx, ids!(guide_button))
-                .set_visible(cx, s.has_guide);
-            pane.button(cx, ids!(sessions_button))
-                .set_visible(cx, s.has_sessions);
-            pane.button(cx, ids!(commits_button))
-                .set_visible(cx, s.has_commits);
-            pane.button(cx, ids!(comments_button))
-                .set_visible(cx, s.has_comments);
-            // The default tab for this load: the guide when one exists, the
-            // plain diff otherwise (build_review set d.tab accordingly).
-            dock.select_tab(cx, stream_tab_spec(s.tab).0);
-            // Seen state is content-addressed, so a fresh load can already be
-            // part-reviewed: re-tally the progress bar for this range.
-            if let Some(mut p) = pane.borrow_mut::<ReviewPane>() {
-                p.refresh_progress(cx);
-            }
-            dirty = true;
+        for window in &mut self.windows {
+            dirty |= window.reconcile(cx);
         }
         if dirty {
-            self.ui.redraw(cx);
             self.apply_screenshot_hooks(cx);
         }
     }
@@ -605,16 +509,38 @@ impl MatchEvent for App {
     fn handle_key_down(&mut self, cx: &mut Cx, e: &KeyEvent) {
         if e.key_code == KeyCode::F3 {
             self.show_perf = !self.show_perf;
-            self.ui
-                .widget(cx, ids!(pane_a))
-                .view(cx, ids!(perf_overlay))
-                .set_visible(cx, self.show_perf);
+            for window in &self.windows {
+                window
+                    .pane(cx)
+                    .view(cx, ids!(perf_overlay))
+                    .set_visible(cx, self.show_perf);
+            }
             self.ui.redraw(cx);
         }
     }
 }
 
 impl App {
+    /// Take a window into the App's care: mint its state, hand it to its pane
+    /// (the pane is what puts it in `Scope` for the rows below), and remember
+    /// it. Called for the declared window at startup and for each ⌘N window.
+    /// The window the dev hooks and the CLI mean: the one the app started on.
+    fn primary(&self) -> Option<&AppWindow> {
+        self.windows.first()
+    }
+
+    fn adopt_window(&mut self, cx: &mut Cx, id: LiveId, window: WidgetRef) {
+        let state = WindowState::new(id);
+        if let Some(mut pane) = window.widget(cx, ids!(pane_a)).borrow_mut::<ReviewPane>() {
+            pane.adopt(state.clone());
+        }
+        self.windows.push(AppWindow::new(state, window));
+    }
+
+    fn window_mut(&mut self, id: LiveId) -> Option<&mut AppWindow> {
+        self.windows.iter_mut().find(|w| w.state.id == id)
+    }
+
     /// The dev/screenshot hooks
     /// (CONCATS_APP_COMBO/SHARE/TAB/SCROLL/TERM/SETTINGS/SHOT) fire once per
     /// run, after a load lands; SHOT_EVERY re-arms them on every load. Each
@@ -644,7 +570,9 @@ impl App {
         // CONCATS_APP_SHARE=1: likewise for the share dropdown —
         // with the same worktree-only stage row the click path shows.
         if std::env::var("CONCATS_APP_SHARE").is_ok_and(|v| !v.is_empty()) {
-            let worktree = read_doc(|d| d.workdir.is_some());
+            let worktree = self
+                .primary()
+                .is_some_and(|w| w.state.read(|d| d.workdir.is_some()));
             self.ui
                 .button(cx, ids!(share_stage))
                 .set_visible(cx, worktree);
@@ -672,8 +600,11 @@ impl App {
         }
         // CONCATS_APP_FOLD=path[,path…]: shut those file cards, so the
         // folded state can be screenshotted without a pointer.
-        if let Ok(paths) = std::env::var("CONCATS_APP_FOLD") {
-            with_doc(|d| {
+        if let (Ok(paths), Some(state)) = (
+            std::env::var("CONCATS_APP_FOLD"),
+            self.primary().map(|w| w.state.clone()),
+        ) {
+            state.with(|d| {
                 d.folded = paths
                     .split(',')
                     .filter(|p| !p.is_empty())
@@ -685,7 +616,9 @@ impl App {
         // test screenshot the sticky header without a pointer.
         if let Ok(n) = std::env::var("CONCATS_APP_SCROLL") {
             if let Ok(n) = n.parse::<usize>() {
-                let t = read_doc(|d| d.tab);
+                let Some(t) = self.primary().map(|w| w.state.read(|d| d.tab)) else {
+                    return;
+                };
                 let pane = self.ui.widget(cx, ids!(pane_a));
                 let content = pane.dock(cx, ids!(dock)).item(stream_tab_spec(t).0);
                 let list = content.portal_list(cx, ids!(list));
@@ -750,7 +683,10 @@ impl App {
             Some((x.trim().parse::<f64>().ok()?, y.trim().parse::<f64>().ok()?))
         });
         // Nothing to hit until a load has landed and drawn.
-        if read_doc(|d| d.files_rows.is_empty()) {
+        let Some(state) = self.primary().map(|w| w.state.clone()) else {
+            return;
+        };
+        if state.read(|d| d.files_rows.is_empty()) {
             return;
         }
         // A requested capture only answers from a frame that PRESENTS, and a
@@ -950,6 +886,180 @@ impl App {
         );
     }
 
+    // Per-window work lives on `AppWindow`.
+}
+
+impl AppWindow {
+    /// This window's pane. Every lookup goes through the window's own subtree:
+    /// `ids!(pane_a)` from the root answers with the FIRST match, and with two
+    /// windows open there are two panes answering to it.
+    fn pane(&self, cx: &Cx) -> WidgetRef {
+        self.window.widget(cx, ids!(pane_a))
+    }
+
+    /// Reflect this window's document into its chrome. Returns whether
+    /// anything changed, which is the App's cue to run the capture hooks.
+    fn reconcile(&mut self, cx: &mut Cx) -> bool {
+        struct Snap {
+            generation: u64,
+            loading: bool,
+            status: String,
+            repo: String,
+            base: String,
+            head: String,
+            has_guide: bool,
+            has_sessions: bool,
+            has_commits: bool,
+            has_comments: bool,
+            tab: Tab,
+            git_dir: Option<PathBuf>,
+        }
+        let s = {
+            let d = self.state.snapshot();
+            Snap {
+                generation: d.generation,
+                loading: d.loading,
+                status: status_line(&d),
+                repo: d.repo.clone(),
+                base: d.base.clone(),
+                head: d.head.clone(),
+                has_guide: d.has_guide,
+                has_sessions: d.has_sessions,
+                has_commits: d.has_commits,
+                has_comments: d.has_comments,
+                tab: d.tab,
+                git_dir: d.git_dir.clone(),
+            }
+        };
+        // Spin the header's ↻ whenever a load is in flight. This runs on every
+        // signal (load start and land both signal), not only on a generation
+        // change, so the spinner starts the moment a load begins.
+        if let Some(mut p) = self.pane(cx).borrow_mut::<ReviewPane>() {
+            p.set_loading(cx, s.loading);
+        }
+        let mut dirty = false;
+        // Reconcile the chrome only when the document actually changed
+        // (generation bumps on each landed load), so redraws stay rare.
+        // Generation 0 is the empty document every run starts on: reconciling
+        // it would close the three stream tabs before the first load can say
+        // whether it has them, and they would come back appended — the tab
+        // strip out of stream order for the rest of the session.
+        if s.generation > 0 && self.seen != Some(s.generation) {
+            self.seen = Some(s.generation);
+            let pane = self.pane(cx);
+            pane.label(cx, ids!(status_label)).set_text(cx, &s.status);
+            // The header chips: the repo's dir name and the loaded range. The
+            // canonical path also seeds the picker's recents (so "." resolves
+            // to a stable absolute path the list can dedup on).
+            review().send(ReviewCmd::RecordRecent(s.repo.clone()));
+            let dir = std::path::Path::new(&s.repo)
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| s.repo.clone());
+            pane.button(cx, ids!(repo_button))
+                .set_text(cx, if dir.is_empty() { "concats app" } else { &dir });
+            pane.button(cx, ids!(range_button))
+                .set_text(cx, &format!("{}…{}", s.base, s.head));
+            // The load rebuilt every stream, so nothing is spliced any more.
+            self.spliced_rev = 0;
+            // Adopt the repo the load landed on: the service opens its store
+            // (sqlite, on its thread) and publishes what is already recorded.
+            if let Some(git_dir) = s.git_dir.clone() {
+                review().send(ReviewCmd::Open(git_dir));
+            }
+            let dock = pane.dock(cx, ids!(dock));
+            // Restore this repo's persisted dock layout, once per repo —
+            // before reconciliation, which then closes any restored tab
+            // whose stream this particular load doesn't have.
+            if s.git_dir.is_some() && self.layout_git_dir != s.git_dir {
+                self.layout_git_dir = s.git_dir.clone();
+                if let Some(layout) = s.git_dir.as_deref().and_then(load_layout) {
+                    let open = matches!(
+                        layout.dock_items.get(&id!(root)),
+                        Some(DockItem::Splitter {
+                            align: SplitterAlign::FromB(h),
+                            ..
+                        }) if *h > 1.0
+                    );
+                    if let Some(mut p) = pane.borrow_mut::<ReviewPane>() {
+                        p.bottom_restore = layout.bottom_restore;
+                        p.sidebar_restore = layout.sidebar_restore;
+                        // Stream tabs absent from the saved layout stay
+                        // closed. (A stream that was merely unavailable at
+                        // save time lands here too — self-healing, its
+                        // status-bar button brings it back.)
+                        for t in [
+                            Tab::Guide,
+                            Tab::Sessions,
+                            Tab::Commits,
+                            Tab::Comments,
+                            Tab::Files,
+                        ] {
+                            let (tab_id, ..) = stream_tab_spec(t);
+                            if !layout.dock_items.contains_key(&tab_id) {
+                                p.user_closed.insert(tab_id);
+                            }
+                        }
+                    }
+                    dock.load_state(cx, layout.dock_items);
+                    if open {
+                        if let Some(mut p) = pane.borrow_mut::<ReviewPane>() {
+                            // A restored-open panel needs its shell running;
+                            // extra session tabs respawn when pressed.
+                            p.open_terminal(cx, id!(terminal_tab));
+                        }
+                    }
+                }
+            }
+            // Tabs that have nothing to show don't exist — and tabs the user
+            // closed stay closed. Reconcile the dock against this load:
+            // close absent streams, (re)create the ones that appeared, keep
+            // the user's layout otherwise.
+            let closed = pane
+                .borrow::<ReviewPane>()
+                .map(|p| p.user_closed.clone())
+                .unwrap_or_default();
+            for (t, available) in [
+                (Tab::Guide, s.has_guide),
+                (Tab::Sessions, s.has_sessions),
+                (Tab::Commits, s.has_commits),
+                (Tab::Comments, s.has_comments),
+                (Tab::Files, true),
+            ] {
+                let (tab_id, ..) = stream_tab_spec(t);
+                let want = available && !closed.contains(&tab_id);
+                let exists = dock.find_tab_bar_of_tab(tab_id).is_some();
+                if want && !exists {
+                    create_stream_tab(cx, &dock, t);
+                } else if !want && exists {
+                    dock.close_tab(cx, tab_id);
+                }
+            }
+            // The view buttons mirror stream availability, like the tabs.
+            pane.button(cx, ids!(guide_button))
+                .set_visible(cx, s.has_guide);
+            pane.button(cx, ids!(sessions_button))
+                .set_visible(cx, s.has_sessions);
+            pane.button(cx, ids!(commits_button))
+                .set_visible(cx, s.has_commits);
+            pane.button(cx, ids!(comments_button))
+                .set_visible(cx, s.has_comments);
+            // The default tab for this load: the guide when one exists, the
+            // plain diff otherwise (build_review set d.tab accordingly).
+            dock.select_tab(cx, stream_tab_spec(s.tab).0);
+            // Seen state is content-addressed, so a fresh load can already be
+            // part-reviewed: re-tally the progress bar for this range.
+            if let Some(mut p) = pane.borrow_mut::<ReviewPane>() {
+                p.refresh_progress(cx);
+            }
+            dirty = true;
+        }
+        if dirty {
+            self.window.redraw(cx);
+        }
+        dirty
+    }
+
     /// One tick of the ~1s poll: pick up guides another process `submit`ted
     /// and review-state (comments) another process wrote. Skipped mid-load —
     /// and the fingerprints are only advanced when a tick actually runs, so a
@@ -964,7 +1074,7 @@ impl App {
             // becomes a document, it is edited, or it takes hold of a thread.
             // `rev` alone misses the first and the last, which is what a
             // freshly opened file with comments on it does.
-            let rev: u64 = read_doc(|d| {
+            let rev: u64 = self.state.read(|d| {
                 d.blobs
                     .iter()
                     .filter(|b| b.doc.is_some())
@@ -973,13 +1083,13 @@ impl App {
             });
             if self.cached_rev != rev {
                 self.cached_rev = rev;
-                read_doc(load::cache_buffers);
+                self.state.read(load::cache_buffers);
             }
         }
         // Persist the dock layout when it changed (tab moves/selection,
         // splits, panel resizes) — the poll's 1s cadence caps file writes.
         {
-            let pane = self.ui.widget(cx, ids!(pane_a));
+            let pane = self.pane(cx);
             let dock = pane.dock(cx, ids!(dock));
             if dock.check_and_clear_need_save() {
                 if let Some(git_dir) = self.layout_git_dir.clone() {
@@ -1006,7 +1116,7 @@ impl App {
             applied_guide_at: Option<u64>,
         }
         let snap = {
-            let d = docs().read().unwrap();
+            let d = self.state.snapshot();
             if d.loading {
                 return;
             }
@@ -1030,6 +1140,7 @@ impl App {
         // how "stage seen hunks" refreshes the pane.
         match &snap.workdir {
             Some(workdir) => review().send(ReviewCmd::WorktreeProbe {
+                window: self.state.id,
                 workdir: workdir.clone(),
                 last: self.worktree_fp,
             }),
@@ -1057,6 +1168,7 @@ impl App {
         review().send(ReviewCmd::Poll {
             git_dir: snap.git_dir.clone(),
             guide,
+            window: self.state.id,
         });
     }
 
@@ -1064,7 +1176,7 @@ impl App {
     fn worktree_changed(&mut self, cx: &mut Cx, fp: u64) {
         let had = std::mem::replace(&mut self.worktree_fp, fp);
         let Some((target, guide)) = ({
-            let d = docs().read().unwrap();
+            let d = self.state.snapshot();
             // The first probe only baselines; a load in flight owns the doc.
             (had != 0 && !d.loading).then(|| {
                 (
@@ -1079,8 +1191,8 @@ impl App {
         }) else {
             return;
         };
-        spawn_load(target, guide);
-        if let Some(mut p) = self.ui.widget(cx, ids!(pane_a)).borrow_mut::<ReviewPane>() {
+        spawn_load(&self.state, target, guide);
+        if let Some(mut p) = self.pane(cx).borrow_mut::<ReviewPane>() {
             p.set_loading(cx, true);
         }
     }
@@ -1090,7 +1202,7 @@ impl App {
     /// `has_guide` flipping true is what makes the Guide tab appear).
     fn guide_ready(&mut self, cx: &mut Cx) {
         let Some(target) = ({
-            let d = docs().read().unwrap();
+            let d = self.state.snapshot();
             // A load already in flight re-resolves the newest guide itself.
             (!d.loading).then(|| concats_state::Target {
                 repo: d.repo.clone(),
@@ -1100,41 +1212,41 @@ impl App {
         }) else {
             return;
         };
-        self.ui
-            .widget(cx, ids!(pane_a))
+        self.pane(cx)
             .label(cx, ids!(status_label))
             .set_text(cx, "guide submitted — loading…");
-        spawn_load(target, None);
-        if let Some(mut p) = self.ui.widget(cx, ids!(pane_a)).borrow_mut::<ReviewPane>() {
+        spawn_load(&self.state, target, None);
+        if let Some(mut p) = self.pane(cx).borrow_mut::<ReviewPane>() {
             p.set_loading(cx, true);
         }
     }
 
     /// The service published a new review state (a tick, a comment, someone
-    /// else's write): splice the comments into the document, re-tally the
-    /// progress bar, redraw. This is the only place that reacts to it.
+    /// else's write): splice the comments into this window's document,
+    /// re-tally the progress bar, redraw. Windows on another repo no-op.
     fn review_state_changed(&mut self, cx: &mut Cx) {
         let mut has_comments = None;
         {
-            let state = review_state().load();
-            let mut snapshot = docs().write().unwrap();
-            // A publish for a repo this pane no longer shows (the user
+            let git_dir = self.state.read(|d| d.git_dir.clone());
+            let state = review_state(git_dir.as_deref()).load();
+            // A publish for a repo this window no longer shows (the user
             // switched mid-flight) is not ours to splice.
-            if state.git_dir.is_some() && state.git_dir != snapshot.git_dir {
+            if state.git_dir.is_some() && state.git_dir != git_dir {
                 return;
             }
             if self.spliced_rev != state.comments_rev {
                 self.spliced_rev = state.comments_rev;
-                let doc = Arc::make_mut(&mut snapshot);
-                resplice_comments(doc, &state.comments);
-                has_comments = Some(doc.has_comments);
+                has_comments = Some(self.state.with(|doc| {
+                    resplice_comments(doc, &state.comments);
+                    doc.has_comments
+                }));
             }
         }
         // Comments come and go without a load (the CLI adds one, a thread is
         // deleted): reconcile the Comments tab and its view button here, the
         // same way a landed load reconciles the other streams.
         if let Some(has) = has_comments {
-            let pane = self.ui.widget(cx, ids!(pane_a));
+            let pane = self.pane(cx);
             pane.button(cx, ids!(comments_button)).set_visible(cx, has);
             let closed = pane
                 .borrow::<ReviewPane>()
@@ -1150,10 +1262,10 @@ impl App {
                 dock.close_tab(cx, tab_id);
             }
         }
-        if let Some(mut p) = self.ui.widget(cx, ids!(pane_a)).borrow_mut::<ReviewPane>() {
+        if let Some(mut p) = self.pane(cx).borrow_mut::<ReviewPane>() {
             p.refresh_progress(cx);
         }
-        self.ui.redraw(cx);
+        self.window.redraw(cx);
     }
 }
 
@@ -1259,31 +1371,9 @@ impl AppMain for App {
             }
         }
         self.match_event(cx, event);
-        if matches!(event, Event::Draw(_)) {
-            let (document, focus_composer) = {
-                let snapshot = docs().read().unwrap();
-                if !snapshot.compose_focus {
-                    (snapshot.clone(), None)
-                } else {
-                    drop(snapshot);
-                    let mut snapshot = docs().write().unwrap();
-                    let document = Arc::make_mut(&mut snapshot);
-                    let focus = Some(document.tab);
-                    document.compose_focus = false;
-                    (snapshot.clone(), focus)
-                }
-            };
-            let mut frame = FrameData {
-                document,
-                review: review_state().load(),
-                theme: theme::active_theme(),
-                focus_composer,
-            };
-            self.ui
-                .handle_event(cx, event, &mut Scope::with_data(&mut frame));
-        } else {
-            self.ui.handle_event(cx, event, &mut Scope::empty());
-        }
+        // `Root` hands every window the same scope, so the per-window one is
+        // built further down, by each window's own pane.
+        self.ui.handle_event(cx, event, &mut Scope::empty());
     }
 }
 
