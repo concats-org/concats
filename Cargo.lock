@@ -5,7 +5,7 @@ version = 4
 [[package]]
 name = "ab_glyph_rasterizer"
 version = "0.1.8"
-source = "git+https://github.com/orlandohohmeier/makepad?branch=int#4d0abe8a861b7d4e17714e8b0b3e7473ce50906e"
+source = "git+https://github.com/orlandohohmeier/makepad?branch=int#2ce43996eb9b16b3a7a2d4921fddf704edd36b85"
 
 [[package]]
 name = "addr2line"
@@ -86,7 +86,7 @@ version = "1.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "40c48f72fd53cd289104fc64099abca73db4166ad86ea0b4341abe65af83dadc"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -97,7 +97,7 @@ checksum = "291e6a250ff86cd4a820112fb8898808a366d8f9f58ce16d1f538353ad55747d"
 dependencies = [
  "anstyle",
  "once_cell_polyfill",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -127,7 +127,7 @@ dependencies = [
 [[package]]
 name = "arrayvec"
 version = "0.7.6"
-source = "git+https://github.com/orlandohohmeier/makepad?branch=int#4d0abe8a861b7d4e17714e8b0b3e7473ce50906e"
+source = "git+https://github.com/orlandohohmeier/makepad?branch=int#2ce43996eb9b16b3a7a2d4921fddf704edd36b85"
 
 [[package]]
 name = "arrayvec"
@@ -144,7 +144,7 @@ checksum = "2ccd462b64c3c72f1be8305905a85d85403d768e8690c9b8bd3b9009a5761679"
 [[package]]
 name = "ash"
 version = "0.38.0+1.3.281"
-source = "git+https://github.com/orlandohohmeier/makepad?branch=int#4d0abe8a861b7d4e17714e8b0b3e7473ce50906e"
+source = "git+https://github.com/orlandohohmeier/makepad?branch=int#2ce43996eb9b16b3a7a2d4921fddf704edd36b85"
 dependencies = [
  "libloading 0.8.9 (git+https://github.com/orlandohohmeier/makepad?branch=int)",
 ]
@@ -390,7 +390,7 @@ dependencies = [
 [[package]]
 name = "bit-set"
 version = "0.8.0"
-source = "git+https://github.com/orlandohohmeier/makepad?branch=int#4d0abe8a861b7d4e17714e8b0b3e7473ce50906e"
+source = "git+https://github.com/orlandohohmeier/makepad?branch=int#2ce43996eb9b16b3a7a2d4921fddf704edd36b85"
 dependencies = [
  "bit-vec 0.8.0 (git+https://github.com/orlandohohmeier/makepad?branch=int)",
 ]
@@ -404,7 +404,7 @@ checksum = "5e764a1d40d510daf35e07be9eb06e75770908c27d411ee6c92109c9840eaaf7"
 [[package]]
 name = "bit-vec"
 version = "0.8.0"
-source = "git+https://github.com/orlandohohmeier/makepad?branch=int#4d0abe8a861b7d4e17714e8b0b3e7473ce50906e"
+source = "git+https://github.com/orlandohohmeier/makepad?branch=int#2ce43996eb9b16b3a7a2d4921fddf704edd36b85"
 
 [[package]]
 name = "bitflags"
@@ -415,7 +415,7 @@ checksum = "bef38d45163c2f1dde094a7dfd33ccf595c92905c8f8f4fdc18d06fb1037718a"
 [[package]]
 name = "bitflags"
 version = "2.10.0"
-source = "git+https://github.com/orlandohohmeier/makepad?branch=int#4d0abe8a861b7d4e17714e8b0b3e7473ce50906e"
+source = "git+https://github.com/orlandohohmeier/makepad?branch=int#2ce43996eb9b16b3a7a2d4921fddf704edd36b85"
 
 [[package]]
 name = "bitflags"
@@ -483,7 +483,7 @@ checksum = "72f5acc6cb2ba439de613abc23857ec3d78374d8ed5ac84e9d11336e87da8649"
 [[package]]
 name = "bytemuck"
 version = "1.25.0"
-source = "git+https://github.com/orlandohohmeier/makepad?branch=int#4d0abe8a861b7d4e17714e8b0b3e7473ce50906e"
+source = "git+https://github.com/orlandohohmeier/makepad?branch=int#2ce43996eb9b16b3a7a2d4921fddf704edd36b85"
 
 [[package]]
 name = "bytemuck"
@@ -500,7 +500,7 @@ checksum = "1fd0f2584146f6f2ef48085050886acf353beff7305ebd1ae69500e27c67f64b"
 [[package]]
 name = "byteorder"
 version = "1.5.0"
-source = "git+https://github.com/orlandohohmeier/makepad?branch=int#4d0abe8a861b7d4e17714e8b0b3e7473ce50906e"
+source = "git+https://github.com/orlandohohmeier/makepad?branch=int#2ce43996eb9b16b3a7a2d4921fddf704edd36b85"
 
 [[package]]
 name = "byteorder-lite"
@@ -533,12 +533,12 @@ checksum = "9330f8b2ff13f34540b44e946ef35111825727b38d33286ef986142615121801"
 [[package]]
 name = "cfg-if"
 version = "1.0.4"
-source = "git+https://github.com/orlandohohmeier/makepad?branch=int#4d0abe8a861b7d4e17714e8b0b3e7473ce50906e"
+source = "git+https://github.com/orlandohohmeier/makepad?branch=int#2ce43996eb9b16b3a7a2d4921fddf704edd36b85"
 
 [[package]]
 name = "cfg_aliases"
 version = "0.2.1"
-source = "git+https://github.com/orlandohohmeier/makepad?branch=int#4d0abe8a861b7d4e17714e8b0b3e7473ce50906e"
+source = "git+https://github.com/orlandohohmeier/makepad?branch=int#2ce43996eb9b16b3a7a2d4921fddf704edd36b85"
 
 [[package]]
 name = "cfg_aliases"
@@ -896,7 +896,7 @@ checksum = "61803da095bee82a81bb1a452ecc25d3b2f1416d1897eb86430c6159ef717c17"
 [[package]]
 name = "crunchy"
 version = "0.2.4"
-source = "git+https://github.com/orlandohohmeier/makepad?branch=int#4d0abe8a861b7d4e17714e8b0b3e7473ce50906e"
+source = "git+https://github.com/orlandohohmeier/makepad?branch=int#2ce43996eb9b16b3a7a2d4921fddf704edd36b85"
 
 [[package]]
 name = "crypto-common"
@@ -1063,7 +1063,7 @@ dependencies = [
  "libc",
  "option-ext",
  "redox_users",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -1113,7 +1113,7 @@ checksum = "75b325c5dbd37f80359721ad39aca5a29fb04c89279657cffdda8736d0c0b9d2"
 [[package]]
 name = "downcast-rs"
 version = "1.2.1"
-source = "git+https://github.com/orlandohohmeier/makepad?branch=int#4d0abe8a861b7d4e17714e8b0b3e7473ce50906e"
+source = "git+https://github.com/orlandohohmeier/makepad?branch=int#2ce43996eb9b16b3a7a2d4921fddf704edd36b85"
 
 [[package]]
 name = "dunce"
@@ -1226,7 +1226,7 @@ checksum = "877a4ace8713b0bcf2a4e7eec82529c029f1d0619886d18145fea96c3ffe5c0f"
 [[package]]
 name = "equivalent"
 version = "1.0.2"
-source = "git+https://github.com/orlandohohmeier/makepad?branch=int#4d0abe8a861b7d4e17714e8b0b3e7473ce50906e"
+source = "git+https://github.com/orlandohohmeier/makepad?branch=int#2ce43996eb9b16b3a7a2d4921fddf704edd36b85"
 
 [[package]]
 name = "errno"
@@ -1235,7 +1235,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -1356,7 +1356,7 @@ checksum = "77ce24cb58228fbb8aa041425bb1050850ac19177686ea6e0f41a70416f56fdb"
 [[package]]
 name = "foldhash"
 version = "0.2.0"
-source = "git+https://github.com/orlandohohmeier/makepad?branch=int#4d0abe8a861b7d4e17714e8b0b3e7473ce50906e"
+source = "git+https://github.com/orlandohohmeier/makepad?branch=int#2ce43996eb9b16b3a7a2d4921fddf704edd36b85"
 
 [[package]]
 name = "form_urlencoded"
@@ -1442,7 +1442,7 @@ dependencies = [
 [[package]]
 name = "fxhash"
 version = "0.2.1"
-source = "git+https://github.com/orlandohohmeier/makepad?branch=int#4d0abe8a861b7d4e17714e8b0b3e7473ce50906e"
+source = "git+https://github.com/orlandohohmeier/makepad?branch=int#2ce43996eb9b16b3a7a2d4921fddf704edd36b85"
 dependencies = [
  "byteorder 1.5.0 (git+https://github.com/orlandohohmeier/makepad?branch=int)",
 ]
@@ -2379,7 +2379,7 @@ dependencies = [
 [[package]]
 name = "hashbrown"
 version = "0.16.1"
-source = "git+https://github.com/orlandohohmeier/makepad?branch=int#4d0abe8a861b7d4e17714e8b0b3e7473ce50906e"
+source = "git+https://github.com/orlandohohmeier/makepad?branch=int#2ce43996eb9b16b3a7a2d4921fddf704edd36b85"
 dependencies = [
  "foldhash 0.2.0 (git+https://github.com/orlandohohmeier/makepad?branch=int)",
 ]
@@ -2465,7 +2465,7 @@ checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
 [[package]]
 name = "hexf-parse"
 version = "0.2.1"
-source = "git+https://github.com/orlandohohmeier/makepad?branch=int#4d0abe8a861b7d4e17714e8b0b3e7473ce50906e"
+source = "git+https://github.com/orlandohohmeier/makepad?branch=int#2ce43996eb9b16b3a7a2d4921fddf704edd36b85"
 
 [[package]]
 name = "hilog-sys"
@@ -2639,7 +2639,7 @@ dependencies = [
 [[package]]
 name = "indexmap"
 version = "2.13.0"
-source = "git+https://github.com/orlandohohmeier/makepad?branch=int#4d0abe8a861b7d4e17714e8b0b3e7473ce50906e"
+source = "git+https://github.com/orlandohohmeier/makepad?branch=int#2ce43996eb9b16b3a7a2d4921fddf704edd36b85"
 dependencies = [
  "equivalent 1.0.2 (git+https://github.com/orlandohohmeier/makepad?branch=int)",
  "hashbrown 0.16.1 (git+https://github.com/orlandohohmeier/makepad?branch=int)",
@@ -2811,7 +2811,7 @@ dependencies = [
 [[package]]
 name = "libloading"
 version = "0.8.9"
-source = "git+https://github.com/orlandohohmeier/makepad?branch=int#4d0abe8a861b7d4e17714e8b0b3e7473ce50906e"
+source = "git+https://github.com/orlandohohmeier/makepad?branch=int#2ce43996eb9b16b3a7a2d4921fddf704edd36b85"
 dependencies = [
  "cfg-if 1.0.4 (git+https://github.com/orlandohohmeier/makepad?branch=int)",
  "windows-link 0.2.1 (git+https://github.com/orlandohohmeier/makepad?branch=int)",
@@ -2861,7 +2861,7 @@ dependencies = [
 [[package]]
 name = "log"
 version = "0.4.29"
-source = "git+https://github.com/orlandohohmeier/makepad?branch=int#4d0abe8a861b7d4e17714e8b0b3e7473ce50906e"
+source = "git+https://github.com/orlandohohmeier/makepad?branch=int#2ce43996eb9b16b3a7a2d4921fddf704edd36b85"
 
 [[package]]
 name = "log"
@@ -3043,7 +3043,7 @@ dependencies = [
 [[package]]
 name = "makepad-apple-sys"
 version = "1.0.0"
-source = "git+https://github.com/orlandohohmeier/makepad?branch=int#4d0abe8a861b7d4e17714e8b0b3e7473ce50906e"
+source = "git+https://github.com/orlandohohmeier/makepad?branch=int#2ce43996eb9b16b3a7a2d4921fddf704edd36b85"
 dependencies = [
  "makepad-objc-sys",
 ]
@@ -3051,12 +3051,12 @@ dependencies = [
 [[package]]
 name = "makepad-byteorder-lite"
 version = "0.1.0"
-source = "git+https://github.com/orlandohohmeier/makepad?branch=int#4d0abe8a861b7d4e17714e8b0b3e7473ce50906e"
+source = "git+https://github.com/orlandohohmeier/makepad?branch=int#2ce43996eb9b16b3a7a2d4921fddf704edd36b85"
 
 [[package]]
 name = "makepad-derive-wasm-bridge"
 version = "1.0.0"
-source = "git+https://github.com/orlandohohmeier/makepad?branch=int#4d0abe8a861b7d4e17714e8b0b3e7473ce50906e"
+source = "git+https://github.com/orlandohohmeier/makepad?branch=int#2ce43996eb9b16b3a7a2d4921fddf704edd36b85"
 dependencies = [
  "makepad-micro-proc-macro",
 ]
@@ -3064,7 +3064,7 @@ dependencies = [
 [[package]]
 name = "makepad-derive-widget"
 version = "2.0.0"
-source = "git+https://github.com/orlandohohmeier/makepad?branch=int#4d0abe8a861b7d4e17714e8b0b3e7473ce50906e"
+source = "git+https://github.com/orlandohohmeier/makepad?branch=int#2ce43996eb9b16b3a7a2d4921fddf704edd36b85"
 dependencies = [
  "makepad-live-id",
  "makepad-micro-proc-macro",
@@ -3073,7 +3073,7 @@ dependencies = [
 [[package]]
 name = "makepad-draw"
 version = "2.0.0"
-source = "git+https://github.com/orlandohohmeier/makepad?branch=int#4d0abe8a861b7d4e17714e8b0b3e7473ce50906e"
+source = "git+https://github.com/orlandohohmeier/makepad?branch=int#2ce43996eb9b16b3a7a2d4921fddf704edd36b85"
 dependencies = [
  "ab_glyph_rasterizer",
  "fxhash",
@@ -3097,7 +3097,7 @@ dependencies = [
 [[package]]
 name = "makepad-error-log"
 version = "1.0.0"
-source = "git+https://github.com/orlandohohmeier/makepad?branch=int#4d0abe8a861b7d4e17714e8b0b3e7473ce50906e"
+source = "git+https://github.com/orlandohohmeier/makepad?branch=int#2ce43996eb9b16b3a7a2d4921fddf704edd36b85"
 dependencies = [
  "makepad-micro-serde",
 ]
@@ -3105,27 +3105,27 @@ dependencies = [
 [[package]]
 name = "makepad-fast-inflate"
 version = "0.1.0"
-source = "git+https://github.com/orlandohohmeier/makepad?branch=int#4d0abe8a861b7d4e17714e8b0b3e7473ce50906e"
+source = "git+https://github.com/orlandohohmeier/makepad?branch=int#2ce43996eb9b16b3a7a2d4921fddf704edd36b85"
 
 [[package]]
 name = "makepad-filesystem-watcher"
 version = "0.1.0"
-source = "git+https://github.com/orlandohohmeier/makepad?branch=int#4d0abe8a861b7d4e17714e8b0b3e7473ce50906e"
+source = "git+https://github.com/orlandohohmeier/makepad?branch=int#2ce43996eb9b16b3a7a2d4921fddf704edd36b85"
 
 [[package]]
 name = "makepad-futures"
 version = "1.0.0"
-source = "git+https://github.com/orlandohohmeier/makepad?branch=int#4d0abe8a861b7d4e17714e8b0b3e7473ce50906e"
+source = "git+https://github.com/orlandohohmeier/makepad?branch=int#2ce43996eb9b16b3a7a2d4921fddf704edd36b85"
 
 [[package]]
 name = "makepad-futures-legacy"
 version = "1.0.0"
-source = "git+https://github.com/orlandohohmeier/makepad?branch=int#4d0abe8a861b7d4e17714e8b0b3e7473ce50906e"
+source = "git+https://github.com/orlandohohmeier/makepad?branch=int#2ce43996eb9b16b3a7a2d4921fddf704edd36b85"
 
 [[package]]
 name = "makepad-gif"
 version = "0.1.0"
-source = "git+https://github.com/orlandohohmeier/makepad?branch=int#4d0abe8a861b7d4e17714e8b0b3e7473ce50906e"
+source = "git+https://github.com/orlandohohmeier/makepad?branch=int#2ce43996eb9b16b3a7a2d4921fddf704edd36b85"
 dependencies = [
  "weezl",
 ]
@@ -3133,7 +3133,7 @@ dependencies = [
 [[package]]
 name = "makepad-half"
 version = "2.7.1"
-source = "git+https://github.com/orlandohohmeier/makepad?branch=int#4d0abe8a861b7d4e17714e8b0b3e7473ce50906e"
+source = "git+https://github.com/orlandohohmeier/makepad?branch=int#2ce43996eb9b16b3a7a2d4921fddf704edd36b85"
 dependencies = [
  "cfg-if 1.0.4 (git+https://github.com/orlandohohmeier/makepad?branch=int)",
  "crunchy",
@@ -3144,7 +3144,7 @@ dependencies = [
 [[package]]
 name = "makepad-html"
 version = "1.0.0"
-source = "git+https://github.com/orlandohohmeier/makepad?branch=int#4d0abe8a861b7d4e17714e8b0b3e7473ce50906e"
+source = "git+https://github.com/orlandohohmeier/makepad?branch=int#2ce43996eb9b16b3a7a2d4921fddf704edd36b85"
 dependencies = [
  "makepad-live-id",
 ]
@@ -3158,7 +3158,7 @@ checksum = "9775cbec5fa0647500c3e5de7c850280a88335d1d2d770e5aa2332b801ba7064"
 [[package]]
 name = "makepad-latex-math"
 version = "0.1.0"
-source = "git+https://github.com/orlandohohmeier/makepad?branch=int#4d0abe8a861b7d4e17714e8b0b3e7473ce50906e"
+source = "git+https://github.com/orlandohohmeier/makepad?branch=int#2ce43996eb9b16b3a7a2d4921fddf704edd36b85"
 dependencies = [
  "ttf-parser",
 ]
@@ -3166,7 +3166,7 @@ dependencies = [
 [[package]]
 name = "makepad-live-id"
 version = "1.0.0"
-source = "git+https://github.com/orlandohohmeier/makepad?branch=int#4d0abe8a861b7d4e17714e8b0b3e7473ce50906e"
+source = "git+https://github.com/orlandohohmeier/makepad?branch=int#2ce43996eb9b16b3a7a2d4921fddf704edd36b85"
 dependencies = [
  "makepad-live-id-macros",
 ]
@@ -3174,7 +3174,7 @@ dependencies = [
 [[package]]
 name = "makepad-live-id-macros"
 version = "1.0.0"
-source = "git+https://github.com/orlandohohmeier/makepad?branch=int#4d0abe8a861b7d4e17714e8b0b3e7473ce50906e"
+source = "git+https://github.com/orlandohohmeier/makepad?branch=int#2ce43996eb9b16b3a7a2d4921fddf704edd36b85"
 dependencies = [
  "makepad-micro-proc-macro",
 ]
@@ -3182,7 +3182,7 @@ dependencies = [
 [[package]]
 name = "makepad-live-reload-core"
 version = "0.1.0"
-source = "git+https://github.com/orlandohohmeier/makepad?branch=int#4d0abe8a861b7d4e17714e8b0b3e7473ce50906e"
+source = "git+https://github.com/orlandohohmeier/makepad?branch=int#2ce43996eb9b16b3a7a2d4921fddf704edd36b85"
 dependencies = [
  "makepad-filesystem-watcher",
 ]
@@ -3190,7 +3190,7 @@ dependencies = [
 [[package]]
 name = "makepad-math"
 version = "1.0.0"
-source = "git+https://github.com/orlandohohmeier/makepad?branch=int#4d0abe8a861b7d4e17714e8b0b3e7473ce50906e"
+source = "git+https://github.com/orlandohohmeier/makepad?branch=int#2ce43996eb9b16b3a7a2d4921fddf704edd36b85"
 dependencies = [
  "makepad-micro-serde",
 ]
@@ -3198,12 +3198,12 @@ dependencies = [
 [[package]]
 name = "makepad-micro-proc-macro"
 version = "1.0.0"
-source = "git+https://github.com/orlandohohmeier/makepad?branch=int#4d0abe8a861b7d4e17714e8b0b3e7473ce50906e"
+source = "git+https://github.com/orlandohohmeier/makepad?branch=int#2ce43996eb9b16b3a7a2d4921fddf704edd36b85"
 
 [[package]]
 name = "makepad-micro-serde"
 version = "1.0.0"
-source = "git+https://github.com/orlandohohmeier/makepad?branch=int#4d0abe8a861b7d4e17714e8b0b3e7473ce50906e"
+source = "git+https://github.com/orlandohohmeier/makepad?branch=int#2ce43996eb9b16b3a7a2d4921fddf704edd36b85"
 dependencies = [
  "makepad-live-id",
  "makepad-micro-serde-derive",
@@ -3212,7 +3212,7 @@ dependencies = [
 [[package]]
 name = "makepad-micro-serde-derive"
 version = "1.0.0"
-source = "git+https://github.com/orlandohohmeier/makepad?branch=int#4d0abe8a861b7d4e17714e8b0b3e7473ce50906e"
+source = "git+https://github.com/orlandohohmeier/makepad?branch=int#2ce43996eb9b16b3a7a2d4921fddf704edd36b85"
 dependencies = [
  "makepad-micro-proc-macro",
 ]
@@ -3220,7 +3220,7 @@ dependencies = [
 [[package]]
 name = "makepad-network"
 version = "1.0.0"
-source = "git+https://github.com/orlandohohmeier/makepad?branch=int#4d0abe8a861b7d4e17714e8b0b3e7473ce50906e"
+source = "git+https://github.com/orlandohohmeier/makepad?branch=int#2ce43996eb9b16b3a7a2d4921fddf704edd36b85"
 dependencies = [
  "makepad-apple-sys",
  "makepad-error-log",
@@ -3234,12 +3234,12 @@ dependencies = [
 [[package]]
 name = "makepad-objc-sys"
 version = "1.0.0"
-source = "git+https://github.com/orlandohohmeier/makepad?branch=int#4d0abe8a861b7d4e17714e8b0b3e7473ce50906e"
+source = "git+https://github.com/orlandohohmeier/makepad?branch=int#2ce43996eb9b16b3a7a2d4921fddf704edd36b85"
 
 [[package]]
 name = "makepad-platform"
 version = "2.0.0"
-source = "git+https://github.com/orlandohohmeier/makepad?branch=int#4d0abe8a861b7d4e17714e8b0b3e7473ce50906e"
+source = "git+https://github.com/orlandohohmeier/makepad?branch=int#2ce43996eb9b16b3a7a2d4921fddf704edd36b85"
 dependencies = [
  "ash",
  "bitflags 2.10.0",
@@ -3277,12 +3277,12 @@ dependencies = [
 [[package]]
 name = "makepad-regex"
 version = "0.1.0"
-source = "git+https://github.com/orlandohohmeier/makepad?branch=int#4d0abe8a861b7d4e17714e8b0b3e7473ce50906e"
+source = "git+https://github.com/orlandohohmeier/makepad?branch=int#2ce43996eb9b16b3a7a2d4921fddf704edd36b85"
 
 [[package]]
 name = "makepad-script"
 version = "1.0.0"
-source = "git+https://github.com/orlandohohmeier/makepad?branch=int#4d0abe8a861b7d4e17714e8b0b3e7473ce50906e"
+source = "git+https://github.com/orlandohohmeier/makepad?branch=int#2ce43996eb9b16b3a7a2d4921fddf704edd36b85"
 dependencies = [
  "makepad-error-log",
  "makepad-html",
@@ -3297,7 +3297,7 @@ dependencies = [
 [[package]]
 name = "makepad-script-derive"
 version = "1.0.0"
-source = "git+https://github.com/orlandohohmeier/makepad?branch=int#4d0abe8a861b7d4e17714e8b0b3e7473ce50906e"
+source = "git+https://github.com/orlandohohmeier/makepad?branch=int#2ce43996eb9b16b3a7a2d4921fddf704edd36b85"
 dependencies = [
  "makepad-micro-proc-macro",
 ]
@@ -3305,7 +3305,7 @@ dependencies = [
 [[package]]
 name = "makepad-script-std"
 version = "1.0.0"
-source = "git+https://github.com/orlandohohmeier/makepad?branch=int#4d0abe8a861b7d4e17714e8b0b3e7473ce50906e"
+source = "git+https://github.com/orlandohohmeier/makepad?branch=int#2ce43996eb9b16b3a7a2d4921fddf704edd36b85"
 dependencies = [
  "makepad-network",
  "makepad-script",
@@ -3321,17 +3321,17 @@ dependencies = [
 [[package]]
 name = "makepad-shared-bytes"
 version = "1.0.0"
-source = "git+https://github.com/orlandohohmeier/makepad?branch=int#4d0abe8a861b7d4e17714e8b0b3e7473ce50906e"
+source = "git+https://github.com/orlandohohmeier/makepad?branch=int#2ce43996eb9b16b3a7a2d4921fddf704edd36b85"
 
 [[package]]
 name = "makepad-stitch"
 version = "0.1.0"
-source = "git+https://github.com/orlandohohmeier/makepad?branch=int#4d0abe8a861b7d4e17714e8b0b3e7473ce50906e"
+source = "git+https://github.com/orlandohohmeier/makepad?branch=int#2ce43996eb9b16b3a7a2d4921fddf704edd36b85"
 
 [[package]]
 name = "makepad-studio-protocol"
 version = "0.1.0"
-source = "git+https://github.com/orlandohohmeier/makepad?branch=int#4d0abe8a861b7d4e17714e8b0b3e7473ce50906e"
+source = "git+https://github.com/orlandohohmeier/makepad?branch=int#2ce43996eb9b16b3a7a2d4921fddf704edd36b85"
 dependencies = [
  "bitflags 2.10.0",
  "makepad-error-log",
@@ -3343,7 +3343,7 @@ dependencies = [
 [[package]]
 name = "makepad-svg"
 version = "1.0.0"
-source = "git+https://github.com/orlandohohmeier/makepad?branch=int#4d0abe8a861b7d4e17714e8b0b3e7473ce50906e"
+source = "git+https://github.com/orlandohohmeier/makepad?branch=int#2ce43996eb9b16b3a7a2d4921fddf704edd36b85"
 dependencies = [
  "makepad-html",
  "makepad-live-id",
@@ -3352,7 +3352,7 @@ dependencies = [
 [[package]]
 name = "makepad-terminal-core"
 version = "1.0.0"
-source = "git+https://github.com/orlandohohmeier/makepad?branch=int#4d0abe8a861b7d4e17714e8b0b3e7473ce50906e"
+source = "git+https://github.com/orlandohohmeier/makepad?branch=int#2ce43996eb9b16b3a7a2d4921fddf704edd36b85"
 dependencies = [
  "windows",
 ]
@@ -3360,7 +3360,7 @@ dependencies = [
 [[package]]
 name = "makepad-tsdf"
 version = "0.1.0"
-source = "git+https://github.com/orlandohohmeier/makepad?branch=int#4d0abe8a861b7d4e17714e8b0b3e7473ce50906e"
+source = "git+https://github.com/orlandohohmeier/makepad?branch=int#2ce43996eb9b16b3a7a2d4921fddf704edd36b85"
 dependencies = [
  "makepad-math",
  "makepad-micro-serde",
@@ -3369,7 +3369,7 @@ dependencies = [
 [[package]]
 name = "makepad-video"
 version = "1.0.0"
-source = "git+https://github.com/orlandohohmeier/makepad?branch=int#4d0abe8a861b7d4e17714e8b0b3e7473ce50906e"
+source = "git+https://github.com/orlandohohmeier/makepad?branch=int#2ce43996eb9b16b3a7a2d4921fddf704edd36b85"
 dependencies = [
  "makepad-apple-sys",
  "makepad-objc-sys",
@@ -3379,7 +3379,7 @@ dependencies = [
 [[package]]
 name = "makepad-wasm-bridge"
 version = "1.0.0"
-source = "git+https://github.com/orlandohohmeier/makepad?branch=int#4d0abe8a861b7d4e17714e8b0b3e7473ce50906e"
+source = "git+https://github.com/orlandohohmeier/makepad?branch=int#2ce43996eb9b16b3a7a2d4921fddf704edd36b85"
 dependencies = [
  "makepad-derive-wasm-bridge",
  "makepad-live-id",
@@ -3388,7 +3388,7 @@ dependencies = [
 [[package]]
 name = "makepad-webp"
 version = "0.2.4"
-source = "git+https://github.com/orlandohohmeier/makepad?branch=int#4d0abe8a861b7d4e17714e8b0b3e7473ce50906e"
+source = "git+https://github.com/orlandohohmeier/makepad?branch=int#2ce43996eb9b16b3a7a2d4921fddf704edd36b85"
 dependencies = [
  "makepad-byteorder-lite",
 ]
@@ -3396,7 +3396,7 @@ dependencies = [
 [[package]]
 name = "makepad-widgets"
 version = "2.0.0"
-source = "git+https://github.com/orlandohohmeier/makepad?branch=int#4d0abe8a861b7d4e17714e8b0b3e7473ce50906e"
+source = "git+https://github.com/orlandohohmeier/makepad?branch=int#2ce43996eb9b16b3a7a2d4921fddf704edd36b85"
 dependencies = [
  "makepad-derive-widget",
  "makepad-draw",
@@ -3410,7 +3410,7 @@ dependencies = [
 [[package]]
 name = "makepad-zune-bmp"
 version = "0.5.2"
-source = "git+https://github.com/orlandohohmeier/makepad?branch=int#4d0abe8a861b7d4e17714e8b0b3e7473ce50906e"
+source = "git+https://github.com/orlandohohmeier/makepad?branch=int#2ce43996eb9b16b3a7a2d4921fddf704edd36b85"
 dependencies = [
  "log 0.4.33",
  "makepad-zune-core",
@@ -3419,7 +3419,7 @@ dependencies = [
 [[package]]
 name = "makepad-zune-core"
 version = "0.5.1"
-source = "git+https://github.com/orlandohohmeier/makepad?branch=int#4d0abe8a861b7d4e17714e8b0b3e7473ce50906e"
+source = "git+https://github.com/orlandohohmeier/makepad?branch=int#2ce43996eb9b16b3a7a2d4921fddf704edd36b85"
 dependencies = [
  "log 0.4.33",
 ]
@@ -3427,7 +3427,7 @@ dependencies = [
 [[package]]
 name = "makepad-zune-inflate"
 version = "0.2.54"
-source = "git+https://github.com/orlandohohmeier/makepad?branch=int#4d0abe8a861b7d4e17714e8b0b3e7473ce50906e"
+source = "git+https://github.com/orlandohohmeier/makepad?branch=int#2ce43996eb9b16b3a7a2d4921fddf704edd36b85"
 dependencies = [
  "simd-adler32 0.3.9",
 ]
@@ -3435,7 +3435,7 @@ dependencies = [
 [[package]]
 name = "makepad-zune-jpeg"
 version = "0.5.15"
-source = "git+https://github.com/orlandohohmeier/makepad?branch=int#4d0abe8a861b7d4e17714e8b0b3e7473ce50906e"
+source = "git+https://github.com/orlandohohmeier/makepad?branch=int#2ce43996eb9b16b3a7a2d4921fddf704edd36b85"
 dependencies = [
  "makepad-zune-core",
 ]
@@ -3443,7 +3443,7 @@ dependencies = [
 [[package]]
 name = "makepad-zune-png"
 version = "0.5.2"
-source = "git+https://github.com/orlandohohmeier/makepad?branch=int#4d0abe8a861b7d4e17714e8b0b3e7473ce50906e"
+source = "git+https://github.com/orlandohohmeier/makepad?branch=int#2ce43996eb9b16b3a7a2d4921fddf704edd36b85"
 dependencies = [
  "makepad-fast-inflate",
  "makepad-zune-core",
@@ -3453,7 +3453,7 @@ dependencies = [
 [[package]]
 name = "makepad-zune-qoi"
 version = "0.5.2"
-source = "git+https://github.com/orlandohohmeier/makepad?branch=int#4d0abe8a861b7d4e17714e8b0b3e7473ce50906e"
+source = "git+https://github.com/orlandohohmeier/makepad?branch=int#2ce43996eb9b16b3a7a2d4921fddf704edd36b85"
 dependencies = [
  "makepad-zune-core",
 ]
@@ -3487,7 +3487,7 @@ checksum = "490cc448043f947bae3cbee9c203358d62dbee0db12107a74be5c30ccfd09771"
 [[package]]
 name = "memchr"
 version = "2.7.6"
-source = "git+https://github.com/orlandohohmeier/makepad?branch=int#4d0abe8a861b7d4e17714e8b0b3e7473ce50906e"
+source = "git+https://github.com/orlandohohmeier/makepad?branch=int#2ce43996eb9b16b3a7a2d4921fddf704edd36b85"
 
 [[package]]
 name = "memchr"
@@ -3592,7 +3592,7 @@ dependencies = [
 [[package]]
 name = "naga"
 version = "27.0.3"
-source = "git+https://github.com/orlandohohmeier/makepad?branch=int#4d0abe8a861b7d4e17714e8b0b3e7473ce50906e"
+source = "git+https://github.com/orlandohohmeier/makepad?branch=int#2ce43996eb9b16b3a7a2d4921fddf704edd36b85"
 dependencies = [
  "arrayvec 0.7.6",
  "bit-set 0.8.0 (git+https://github.com/orlandohohmeier/makepad?branch=int)",
@@ -3691,7 +3691,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -3775,7 +3775,7 @@ dependencies = [
 [[package]]
 name = "num-traits"
 version = "0.2.20"
-source = "git+https://github.com/orlandohohmeier/makepad?branch=int#4d0abe8a861b7d4e17714e8b0b3e7473ce50906e"
+source = "git+https://github.com/orlandohohmeier/makepad?branch=int#2ce43996eb9b16b3a7a2d4921fddf704edd36b85"
 
 [[package]]
 name = "objc2"
@@ -3844,7 +3844,7 @@ checksum = "8d380ab6c951261a0e44306245bc960b3b3367f099a7da7156bd1a3cacaf783c"
 [[package]]
 name = "once_cell"
 version = "1.21.3"
-source = "git+https://github.com/orlandohohmeier/makepad?branch=int#4d0abe8a861b7d4e17714e8b0b3e7473ce50906e"
+source = "git+https://github.com/orlandohohmeier/makepad?branch=int#2ce43996eb9b16b3a7a2d4921fddf704edd36b85"
 
 [[package]]
 name = "once_cell"
@@ -4000,7 +4000,7 @@ dependencies = [
 [[package]]
 name = "pkg-config"
 version = "0.3.32"
-source = "git+https://github.com/orlandohohmeier/makepad?branch=int#4d0abe8a861b7d4e17714e8b0b3e7473ce50906e"
+source = "git+https://github.com/orlandohohmeier/makepad?branch=int#2ce43996eb9b16b3a7a2d4921fddf704edd36b85"
 
 [[package]]
 name = "pkg-config"
@@ -4191,7 +4191,7 @@ dependencies = [
 [[package]]
 name = "pulldown-cmark"
 version = "0.12.2"
-source = "git+https://github.com/orlandohohmeier/makepad?branch=int#4d0abe8a861b7d4e17714e8b0b3e7473ce50906e"
+source = "git+https://github.com/orlandohohmeier/makepad?branch=int#2ce43996eb9b16b3a7a2d4921fddf704edd36b85"
 dependencies = [
  "bitflags 2.10.0",
  "memchr 2.7.6",
@@ -4431,7 +4431,7 @@ checksum = "b50b8869d9fc858ce7266cce0194bd74df58b9d0e3f6df3a9fc8eb470d95c09d"
 [[package]]
 name = "rustc-hash"
 version = "1.1.0"
-source = "git+https://github.com/orlandohohmeier/makepad?branch=int#4d0abe8a861b7d4e17714e8b0b3e7473ce50906e"
+source = "git+https://github.com/orlandohohmeier/makepad?branch=int#2ce43996eb9b16b3a7a2d4921fddf704edd36b85"
 
 [[package]]
 name = "rustc-hash"
@@ -4458,7 +4458,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -4482,7 +4482,7 @@ dependencies = [
 [[package]]
 name = "rustybuzz"
 version = "0.18.0"
-source = "git+https://github.com/orlandohohmeier/makepad?branch=int#4d0abe8a861b7d4e17714e8b0b3e7473ce50906e"
+source = "git+https://github.com/orlandohohmeier/makepad?branch=int#2ce43996eb9b16b3a7a2d4921fddf704edd36b85"
 dependencies = [
  "bitflags 2.10.0",
  "bytemuck 1.25.0",
@@ -4513,7 +4513,7 @@ checksum = "e1cf6437eb19a8f4a6cc0f7dca544973b0b78843adbfeb3683d1a94a0024a294"
 [[package]]
 name = "scoped-tls"
 version = "1.0.1"
-source = "git+https://github.com/orlandohohmeier/makepad?branch=int#4d0abe8a861b7d4e17714e8b0b3e7473ce50906e"
+source = "git+https://github.com/orlandohohmeier/makepad?branch=int#2ce43996eb9b16b3a7a2d4921fddf704edd36b85"
 
 [[package]]
 name = "scopeguard"
@@ -4524,7 +4524,7 @@ checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 [[package]]
 name = "sdfer"
 version = "0.2.1"
-source = "git+https://github.com/orlandohohmeier/makepad?branch=int#4d0abe8a861b7d4e17714e8b0b3e7473ce50906e"
+source = "git+https://github.com/orlandohohmeier/makepad?branch=int#2ce43996eb9b16b3a7a2d4921fddf704edd36b85"
 
 [[package]]
 name = "semver"
@@ -4676,7 +4676,7 @@ dependencies = [
 [[package]]
 name = "simd-adler32"
 version = "0.3.9"
-source = "git+https://github.com/orlandohohmeier/makepad?branch=int#4d0abe8a861b7d4e17714e8b0b3e7473ce50906e"
+source = "git+https://github.com/orlandohohmeier/makepad?branch=int#2ce43996eb9b16b3a7a2d4921fddf704edd36b85"
 
 [[package]]
 name = "simd-adler32"
@@ -4703,7 +4703,7 @@ checksum = "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5"
 [[package]]
 name = "smallvec"
 version = "1.15.1"
-source = "git+https://github.com/orlandohohmeier/makepad?branch=int#4d0abe8a861b7d4e17714e8b0b3e7473ce50906e"
+source = "git+https://github.com/orlandohohmeier/makepad?branch=int#2ce43996eb9b16b3a7a2d4921fddf704edd36b85"
 
 [[package]]
 name = "smallvec"
@@ -4726,7 +4726,7 @@ dependencies = [
 [[package]]
 name = "spirv"
 version = "0.3.0+sdk-1.3.268.0"
-source = "git+https://github.com/orlandohohmeier/makepad?branch=int#4d0abe8a861b7d4e17714e8b0b3e7473ce50906e"
+source = "git+https://github.com/orlandohohmeier/makepad?branch=int#2ce43996eb9b16b3a7a2d4921fddf704edd36b85"
 dependencies = [
  "bitflags 2.13.1",
 ]
@@ -4830,7 +4830,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell 1.21.4",
  "rustix",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -4871,7 +4871,7 @@ dependencies = [
 [[package]]
 name = "thiserror"
 version = "2.0.18"
-source = "git+https://github.com/orlandohohmeier/makepad?branch=int#4d0abe8a861b7d4e17714e8b0b3e7473ce50906e"
+source = "git+https://github.com/orlandohohmeier/makepad?branch=int#2ce43996eb9b16b3a7a2d4921fddf704edd36b85"
 dependencies = [
  "thiserror-impl 2.0.18",
 ]
@@ -4899,7 +4899,7 @@ dependencies = [
 [[package]]
 name = "thiserror-impl"
 version = "2.0.18"
-source = "git+https://github.com/orlandohohmeier/makepad?branch=int#4d0abe8a861b7d4e17714e8b0b3e7473ce50906e"
+source = "git+https://github.com/orlandohohmeier/makepad?branch=int#2ce43996eb9b16b3a7a2d4921fddf704edd36b85"
 dependencies = [
  "makepad-micro-proc-macro",
 ]
@@ -5326,7 +5326,7 @@ dependencies = [
 [[package]]
 name = "ttf-parser"
 version = "0.24.1"
-source = "git+https://github.com/orlandohohmeier/makepad?branch=int#4d0abe8a861b7d4e17714e8b0b3e7473ce50906e"
+source = "git+https://github.com/orlandohohmeier/makepad?branch=int#2ce43996eb9b16b3a7a2d4921fddf704edd36b85"
 
 [[package]]
 name = "twox-hash"
@@ -5354,7 +5354,7 @@ checksum = "f2f6fb2847f6742cd76af783a2a2c49e9375d0a111c7bef6f71cd9e738c72d6e"
 dependencies = [
  "memoffset",
  "tempfile",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -5375,17 +5375,17 @@ dependencies = [
 [[package]]
 name = "unicase"
 version = "2.9.0"
-source = "git+https://github.com/orlandohohmeier/makepad?branch=int#4d0abe8a861b7d4e17714e8b0b3e7473ce50906e"
+source = "git+https://github.com/orlandohohmeier/makepad?branch=int#2ce43996eb9b16b3a7a2d4921fddf704edd36b85"
 
 [[package]]
 name = "unicode-bidi"
 version = "0.3.18"
-source = "git+https://github.com/orlandohohmeier/makepad?branch=int#4d0abe8a861b7d4e17714e8b0b3e7473ce50906e"
+source = "git+https://github.com/orlandohohmeier/makepad?branch=int#2ce43996eb9b16b3a7a2d4921fddf704edd36b85"
 
 [[package]]
 name = "unicode-bidi-mirroring"
 version = "0.3.0"
-source = "git+https://github.com/orlandohohmeier/makepad?branch=int#4d0abe8a861b7d4e17714e8b0b3e7473ce50906e"
+source = "git+https://github.com/orlandohohmeier/makepad?branch=int#2ce43996eb9b16b3a7a2d4921fddf704edd36b85"
 
 [[package]]
 name = "unicode-bom"
@@ -5396,7 +5396,7 @@ checksum = "7eec5d1121208364f6793f7d2e222bf75a915c19557537745b195b253dd64217"
 [[package]]
 name = "unicode-ccc"
 version = "0.3.0"
-source = "git+https://github.com/orlandohohmeier/makepad?branch=int#4d0abe8a861b7d4e17714e8b0b3e7473ce50906e"
+source = "git+https://github.com/orlandohohmeier/makepad?branch=int#2ce43996eb9b16b3a7a2d4921fddf704edd36b85"
 
 [[package]]
 name = "unicode-ident"
@@ -5413,7 +5413,7 @@ checksum = "3b09c83c3c29d37506a3e260c08c03743a6bb66a9cd432c6934ab501a190571f"
 [[package]]
 name = "unicode-linebreak"
 version = "0.1.5"
-source = "git+https://github.com/orlandohohmeier/makepad?branch=int#4d0abe8a861b7d4e17714e8b0b3e7473ce50906e"
+source = "git+https://github.com/orlandohohmeier/makepad?branch=int#2ce43996eb9b16b3a7a2d4921fddf704edd36b85"
 
 [[package]]
 name = "unicode-normalization"
@@ -5427,17 +5427,17 @@ dependencies = [
 [[package]]
 name = "unicode-properties"
 version = "0.1.4"
-source = "git+https://github.com/orlandohohmeier/makepad?branch=int#4d0abe8a861b7d4e17714e8b0b3e7473ce50906e"
+source = "git+https://github.com/orlandohohmeier/makepad?branch=int#2ce43996eb9b16b3a7a2d4921fddf704edd36b85"
 
 [[package]]
 name = "unicode-script"
 version = "0.5.8"
-source = "git+https://github.com/orlandohohmeier/makepad?branch=int#4d0abe8a861b7d4e17714e8b0b3e7473ce50906e"
+source = "git+https://github.com/orlandohohmeier/makepad?branch=int#2ce43996eb9b16b3a7a2d4921fddf704edd36b85"
 
 [[package]]
 name = "unicode-segmentation"
 version = "1.12.0"
-source = "git+https://github.com/orlandohohmeier/makepad?branch=int#4d0abe8a861b7d4e17714e8b0b3e7473ce50906e"
+source = "git+https://github.com/orlandohohmeier/makepad?branch=int#2ce43996eb9b16b3a7a2d4921fddf704edd36b85"
 
 [[package]]
 name = "unicode-segmentation"
@@ -5609,7 +5609,7 @@ dependencies = [
 [[package]]
 name = "wayland-backend"
 version = "0.3.12"
-source = "git+https://github.com/orlandohohmeier/makepad?branch=int#4d0abe8a861b7d4e17714e8b0b3e7473ce50906e"
+source = "git+https://github.com/orlandohohmeier/makepad?branch=int#2ce43996eb9b16b3a7a2d4921fddf704edd36b85"
 dependencies = [
  "downcast-rs 1.2.1 (git+https://github.com/orlandohohmeier/makepad?branch=int)",
  "libc",
@@ -5635,7 +5635,7 @@ dependencies = [
 [[package]]
 name = "wayland-client"
 version = "0.31.12"
-source = "git+https://github.com/orlandohohmeier/makepad?branch=int#4d0abe8a861b7d4e17714e8b0b3e7473ce50906e"
+source = "git+https://github.com/orlandohohmeier/makepad?branch=int#2ce43996eb9b16b3a7a2d4921fddf704edd36b85"
 dependencies = [
  "bitflags 2.13.1",
  "libc",
@@ -5657,7 +5657,7 @@ dependencies = [
 [[package]]
 name = "wayland-egl"
 version = "0.32.9"
-source = "git+https://github.com/orlandohohmeier/makepad?branch=int#4d0abe8a861b7d4e17714e8b0b3e7473ce50906e"
+source = "git+https://github.com/orlandohohmeier/makepad?branch=int#2ce43996eb9b16b3a7a2d4921fddf704edd36b85"
 dependencies = [
  "wayland-backend 0.3.12",
  "wayland-sys 0.31.8",
@@ -5666,7 +5666,7 @@ dependencies = [
 [[package]]
 name = "wayland-protocols"
 version = "0.32.10"
-source = "git+https://github.com/orlandohohmeier/makepad?branch=int#4d0abe8a861b7d4e17714e8b0b3e7473ce50906e"
+source = "git+https://github.com/orlandohohmeier/makepad?branch=int#2ce43996eb9b16b3a7a2d4921fddf704edd36b85"
 dependencies = [
  "bitflags 2.13.1",
  "wayland-backend 0.3.12",
@@ -5699,7 +5699,7 @@ dependencies = [
 [[package]]
 name = "wayland-sys"
 version = "0.31.8"
-source = "git+https://github.com/orlandohohmeier/makepad?branch=int#4d0abe8a861b7d4e17714e8b0b3e7473ce50906e"
+source = "git+https://github.com/orlandohohmeier/makepad?branch=int#2ce43996eb9b16b3a7a2d4921fddf704edd36b85"
 dependencies = [
  "log 0.4.29",
  "pkg-config 0.3.32",
@@ -5729,7 +5729,7 @@ dependencies = [
 [[package]]
 name = "weezl"
 version = "0.1.12"
-source = "git+https://github.com/orlandohohmeier/makepad?branch=int#4d0abe8a861b7d4e17714e8b0b3e7473ce50906e"
+source = "git+https://github.com/orlandohohmeier/makepad?branch=int#2ce43996eb9b16b3a7a2d4921fddf704edd36b85"
 
 [[package]]
 name = "winapi"
@@ -5753,7 +5753,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -5765,7 +5765,7 @@ checksum = "712e227841d057c1ee1cd2fb22fa7e5a5461ae8e48fa2ca79ec42cfc1931183f"
 [[package]]
 name = "windows"
 version = "0.62.2"
-source = "git+https://github.com/orlandohohmeier/makepad?branch=int#4d0abe8a861b7d4e17714e8b0b3e7473ce50906e"
+source = "git+https://github.com/orlandohohmeier/makepad?branch=int#2ce43996eb9b16b3a7a2d4921fddf704edd36b85"
 dependencies = [
  "windows-collections",
  "windows-core",
@@ -5775,7 +5775,7 @@ dependencies = [
 [[package]]
 name = "windows-collections"
 version = "0.3.2"
-source = "git+https://github.com/orlandohohmeier/makepad?branch=int#4d0abe8a861b7d4e17714e8b0b3e7473ce50906e"
+source = "git+https://github.com/orlandohohmeier/makepad?branch=int#2ce43996eb9b16b3a7a2d4921fddf704edd36b85"
 dependencies = [
  "windows-core",
 ]
@@ -5783,7 +5783,7 @@ dependencies = [
 [[package]]
 name = "windows-core"
 version = "0.62.2"
-source = "git+https://github.com/orlandohohmeier/makepad?branch=int#4d0abe8a861b7d4e17714e8b0b3e7473ce50906e"
+source = "git+https://github.com/orlandohohmeier/makepad?branch=int#2ce43996eb9b16b3a7a2d4921fddf704edd36b85"
 dependencies = [
  "windows-link 0.2.1 (git+https://github.com/orlandohohmeier/makepad?branch=int)",
  "windows-result 0.4.1 (git+https://github.com/orlandohohmeier/makepad?branch=int)",
@@ -5793,7 +5793,7 @@ dependencies = [
 [[package]]
 name = "windows-future"
 version = "0.3.2"
-source = "git+https://github.com/orlandohohmeier/makepad?branch=int#4d0abe8a861b7d4e17714e8b0b3e7473ce50906e"
+source = "git+https://github.com/orlandohohmeier/makepad?branch=int#2ce43996eb9b16b3a7a2d4921fddf704edd36b85"
 dependencies = [
  "windows-core",
 ]
@@ -5807,7 +5807,7 @@ checksum = "f0805222e57f7521d6a62e36fa9163bc891acd422f971defe97d64e70d0a4fe5"
 [[package]]
 name = "windows-link"
 version = "0.2.1"
-source = "git+https://github.com/orlandohohmeier/makepad?branch=int#4d0abe8a861b7d4e17714e8b0b3e7473ce50906e"
+source = "git+https://github.com/orlandohohmeier/makepad?branch=int#2ce43996eb9b16b3a7a2d4921fddf704edd36b85"
 
 [[package]]
 name = "windows-result"
@@ -5821,7 +5821,7 @@ dependencies = [
 [[package]]
 name = "windows-result"
 version = "0.4.1"
-source = "git+https://github.com/orlandohohmeier/makepad?branch=int#4d0abe8a861b7d4e17714e8b0b3e7473ce50906e"
+source = "git+https://github.com/orlandohohmeier/makepad?branch=int#2ce43996eb9b16b3a7a2d4921fddf704edd36b85"
 dependencies = [
  "windows-link 0.2.1 (git+https://github.com/orlandohohmeier/makepad?branch=int)",
 ]
@@ -5829,7 +5829,7 @@ dependencies = [
 [[package]]
 name = "windows-strings"
 version = "0.5.1"
-source = "git+https://github.com/orlandohohmeier/makepad?branch=int#4d0abe8a861b7d4e17714e8b0b3e7473ce50906e"
+source = "git+https://github.com/orlandohohmeier/makepad?branch=int#2ce43996eb9b16b3a7a2d4921fddf704edd36b85"
 dependencies = [
  "windows-link 0.2.1 (git+https://github.com/orlandohohmeier/makepad?branch=int)",
 ]
@@ -6119,7 +6119,7 @@ dependencies = [
 [[package]]
 name = "zerocopy"
 version = "0.8.39"
-source = "git+https://github.com/orlandohohmeier/makepad?branch=int#4d0abe8a861b7d4e17714e8b0b3e7473ce50906e"
+source = "git+https://github.com/orlandohohmeier/makepad?branch=int#2ce43996eb9b16b3a7a2d4921fddf704edd36b85"
 
 [[package]]
 name = "zerocopy"
