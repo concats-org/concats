@@ -1459,7 +1459,14 @@ impl ReviewPane {
         if !head.is_empty() {
             env.push(("CONCATS_APP_HEAD", head.as_str()));
         }
-        terminal::open(tab, std::path::Path::new(&cwd), &env);
+        terminal::open(
+            terminal::Session {
+                window: self.state().id,
+                tab,
+            },
+            std::path::Path::new(&cwd),
+            &env,
+        );
         self.view.redraw(cx);
     }
 
@@ -1609,7 +1616,7 @@ impl ReviewPane {
             return;
         };
         if current <= 1.0 {
-            if terminal::count() == 0 {
+            if terminal::count(self.state().id) == 0 {
                 self.open_terminal(cx, id!(terminal_tab));
                 self.view
                     .dock(cx, ids!(dock))
@@ -1767,7 +1774,10 @@ impl ReviewPane {
                         }
                     } else if tab_id != id!(terminal_tab) && is_terminal_dock_tab(&dock, tab_id) {
                         // Closing a `+`-created terminal tab ends its shell.
-                        terminal::close(tab_id);
+                        terminal::close(terminal::Session {
+                            window: self.state().id,
+                            tab: tab_id,
+                        });
                         dock.close_tab(cx, tab_id);
                     } else if tab_id == id!(settings_tab) {
                         dock.close_tab(cx, tab_id);
@@ -1800,8 +1810,8 @@ impl ReviewPane {
             // changed — the resize path). The `path` names the session's tab.
             match wa.cast() {
                 DesktopTerminalViewAction::Input { path, data } => {
-                    if let Some(tab) = terminal::tab_from_path(&path) {
-                        terminal::input(tab, data);
+                    if let Some(session) = terminal::tab_from_path(&path) {
+                        terminal::input(session, data);
                     }
                 }
                 DesktopTerminalViewAction::RequestViewport {
@@ -1811,9 +1821,9 @@ impl ReviewPane {
                     pty_rows,
                     top_row,
                 } => {
-                    if let Some(tab) = terminal::tab_from_path(&path) {
-                        if terminal::request_viewport(tab, cols, rows, pty_rows, top_row) {
-                            dock.item(tab).redraw(cx);
+                    if let Some(session) = terminal::tab_from_path(&path) {
+                        if terminal::request_viewport(session, cols, rows, pty_rows, top_row) {
+                            dock.item(session.tab).redraw(cx);
                         }
                     }
                 }
