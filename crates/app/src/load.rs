@@ -14,24 +14,27 @@ use concats_review::{guide, sessions, store};
 use concats_state::Target;
 
 use crate::{
-    docs,
     file_view::{open_file, open_settings, read_file_sides},
     makepad_widgets::makepad_platform::thread::SignalToUI,
     review_doc::{
         changed_keys, splice_comments, splice_composer, Caret, Compose, Composing, ReviewDoc, Tab,
     },
     service::{review, review_state, ReviewCmd},
-    with_doc,
+    window::WindowState,
 };
 
-static LOAD_REQUEST: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-
-pub(crate) fn spawn_load(target: Target, guide: Option<String>) {
-    let request = LOAD_REQUEST.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-    with_doc(|d| {
+/// Load `target` into `state`'s window on a worker thread.
+pub(crate) fn spawn_load(
+    state: &std::sync::Arc<WindowState>,
+    target: Target,
+    guide: Option<String>,
+) {
+    let request = state.next_load();
+    state.with(|d| {
         d.loading = true;
         d.error = None;
     });
+    let state = state.clone();
     // Wake the UI now so the header's ↻ starts spinning immediately; the land
     // bumps generation and signals again, which stops it.
     SignalToUI::set_ui_signal();
@@ -74,13 +77,15 @@ pub(crate) fn spawn_load(target: Target, guide: Option<String>) {
                 // resolved against the table — see `carry_live_buffers`. Held
                 // cursors are the only thing that survives a writer editing the
                 // very line a conversation is on.
-                let live: Vec<Blob> = crate::read_doc(|prev| {
-                    prev.blobs
-                        .iter()
-                        .filter(|b| b.doc.is_some())
-                        .cloned()
-                        .collect()
-                });
+                // The document being replaced, read once: everything that
+                // carries over comes out of it.
+                let prev = state.snapshot();
+                let live: Vec<Blob> = prev
+                    .blobs
+                    .iter()
+                    .filter(|b| b.doc.is_some())
+                    .cloned()
+                    .collect();
                 build_review(d, loaded, &target, guide.map(|(md, _)| md));
                 // In-process buffers first, then the cache for anything this
                 // process has not opened yet — which on the first load after a
@@ -88,10 +93,10 @@ pub(crate) fn spawn_load(target: Target, guide: Option<String>) {
                 if carry_live_buffers(d, &live) | restore_cached_buffers(d) {
                     // The splice ran inside `build_review` against the fresh
                     // read; redo it now that the real buffers are back.
-                    resplice_comments(d, &review_state().load().comments);
+                    resplice_comments(d, &review_state(d.git_dir.as_deref()).load().comments);
                 }
-                reopen_files(d, &target);
-                carry_caret(d);
+                reopen_files(d, &prev, &target);
+                carry_caret(d, &prev);
                 compose_from_env(d);
             }
             Err(e) => {
@@ -105,7 +110,7 @@ pub(crate) fn spawn_load(target: Target, guide: Option<String>) {
                 });
             }
         }
-        if LOAD_REQUEST.load(std::sync::atomic::Ordering::Acquire) != request {
+        if !state.load_is_current(request) {
             return;
         }
         // Publish the open range under this window's id, so bare CLI commands
@@ -115,18 +120,12 @@ pub(crate) fn spawn_load(target: Target, guide: Option<String>) {
         // the range the winning load published.
         if next.error.is_none() {
             if let Some(conn) = concats_state::open_app_db() {
-                concats_state::publish_window_range(&conn, concats_state::window_id(), &target);
+                concats_state::publish_window_range(&conn, &state.key, &target);
             }
         }
         // Publish: the lock is held for a swap, nothing more. Fold state is
         // the view's, not the document's, so it rides across the reload.
-        let mut snapshot = docs().write().unwrap();
-        next.folded.clone_from(&snapshot.folded);
-        next.show_all_comments
-            .clone_from(&snapshot.show_all_comments);
-        next.generation = snapshot.generation + 1;
-        *snapshot = std::sync::Arc::new(next);
-        drop(snapshot);
+        state.land(next);
         SignalToUI::set_ui_signal();
     });
 }
@@ -182,17 +181,16 @@ fn guide_for(path: Option<&str>, loaded: &Loaded) -> Option<(String, Option<u64>
 /// Re-open the File tabs the previous document had, over the fresh blob table.
 /// A WORKTREE review reloads on every save; a file that blanked out once a
 /// second while being read would be unusable.
-fn reopen_files(d: &mut ReviewDoc, target: &Target) {
-    let open: Vec<(u64, String)> = crate::read_doc(|prev| {
-        prev.files_open
-            .iter()
-            .map(|f| (f.tab, f.path.clone()))
-            .collect()
-    });
+fn reopen_files(d: &mut ReviewDoc, prev: &ReviewDoc, target: &Target) {
+    let open: Vec<(u64, String)> = prev
+        .files_open
+        .iter()
+        .map(|f| (f.tab, f.path.clone()))
+        .collect();
     if open.is_empty() {
         return;
     }
-    let comments = review_state().load().comments.clone();
+    let comments = review_state(d.git_dir.as_deref()).load().comments.clone();
     for (tab, path) in open {
         if tab == crate::dock::settings_tab_id().0 {
             // Not a path in this repo — its content comes from the config
@@ -221,8 +219,8 @@ fn reopen_files(d: &mut ReviewDoc, target: &Target) {
 /// edited buffer has a hash no load produces). Inside a document it travels as
 /// a cursor, which carries it through an external write landing above it;
 /// clamping a line number would slide it onto other code.
-fn carry_caret(d: &mut ReviewDoc) {
-    let Some((oid, origin, caret, cursor, tab)) = crate::read_doc(|prev| {
+fn carry_caret(d: &mut ReviewDoc, prev: &ReviewDoc) {
+    let Some((oid, origin, caret, cursor, tab)) = (|| {
         let caret = prev.caret?;
         let blob = prev.blobs.get(caret.blob as usize)?;
         let at = blob
@@ -235,7 +233,7 @@ fn carry_caret(d: &mut ReviewDoc) {
             .zip(at)
             .and_then(|(doc, at)| concats_sync::cursor_at(doc, at));
         Some((blob.oid, blob.origin.clone(), caret, cursor, prev.tab))
-    }) else {
+    })() else {
         return;
     };
     let Some(i) = d.blobs.iter().position(|b| b.oid == oid).or_else(|| {
@@ -432,7 +430,7 @@ pub(crate) fn build_review(
     // Stored review state: splice comments below their anchor lines, in every
     // stream, then close each file card. Called under the docs lock — lock
     // order is docs, then stores.
-    resplice_comments(d, &review_state().load().comments);
+    resplice_comments(d, &review_state(d.git_dir.as_deref()).load().comments);
     d.changed_keys = changed_keys(d);
 }
 

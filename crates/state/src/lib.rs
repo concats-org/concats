@@ -25,20 +25,16 @@ pub struct Target {
     pub head: String,
 }
 
-/// This window's identity, exported into its terminals as `CONCATS_APP_WINDOW`.
-/// One window per process today, so one id per process; a process that opens
-/// several mints one per window. Two windows on one repo get two ids, where a
-/// repo-keyed range would collide.
+/// A fresh window identity, exported into that window's terminals as
+/// `CONCATS_APP_WINDOW`. One per window, not one per process: two windows on
+/// one repo get two ids, where a repo-keyed range would collide.
 #[must_use]
-pub fn window_id() -> &'static str {
-    static ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    ID.get_or_init(|| {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0);
-        format!("{}-{nanos}", std::process::id())
-    })
+pub fn new_window_id() -> String {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    format!("{}-{nanos}", std::process::id())
 }
 
 /// The app database, WAL'd and schema'd. `None` (with a warning) when the

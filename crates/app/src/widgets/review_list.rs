@@ -824,6 +824,11 @@ script_mod! {
 pub struct ReviewList {
     #[deref]
     view: View,
+    /// The window these rows belong to, taken from `Scope` — the pane above
+    /// puts it there. Cached because the helpers below run off the event that
+    /// carried it.
+    #[rust]
+    state: Option<std::sync::Arc<crate::window::WindowState>>,
     /// Which row stream this instance renders (`@review`/`@files`/
     /// `@sessions`/`@commits`): every dock tab owns one stream-pinned list.
     #[live]
@@ -961,6 +966,17 @@ impl CardIndex {
 }
 
 impl ReviewList {
+    /// The window these rows belong to. Detached until the first event carries
+    /// one down from the pane, which is before any gesture can reach a row.
+    fn state(&self) -> &std::sync::Arc<crate::window::WindowState> {
+        static DETACHED: std::sync::OnceLock<std::sync::Arc<crate::window::WindowState>> =
+            std::sync::OnceLock::new();
+        match self.state.as_ref() {
+            Some(state) => state,
+            None => DETACHED.get_or_init(|| crate::window::WindowState::new(LiveId(0))),
+        }
+    }
+
     /// The stream row a list entry renders. Folding hides rows, so an entry
     /// index is not a row index while any card is shut.
     pub fn row_at(&self, entry: usize) -> Option<usize> {
@@ -1078,6 +1094,10 @@ impl Widget for ReviewList {
             return DrawStep::done();
         };
         let d = &*frame.document;
+        // The highlighter runs off the UI thread, so the request carries both
+        // the document to read and the window to answer.
+        let window = frame.state.id;
+        let doc = frame.document.clone();
         let tab = tab_of(cx, self.widget_uid(), self.kind, &d.files_open);
         self.drawn_tab = Some(tab);
         let review = &frame.review;
@@ -1233,6 +1253,8 @@ impl Widget for ReviewList {
                             && self.requested_highlights.insert((blob, rev))
                         {
                             highlight().send(HighlightCmd::Request {
+                                window,
+                                doc: doc.clone(),
                                 generation: d.generation,
                                 blob,
                                 rev,
@@ -1650,6 +1672,9 @@ impl Widget for ReviewList {
     }
 
     fn handle_event(&mut self, cx: &mut Cx, event: &Event, scope: &mut Scope) {
+        if let Some(state) = crate::frame_state(scope) {
+            self.state = Some(state);
+        }
         // The caret's keys are claimed before the list sees them: `PortalList`
         // binds Home, Cmd-A and the arrows to its own scrolling and selection,
         // and the caret needs all of them. Makepad dispatch is explicit, so not
@@ -1714,7 +1739,7 @@ impl ReviewList {
     /// The bar's tally, over the buffer the caret is in.
     fn count_hits(&mut self, cx: &mut Cx) {
         let query = self.find.clone().unwrap_or_default();
-        let count = crate::read_doc(|d| match (d.caret, query.is_empty()) {
+        let count = self.state().read(|d| match (d.caret, query.is_empty()) {
             (Some(caret), false) => d.blobs[caret.blob as usize]
                 .text
                 .to_ascii_lowercase()
@@ -1750,7 +1775,7 @@ impl ReviewList {
         let head_row = row;
         let tail_row = self.row_at(start.0);
         let mut focus = false;
-        crate::with_doc(|d| {
+        self.state().with(|d| {
             // Where one end of the gesture landed, in blob coordinates: a row
             // index names a position in this stream's current shape, and every
             // resplice renumbers it. Scoped so the closure's borrow of `d` ends
@@ -1808,7 +1833,7 @@ impl ReviewList {
         }
         // A paste carries newlines; a typed Return arrives as `Event::KeyDown`
         // and is handled there, so anything landing here is text either way.
-        let took = crate::with_doc(|d| match closer_for(input) {
+        let took = self.state().with(|d| match closer_for(input) {
             Some(close) => {
                 // Type the pair and sit between it. Only for a bare delimiter:
                 // a paste that happens to start with one is text, not a
@@ -1855,7 +1880,7 @@ impl ReviewList {
         let area = list.area();
         !matches!(area, Area::Empty)
             && cx.has_key_focus(area)
-            && crate::read_doc(|d| d.caret.is_some() && d.tab == tab)
+            && self.state().read(|d| d.caret.is_some() && d.tab == tab)
     }
 
     /// The list's own selection and the caret are two claims about where typing
@@ -1871,8 +1896,12 @@ impl ReviewList {
         if let Some(mut l) = self.view.portal_list(cx, ids!(list)).borrow_mut() {
             l.clear_selection(cx);
         }
-        let comments = crate::service::review_state().load().comments.clone();
-        crate::with_doc(|d| relower_edited(d, &comments));
+        let git_dir = self.state().read(|d| d.git_dir.clone());
+        let comments = crate::service::review_state(git_dir.as_deref())
+            .load()
+            .comments
+            .clone();
+        self.state().with(|d| relower_edited(d, &comments));
         self.redraw(cx);
     }
 
@@ -1887,7 +1916,7 @@ impl ReviewList {
             return edit;
         }
         let list = self.view.portal_list(cx, ids!(list));
-        let took = crate::with_doc(|d| {
+        let took = self.state().with(|d| {
             let Some(caret) = d.caret else {
                 return false;
             };
@@ -1936,7 +1965,7 @@ impl ReviewList {
             }
             // A motion ends the typing run, so undo stops at where you were
             // rather than swallowing everything back to the last newline.
-            crate::with_doc(|d| {
+            self.state().with(|d| {
                 if let Some(c) = d.caret {
                     d.blobs[c.blob as usize].break_group();
                 }
@@ -1949,7 +1978,9 @@ impl ReviewList {
     /// Cmd-F and Escape. Gated on this list owning the caret's stream rather
     /// than on key focus, which the composer or the find field itself may hold.
     fn find_keys(&mut self, cx: &mut Cx, ke: &KeyEvent) -> bool {
-        let mine = crate::read_doc(|d| d.caret.is_some() && self.drawn_tab == Some(d.tab));
+        let mine = self
+            .state()
+            .read(|d| d.caret.is_some() && self.drawn_tab == Some(d.tab));
         if !mine {
             return false;
         }
@@ -1986,7 +2017,7 @@ impl ReviewList {
         let Some(query) = self.find.clone().filter(|q| !q.is_empty()) else {
             return;
         };
-        crate::with_doc(|d| {
+        self.state().with(|d| {
             let Some(caret) = d.caret else {
                 return;
             };
@@ -2022,7 +2053,7 @@ impl ReviewList {
         let Some(query) = self.find.clone().filter(|q| !q.is_empty()) else {
             return;
         };
-        let changed = crate::with_doc(|d| {
+        let changed = self.state().with(|d| {
             let Some(caret) = d.caret else {
                 return false;
             };
@@ -2069,7 +2100,7 @@ impl ReviewList {
     /// plan over the document, and the service, which alone owns the store,
     /// performs the write and the anchor moves.
     fn save(&mut self, cx: &mut Cx) -> bool {
-        let Some(plan) = crate::with_doc(|d| save_plan(d, d.caret?.blob)) else {
+        let Some(plan) = self.state().with(|d| save_plan(d, d.caret?.blob)) else {
             return false;
         };
         // config.json is applied, not just written: a theme change has to take
@@ -2079,7 +2110,7 @@ impl ReviewList {
         if plan.path == crate::theme::config_file() {
             return self.apply_settings(cx, plan);
         }
-        let sent = crate::with_doc(|d| {
+        let sent = self.state().with(|d| {
             let Some(git_dir) = d.git_dir.clone() else {
                 return false;
             };
@@ -2104,7 +2135,7 @@ impl ReviewList {
     /// for "this does not refer to anything real".
     fn apply_settings(&mut self, cx: &mut Cx, plan: crate::file_view::SavePlan) -> bool {
         let applied = crate::theme::apply_settings_text(&plan.text);
-        crate::with_doc(|d| {
+        self.state().with(|d| {
             if let Some(rows) = d.stream_mut(Tab::File(crate::dock::settings_tab_id().0)) {
                 rows.retain(|r| !matches!(r, Row::Warning { .. }));
                 if let Err(message) = &applied {
@@ -2135,7 +2166,7 @@ impl ReviewList {
     /// caller can go on to try it as a motion.
     fn caret_edit(&mut self, cx: &mut Cx, ke: &KeyEvent) -> Option<bool> {
         let took = match ke.key_code {
-            KeyCode::ReturnKey => crate::with_doc(|d| {
+            KeyCode::ReturnKey => self.state().with(|d| {
                 // Auto-indent: a new line starts where the one it came off
                 // starts. Typing a block would be a pain otherwise.
                 let indent = d.caret.map_or(String::new(), |c| {
@@ -2147,11 +2178,11 @@ impl ReviewList {
                 });
                 type_at(d, &format!("\n{indent}"), 0)
             }),
-            KeyCode::Tab => crate::with_doc(|d| type_at(d, INDENT, 0)),
-            KeyCode::Backspace => crate::with_doc(|d| type_at(d, "", 1)),
-            KeyCode::Delete => crate::with_doc(delete_forward),
+            KeyCode::Tab => self.state().with(|d| type_at(d, INDENT, 0)),
+            KeyCode::Backspace => self.state().with(|d| type_at(d, "", 1)),
+            KeyCode::Delete => self.state().with(delete_forward),
             KeyCode::KeyZ if ke.modifiers.logo || ke.modifiers.control => {
-                crate::with_doc(|d| undo_at(d, ke.modifiers.shift))
+                self.state().with(|d| undo_at(d, ke.modifiers.shift))
             }
             KeyCode::KeyS if ke.modifiers.logo || ke.modifiers.control => {
                 return Some(self.save(cx))
