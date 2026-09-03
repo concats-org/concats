@@ -19,11 +19,9 @@ use crate::{
         create_stream_tab, drag_source_tab_id, file_tab_id, is_terminal_dock_tab, model_tab_of,
         stream_tab_spec,
     },
-    docs,
     file_view::{open_file, read_file_sides},
     load::{resplice_comments, spawn_load},
     makepad_widgets::*,
-    read_doc,
     review_doc::{
         blob_label, card_keys, comment_anchor, derive_compose, expand_collapsed, reveal_removed,
         seen_progress, splice_composer, stream_has_composer, strip_composer, Compose, Composing,
@@ -32,7 +30,8 @@ use crate::{
     service::{self, review, review_state, ReviewCmd},
     terminal,
     terminal_view::DesktopTerminalViewAction,
-    with_doc,
+    window::WindowState,
+    FrameData, WindowScope,
 };
 
 script_mod! {
@@ -659,6 +658,11 @@ struct Slide {
 pub struct ReviewPane {
     #[deref]
     view: View,
+    /// The window this pane renders. Set by the App the moment the window is
+    /// opened, and handed to the rows below through `Scope` — `Root` gives
+    /// every window the same scope, so the per-window one starts here.
+    #[rust]
+    state: Option<std::sync::Arc<WindowState>>,
     /// The panel slide in flight, stepped on NextFrame with studio's 0.16s
     /// ease-out cubic (app_backend.rs). One at a time: the two panels are
     /// toggled by two different buttons.
@@ -717,11 +721,29 @@ macro_rules! repo_rows {
 }
 
 impl ReviewPane {
+    /// Take the window this pane renders. Called by the App as the window
+    /// opens, before any event reaches the pane.
+    pub(crate) fn adopt(&mut self, state: std::sync::Arc<WindowState>) {
+        self.state = Some(state);
+    }
+
+    /// The window this pane renders. Before the App has adopted it — the first
+    /// frames of a run — this answers with a detached empty document, which is
+    /// what the pane would draw at that point anyway.
+    fn state(&self) -> &std::sync::Arc<WindowState> {
+        static DETACHED: std::sync::OnceLock<std::sync::Arc<WindowState>> =
+            std::sync::OnceLock::new();
+        match self.state.as_ref() {
+            Some(state) => state,
+            None => DETACHED.get_or_init(|| WindowState::new(LiveId(0))),
+        }
+    }
+
     /// Open the Settings dock tab — creating it next to the stream tabs if it
     /// isn't open, else selecting it. Shared by the `{ }` toolbar button and the
     /// `CONCATS_APP_SETTINGS` screenshot hook.
     pub fn open_settings_tab(&mut self, cx: &mut Cx) {
-        crate::with_doc(crate::file_view::open_settings);
+        self.state().with(crate::file_view::open_settings);
         let dock = self.view.dock(cx, ids!(dock));
         if dock.find_tab_bar_of_tab(id!(settings_tab)).is_none() {
             // Open next to the stream tabs (the bar they live in), else the main
@@ -760,7 +782,9 @@ impl ReviewPane {
     /// single-digit milliseconds — and it must not bump `generation`, the only
     /// thing a landed background load could signal with.
     pub fn open_file_tab(&mut self, cx: &mut Cx, path: String) {
-        let (repo, range) = read_doc(|d| (d.repo.clone(), (d.merge_base_oid, d.head_oid)));
+        let (repo, range) = self
+            .state()
+            .read(|d| (d.repo.clone(), (d.merge_base_oid, d.head_oid)));
         let sides = match read_file_sides(&repo, range, &path) {
             Ok(sides) => sides,
             Err(e) => {
@@ -770,8 +794,9 @@ impl ReviewPane {
                     .set_text(cx, &e.to_string());
             }
         };
-        let comments = review_state().load().comments.clone();
-        with_doc(|d| open_file(d, &path, sides, &comments));
+        let git_dir = self.state().read(|d| d.git_dir.clone());
+        let comments = review_state(git_dir.as_deref()).load().comments.clone();
+        self.state().with(|d| open_file(d, &path, sides, &comments));
 
         let tab_id = file_tab_id(&path);
         let dock = self.view.dock(cx, ids!(dock));
@@ -787,7 +812,9 @@ impl ReviewPane {
             .into_iter()
             .find_map(|t| dock.find_tab_bar_of_tab(t).map(|(b, _)| b))
             .unwrap_or(id!(main_tabs));
-            let name = read_doc(|d| crate::file_view::file_tab_title(d, &path));
+            let name = self
+                .state()
+                .read(|d| crate::file_view::file_tab_title(d, &path));
             dock.create_tab(cx, bar, tab_id, id!(FilePane), name, id!(FileTab), None);
         }
         dock.select_tab(cx, tab_id);
@@ -799,7 +826,7 @@ impl ReviewPane {
     /// tab that is gone has no stream to keep — and leaving it would have the
     /// comment and composer passes walking rows nothing renders.
     fn close_file_tab(&mut self, cx: &mut Cx, tab_id: LiveId) {
-        with_doc(|d| {
+        self.state().with(|d| {
             d.files_open.retain(|f| f.tab != tab_id.0);
             // The gesture cannot stay pointed at a stream that no longer
             // exists; the diff is where every range starts.
@@ -882,7 +909,7 @@ impl ReviewPane {
     fn combo_filter(&mut self, cx: &mut Cx, query: &str) {
         let query = query.trim().to_lowercase();
         let rows = combo_rows!();
-        let matches: Vec<String> = read_doc(|d| {
+        let matches: Vec<String> = self.state().read(|d| {
             d.refs
                 .iter()
                 .filter(|r| query.is_empty() || r.to_lowercase().contains(&query))
@@ -910,13 +937,17 @@ impl ReviewPane {
             .set_text(cx, "loading…");
         self.combo_close(cx);
         self.set_loading(cx, true);
-        spawn_load(concats_state::Target { repo, base, head }, None);
+        spawn_load(
+            self.state(),
+            concats_state::Target { repo, base, head },
+            None,
+        );
     }
 
     /// The range to (re)load with: whatever is open, else a sane default for a
     /// repo the app hasn't diffed yet.
     fn current_range(&self) -> (String, String) {
-        read_doc(|d| {
+        self.state().read(|d| {
             if d.base.is_empty() {
                 ("HEAD~5".into(), "HEAD".into())
             } else {
@@ -931,7 +962,7 @@ impl ReviewPane {
     fn pick_repo(&mut self, cx: &mut Cx) {
         let mut dialog = rfd::FileDialog::new().set_title("Choose a repository");
         // Start the browser next to the current repo, not the cwd.
-        let current = read_doc(|d| d.repo.clone());
+        let current = self.state().read(|d| d.repo.clone());
         if let Some(parent) = std::path::Path::new(&current).parent() {
             if !parent.as_os_str().is_empty() {
                 dialog = dialog.set_directory(parent);
@@ -954,7 +985,7 @@ impl ReviewPane {
     /// that stream closes it. (Scroll state lives per list instance now, so
     /// there is nothing to reset here.)
     pub fn set_gesture_tab(&mut self, cx: &mut Cx, tab: Tab) {
-        let changed = with_doc(|d| {
+        let changed = self.state().with(|d| {
             if d.tab == tab {
                 return false;
             }
@@ -973,7 +1004,7 @@ impl ReviewPane {
     /// this file card flips together. Content-addressed, so the mark shows up
     /// in every view that renders those lines.
     fn toggle_card_seen(&mut self, cx: &mut Cx, tab: Tab, item_id: usize) {
-        let docs = docs().read().unwrap();
+        let docs = self.state().snapshot();
         let d = &*docs;
         let keys = card_keys(d.stream(tab), item_id, &d.blobs);
         if keys.is_empty() {
@@ -1001,7 +1032,9 @@ impl ReviewPane {
     fn redraw_streams(&mut self, cx: &mut Cx) {
         self.view.redraw(cx);
         let dock = self.view.dock(cx, ids!(dock));
-        let files = read_doc(|d| d.files_open.iter().map(|f| f.tab).collect::<Vec<_>>());
+        let files = self
+            .state()
+            .read(|d| d.files_open.iter().map(|f| f.tab).collect::<Vec<_>>());
         for tab in [
             Tab::Guide,
             Tab::Sessions,
@@ -1020,7 +1053,7 @@ impl ReviewPane {
     /// is shut in every stream that renders that file — and the list rebuilds
     /// its entry→row mapping on the next draw.
     fn toggle_card_fold(&mut self, cx: &mut Cx, tab: Tab, item_id: usize) {
-        with_doc(|d| {
+        self.state().with(|d| {
             let Some(Row::FileHeader { path, .. }) = d.stream(tab).get(item_id).cloned() else {
                 return;
             };
@@ -1036,8 +1069,9 @@ impl ReviewPane {
     /// — and announces the new shape, because every row-indexed cache below
     /// is stale the moment a row is inserted mid-stream.
     fn toggle_card_outdated(&mut self, cx: &mut Cx, tab: Tab, item_id: usize) {
-        let comments = review_state().load().comments.clone();
-        with_doc(|d| {
+        let git_dir = self.state().read(|d| d.git_dir.clone());
+        let comments = review_state(git_dir.as_deref()).load().comments.clone();
+        self.state().with(|d| {
             let Some(Row::FileHeader { path, .. }) = d.stream(tab).get(item_id).cloned() else {
                 return;
             };
@@ -1054,7 +1088,8 @@ impl ReviewPane {
     /// copy of the run opens: the same file is a card in several streams, and
     /// each one is its own reading surface.
     fn expand_run(&mut self, cx: &mut Cx, tab: Tab, item_id: usize, end: CollapsedEnd) {
-        with_doc(|d| expand_collapsed(d, tab, item_id, end));
+        self.state()
+            .with(|d| expand_collapsed(d, tab, item_id, end));
         self.redraw_streams(cx);
     }
 
@@ -1063,8 +1098,8 @@ impl ReviewPane {
     /// write picked up by the poll.
     pub fn refresh_progress(&mut self, cx: &mut Cx) {
         let (seen, total) = {
-            let docs = docs().read().unwrap();
-            seen_progress(&docs, &review_state().load())
+            let docs = self.state().snapshot();
+            seen_progress(&docs, &review_state(docs.git_dir.as_deref()).load())
         };
         if let Some(mut bar) = self.view.widget(cx, ids!(progress)).borrow_mut::<SeenBar>() {
             bar.set_progress(cx, seen, total);
@@ -1082,9 +1117,9 @@ impl ReviewPane {
     ) {
         self.view.view(cx, ids!(share_panel)).set_visible(cx, false);
         let (md, n) = {
-            let docs = docs().read().unwrap();
+            let docs = self.state().snapshot();
             let d = &*docs;
-            let st = review_state().load();
+            let st = review_state(d.git_dir.as_deref()).load();
             let (old, new) = interchange::blob_sides(d.files_rows.iter(), &d.blobs);
             let mut entries = interchange::entries_from(&st.comments, &old, &new);
             entries.sort_by(|x, y| (&x.path, x.start, x.id).cmp(&(&y.path, y.start, y.id)));
@@ -1120,8 +1155,9 @@ impl ReviewPane {
     /// staged hunks drop out of the unstaged view within a second.
     fn stage_seen_hunks(&mut self, cx: &mut Cx) {
         self.view.view(cx, ids!(share_panel)).set_visible(cx, false);
-        let (workdir, files, git_dir) =
-            read_doc(|d| (d.workdir.clone(), d.stage.clone(), d.git_dir.clone()));
+        let (workdir, files, git_dir) = self
+            .state()
+            .read(|d| (d.workdir.clone(), d.stage.clone(), d.git_dir.clone()));
         let (Some(workdir), Some(git_dir)) = (workdir, git_dir) else {
             return;
         };
@@ -1139,7 +1175,7 @@ impl ReviewPane {
     }
 
     fn delete_comment_at(&mut self, cx: &mut Cx, tab: Tab, item_id: usize) {
-        let docs = docs().read().unwrap();
+        let docs = self.state().snapshot();
         let d = &*docs;
         let Some(Row::Comment { id, .. }) = d.stream(tab).get(item_id).cloned() else {
             return;
@@ -1160,7 +1196,7 @@ impl ReviewPane {
         // `d.tab` routes the composer into a stream.
         self.set_gesture_tab(cx, tab);
         {
-            let mut docs = docs().write().unwrap();
+            let mut docs = self.state().write();
             let d = Arc::make_mut(&mut docs);
             let Some(Row::Comment { id, parent, .. }) = d.stream(tab).get(item_id) else {
                 return;
@@ -1188,7 +1224,7 @@ impl ReviewPane {
         // drag actually started in (closing a composer left in another one).
         self.set_gesture_tab(cx, tab);
         {
-            let mut docs = docs().write().unwrap();
+            let mut docs = self.state().write();
             let d = Arc::make_mut(&mut docs);
             let kind = match d.active().get(item_id) {
                 Some(Row::Code { kind, .. }) => *kind,
@@ -1280,7 +1316,7 @@ impl ReviewPane {
             return;
         };
         {
-            let mut docs = docs().write().unwrap();
+            let mut docs = self.state().write();
             let d = Arc::make_mut(&mut docs);
             // A reply has no range to drag; only a line selection grows.
             if stream_has_composer(d.active()) || !matches!(d.compose, Some(Composing::Lines(_))) {
@@ -1311,7 +1347,7 @@ impl ReviewPane {
     /// Release: open the inline composer below the selection.
     fn compose_open(&mut self, cx: &mut Cx) {
         {
-            let mut docs = docs().write().unwrap();
+            let mut docs = self.state().write();
             let d = Arc::make_mut(&mut docs);
             if d.compose.is_none() || stream_has_composer(d.active()) {
                 return;
@@ -1324,7 +1360,7 @@ impl ReviewPane {
 
     fn post_comment(&mut self, cx: &mut Cx) {
         {
-            let mut docs = docs().write().unwrap();
+            let mut docs = self.state().write();
             let d = Arc::make_mut(&mut docs);
             let body = d.compose_draft.trim().to_string();
             if body.is_empty() {
@@ -1382,7 +1418,7 @@ impl ReviewPane {
     }
 
     fn close_composer(&mut self, cx: &mut Cx) {
-        with_doc(|d| {
+        self.state().with(|d| {
             d.compose = None;
             d.compose_draft.clear();
             strip_composer(d);
@@ -1401,7 +1437,9 @@ impl ReviewPane {
     /// CONCATS_APP_REPO/BASE/HEAD values ride along as the fallback for when
     /// the app has exited.
     pub fn open_terminal(&mut self, cx: &mut Cx, tab: LiveId) {
-        let (repo, base, head) = read_doc(|d| (d.repo.clone(), d.base.clone(), d.head.clone()));
+        let (repo, base, head) = self
+            .state()
+            .read(|d| (d.repo.clone(), d.base.clone(), d.head.clone()));
         let cwd = if repo.is_empty() {
             ".".to_string()
         } else {
@@ -1412,7 +1450,7 @@ impl ReviewPane {
             .map(|p| p.display().to_string())
             .unwrap_or(cwd);
         let mut env: Vec<(&str, &str)> = vec![
-            ("CONCATS_APP_WINDOW", concats_state::window_id()),
+            ("CONCATS_APP_WINDOW", self.state().key.as_str()),
             ("CONCATS_APP_REPO", cwd.as_str()),
         ];
         if !base.is_empty() {
@@ -1604,7 +1642,7 @@ impl ReviewPane {
         // The header Load button reloads the open repo at its current range.
         if self.view.button(cx, ids!(load_button)).clicked(actions) {
             let (base, head) = self.current_range();
-            let repo = read_doc(|d| d.repo.clone());
+            let repo = self.state().read(|d| d.repo.clone());
             self.combo_load(cx, repo, base, head);
         }
 
@@ -1655,7 +1693,7 @@ impl ReviewPane {
                     Some((b, h)) => (b.trim().to_string(), h.trim().to_string()),
                     None => (text, "HEAD".to_string()),
                 };
-                let repo = read_doc(|d| d.repo.clone());
+                let repo = self.state().read(|d| d.repo.clone());
                 self.combo_load(cx, repo, base, head);
             } else {
                 self.combo_close(cx);
@@ -1674,7 +1712,7 @@ impl ReviewPane {
                         Some((b, h)) => (b.to_string(), h.to_string()),
                         None => (text, "HEAD".into()),
                     };
-                    let repo = read_doc(|d| d.repo.clone());
+                    let repo = self.state().read(|d| d.repo.clone());
                     self.combo_load(cx, repo, base, head);
                 }
             }
@@ -1689,7 +1727,9 @@ impl ReviewPane {
         let dock = self.view.dock(cx, ids!(dock));
         // A File tab is its file's identity, so telling one from a terminal's
         // tab takes the document's open list.
-        let open_files = read_doc(|d| d.files_open.iter().map(|f| f.tab).collect::<Vec<_>>());
+        let open_files = self
+            .state()
+            .read(|d| d.files_open.iter().map(|f| f.tab).collect::<Vec<_>>());
         for action in actions {
             let Some(wa) = action.as_widget_action() else {
                 continue;
@@ -1827,7 +1867,7 @@ impl ReviewPane {
             let open = panel.visible();
             if !open {
                 // Staging only exists where there is a worktree to stage from.
-                let worktree = read_doc(|d| d.workdir.is_some());
+                let worktree = self.state().read(|d| d.workdir.is_some());
                 self.view
                     .button(cx, ids!(share_stage))
                     .set_visible(cx, worktree);
@@ -1927,7 +1967,7 @@ impl ReviewPane {
                 }
                 // "N lines removed": put them back where they were taken from.
                 ReviewItemAction::Reveal { tab, row } => {
-                    with_doc(|d| reveal_removed(d, *tab, *row));
+                    self.state().with(|d| reveal_removed(d, *tab, *row));
                     self.redraw_streams(cx);
                 }
                 ReviewItemAction::Post
@@ -1959,7 +1999,7 @@ impl ReviewPane {
         // A File tab's title carries its revision and its unsaved state, so it
         // is refreshed wherever the document might have moved — the tab is the
         // only chrome the editor has.
-        for (tab, title) in read_doc(|d| {
+        for (tab, title) in self.state().read(|d| {
             d.files_open
                 .iter()
                 .filter(|f| f.tab != crate::dock::settings_tab_id().0)
@@ -1968,7 +2008,9 @@ impl ReviewPane {
         }) {
             dock.set_tab_title(cx, tab, title);
         }
-        let open_files = read_doc(|d| d.files_open.iter().map(|f| f.tab).collect::<Vec<_>>());
+        let open_files = self
+            .state()
+            .read(|d| d.files_open.iter().map(|f| f.tab).collect::<Vec<_>>());
         for (tab_id, tab) in [
             (id!(guide_tab), Tab::Guide),
             (id!(sessions_tab), Tab::Sessions),
@@ -2051,10 +2093,10 @@ impl ReviewPane {
             for action in keystrokes {
                 match action {
                     TextInputAction::Changed(draft) => {
-                        with_doc(|d| d.compose_draft = draft.clone());
+                        self.state().with(|d| d.compose_draft = draft.clone());
                     }
                     TextInputAction::Returned(draft, _) => {
-                        with_doc(|d| d.compose_draft = draft.clone());
+                        self.state().with(|d| d.compose_draft = draft.clone());
                         self.post_comment(cx);
                     }
                     _ => {}
@@ -2065,18 +2107,42 @@ impl ReviewPane {
 }
 
 impl Widget for ReviewPane {
-    fn draw_walk(&mut self, cx: &mut Cx2d, scope: &mut Scope, walk: Walk) -> DrawStep {
-        // `ReviewList.pane` stays at its default 0 — pane-keying survives for
-        // a future second window, but this pane is always pane 0.
-        self.view.draw_walk(cx, scope, walk)
+    /// Where a window's scope begins. `Root` hands every window the same one,
+    /// so the rows below are told which document they are drawn from here —
+    /// the pane is the first widget that belongs to exactly one window.
+    fn draw_walk(&mut self, cx: &mut Cx2d, _scope: &mut Scope, walk: Walk) -> DrawStep {
+        let state = self.state().clone();
+        // The composer asks for focus by flagging the document; the draw that
+        // honours it is the one that clears it. Read before write, so the
+        // common frame never takes the write lock and never deep-clones the
+        // document behind `Arc::make_mut`.
+        let focus_composer = state.read(|d| d.compose_focus.then_some(d.tab));
+        if focus_composer.is_some() {
+            state.with(|d| d.compose_focus = false);
+        }
+        let document = state.snapshot();
+        let mut frame = FrameData {
+            review: review_state(document.git_dir.as_deref()).load(),
+            theme: crate::theme::active_theme(),
+            focus_composer,
+            document,
+            state,
+        };
+        self.view
+            .draw_walk(cx, &mut Scope::with_data(&mut frame), walk)
     }
 
-    fn handle_event(&mut self, cx: &mut Cx, event: &Event, scope: &mut Scope) {
+    fn handle_event(&mut self, cx: &mut Cx, event: &Event, _scope: &mut Scope) {
         if let Event::NextFrame(ne) = event {
             if self.slide_next_frame.is_event(event).is_some() {
                 self.step_slide(cx, ne.time);
             }
         }
+        // Only which window, not the whole frame: this runs on every mouse
+        // move, and rebuilding the rest of `FrameData` there would cost a
+        // registry lookup per event for something no handler reads.
+        let mut window = WindowScope(self.state().clone());
+        let scope = &mut Scope::with_data(&mut window);
         self.view.handle_event(cx, event, scope);
         self.widget_match_event(cx, event, scope);
     }
