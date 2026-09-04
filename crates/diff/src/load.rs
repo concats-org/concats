@@ -531,7 +531,7 @@ impl FileLowerer<'_> {
             }
         };
 
-        for h in hunks.iter() {
+        for (i, h) in hunks.iter().enumerate() {
             let hb = h.before.start as usize;
             let ha = h.after.start as usize;
 
@@ -596,7 +596,14 @@ impl FileLowerer<'_> {
             let avail = old_n
                 .saturating_sub(next_old)
                 .min(new_n.saturating_sub(next_new));
-            for k in 0..CONTEXT.min(avail) {
+            // …and never past where the next hunk starts. `avail` counts to the
+            // end of the file, so without this the run walks into the next
+            // hunk's changed lines and shows them as context first.
+            let until_next = hunks.get(i + 1).map_or(usize::MAX, |next| {
+                (next.before.start as usize).saturating_sub(next_old)
+            });
+            let trailing = CONTEXT.min(avail).min(until_next);
+            for k in 0..trailing {
                 emit_ctx(&mut rows, next_old + k, next_new + k);
             }
 
@@ -629,18 +636,21 @@ impl FileLowerer<'_> {
             });
             *self.next_hunk_id += 1;
 
-            old_at = next_old;
-            new_at = next_new;
+            // Past the trailing context, not merely past the hunk. Two hunks
+            // closer together than twice `CONTEXT` share the equal run between
+            // them, and leaving the cursor at the hunk's end let the next one
+            // count those lines again and emit them a second time — the same
+            // line numbers twice, and (a row being a reference) two rows on one
+            // `(blob, line)` key, so selecting one selected both.
+            old_at = next_old + trailing;
+            new_at = next_new + trailing;
         }
 
-        // Whatever unchanged tail is left after the last hunk's trailing
-        // context. The tail starts past that context, so the same offset shifts
-        // the collapsed run.
-        let shown = if out_hunks.is_empty() { 0 } else { CONTEXT };
+        // Whatever unchanged tail is left. `old_at` is already past the last
+        // hunk's trailing context, so this needs no offset of its own.
         let tail_gap = old_n
             .saturating_sub(old_at)
-            .min(new_n.saturating_sub(new_at))
-            .saturating_sub(shown);
+            .min(new_n.saturating_sub(new_at));
         st.lower_ms += t.elapsed().as_secs_f64() * 1000.0;
 
         st.adds += adds;
@@ -655,7 +665,7 @@ impl FileLowerer<'_> {
             adds,
             dels,
             hunks: out_hunks,
-            gap_after: collapsed_run(new_b, old_at + shown, new_at + shown, tail_gap),
+            gap_after: collapsed_run(new_b, old_at, new_at, tail_gap),
         }))
     }
 }
@@ -1218,6 +1228,47 @@ pub(crate) fn worktree_status(repo: &Repository) -> Result<Vec<(String, u8)>, Er
 mod tests {
     use super::*;
     use crate::fixture::{add, commit, init_repo};
+
+    /// Two changes closer together than twice `CONTEXT` share the unchanged
+    /// run between them. Each hunk used to take its own full copy of that run —
+    /// the same line numbers rendered twice, and a `Row::Code` being a
+    /// reference, two rows on one `(blob, line)` key: selecting one selected
+    /// them all.
+    #[test]
+    fn hunks_sharing_a_run_of_context_do_not_repeat_it() {
+        let (_tmp, root) = init_repo();
+        let base: String = (1..=20).map(|n| format!("line {n}\n")).collect();
+        add(&root, "a.txt", &base);
+        // Two edits four lines apart: closer than CONTEXT either side of both.
+        let edited = base
+            .replace("line 8\n", "line 8 edited\n")
+            .replace("line 12\n", "line 12 edited\n");
+        std::fs::write(root.join("a.txt"), &edited).unwrap();
+
+        let loaded = load(&root, INDEX_REV, WORKTREE_REV).unwrap();
+        let file = loaded
+            .files
+            .iter()
+            .find(|f| f.path == "a.txt")
+            .expect("a.txt changed");
+        assert!(file.hunks.len() > 1, "the edits should be separate hunks");
+
+        let mut seen = std::collections::HashSet::new();
+        for row in file.hunks.iter().flat_map(|h| h.rows.iter()) {
+            if let Row::Code {
+                new_no: Some(no),
+                blob,
+                ..
+            } = row
+            {
+                assert!(
+                    seen.insert((*blob, *no)),
+                    "line {no} rendered twice in {:?}",
+                    file.path
+                );
+            }
+        }
+    }
 
     #[test]
     fn worktree_load_diffs_index_vs_worktree() {
