@@ -657,9 +657,9 @@ fn main() {
         );
     }
 
-    /// tree-sitter-typescript's query is only the delta over JavaScript, so a
-    /// `.ts` file highlighted from it alone gets types and nothing else — which
-    /// looks like working highlighting until you notice the keywords are grey.
+    /// TypeScript needs both query sets — its own and JavaScript's. This checks
+    /// they are both loaded: with only tree-sitter-typescript's, a `.ts` file
+    /// colours its types and nothing else.
     #[test]
     fn typescript_is_coloured_by_more_than_its_own_delta_query() {
         let src = "const lead: string = block.trimStart(); // why\n";
