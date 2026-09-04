@@ -1098,6 +1098,10 @@ impl Widget for ReviewList {
         // the document to read and the window to answer.
         let window = frame.state.id;
         let doc = frame.document.clone();
+        // Also taken here, not only from the event path: the first draw of a
+        // window happens before any event reaches its rows, and the IME gate
+        // at the end of this function needs to know whose window this is.
+        self.state = Some(frame.state.clone());
         let tab = tab_of(cx, self.widget_uid(), self.kind, &d.files_open);
         self.drawn_tab = Some(tab);
         let review = &frame.review;
@@ -1660,13 +1664,22 @@ impl Widget for ReviewList {
         // Arm the platform text input at the caret. Without it, typed
         // characters never arrive as `Event::TextInput` and the surface is
         // read-only, however much key handling sits behind it.
-        match self.caret_rect {
-            Some(rect) => {
-                let area = self.view.portal_list(cx, ids!(list)).area();
-                let origin = area.rect(cx).pos;
-                cx.show_text_ime(area, rect.pos - origin);
+        //
+        // The IME is one thing for the whole app, not one per window, so only
+        // the focused window may touch it. Without that check every list in
+        // every other window calls `hide_text_ime` on each of its draws and
+        // tears down the IME the window with the caret just armed — which
+        // reads as the app going dead to the keyboard the moment a second
+        // window is open.
+        if self.state().is_focused() {
+            match self.caret_rect {
+                Some(rect) => {
+                    let area = self.view.portal_list(cx, ids!(list)).area();
+                    let origin = area.rect(cx).pos;
+                    cx.show_text_ime(area, rect.pos - origin);
+                }
+                None => cx.hide_text_ime(),
             }
-            None => cx.hide_text_ime(),
         }
         DrawStep::done()
     }

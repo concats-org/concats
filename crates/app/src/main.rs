@@ -506,6 +506,19 @@ impl MatchEvent for App {
         self.poll = cx.start_interval(1.0);
     }
 
+    fn handle_window_got_focus(&mut self, _cx: &mut Cx, window_id: &WindowId) {
+        let Some(state) = self
+            .windows
+            .iter()
+            .find(|w| w.window.as_window().window_id() == Some(*window_id))
+            .map(|w| w.state.clone())
+        else {
+            return;
+        };
+        self.focused = Some(state.id);
+        self.focus_window(&state);
+    }
+
     fn handle_timer(&mut self, cx: &mut Cx, e: &TimerEvent) {
         if self.poll.is_timer(e).is_some() {
             self.click_hook(cx);
@@ -584,7 +597,17 @@ impl App {
         if let Some(mut pane) = window.widget(cx, ids!(pane_a)).borrow_mut::<ReviewPane>() {
             pane.adopt(state.clone());
         }
+        self.focus_window(&state);
         self.windows.push(AppWindow::new(state, window));
+    }
+
+    /// One window has the keyboard at a time. Opening a window takes it, and
+    /// the platform's focus events keep it in step after that.
+    fn focus_window(&self, state: &Arc<WindowState>) {
+        for window in &self.windows {
+            window.state.set_focused(false);
+        }
+        state.set_focused(true);
     }
 
     fn window_mut(&mut self, id: LiveId) -> Option<&mut AppWindow> {
@@ -691,6 +714,12 @@ impl App {
                 if self.windows.len() == before {
                     break;
                 }
+            }
+            // Opening took the keyboard, and every other hook drives the
+            // window the app started on. Hand it back, so a capture types
+            // where the rest of the hooks are looking.
+            if let Some(primary) = self.windows.first().map(|w| w.state.clone()) {
+                self.focus_window(&primary);
             }
         }
         // CONCATS_APP_TAB=guide|sessions|commits|comments|files: land on a
@@ -1493,13 +1522,6 @@ impl AppMain for App {
         // After `Root` has dropped the widget, so the window is gone from both.
         if let Event::WindowClosed(e) = event {
             self.retire_window(e.window_id);
-        }
-        if let Event::WindowGotFocus(window_id) = event {
-            self.focused = self
-                .windows
-                .iter()
-                .find(|w| w.window.as_window().window_id() == Some(*window_id))
-                .map(|w| w.state.id);
         }
         self.match_event(cx, event);
         // `Root` hands every window the same scope, so the per-window one is

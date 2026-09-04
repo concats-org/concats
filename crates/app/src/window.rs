@@ -7,7 +7,7 @@
 //! should see one set of comments and ticks.
 
 use std::sync::{
-    atomic::{AtomicU64, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
     Arc, RwLock,
 };
 
@@ -28,6 +28,13 @@ pub(crate) struct WindowState {
     /// Loads are superseded rather than cancelled: one that is no longer the
     /// newest drops its result instead of landing it.
     load_request: AtomicU64,
+    /// Whether this window has the OS focus.
+    ///
+    /// Keyboard events carry no window — makepad routes them through one
+    /// global key focus — so every window's widgets see every keystroke, and
+    /// anything that reads them without asking whose window it is acts on all
+    /// of them at once. This is that question.
+    focused: AtomicBool,
 }
 
 impl WindowState {
@@ -37,7 +44,16 @@ impl WindowState {
             key: concats_state::new_window_id(),
             doc: RwLock::new(Arc::new(ReviewDoc::default())),
             load_request: AtomicU64::new(0),
+            focused: AtomicBool::new(false),
         })
+    }
+
+    pub(crate) fn is_focused(&self) -> bool {
+        self.focused.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn set_focused(&self, focused: bool) {
+        self.focused.store(focused, Ordering::Relaxed);
     }
 
     pub(crate) fn read<R>(&self, f: impl FnOnce(&ReviewDoc) -> R) -> R {
