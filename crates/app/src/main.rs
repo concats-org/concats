@@ -593,7 +593,7 @@ impl App {
     }
 
     fn adopt_window(&mut self, cx: &mut Cx, id: LiveId, window: WidgetRef) {
-        let state = WindowState::new(id);
+        let state = WindowState::new(id, window.as_window().window_id());
         if let Some(mut pane) = window.widget(cx, ids!(pane_a)).borrow_mut::<ReviewPane>() {
             pane.adopt(state.clone());
         }

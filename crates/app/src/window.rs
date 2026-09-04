@@ -11,7 +11,10 @@ use std::sync::{
     Arc, RwLock,
 };
 
-use crate::{makepad_widgets::LiveId, review_doc::ReviewDoc};
+use crate::{
+    makepad_widgets::{LiveId, WindowId},
+    review_doc::ReviewDoc,
+};
 
 /// Handed to the window's `ReviewPane` when the window opens, and from there
 /// to its rows through `Scope`. Cloning one is an `Arc` clone.
@@ -22,6 +25,8 @@ pub(crate) struct WindowState {
     /// This window's row in `app.db`, exported to its terminals as
     /// `CONCATS_APP_WINDOW` so a bare `concats` command follows this window.
     pub key: String,
+    /// The platform's id for this window, which is what a pointer event names.
+    pub platform: Option<WindowId>,
     /// The published document. A draw clones the `Arc` and releases the lock
     /// before painting; writers replace or mutate the uniquely held snapshot.
     doc: RwLock<Arc<ReviewDoc>>,
@@ -38,10 +43,11 @@ pub(crate) struct WindowState {
 }
 
 impl WindowState {
-    pub(crate) fn new(id: LiveId) -> Arc<Self> {
+    pub(crate) fn new(id: LiveId, platform: Option<WindowId>) -> Arc<Self> {
         Arc::new(Self {
             id,
             key: concats_state::new_window_id(),
+            platform,
             doc: RwLock::new(Arc::new(ReviewDoc::default())),
             load_request: AtomicU64::new(0),
             focused: AtomicBool::new(false),

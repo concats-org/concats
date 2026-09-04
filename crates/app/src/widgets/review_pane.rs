@@ -735,7 +735,7 @@ impl ReviewPane {
             std::sync::OnceLock::new();
         match self.state.as_ref() {
             Some(state) => state,
-            None => DETACHED.get_or_init(|| WindowState::new(LiveId(0))),
+            None => DETACHED.get_or_init(|| WindowState::new(LiveId(0), None)),
         }
     }
 
@@ -1810,8 +1810,15 @@ impl ReviewPane {
             // changed — the resize path). The `path` names the session's tab.
             match wa.cast() {
                 DesktopTerminalViewAction::Input { path, data } => {
+                    // Actions are one batch for the whole app and this arm
+                    // matches on the payload, so every window's pane sees
+                    // every window's terminal input. Without this the shell
+                    // got each keystroke once per open window — the doubled
+                    // letters. The path already names the session's window.
                     if let Some(session) = terminal::tab_from_path(&path) {
-                        terminal::input(session, data);
+                        if session.window == self.state().id {
+                            terminal::input(session, data);
+                        }
                     }
                 }
                 DesktopTerminalViewAction::RequestViewport {
@@ -1822,7 +1829,9 @@ impl ReviewPane {
                     top_row,
                 } => {
                     if let Some(session) = terminal::tab_from_path(&path) {
-                        if terminal::request_viewport(session, cols, rows, pty_rows, top_row) {
+                        if session.window == self.state().id
+                            && terminal::request_viewport(session, cols, rows, pty_rows, top_row)
+                        {
                             dock.item(session.tab).redraw(cx);
                         }
                     }
@@ -2116,6 +2125,18 @@ impl ReviewPane {
     }
 }
 
+/// The window a pointer event names, for the events that name one.
+fn pointer_window(event: &Event) -> Option<WindowId> {
+    Some(match event {
+        Event::MouseDown(e) => e.window_id,
+        Event::MouseMove(e) => e.window_id,
+        Event::MouseUp(e) => e.window_id,
+        Event::Scroll(e) => e.window_id,
+        Event::TouchUpdate(e) => e.window_id,
+        _ => return None,
+    })
+}
+
 /// Events that reach a widget by key focus rather than by position. Mouse and
 /// touch carry a `window_id` and makepad's hit test filters on it; these do
 /// not, so the window has to.
@@ -2167,6 +2188,17 @@ impl Widget for ReviewPane {
         // window at once. A window that does not have the OS focus drops them.
         if is_keyboard_input(event) && !self.state().is_focused() {
             return;
+        }
+        // A pointer names its window, and makepad's hit test keeps two windows
+        // apart by the `handled` flag — but the rows below also test raw
+        // coordinates against their own rects (`PortalList`'s text selection
+        // does), and two windows overlap in window-local space. So a drag in
+        // one window selected in both, however unrelated their repos. Drop
+        // what was not meant for this window before it reaches them.
+        if let Some(window_id) = pointer_window(event) {
+            if self.state().platform != Some(window_id) {
+                return;
+            }
         }
         if let Event::NextFrame(ne) = event {
             if self.slide_next_frame.is_event(event).is_some() {
