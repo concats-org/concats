@@ -973,7 +973,7 @@ impl ReviewList {
             std::sync::OnceLock::new();
         match self.state.as_ref() {
             Some(state) => state,
-            None => DETACHED.get_or_init(|| crate::window::WindowState::new(LiveId(0))),
+            None => DETACHED.get_or_init(|| crate::window::WindowState::new(LiveId(0), None)),
         }
     }
 
