@@ -112,8 +112,8 @@ mod grammars {
         // NB: tree-sitter-typescript ships only the *delta* over JavaScript —
         // types, parameters, and the TS-only keywords. Everything a `.ts` file
         // shares with JavaScript (keywords, strings, calls, comments) is in the
-        // JavaScript queries, so the two concatenate or a `.ts` file comes out
-        // all but uncoloured. TSX is the same queries over the JSX grammar.
+        // JavaScript queries, so both go in. TSX takes the same pair over the
+        // JSX grammar.
         #[cfg(feature = "typescript")]
         {
             let hl = [
