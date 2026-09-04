@@ -2116,6 +2116,22 @@ impl ReviewPane {
     }
 }
 
+/// Events that reach a widget by key focus rather than by position. Mouse and
+/// touch carry a `window_id` and makepad's hit test filters on it; these do
+/// not, so the window has to.
+fn is_keyboard_input(event: &Event) -> bool {
+    matches!(
+        event,
+        Event::KeyDown(_)
+            | Event::KeyUp(_)
+            | Event::TextInput(_)
+            | Event::TextRangeReplace(_)
+            | Event::TextCopy(_)
+            | Event::TextCut(_)
+            | Event::ImeAction(_)
+    )
+}
+
 impl Widget for ReviewPane {
     /// Where a window's scope begins. `Root` hands every window the same one,
     /// so the rows below are told which document they are drawn from here —
@@ -2143,6 +2159,15 @@ impl Widget for ReviewPane {
     }
 
     fn handle_event(&mut self, cx: &mut Cx, event: &Event, _scope: &mut Scope) {
+        // A keystroke names no window: makepad routes the keyboard through one
+        // global key focus, so `Root` hands every window's widgets every key.
+        // The rows below claim keys before that focus gate — the caret needs
+        // the arrows, Home and Cmd-A that `PortalList` would otherwise take —
+        // so without this a keystroke edits, and a Cmd-A selects, in every
+        // window at once. A window that does not have the OS focus drops them.
+        if is_keyboard_input(event) && !self.state().is_focused() {
+            return;
+        }
         if let Event::NextFrame(ne) = event {
             if self.slide_next_frame.is_event(event).is_some() {
                 self.step_slide(cx, ne.time);
