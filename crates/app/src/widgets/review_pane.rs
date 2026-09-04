@@ -727,6 +727,19 @@ impl ReviewPane {
         self.state = Some(state);
     }
 
+    /// Whether a widget action came from this window.
+    ///
+    /// Actions are one batch for the whole app, and the two loops below match
+    /// on the action's payload rather than on the widget that sent it — so a
+    /// gutter drag in one window opened a composer in every window, over
+    /// documents with nothing to do with each other, and a keystroke in one
+    /// terminal reached every window's copy of that shell. The handlers that
+    /// resolve their own widget first (`self.view.button(..).clicked(..)`)
+    /// compare uids and were never affected.
+    fn owns(&self, cx: &Cx, uid: WidgetUid) -> bool {
+        cx.widget_tree().path_to(uid).contains(&self.state().id)
+    }
+
     /// The window this pane renders. Before the App has adopted it — the first
     /// frames of a run — this answers with a detached empty document, which is
     /// what the pane would draw at that point anyway.
@@ -1741,6 +1754,9 @@ impl ReviewPane {
             let Some(wa) = action.as_widget_action() else {
                 continue;
             };
+            if !self.owns(cx, wa.widget_uid) {
+                continue;
+            }
             match wa.cast() {
                 DockAction::TabWasPressed(tab_id) => {
                     if let Some(tab) = model_tab_of(tab_id, &open_files) {
@@ -1810,15 +1826,8 @@ impl ReviewPane {
             // changed — the resize path). The `path` names the session's tab.
             match wa.cast() {
                 DesktopTerminalViewAction::Input { path, data } => {
-                    // Actions are one batch for the whole app and this arm
-                    // matches on the payload, so every window's pane sees
-                    // every window's terminal input. Without this the shell
-                    // got each keystroke once per open window — the doubled
-                    // letters. The path already names the session's window.
                     if let Some(session) = terminal::tab_from_path(&path) {
-                        if session.window == self.state().id {
-                            terminal::input(session, data);
-                        }
+                        terminal::input(session, data);
                     }
                 }
                 DesktopTerminalViewAction::RequestViewport {
@@ -1829,9 +1838,7 @@ impl ReviewPane {
                     top_row,
                 } => {
                     if let Some(session) = terminal::tab_from_path(&path) {
-                        if session.window == self.state().id
-                            && terminal::request_viewport(session, cols, rows, pty_rows, top_row)
-                        {
+                        if terminal::request_viewport(session, cols, rows, pty_rows, top_row) {
                             dock.item(session.tab).redraw(cx);
                         }
                     }
@@ -1922,6 +1929,9 @@ impl ReviewPane {
             let Some(action) = action.as_widget_action() else {
                 continue;
             };
+            if !self.owns(cx, action.widget_uid) {
+                continue;
+            }
             let Some(target) = action
                 .data
                 .as_ref()
@@ -2189,12 +2199,12 @@ impl Widget for ReviewPane {
         if is_keyboard_input(event) && !self.state().is_focused() {
             return;
         }
-        // A pointer names its window, and makepad's hit test keeps two windows
-        // apart by the `handled` flag — but the rows below also test raw
-        // coordinates against their own rects (`PortalList`'s text selection
-        // does), and two windows overlap in window-local space. So a drag in
-        // one window selected in both, however unrelated their repos. Drop
-        // what was not meant for this window before it reaches them.
+        // A pointer names its window, but two windows overlap in window-local
+        // coordinates, so the same press lands on both — and whichever runs
+        // last takes the key focus, which is how a click in one window sent
+        // the next keystroke to the other one's shell. Makepad's hit test
+        // keeps them apart with the `handled` flag, but a widget that tests
+        // raw coordinates never consults it.
         if let Some(window_id) = pointer_window(event) {
             if self.state().platform != Some(window_id) {
                 return;
