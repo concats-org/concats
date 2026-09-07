@@ -1019,7 +1019,7 @@ impl ReviewList {
 /// All four fixed streams have their own kind, but there is one File pane per
 /// open file and they share `@file` — so a File pane finds out which file by
 /// looking for its own dock tab in the widget tree path, the way a terminal
-/// pane finds its session (`DesktopTerminalView::terminal_path_for_widget`). A
+/// pane finds its session (`TerminalView::session_for_widget`). A
 /// pane whose tab the document has no file for renders an empty stream.
 fn tab_of(cx: &Cx, uid: WidgetUid, kind: LiveId, open: &[FileView]) -> Tab {
     if kind == id!(review) {
@@ -2168,7 +2168,6 @@ impl ReviewList {
             d.rows_rev += 1;
         });
         if applied.is_ok() {
-            crate::terminal::retheme_all();
             cx.request_live_edit();
         }
         self.redraw(cx);

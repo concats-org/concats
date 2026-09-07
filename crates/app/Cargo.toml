@@ -72,8 +72,7 @@ concats_theme = { workspace = true }
 
 makepad-service = { workspace = true }
 makepad-widgets = { workspace = true }
-# TODO: Replacet this in-app terminal setup.
-makepad-terminal-core = { workspace = true }
+alacritty_terminal = { workspace = true }
 
 gix = { workspace = true }
 

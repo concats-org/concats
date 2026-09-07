@@ -43,14 +43,23 @@ script_mod! {
     // settings; theme.rs), so both re-bake on request_live_edit.
     mod.widgets.FONT = TextStyle{
         font_family: FontFamily{
-            latin := FontMember{res: mod.app_font.res asc: 0.0 desc: 0.0}
+            first := FontMember{res: mod.app_font.first asc: 0.0 desc: 0.0}
+            second := FontMember{res: mod.app_font.second asc: 0.0 desc: 0.0}
+            third := FontMember{res: mod.app_font.third asc: 0.0 desc: 0.0}
+            fourth := FontMember{res: mod.app_font.fourth asc: 0.0 desc: 0.0}
+            mono := FontMember{res: mod.app_font.mono asc: 0.0 desc: 0.0}
+            cjk := FontMember{res: mod.app_font.cjk asc: 0.0 desc: 0.0}
+            emoji := FontMember{res: mod.app_font.emoji asc: 0.0 desc: 0.0}
         }
         font_size: mod.app_font.size
         line_spacing: 1.4
     }
+    // Bold stays a single face: weight is a per-member property, so a bold
+    // chain would be a second family. Nothing bold has wanted a fallback glyph
+    // yet.
     mod.widgets.FONT_BOLD = TextStyle{
         font_family: FontFamily{
-            latin := FontMember{res: mod.app_font.res asc: 0.0 desc: 0.0 weight: 700.0}
+            latin := FontMember{res: mod.app_font.first asc: 0.0 desc: 0.0 weight: 700.0}
         }
         font_size: mod.app_font.size
         line_spacing: 1.4

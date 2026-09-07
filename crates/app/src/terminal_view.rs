@@ -1,24 +1,38 @@
-//! The terminal renderer, copied from makepad-studio
-//! (`studio/desktop/src/desktop_terminal_view.rs`). Keep it diffable against
-//! upstream.
+//! The terminal renderer: one widget per dock tab, drawing the grid its
+//! session owns.
 //!
-//! Two adaptations. Framebuffers come from [`crate::terminal`]'s session map
-//! instead of studio's path-keyed AppData map; the String `path` plumbing stays
-//! (ours encodes the enclosing dock tab's id), so the emit sites and the action
-//! enum are unchanged. And the DSL block is restyled onto the app's Concats
-//! chrome and JetBrains Mono.
+//! Nothing is copied out to draw. The widget locks the term in the draw path
+//! and walks `renderable_content()`; the thread parsing the shell holds the
+//! same lock while it writes, and [`FairMutex`](alacritty_terminal::sync)
+//! hands it back rather than letting a flood of output starve the frame.
+//!
+//! The scrollback belongs to the term as `display_offset`, so the makepad
+//! scroll bar is an indicator and an input device, never the source of truth:
+//! the draw path puts it where the display is, and a drag turns back into a
+//! `Scroll`.
+//!
+//! TODO: find in the scrollback. `alacritty_terminal::term::search` is the
+//! whole mechanism, but the panel should reuse the review list's find rather
+//! than grow a second one — and that interaction wants rework of its own
+//! first, which is not this change's to do.
 
 use std::collections::HashMap;
 
-use makepad_terminal_core::{TermKeyCode, Terminal};
+use alacritty_terminal::{
+    grid::{Dimensions, Scroll},
+    index::{Column, Point, Side},
+    selection::{Selection, SelectionType},
+    term::{cell::Flags, point_to_viewport, viewport_to_point, TermMode},
+    vte::ansi::CursorShape,
+    Term,
+};
 
 use crate::{
     makepad_widgets::{
-        scroll_bars::ScrollBarsAction,
-        text::{geom::Point, rasterizer::RasterizedGlyph},
+        text::{geom::Point as TextPoint, rasterizer::RasterizedGlyph},
         *,
     },
-    terminal::TerminalFramebuffer,
+    terminal::{colors, keys, mouse, Proxy, Session, Size},
 };
 
 script_mod! {
@@ -59,26 +73,37 @@ script_mod! {
         }
     }
 
-    mod.widgets.DesktopTerminalViewBase = #(DesktopTerminalView::register_widget(vm))
+    mod.widgets.TerminalViewBase = #(TerminalView::register_widget(vm))
 
-    // The terminal's text style: the app's configurable family from
+    // The terminal's text style: the app's configurable font chain from
     // `mod.app_font`, at the terminal's own size, so the cell grid stays put
     // when the app font size changes. (This module's script scope can't see the
-    // `FONT` `let` in `main.rs`.)
+    // `FONT` `let` in `main.rs`.) Braille is drawn, not shaped — `draw_braille`.
     let TERM_FONT = TextStyle{
         font_family: FontFamily{
-            latin := FontMember{res: mod.app_font.res asc: 0.0 desc: 0.0}
+            first := FontMember{res: mod.app_font.first asc: 0.0 desc: 0.0}
+            second := FontMember{res: mod.app_font.second asc: 0.0 desc: 0.0}
+            third := FontMember{res: mod.app_font.third asc: 0.0 desc: 0.0}
+            fourth := FontMember{res: mod.app_font.fourth asc: 0.0 desc: 0.0}
+            mono := FontMember{res: mod.app_font.mono asc: 0.0 desc: 0.0}
+            cjk := FontMember{res: mod.app_font.cjk asc: 0.0 desc: 0.0}
+            emoji := FontMember{res: mod.app_font.emoji asc: 0.0 desc: 0.0}
         }
         font_size: 9
-        line_spacing: 1.4
+        // A terminal cell is the glyph box, with no leading added: box-drawing
+        // characters are cut to fill that box exactly, so any extra spacing
+        // opens gaps between the rows of a frame an application draws, and the
+        // grid reads as stretched. JetBrains Mono is 1.32 em tall over a 0.6 em
+        // advance, so this lands at the 2.2:1 cell a terminal expects.
+        line_spacing: 1.0
     }
 
-    mod.widgets.DesktopTerminalView = set_type_default() do mod.widgets.DesktopTerminalViewBase {
+    mod.widgets.TerminalView = set_type_default() do mod.widgets.TerminalViewBase {
         width: Fill
         height: Fill
         font_size: 9.0
         cell_width_factor: 0.6
-        cell_height_factor: 1.4
+        cell_height_factor: 1.32
         pad_x: 6.0
         pad_y: 4.0
         text_y_offset: 0.0
@@ -106,17 +131,10 @@ script_mod! {
 }
 
 #[derive(Clone, Debug, Default)]
-pub enum DesktopTerminalViewAction {
+pub enum TerminalViewAction {
     Input {
-        path: String,
+        session: Session,
         data: Vec<u8>,
-    },
-    RequestViewport {
-        path: String,
-        cols: u16,
-        rows: u16,
-        pty_rows: u16,
-        top_row: usize,
     },
     #[default]
     None,
@@ -154,8 +172,54 @@ struct CachedTerminalGlyph {
     baseline_offset_in_lpxs: f32,
 }
 
+/// How thick an underline or strikeout is drawn, in logical pixels.
+const RULE_HEIGHT: f64 = 1.0;
+/// How wide a beam cursor is drawn.
+const BEAM_WIDTH: f64 = 2.0;
+
+/// Where the scroll bar sits when the display is `offset` lines back from the
+/// bottom of the grid.
+///
+/// This and [`display_offset_for`] are inverses, and between them the only
+/// description of how the bar and the scrollback relate. Writing that mapping
+/// out twice is how it came to disagree with itself.
+fn scroll_pos_for(offset: usize, max_scroll: f64, cell_height: f64) -> f64 {
+    (max_scroll - offset as f64 * cell_height).max(0.0)
+}
+
+/// How far back the display is for a bar sitting at `scroll_y`.
+fn display_offset_for(scroll_y: f64, max_scroll: f64, cell_height: f64) -> usize {
+    ((max_scroll - scroll_y) / cell_height).round().max(0.0) as usize
+}
+
+/// The Braille block, which an agent's spinner is made of.
+fn is_braille(c: char) -> bool {
+    ('\u{2800}'..='\u{28ff}').contains(&c)
+}
+
+/// The lit dots of a Braille cell as (row, column) in a two by four grid.
+///
+/// The low eight bits of the codepoint are the pattern: dots one to three run
+/// down the left column, four to six down the right, and seven and eight add
+/// the fourth row — the order the standard assigns, not raster order.
+fn braille_dots(c: char) -> impl Iterator<Item = (usize, usize)> {
+    const DOTS: [(u32, usize, usize); 8] = [
+        (0x01, 0, 0),
+        (0x02, 1, 0),
+        (0x04, 2, 0),
+        (0x40, 3, 0),
+        (0x08, 0, 1),
+        (0x10, 1, 1),
+        (0x20, 2, 1),
+        (0x80, 3, 1),
+    ];
+    let pattern = c as u32 - 0x2800;
+    DOTS.into_iter()
+        .filter_map(move |(bit, row, column)| (pattern & bit != 0).then_some((row, column)))
+}
+
 #[derive(Script, Widget)]
-pub struct DesktopTerminalView {
+pub struct TerminalView {
     #[uid]
     uid: WidgetUid,
     #[source]
@@ -179,7 +243,7 @@ pub struct DesktopTerminalView {
     font_size: f64,
     #[live(0.6)]
     cell_width_factor: f64,
-    #[live(1.4)]
+    #[live(1.32)]
     cell_height_factor: f64,
     #[live(4.0)]
     pad_x: f64,
@@ -189,6 +253,10 @@ pub struct DesktopTerminalView {
     text_y_offset: f64,
     #[live(0.0)]
     cursor_y_offset: f64,
+    #[live]
+    selection_color_focus: Vec4f,
+    #[live]
+    selection_color_unfocus: Vec4f,
     #[rust]
     viewport_rect: Rect,
     #[rust]
@@ -207,55 +275,37 @@ pub struct DesktopTerminalView {
     glyph_cache_font_scale: f32,
     #[rust]
     glyph_cache_dpi_factor: f64,
-    #[rust]
-    follow_output: bool,
-    #[rust]
-    last_requested: Option<(String, u16, u16, u16, usize)>,
-    #[rust]
-    last_total_lines: usize,
-    #[rust]
-    last_path: Option<String>,
-    #[rust]
-    last_enter_time: f64,
-    #[live]
-    selection_color_focus: Vec4f,
-    #[live]
-    selection_color_unfocus: Vec4f,
-    #[rust]
-    selection_anchor: Option<(usize, usize)>,
-    #[rust]
-    selection_cursor: Option<(usize, usize)>,
+    /// Whether the pointer is drawing a selection, and which button opened it,
+    /// so motion can be reported to an application that asked for it.
     #[rust]
     selecting: bool,
     #[rust]
-    select_scroll_next_frame: NextFrame,
+    held: Option<MouseButton>,
+    /// Wheel deltas arrive in pixels and a line is the smallest thing a
+    /// terminal can scroll, so the remainder is kept for the next event.
     #[rust]
-    last_finger_abs: Option<Vec2d>,
-    #[rust]
-    last_frame: Option<TerminalFramebuffer>,
+    scroll_accum: f64,
     #[rust]
     ime_pos: Option<Vec2d>,
 }
 
-impl ScriptHook for DesktopTerminalView {}
+impl ScriptHook for TerminalView {}
 
-impl DesktopTerminalView {
+impl TerminalView {
     /// Which terminal session this widget instance shows: the nearest
     /// enclosing dock tab with a live session (the widget tree path contains
-    /// the dock item ids). Same shape as studio's AppData-based resolver.
+    /// the dock item ids).
     ///
     /// `window` comes from the scope the pane put there. The tab ids are the
     /// same in every window, so without it this resolves to whichever window
     /// opened that tab first.
-    fn terminal_path_for_widget(cx: &Cx, widget_uid: WidgetUid, window: LiveId) -> Option<String> {
-        let path = cx.widget_tree().path_to(widget_uid);
-        for node in path.iter().rev() {
-            let session = crate::terminal::Session { window, tab: *node };
-            if crate::terminal::is_open(session) {
-                return Some(crate::terminal::tab_path(session));
-            }
-        }
-        None
+    fn session_for_widget(cx: &Cx, widget_uid: WidgetUid, window: LiveId) -> Option<Session> {
+        cx.widget_tree()
+            .path_to(widget_uid)
+            .iter()
+            .rev()
+            .map(|node| Session { window, tab: *node })
+            .find(|session| crate::terminal::is_open(*session))
     }
 
     fn fallback_cell_metrics(&self) -> (f64, f64) {
@@ -271,13 +321,7 @@ impl DesktopTerminalView {
         let layout = self
             .draw_text
             .layout(cx, 0.0, 0.0, None, false, Align::default(), "M");
-        let Some(first_row) = layout.rows.first() else {
-            self.cell_width = fallback_w;
-            self.cell_height = fallback_h;
-            self.cell_offset_y = 0.0;
-            return;
-        };
-        let Some(first_glyph) = first_row.glyphs.first() else {
+        let Some(first_glyph) = layout.rows.first().and_then(|row| row.glyphs.first()) else {
             self.cell_width = fallback_w;
             self.cell_height = fallback_h;
             self.cell_offset_y = 0.0;
@@ -317,46 +361,36 @@ impl DesktopTerminalView {
         )
     }
 
-    fn current_scroll_pixels(&self) -> f64 {
-        self.scroll_bars.get_scroll_pos().y.max(0.0)
-    }
-
-    fn content_height_for_total_lines(&self, total_lines: usize) -> f64 {
-        let (_, cell_height) = self.cell_metrics();
-        total_lines.max(1) as f64 * cell_height + self.pad_y * 2.0
-    }
-
-    fn max_scroll_pixels_for_total_lines(&self, total_lines: usize) -> f64 {
-        let content_height = self.content_height_for_total_lines(total_lines);
-        if content_height <= self.viewport_rect.size.y + 0.1 {
-            return 0.0;
+    /// The widget's geometry in cells, for the term and the PTY.
+    fn size(&self) -> Size {
+        let (cell_width, cell_height) = self.cell_metrics();
+        Size {
+            columns: ((self.viewport_rect.size.x - self.pad_x * 2.0) / cell_width)
+                .floor()
+                .max(1.0) as usize,
+            screen_lines: ((self.viewport_rect.size.y - self.pad_y * 2.0) / cell_height)
+                .floor()
+                .max(1.0) as usize,
+            cell_width: cell_width.round().max(1.0) as u16,
+            cell_height: cell_height.round().max(1.0) as u16,
         }
+    }
+
+    /// How far the scroll bar can travel over a grid of `total_lines`: the
+    /// content it stands for, less the part already on screen.
+    fn max_scroll(&self, total_lines: usize) -> f64 {
+        let (_, cell_height) = self.cell_metrics();
+        let content_height =
+            (total_lines as f64 * cell_height + self.pad_y * 2.0).max(self.viewport_rect.size.y);
         content_height - self.viewport_rect.size.y
     }
 
-    fn is_scrolled_to_bottom(&self, total_lines: usize) -> bool {
-        self.current_scroll_pixels() >= self.max_scroll_pixels_for_total_lines(total_lines) - 1.0
-    }
-
-    fn clamp_scroll_position(&mut self, cx: &mut Cx, total_lines: usize) {
-        let y = self
-            .current_scroll_pixels()
-            .min(self.max_scroll_pixels_for_total_lines(total_lines));
-        let _ = self.scroll_bars.set_scroll_pos_no_clip(cx, dvec2(0.0, y));
-    }
-
-    fn stick_to_bottom(&mut self, cx: &mut Cx, total_lines: usize) {
-        let y = self.max_scroll_pixels_for_total_lines(total_lines);
-        let _ = self.scroll_bars.set_scroll_pos_no_clip(cx, dvec2(0.0, y));
-        self.follow_output = true;
-    }
-
-    fn scrollbar_total_lines(frame: &TerminalFramebuffer) -> usize {
-        // Custom scroll-region apps like Codex report `is_tui = true`, but they
-        // can still have real scrollback above the viewport. Capping these
-        // frames to `pty_rows` collapses the scrollbar to a single screen and
-        // causes redraws to clamp the scroll position back to the top.
-        frame.total_lines
+    /// Where the top left cell is drawn.
+    fn origin(&self) -> Vec2d {
+        dvec2(
+            self.unscrolled_rect.pos.x + self.pad_x,
+            self.unscrolled_rect.pos.y + self.pad_y,
+        )
     }
 
     fn invalidate_glyph_cache_if_needed(&mut self, cx: &Cx2d) {
@@ -393,148 +427,15 @@ impl DesktopTerminalView {
         Some(cached)
     }
 
-    fn decode_cell(
-        frame: &TerminalFramebuffer,
-        row: usize,
-        col: usize,
-    ) -> Option<(char, Vec4f, Vec4f)> {
-        let cols = frame.cols as usize;
-        let rows = frame.rows as usize;
-        if row >= rows || col >= cols {
-            return None;
-        }
-        let idx = (row * cols + col) * 10;
-        if idx + 9 >= frame.cells.len() {
-            return None;
-        }
-        let codepoint = u32::from_le_bytes([
-            frame.cells[idx],
-            frame.cells[idx + 1],
-            frame.cells[idx + 2],
-            frame.cells[idx + 3],
-        ]);
-        let ch = char::from_u32(codepoint).unwrap_or(' ');
-        let fg = vec4(
-            frame.cells[idx + 4] as f32 / 255.0,
-            frame.cells[idx + 5] as f32 / 255.0,
-            frame.cells[idx + 6] as f32 / 255.0,
-            1.0,
-        );
-        let bg = vec4(
-            frame.cells[idx + 7] as f32 / 255.0,
-            frame.cells[idx + 8] as f32 / 255.0,
-            frame.cells[idx + 9] as f32 / 255.0,
-            1.0,
-        );
-        Some((if ch == '\0' { ' ' } else { ch }, fg, bg))
-    }
-
-    fn decode_rgb(rgb: u32) -> Vec4f {
-        vec4(
-            ((rgb >> 16) & 0xff) as f32 / 255.0,
-            ((rgb >> 8) & 0xff) as f32 / 255.0,
-            (rgb & 0xff) as f32 / 255.0,
-            1.0,
-        )
-    }
-
-    fn send_viewport_request(
-        &mut self,
-        cx: &mut Cx,
-        path: &str,
-        cols: u16,
-        rows: u16,
-        pty_rows: u16,
-        top_row: usize,
-    ) {
-        let request = (path.to_string(), cols, rows, pty_rows, top_row);
-        if self.last_requested.as_ref() == Some(&request) {
-            return;
-        }
-        self.last_requested = Some(request.clone());
-        cx.widget_action(
-            self.widget_uid(),
-            DesktopTerminalViewAction::RequestViewport {
-                path: request.0,
-                cols: request.1,
-                rows: request.2,
-                pty_rows: request.3,
-                top_row: request.4,
-            },
-        );
-    }
-
-    fn requested_frame_range(
-        visible_top_row: usize,
-        visible_rows: usize,
-        selection: Option<((usize, usize), (usize, usize))>,
-    ) -> (usize, usize) {
-        let mut start_row = visible_top_row;
-        let mut end_row_exclusive = visible_top_row.saturating_add(visible_rows.max(1));
-
-        if let Some(((selection_start_row, _), (selection_end_row, _))) = selection {
-            start_row = start_row.min(selection_start_row);
-            end_row_exclusive = end_row_exclusive.max(selection_end_row.saturating_add(1));
-        }
-
-        let max_span = u16::MAX as usize;
-        if end_row_exclusive.saturating_sub(start_row) > max_span {
-            end_row_exclusive = start_row.saturating_add(max_span);
-        }
-
-        (start_row, end_row_exclusive)
-    }
-
-    fn visible_frame_rows(
-        frame: &TerminalFramebuffer,
-        scroll_y: f64,
-        cell_height: f64,
-        max_visible_rows: usize,
-        screen_top: f64,
-    ) -> Option<(usize, usize, f64)> {
-        let frame_rows = frame.rows as usize;
-        if frame_rows == 0 || cell_height <= 0.0 {
-            return None;
-        }
-
-        let frame_top_pixels = frame.top_row as f64 * cell_height;
-        let scroll_delta = (scroll_y - frame_top_pixels).max(0.0);
-        let start_row = ((scroll_delta / cell_height).floor() as usize).min(frame_rows);
-        let render_rows = frame_rows
-            .saturating_sub(start_row)
-            .min(max_visible_rows.max(1));
-        if render_rows == 0 {
-            return None;
-        }
-
-        let intra_row_offset = scroll_delta - start_row as f64 * cell_height;
-        let origin_y = screen_top - intra_row_offset;
-        Some((start_row, render_rows, origin_y))
-    }
-
-    fn draw_framebuffer(&mut self, cx: &mut Cx2d, frame: &TerminalFramebuffer) {
-        let cols = frame.cols as usize;
-        let rows = frame.rows as usize;
-        if cols == 0 || rows == 0 {
-            return;
-        }
-
+    /// Walk the visible grid: a background where a cell asked for one, the
+    /// glyph, whatever rules its flags call for, and the cursor on top.
+    fn draw_grid(&mut self, cx: &mut Cx2d, term: &Term<Proxy>, focused: bool) {
+        let theme = crate::theme::active_theme();
+        let content = term.renderable_content();
+        let (display_offset, cursor, selection) =
+            (content.display_offset, content.cursor, content.selection);
         let (cell_width, cell_height) = self.cell_metrics();
-
-        let screen_top = self.unscrolled_rect.pos.y + self.pad_y;
-        let screen_bottom = self.unscrolled_rect.pos.y + self.unscrolled_rect.size.y - self.pad_y;
-        let usable_height = (screen_bottom - screen_top).max(0.0);
-        let max_visible_rows = (usable_height / cell_height).ceil().max(1.0) as usize + 2;
-        let scroll_y = self.current_scroll_pixels();
-        let Some((start_row, render_rows, origin_y)) =
-            Self::visible_frame_rows(frame, scroll_y, cell_height, max_visible_rows, screen_top)
-        else {
-            return;
-        };
-
-        let origin_x = self.unscrolled_rect.pos.x + self.pad_x;
-        let default_bg = Self::decode_rgb(frame.default_bg_rgb);
-        let has_focus = cx.has_key_focus(self.scroll_bars.area());
+        let origin = self.origin();
 
         self.draw_cell_bg.new_draw_call(cx);
         self.draw_cursor.new_draw_call(cx);
@@ -542,155 +443,217 @@ impl DesktopTerminalView {
         self.draw_text.begin_many_instances(cx);
         self.invalidate_glyph_cache_if_needed(cx);
 
-        for i in 0..render_rows {
-            let frame_row = start_row + i;
-            let virtual_row = frame.top_row + frame_row;
-            let y = origin_y + i as f64 * cell_height;
-            for col in 0..cols {
-                let Some((ch, fg_color, bg_color)) = Self::decode_cell(frame, frame_row, col)
-                else {
-                    continue;
-                };
-                let x = origin_x + col as f64 * cell_width;
+        for indexed in content.display_iter {
+            let flags = indexed.cell.flags;
+            // The second half of a wide character is not drawn: the glyph in
+            // the cell before it already covers this column.
+            if flags.contains(Flags::WIDE_CHAR_SPACER) {
+                continue;
+            }
+            let Some(viewport) = point_to_viewport(display_offset, indexed.point) else {
+                continue;
+            };
+            let x = origin.x + viewport.column.0 as f64 * cell_width;
+            let y = origin.y + viewport.line as f64 * cell_height;
+            let width = if flags.contains(Flags::WIDE_CHAR) {
+                cell_width * 2.0
+            } else {
+                cell_width
+            };
 
-                let selected = self.is_cell_selected(virtual_row, col);
-                if selected {
-                    self.draw_cell_bg.color = if has_focus {
-                        self.selection_color_focus
-                    } else {
-                        self.selection_color_unfocus
-                    };
-                    self.draw_cell_bg.draw_abs(
+            let mut fg = colors::foreground(indexed.cell.fg, flags, content.colors, &theme);
+            let mut bg = colors::background(indexed.cell.bg, content.colors, &theme);
+            if flags.contains(Flags::INVERSE) {
+                let ink = fg;
+                fg = bg.unwrap_or_else(|| {
+                    colors::foreground(
+                        alacritty_terminal::vte::ansi::Color::Named(
+                            alacritty_terminal::vte::ansi::NamedColor::Background,
+                        ),
+                        Flags::empty(),
+                        content.colors,
+                        &theme,
+                    )
+                });
+                bg = Some(ink);
+            }
+            if selection
+                .is_some_and(|range| range.contains_cell(&indexed, cursor.point, cursor.shape))
+            {
+                bg = Some(if focused {
+                    self.selection_color_focus
+                } else {
+                    self.selection_color_unfocus
+                });
+            }
+
+            if let Some(color) = bg {
+                self.draw_cell_bg.color = color;
+                self.draw_cell_bg.draw_abs(
+                    cx,
+                    Rect {
+                        pos: dvec2(x, y),
+                        size: dvec2(width, cell_height),
+                    },
+                );
+            }
+
+            // A tab lands in the grid as U+0009 (`Term::put_tab` writes the
+            // character it advanced over), and no control character has a
+            // glyph: those cells are spacing, and shaping them draws .notdef.
+            if is_braille(indexed.cell.c) && !flags.contains(Flags::HIDDEN) {
+                self.draw_cell_bg.color = fg;
+                self.draw_braille(cx, indexed.cell.c, x, y);
+            } else if indexed.cell.c != ' '
+                && !indexed.cell.c.is_control()
+                && !flags.contains(Flags::HIDDEN)
+            {
+                if let Some(glyph) = self.cached_terminal_glyph(cx, indexed.cell.c) {
+                    let baseline_y = y
+                        + self.cell_offset_y
+                        + self.text_y_offset
+                        + glyph.baseline_offset_in_lpxs as f64;
+                    self.draw_text.draw_rasterized_glyph_abs(
                         cx,
-                        Rect {
-                            pos: dvec2(x, y),
-                            size: dvec2(cell_width, cell_height),
-                        },
-                    );
-                } else if bg_color != default_bg {
-                    self.draw_cell_bg.color = bg_color;
-                    self.draw_cell_bg.draw_abs(
-                        cx,
-                        Rect {
-                            pos: dvec2(x, y),
-                            size: dvec2(cell_width, cell_height),
-                        },
+                        TextPoint::new(
+                            (x + glyph.x_offset_in_lpxs as f64) as f32,
+                            baseline_y as f32,
+                        ),
+                        glyph.font_size_in_lpxs,
+                        glyph.rasterized,
+                        fg,
                     );
                 }
+            }
 
-                if ch != ' ' {
-                    if let Some(glyph) = self.cached_terminal_glyph(cx, ch) {
-                        let baseline_y = y
-                            + self.cell_offset_y
-                            + self.text_y_offset
-                            + glyph.baseline_offset_in_lpxs as f64;
-                        self.draw_text.draw_rasterized_glyph_abs(
-                            cx,
-                            Point::new(
-                                (x + glyph.x_offset_in_lpxs as f64) as f32,
-                                baseline_y as f32,
-                            ),
-                            glyph.font_size_in_lpxs,
-                            glyph.rasterized,
-                            fg_color,
-                        );
-                    } else {
-                        let mut s = [0u8; 4];
-                        let text = ch.encode_utf8(&mut s);
-                        self.draw_text.color = fg_color;
-                        self.draw_text.draw_abs(
-                            cx,
-                            dvec2(x, y + self.cell_offset_y + self.text_y_offset),
-                            text,
-                        );
-                    }
+            if flags.intersects(Flags::ALL_UNDERLINES | Flags::STRIKEOUT) {
+                let rule = indexed.cell.underline_color().map_or(fg, |color| {
+                    colors::foreground(color, flags, content.colors, &theme)
+                });
+                self.draw_cell_bg.color = rule;
+                if flags.intersects(Flags::ALL_UNDERLINES) {
+                    self.draw_rule(cx, x, y + cell_height - RULE_HEIGHT * 2.0, width);
+                }
+                if flags.contains(Flags::STRIKEOUT) {
+                    self.draw_rule(cx, x, y + cell_height * 0.5, width);
                 }
             }
         }
         self.draw_text.end_many_instances(cx);
 
-        if frame.cursor_visible && frame.cursor_row >= 0 {
-            let cursor_row = frame.cursor_row as usize;
-            // Map cursor's frame row to the visible slice of the framebuffer.
-            if cursor_row >= start_row && cursor_row < start_row + render_rows {
-                let visible_row = cursor_row - start_row;
-                let cursor_col = (frame.cursor_col as usize).min(cols.saturating_sub(1));
-                let cx_x = origin_x + cursor_col as f64 * cell_width;
-                let cx_y = origin_y + visible_row as f64 * cell_height + self.cursor_y_offset;
-                self.ime_pos = Some(dvec2(
-                    cx_x - self.unscrolled_rect.pos.x,
-                    cx_y - self.unscrolled_rect.pos.y + cell_height,
-                ));
-                self.draw_cursor.focus = if has_focus { 1.0 } else { 0.0 };
-                self.draw_cursor.draw_abs(
-                    cx,
-                    Rect {
-                        pos: dvec2(cx_x, cx_y),
-                        size: dvec2(cell_width, cell_height),
-                    },
-                );
-            }
+        self.draw_cursor_at(cx, cursor.shape, cursor.point, display_offset, focused);
+    }
+
+    fn draw_rule(&mut self, cx: &mut Cx2d, x: f64, y: f64, width: f64) {
+        self.draw_cell_bg.draw_abs(
+            cx,
+            Rect {
+                pos: dvec2(x, y),
+                size: dvec2(width, RULE_HEIGHT),
+            },
+        );
+    }
+
+    /// Braille is drawn rather than shaped. No font we bundle carries the
+    /// block, the one on this platform that does is a proportional symbol face
+    /// whose dots do not line up between adjacent cells — and the pattern is
+    /// already in the codepoint. Alacritty draws its own for the same reasons.
+    fn draw_braille(&mut self, cx: &mut Cx2d, c: char, x: f64, y: f64) {
+        let (cell_width, cell_height) = self.cell_metrics();
+        let (step_x, step_y) = (cell_width / 2.0, cell_height / 4.0);
+        let dot = (step_x.min(step_y) * 0.7).max(1.0);
+        for (row, column) in braille_dots(c) {
+            self.draw_cell_bg.draw_abs(
+                cx,
+                Rect {
+                    pos: dvec2(
+                        x + column as f64 * step_x + (step_x - dot) / 2.0,
+                        y + row as f64 * step_y + (step_y - dot) / 2.0,
+                    ),
+                    size: dvec2(dot, dot),
+                },
+            );
         }
     }
 
-    fn emit_input_bytes(&self, cx: &mut Cx, path: &str, data: Vec<u8>) {
+    fn draw_cursor_at(
+        &mut self,
+        cx: &mut Cx2d,
+        shape: CursorShape,
+        point: Point,
+        display_offset: usize,
+        focused: bool,
+    ) {
+        if shape == CursorShape::Hidden {
+            return;
+        }
+        let Some(viewport) = point_to_viewport(display_offset, point) else {
+            return;
+        };
+        let (cell_width, cell_height) = self.cell_metrics();
+        let origin = self.origin();
+        let x = origin.x + viewport.column.0 as f64 * cell_width;
+        let y = origin.y + viewport.line as f64 * cell_height + self.cursor_y_offset;
+
+        let (pos, size) = match shape {
+            CursorShape::Beam => (dvec2(x, y), dvec2(BEAM_WIDTH, cell_height)),
+            CursorShape::Underline => (
+                dvec2(x, y + cell_height - RULE_HEIGHT * 2.0),
+                dvec2(cell_width, RULE_HEIGHT * 2.0),
+            ),
+            _ => (dvec2(x, y), dvec2(cell_width, cell_height)),
+        };
+
+        // The IME panel opens under the cursor, wherever it is.
+        self.ime_pos = Some(dvec2(
+            x - self.unscrolled_rect.pos.x,
+            y - self.unscrolled_rect.pos.y + cell_height,
+        ));
+        self.draw_cursor.focus = if focused && shape != CursorShape::HollowBlock {
+            1.0
+        } else {
+            0.0
+        };
+        self.draw_cursor.draw_abs(cx, Rect { pos, size });
+    }
+
+    /// The cell under the pointer, and which half of it — the side decides
+    /// whether a selection takes the character or stops before it.
+    fn point_at(
+        &self,
+        abs: Vec2d,
+        display_offset: usize,
+        columns: usize,
+        screen_lines: usize,
+    ) -> (Point, Side) {
+        let (cell_width, cell_height) = self.cell_metrics();
+        let origin = self.origin();
+        let x = (abs.x - origin.x).max(0.0);
+        let y = (abs.y - origin.y).max(0.0);
+        let column = ((x / cell_width).floor() as usize).min(columns.saturating_sub(1));
+        let line = ((y / cell_height).floor() as usize).min(screen_lines.saturating_sub(1));
+        let side = if x - (column as f64 * cell_width) > cell_width / 2.0 {
+            Side::Right
+        } else {
+            Side::Left
+        };
+        (
+            viewport_to_point(display_offset, Point::new(line, Column(column))),
+            side,
+        )
+    }
+
+    fn emit_input_bytes(&self, cx: &mut Cx, session: Session, data: Vec<u8>) {
         if data.is_empty() {
             return;
         }
         cx.widget_action(
             self.widget_uid(),
-            DesktopTerminalViewAction::Input {
-                path: path.to_string(),
-                data,
-            },
+            TerminalViewAction::Input { session, data },
         );
     }
 
-    fn encode_key(
-        &self,
-        key_code: KeyCode,
-        text: &str,
-        mods: &KeyModifiers,
-        cursor_keys_application_mode: bool,
-    ) -> Option<Vec<u8>> {
-        let key = map_keycode(key_code);
-        if key == TermKeyCode::None && text.is_empty() {
-            return None;
-        }
-        let mut encoder = Terminal::new(1, 1);
-        encoder.modes.cursor_keys = cursor_keys_application_mode;
-        encoder.encode_key(key, text, mods.shift, mods.control, mods.alt)
-    }
-
-    fn send_key_to_terminal(
-        &mut self,
-        cx: &mut Cx,
-        path: &str,
-        key_code: KeyCode,
-        mods: &KeyModifiers,
-        cursor_keys_application_mode: bool,
-    ) {
-        if let Some(bytes) = self.encode_key(key_code, "", mods, cursor_keys_application_mode) {
-            self.emit_input_bytes(cx, path, bytes);
-        }
-    }
-
-    fn send_text_to_terminal(
-        &mut self,
-        cx: &mut Cx,
-        path: &str,
-        text: &str,
-        mods: &KeyModifiers,
-        cursor_keys_application_mode: bool,
-    ) {
-        if let Some(bytes) =
-            self.encode_key(KeyCode::Unknown, text, mods, cursor_keys_application_mode)
-        {
-            self.emit_input_bytes(cx, path, bytes);
-        }
-    }
-
-    fn emit_paste_text(&mut self, cx: &mut Cx, path: &str, text: &str, bracketed: bool) {
+    fn emit_paste_text(&mut self, cx: &mut Cx, session: Session, text: &str, bracketed: bool) {
         if text.is_empty() {
             return;
         }
@@ -706,7 +669,7 @@ impl DesktopTerminalView {
         } else {
             bytes.extend_from_slice(text.as_bytes());
         }
-        self.emit_input_bytes(cx, path, bytes);
+        self.emit_input_bytes(cx, session, bytes);
     }
 
     fn shell_quote_path(path: &str) -> String {
@@ -782,222 +745,12 @@ impl DesktopTerminalView {
         }
     }
 
-    fn is_clipboard_paste_shortcut(key_code: KeyCode, modifiers: &KeyModifiers) -> bool {
-        matches!(key_code, KeyCode::KeyV) && (modifiers.control || modifiers.logo) && !modifiers.alt
-    }
-
-    fn is_special_pty_key(key_code: KeyCode) -> bool {
-        matches!(
-            key_code,
-            KeyCode::ReturnKey
-                | KeyCode::NumpadEnter
-                | KeyCode::Backspace
-                | KeyCode::Tab
-                | KeyCode::Escape
-                | KeyCode::Delete
-                | KeyCode::ArrowUp
-                | KeyCode::ArrowDown
-                | KeyCode::ArrowLeft
-                | KeyCode::ArrowRight
-                | KeyCode::Home
-                | KeyCode::End
-                | KeyCode::PageUp
-                | KeyCode::PageDown
-                | KeyCode::Insert
-                | KeyCode::F1
-                | KeyCode::F2
-                | KeyCode::F3
-                | KeyCode::F4
-                | KeyCode::F5
-                | KeyCode::F6
-                | KeyCode::F7
-                | KeyCode::F8
-                | KeyCode::F9
-                | KeyCode::F10
-                | KeyCode::F11
-                | KeyCode::F12
-        )
-    }
-
-    fn is_user_scroll_event(event: &Event) -> bool {
-        matches!(
-            event,
-            Event::Scroll(_)
-                | Event::MouseDown(_)
-                | Event::MouseMove(_)
-                | Event::MouseUp(_)
-                | Event::TouchUpdate(_)
-        )
-    }
-
-    fn pick(&self, abs: Vec2d) -> (usize, usize) {
-        let frame = match self.last_frame.as_ref() {
-            Some(f) => f,
-            None => return (0, 0),
-        };
-        let cols = (frame.cols as usize).max(1);
-        let total_rows = frame.total_lines.max(1);
-        let (cell_width, cell_height) = self.cell_metrics();
-        let local_x = abs.x - self.unscrolled_rect.pos.x - self.pad_x;
-        let local_y =
-            abs.y - self.unscrolled_rect.pos.y - self.pad_y + self.current_scroll_pixels();
-
-        let col = (local_x / cell_width).floor().max(0.0) as usize;
-        let row = (local_y / cell_height).floor().max(0.0) as usize;
-        let col = col.min(cols.saturating_sub(1));
-        let row = row.min(total_rows.saturating_sub(1));
-        (row, col)
-    }
-
-    fn word_kind(ch: char) -> Option<bool> {
-        if ch == '\0' || ch.is_whitespace() {
-            None
-        } else {
-            Some(ch.is_alphanumeric() || ch == '_')
-        }
-    }
-
-    fn word_range_at_in_frame(
-        frame: &TerminalFramebuffer,
-        row: usize,
-        col: usize,
-    ) -> Option<(usize, usize)> {
-        let cols = frame.cols as usize;
-        let rows = frame.rows as usize;
-        let frame_row = row.checked_sub(frame.top_row)?;
-        if frame_row >= rows || cols == 0 {
-            return None;
-        }
-        let col = col.min(cols.saturating_sub(1));
-        let ch = Self::frame_char(frame, frame_row, col)?;
-        let kind = Self::word_kind(ch)?;
-
-        let mut start = col;
-        while start > 0 {
-            if let Some(prev_ch) = Self::frame_char(frame, frame_row, start - 1) {
-                if Self::word_kind(prev_ch) != Some(kind) {
-                    break;
-                }
-            } else {
-                break;
-            }
-            start -= 1;
-        }
-
-        let mut end = col + 1;
-        while end < cols {
-            if let Some(next_ch) = Self::frame_char(frame, frame_row, end) {
-                if Self::word_kind(next_ch) != Some(kind) {
-                    break;
-                }
-            } else {
-                break;
-            }
-            end += 1;
-        }
-        Some((start, end))
-    }
-
-    fn frame_char(frame: &TerminalFramebuffer, frame_row: usize, col: usize) -> Option<char> {
-        let cols = frame.cols as usize;
-        let idx = (frame_row * cols + col) * 10;
-        if idx + 9 >= frame.cells.len() {
-            return None;
-        }
-        let codepoint = u32::from_le_bytes([
-            frame.cells[idx],
-            frame.cells[idx + 1],
-            frame.cells[idx + 2],
-            frame.cells[idx + 3],
-        ]);
-        char::from_u32(codepoint)
-    }
-
-    fn selection_ordered(&self) -> Option<((usize, usize), (usize, usize))> {
-        let anchor = self.selection_anchor?;
-        let cursor = self.selection_cursor?;
-        if anchor == cursor {
-            return None;
-        }
-        if anchor <= cursor {
-            Some((anchor, cursor))
-        } else {
-            Some((cursor, anchor))
-        }
-    }
-
-    fn is_cell_selected(&self, row: usize, col: usize) -> bool {
-        let Some(((start_row, start_col), (end_row, end_col))) = self.selection_ordered() else {
-            return false;
-        };
-        if row < start_row || row > end_row {
-            return false;
-        }
-        if start_row == end_row {
-            return col >= start_col && col < end_col;
-        }
-        if row == start_row {
-            return col >= start_col;
-        }
-        if row == end_row {
-            return col < end_col;
-        }
-        true
-    }
-
-    fn selected_text(&self) -> Option<String> {
-        let frame = self.last_frame.as_ref()?;
-        let cols = frame.cols as usize;
-        if cols == 0 {
-            return None;
-        }
-        let ((start_row, start_col), (end_row, end_col)) = self.selection_ordered()?;
-
-        let mut out = String::new();
-        for row in start_row..=end_row {
-            let frame_row = match row.checked_sub(frame.top_row) {
-                Some(fr) if fr < frame.rows as usize => fr,
-                _ => {
-                    if row < end_row {
-                        out.push('\n');
-                    }
-                    continue;
-                }
-            };
-            let from_col = if row == start_row { start_col } else { 0 };
-            let to_col_exclusive = if row == end_row { end_col } else { cols };
-            if from_col >= to_col_exclusive {
-                continue;
-            }
-            let mut line = String::new();
-            for col in from_col..to_col_exclusive {
-                if let Some(ch) = Self::frame_char(frame, frame_row, col) {
-                    if ch != '\0' {
-                        line.push(ch);
-                    }
-                }
-            }
-            let line = line.trim_end();
-            if row < end_row {
-                out.push_str(line);
-                out.push('\n');
-            } else {
-                out.push_str(line);
-            }
-        }
-        if out.is_empty() {
-            None
-        } else {
-            Some(out)
-        }
-    }
-
     fn handle_drop(
         &mut self,
         cx: &mut Cx,
-        path: &str,
+        session: Session,
         event: &Event,
-        bracketed_paste: bool,
+        mode: TermMode,
     ) -> bool {
         match event.drag_hits(cx, self.scroll_bars.area()) {
             DragHit::Drag(drag) => {
@@ -1011,16 +764,24 @@ impl DesktopTerminalView {
                 let Some(payload) = Self::dropped_text_payload(drop.items.as_ref()) else {
                     return false;
                 };
-                self.emit_paste_text(cx, path, &payload, bracketed_paste);
+                let bracketed = mode.contains(TermMode::BRACKETED_PASTE);
+                self.emit_paste_text(cx, session, &payload, bracketed);
                 self.draw_bg.redraw(cx);
                 true
             }
             _ => false,
         }
     }
+
+    /// Typing pulls the view back to the prompt, the way every terminal does.
+    fn scroll_to_bottom(&self, session: Session) {
+        if let Some(shared) = crate::terminal::term(session) {
+            shared.lock().scroll_display(Scroll::Bottom);
+        }
+    }
 }
 
-impl Widget for DesktopTerminalView {
+impl Widget for TerminalView {
     fn draw_walk(&mut self, cx: &mut Cx2d, scope: &mut Scope, walk: Walk) -> DrawStep {
         self.scroll_bars.begin(cx, walk, self.layout);
         self.viewport_rect = cx.turtle().rect();
@@ -1031,112 +792,37 @@ impl Widget for DesktopTerminalView {
         let window = crate::frame_state(scope)
             .map(|state| state.id)
             .unwrap_or_default();
-        let path = Self::terminal_path_for_widget(cx, self.widget_uid(), window);
+        let session = Self::session_for_widget(cx, self.widget_uid(), window);
 
-        if path.as_deref() != self.last_path.as_deref() {
-            self.last_requested = None;
-            self.follow_output = true;
-            self.last_path = path.clone();
+        self.draw_bg.draw_abs(cx, self.unscrolled_rect);
+
+        let (mut total_lines, mut display_offset) = (0, 0);
+        if let Some(session) = session {
+            crate::terminal::resize(session, self.size());
+            if let Some(shared) = crate::terminal::term(session) {
+                let term = shared.lock();
+                total_lines = term.grid().total_lines();
+                display_offset = term.grid().display_offset();
+                let focused = cx.has_key_focus(self.scroll_bars.area());
+                self.draw_grid(cx, &term, focused);
+            }
         }
 
-        let frame = path
-            .as_deref()
-            .and_then(crate::terminal::tab_from_path)
-            .and_then(crate::terminal::frame_of);
+        // The bar follows the display: content is every line the grid holds,
+        // and the offset counts up from the bottom.
+        let (_, cell_height) = self.cell_metrics();
+        let max_scroll = self.max_scroll(total_lines);
+        let scroll_y = scroll_pos_for(display_offset, max_scroll, cell_height);
+        let _ = self
+            .scroll_bars
+            .set_scroll_pos_no_clip(cx, dvec2(0.0, scroll_y));
 
-        let (cell_width, cell_height) = self.cell_metrics();
-        let req_cols = ((self.viewport_rect.size.x - self.pad_x * 2.0) / cell_width)
-            .floor()
-            .max(1.0) as u16;
-        let req_rows = ((self.viewport_rect.size.y - self.pad_y * 2.0) / cell_height)
-            .ceil()
-            .max(1.0) as u16
-            + 1;
-        let req_rows_usize = req_rows as usize;
-        let pty_rows = ((self.viewport_rect.size.y - self.pad_y * 2.0) / cell_height)
-            .floor()
-            .max(1.0) as u16;
-
-        let total_lines_for_scroll = frame.as_ref().map(Self::scrollbar_total_lines).unwrap_or(0);
-        self.last_total_lines = total_lines_for_scroll;
-
-        if self.follow_output {
-            self.stick_to_bottom(cx, self.last_total_lines);
-        } else {
-            self.clamp_scroll_position(cx, self.last_total_lines);
-        }
-
-        let visible_top_row = (self.current_scroll_pixels() / cell_height)
-            .floor()
-            .max(0.0) as usize;
-        let selection = self.selection_ordered();
-        let (requested_top_row, requested_end_row_exclusive) =
-            Self::requested_frame_range(visible_top_row, req_rows_usize, selection);
-        let requested_rows = requested_end_row_exclusive
-            .saturating_sub(requested_top_row)
-            .max(req_rows_usize)
-            .min(u16::MAX as usize) as u16;
-
-        let frame_matches_viewport = frame
-            .as_ref()
-            .map(|frame| {
-                let frame_end_row_exclusive = frame.top_row.saturating_add(frame.rows as usize);
-                frame.cols == req_cols
-                    && frame.rows >= req_rows
-                    && (selection.is_none()
-                        || (frame.top_row <= requested_top_row
-                            && frame_end_row_exclusive >= requested_end_row_exclusive))
-            })
-            .unwrap_or(false);
-        if frame.is_some() && !frame_matches_viewport {
-            self.last_requested = None;
-        }
-
-        if let Some(path) = path.as_deref() {
-            let top_row = if selection.is_some() {
-                requested_top_row
-            } else if self.follow_output {
-                usize::MAX
-            } else {
-                let top = (self.current_scroll_pixels() / cell_height)
-                    .floor()
-                    .max(0.0) as usize;
-                let max_top = self
-                    .last_total_lines
-                    .saturating_sub(pty_rows.max(1) as usize);
-                top.min(max_top)
-            };
-            let rows = if selection.is_some() {
-                requested_rows
-            } else {
-                req_rows
-            };
-            self.send_viewport_request(cx, path, req_cols, rows, pty_rows, top_row);
-        }
-
-        self.last_frame = frame.clone();
-        if let Some(frame) = frame.as_ref() {
-            let bg = Self::decode_rgb(frame.default_bg_rgb);
-            self.draw_bg
-                .draw_vars
-                .set_uniform(cx, id!(color), &[bg.x, bg.y, bg.z, bg.w]);
-            self.draw_bg.draw_abs(cx, self.unscrolled_rect);
-            self.draw_framebuffer(cx, frame);
-        } else {
-            self.draw_bg.draw_abs(cx, self.unscrolled_rect);
-        }
-
-        let content_height = self.content_height_for_total_lines(self.last_total_lines);
-        let used_height = if content_height <= self.viewport_rect.size.y + 0.1 {
-            self.viewport_rect.size.y
-        } else {
-            content_height
-        };
-
-        cx.turtle_mut()
-            .set_used(self.viewport_rect.size.x.max(1.0), used_height);
+        cx.turtle_mut().set_used(
+            self.viewport_rect.size.x.max(1.0),
+            max_scroll + self.viewport_rect.size.y,
+        );
         self.scroll_bars.end(cx);
-        if path.is_some() && cx.has_key_focus(self.scroll_bars.area()) {
+        if session.is_some() && cx.has_key_focus(self.scroll_bars.area()) {
             if let Some(ime_pos) = self.ime_pos {
                 cx.show_text_ime(self.scroll_bars.area(), ime_pos);
             }
@@ -1148,121 +834,155 @@ impl Widget for DesktopTerminalView {
         let window = crate::frame_state(scope)
             .map(|state| state.id)
             .unwrap_or_default();
-        let (path, frame) = Self::terminal_path_for_widget(cx, self.widget_uid(), window)
-            .map(|path| {
-                let frame =
-                    crate::terminal::tab_from_path(&path).and_then(crate::terminal::frame_of);
-                (path, frame)
-            })
-            .unwrap_or_else(|| (String::new(), None));
+        let session = Self::session_for_widget(cx, self.widget_uid(), window);
+        let Some((session, shared)) =
+            session.and_then(|s| crate::terminal::term(s).map(|term| (s, term)))
+        else {
+            self.scroll_bars.handle_event(cx, event, scope);
+            return;
+        };
 
-        let scroll_actions = self.scroll_bars.handle_event(cx, event, scope);
-        if !scroll_actions.is_empty() {
-            let user_scroll_event = Self::is_user_scroll_event(event);
-            if user_scroll_event
-                && scroll_actions
-                    .iter()
-                    .any(|action| matches!(action, ScrollBarsAction::ScrollY(_)))
-            {
-                self.follow_output = self.is_scrolled_to_bottom(self.last_total_lines);
-            }
-            if user_scroll_event {
-                self.last_requested = None;
-            }
-            self.draw_bg.redraw(cx);
-        }
+        // One read of everything the handlers need, so no lock is held while
+        // an action is emitted.
+        let (mode, display_offset, columns, screen_lines) = {
+            let term = shared.lock();
+            (
+                *term.mode(),
+                term.grid().display_offset(),
+                term.columns(),
+                term.screen_lines(),
+            )
+        };
 
-        let cursor_keys_application_mode = frame
-            .as_ref()
-            .map(|frame| frame.cursor_keys_application_mode)
-            .unwrap_or(false);
-        let bracketed_paste = frame
-            .as_ref()
-            .map(|frame| frame.bracketed_paste)
-            .unwrap_or(false);
-
-        if !path.is_empty() && self.handle_drop(cx, &path, event, bracketed_paste) {
+        if self.handle_drop(cx, session, event, mode) {
             return;
         }
 
-        if self.selecting && self.select_scroll_next_frame.is_event(event).is_some() {
-            self.select_scroll_next_frame = cx.new_next_frame();
-            if let Some(abs) = self.last_finger_abs {
-                let vp_rect = self.scroll_bars.area().clipped_rect(cx);
-                let vp_top = vp_rect.pos.y;
-                let vp_bottom = vp_top + vp_rect.size.y;
+        // The wheel belongs to the application while it is tracking the
+        // pointer, or on the alt screen; otherwise it scrolls our scrollback.
+        if let Event::Scroll(e) = event {
+            if self.scroll_bars.area().clipped_rect(cx).contains(e.abs) {
                 let (_, cell_height) = self.cell_metrics();
-                let scroll_speed = cell_height * 2.0;
-                let edge_band = cell_height.max(4.0);
-                let top_trigger = vp_top + edge_band;
-                let bottom_trigger = vp_bottom - edge_band;
-
-                if abs.y <= top_trigger {
-                    let delta = (top_trigger - abs.y)
-                        .max(cell_height * 0.25)
-                        .min(scroll_speed);
-                    let new_y = (self.current_scroll_pixels() - delta).max(0.0);
-                    let _ = self
-                        .scroll_bars
-                        .set_scroll_pos_no_clip(cx, dvec2(0.0, new_y));
-                } else if abs.y >= bottom_trigger {
-                    let delta = (abs.y - bottom_trigger)
-                        .max(cell_height * 0.25)
-                        .min(scroll_speed);
-                    let max = self.max_scroll_pixels_for_total_lines(self.last_total_lines);
-                    let new_y = (self.current_scroll_pixels() + delta).min(max);
-                    let _ = self
-                        .scroll_bars
-                        .set_scroll_pos_no_clip(cx, dvec2(0.0, new_y));
+                self.scroll_accum += e.scroll.y;
+                let lines = (self.scroll_accum / cell_height).abs() as usize;
+                if lines > 0 {
+                    let up = self.scroll_accum < 0.0;
+                    let (point, _) = self.point_at(e.abs, display_offset, columns, screen_lines);
+                    match mouse::wheel(up, lines, &e.modifiers, point, mode) {
+                        Some(bytes) => {
+                            self.scroll_accum -=
+                                self.scroll_accum.signum() * lines as f64 * cell_height;
+                            self.emit_input_bytes(cx, session, bytes);
+                            e.handled_y.set(true);
+                            self.draw_bg.redraw(cx);
+                            return;
+                        }
+                        // The bar below takes this one, so what is left of a
+                        // line here would only fire late.
+                        None => self.scroll_accum = 0.0,
+                    }
                 }
-
-                self.follow_output = self.is_scrolled_to_bottom(self.last_total_lines);
-                self.selection_cursor = Some(self.pick(abs));
-                self.draw_bg.redraw(cx);
             }
         }
 
+        let scroll_actions = self.scroll_bars.handle_event(cx, event, scope);
+        if !scroll_actions.is_empty() {
+            // A drag or a wheel the bar took: turn the new position back into
+            // a display offset, which is where the scrollback really lives.
+            let (_, cell_height) = self.cell_metrics();
+            let mut term = shared.lock();
+            let max_scroll = self.max_scroll(term.grid().total_lines());
+            let wanted =
+                display_offset_for(self.scroll_bars.get_scroll_pos().y, max_scroll, cell_height)
+                    .min(term.history_size());
+            let delta = wanted as i32 - term.grid().display_offset() as i32;
+            if delta != 0 {
+                term.scroll_display(Scroll::Delta(delta));
+            }
+            drop(term);
+            self.draw_bg.redraw(cx);
+        }
+
         match event.hits(cx, self.scroll_bars.area()) {
-            Hit::FingerDown(FingerDownEvent { abs, tap_count, .. }) => {
+            Hit::FingerDown(e) => {
                 cx.set_key_focus(self.scroll_bars.area());
-                let pos = self.pick(abs);
-                if tap_count == 2 {
-                    if let Some(frame) = self.last_frame.as_ref() {
-                        if let Some((start_col, end_col)) =
-                            Self::word_range_at_in_frame(frame, pos.0, pos.1)
-                        {
-                            self.selection_anchor = Some((pos.0, start_col));
-                            self.selection_cursor = Some((pos.0, end_col));
-                        } else {
-                            self.selection_anchor = Some(pos);
-                            self.selection_cursor = Some(pos);
-                        }
+                self.held = e.device.mouse_button();
+                let (point, side) = self.point_at(e.abs, display_offset, columns, screen_lines);
+
+                // ⌘-click follows a link the program marked with OSC 8, the
+                // way every terminal that understands them does.
+                if e.modifiers.logo {
+                    let uri = shared.lock().grid()[point]
+                        .hyperlink()
+                        .map(|link| link.uri().to_string());
+                    if let Some(uri) = uri {
+                        cx.open_url(&uri, OpenUrlInPlace::No);
+                        return;
                     }
-                    self.selecting = false;
-                    self.last_finger_abs = None;
+                }
+
+                if let Some(button) = self
+                    .held
+                    .filter(|_| mouse::wants_pointer(&e.modifiers, mode))
+                {
+                    if let Some(bytes) = mouse::report(button, true, &e.modifiers, point, mode) {
+                        self.emit_input_bytes(cx, session, bytes);
+                    }
                 } else {
-                    self.selection_anchor = Some(pos);
-                    self.selection_cursor = Some(pos);
+                    let ty = match e.tap_count {
+                        1 => SelectionType::Simple,
+                        2 => SelectionType::Semantic,
+                        _ => SelectionType::Lines,
+                    };
+                    let ty = if e.modifiers.control && e.modifiers.alt {
+                        SelectionType::Block
+                    } else {
+                        ty
+                    };
                     self.selecting = true;
-                    self.last_finger_abs = Some(abs);
-                    self.select_scroll_next_frame = cx.new_next_frame();
+                    shared.lock().selection = Some(Selection::new(ty, point, side));
                 }
                 self.draw_bg.redraw(cx);
             }
-            Hit::FingerMove(FingerMoveEvent { abs, .. }) => {
+            Hit::FingerMove(e) => {
                 cx.set_cursor(MouseCursor::Text);
+                let (point, side) = self.point_at(e.abs, display_offset, columns, screen_lines);
                 if self.selecting {
-                    self.selection_cursor = Some(self.pick(abs));
-                    self.last_finger_abs = Some(abs);
+                    if let Some(selection) = shared.lock().selection.as_mut() {
+                        selection.update(point, side);
+                    }
                     self.draw_bg.redraw(cx);
+                } else if mouse::wants_pointer(&e.modifiers, mode)
+                    && mouse::wants_motion(self.held.is_some(), mode)
+                {
+                    if let Some(bytes) = mouse::motion(self.held, &e.modifiers, point, mode) {
+                        self.emit_input_bytes(cx, session, bytes);
+                    }
                 }
             }
-            Hit::FingerUp(_) => {
+            Hit::FingerUp(e) => {
+                let (point, _) = self.point_at(e.abs, display_offset, columns, screen_lines);
+                if let Some(button) = self
+                    .held
+                    .filter(|_| mouse::wants_pointer(&e.modifiers, mode))
+                {
+                    if let Some(bytes) = mouse::report(button, false, &e.modifiers, point, mode) {
+                        self.emit_input_bytes(cx, session, bytes);
+                    }
+                }
                 self.selecting = false;
-                self.last_finger_abs = None;
+                self.held = None;
             }
-            Hit::FingerHoverIn(_) | Hit::FingerHoverOver(_) => {
-                cx.set_cursor(MouseCursor::Text);
+            Hit::FingerHoverIn(e) | Hit::FingerHoverOver(e) => {
+                // The hand is the only hint that a link is there to be taken.
+                let (point, _) = self.point_at(e.abs, display_offset, columns, screen_lines);
+                let over_link =
+                    e.modifiers.logo && shared.lock().grid()[point].hyperlink().is_some();
+                cx.set_cursor(if over_link {
+                    MouseCursor::Hand
+                } else {
+                    MouseCursor::Text
+                });
             }
             Hit::KeyFocus(_) => {
                 self.draw_bg.redraw(cx);
@@ -1272,115 +992,41 @@ impl Widget for DesktopTerminalView {
                 self.draw_bg.redraw(cx);
             }
             Hit::KeyDown(e) => {
-                if path.is_empty() {
+                // ⌘V is the app's paste, not a key for the shell.
+                if matches!(e.key_code, KeyCode::KeyV) && e.modifiers.logo {
                     return;
                 }
-
-                if Self::is_clipboard_paste_shortcut(e.key_code, &e.modifiers) {
-                    return;
-                }
-                let is_enter =
-                    e.key_code == KeyCode::ReturnKey || e.key_code == KeyCode::NumpadEnter;
-                if is_enter && e.is_repeat && (e.time - self.last_enter_time) < 0.08 {
-                    return;
-                }
-                let sends_special_key = Self::is_special_pty_key(e.key_code);
-                let sends_ctrl_char = e.modifiers.control && e.key_code.to_char(false).is_some();
-                if sends_special_key {
-                    self.send_key_to_terminal(
-                        cx,
-                        &path,
-                        e.key_code,
-                        &e.modifiers,
-                        cursor_keys_application_mode,
-                    );
-                    if is_enter {
-                        self.last_enter_time = e.time;
-                    }
+                if let Some(bytes) = keys::encode(&e, true, mode) {
+                    self.emit_input_bytes(cx, session, bytes);
+                    self.scroll_to_bottom(session);
                     self.draw_bg.redraw(cx);
-                } else if sends_ctrl_char {
-                    if let Some(ch) = e.key_code.to_char(false) {
-                        self.send_text_to_terminal(
-                            cx,
-                            &path,
-                            &ch.to_string(),
-                            &e.modifiers,
-                            cursor_keys_application_mode,
-                        );
-                        self.draw_bg.redraw(cx);
-                    }
+                }
+            }
+            Hit::KeyUp(e) => {
+                if let Some(bytes) = keys::encode(&e, false, mode) {
+                    self.emit_input_bytes(cx, session, bytes);
                 }
             }
             Hit::TextInput(e) => {
-                if path.is_empty() {
-                    return;
-                }
-
                 if e.replace_last {
                     return;
                 }
-
                 if e.was_paste {
-                    self.emit_paste_text(cx, &path, &e.input, bracketed_paste);
-                } else {
-                    let filtered: String = e
-                        .input
-                        .chars()
-                        .filter(|c| *c != '\n' && *c != '\r')
-                        .collect();
-                    if filtered.is_empty() {
-                        return;
-                    }
-                    self.send_text_to_terminal(
-                        cx,
-                        &path,
-                        &filtered,
-                        &KeyModifiers::default(),
-                        cursor_keys_application_mode,
-                    );
+                    let bracketed = mode.contains(TermMode::BRACKETED_PASTE);
+                    self.emit_paste_text(cx, session, &e.input, bracketed);
+                } else if let Some(bytes) =
+                    keys::encode_text(&e.input, &KeyModifiers::default(), mode)
+                {
+                    self.emit_input_bytes(cx, session, bytes);
                 }
+                self.scroll_to_bottom(session);
                 self.draw_bg.redraw(cx);
             }
-            Hit::TextCopy(copy_event) => {
-                if let Some(text) = self.selected_text() {
-                    *copy_event.response.borrow_mut() = Some(text);
-                }
+            Hit::TextCopy(e) => {
+                *e.response.borrow_mut() = shared.lock().selection_to_string();
             }
             _ => {}
         }
-    }
-}
-
-fn map_keycode(kc: KeyCode) -> TermKeyCode {
-    use makepad_terminal_core::TermKeyCode as TK;
-    match kc {
-        KeyCode::ReturnKey | KeyCode::NumpadEnter => TK::Return,
-        KeyCode::Tab => TK::Tab,
-        KeyCode::Backspace => TK::Backspace,
-        KeyCode::Escape => TK::Escape,
-        KeyCode::Delete => TK::Delete,
-        KeyCode::ArrowUp => TK::Up,
-        KeyCode::ArrowDown => TK::Down,
-        KeyCode::ArrowLeft => TK::Left,
-        KeyCode::ArrowRight => TK::Right,
-        KeyCode::Home => TK::Home,
-        KeyCode::End => TK::End,
-        KeyCode::PageUp => TK::PageUp,
-        KeyCode::PageDown => TK::PageDown,
-        KeyCode::Insert => TK::Insert,
-        KeyCode::F1 => TK::F1,
-        KeyCode::F2 => TK::F2,
-        KeyCode::F3 => TK::F3,
-        KeyCode::F4 => TK::F4,
-        KeyCode::F5 => TK::F5,
-        KeyCode::F6 => TK::F6,
-        KeyCode::F7 => TK::F7,
-        KeyCode::F8 => TK::F8,
-        KeyCode::F9 => TK::F9,
-        KeyCode::F10 => TK::F10,
-        KeyCode::F11 => TK::F11,
-        KeyCode::F12 => TK::F12,
-        _ => TK::None,
     }
 }
 
@@ -1388,54 +1034,47 @@ fn map_keycode(kc: KeyCode) -> TermKeyCode {
 mod tests {
     use super::*;
 
-    #[test]
-    fn scrollbar_total_lines_preserves_scrollback_for_custom_scroll_region_apps() {
-        let frame = TerminalFramebuffer {
-            is_tui: true,
-            rows: 20,
-            total_lines: 240,
-            ..Default::default()
-        };
+    fn dots(c: char) -> Vec<(usize, usize)> {
+        braille_dots(c).collect()
+    }
 
-        assert_eq!(DesktopTerminalView::scrollbar_total_lines(&frame), 240);
+    /// The bar and the scrollback are the same number in two units, so the
+    /// trip out and back has to land where it started. It did not: the offset
+    /// used to be derived from the bar's own position, which made it always
+    /// zero, and every scroll snapped to the bottom.
+    #[test]
+    fn the_bar_and_the_scrollback_agree_in_both_directions() {
+        let (cell_height, max_scroll) = (15.0, 1500.0);
+        for offset in [0usize, 1, 7, 50, 99, 100] {
+            let pos = scroll_pos_for(offset, max_scroll, cell_height);
+            assert_eq!(display_offset_for(pos, max_scroll, cell_height), offset);
+        }
+        // The foot of the bar is the live screen, its head the whole history.
+        assert_eq!(scroll_pos_for(0, max_scroll, cell_height), max_scroll);
+        assert_eq!(display_offset_for(max_scroll, max_scroll, cell_height), 0);
+        assert_eq!(display_offset_for(0.0, max_scroll, cell_height), 100);
+        // Half way up the bar is half the history back, not the bottom.
+        assert_eq!(
+            display_offset_for(max_scroll / 2.0, max_scroll, cell_height),
+            50
+        );
     }
 
     #[test]
-    fn scrollbar_total_lines_keeps_plain_terminal_history() {
-        let frame = TerminalFramebuffer {
-            is_tui: false,
-            rows: 20,
-            total_lines: 75,
-            ..Default::default()
-        };
-
-        assert_eq!(DesktopTerminalView::scrollbar_total_lines(&frame), 75);
-    }
-
-    #[test]
-    fn requested_frame_range_expands_to_cover_selection_outside_viewport() {
-        let selection = Some(((12, 4), (34, 9)));
-        let (start_row, end_row_exclusive) =
-            DesktopTerminalView::requested_frame_range(20, 8, selection);
-
-        assert_eq!(start_row, 12);
-        assert_eq!(end_row_exclusive, 35);
-    }
-
-    #[test]
-    fn visible_frame_rows_starts_rendering_at_current_scroll_offset() {
-        let frame = TerminalFramebuffer {
-            top_row: 80,
-            rows: 40,
-            ..Default::default()
-        };
-
-        let (start_row, render_rows, origin_y) =
-            DesktopTerminalView::visible_frame_rows(&frame, 955.0, 10.0, 6, 100.0)
-                .expect("expected visible rows");
-
-        assert_eq!(start_row, 15);
-        assert_eq!(render_rows, 6);
-        assert_eq!(origin_y, 95.0);
+    fn braille_reads_its_dots_off_the_codepoint() {
+        assert!(is_braille('\u{2801}') && !is_braille('a'));
+        // One dot in each corner of the two by four grid.
+        assert_eq!(dots('\u{2801}'), [(0, 0)]);
+        assert_eq!(dots('\u{2808}'), [(0, 1)]);
+        assert_eq!(dots('\u{2840}'), [(3, 0)]);
+        assert_eq!(dots('\u{2880}'), [(3, 1)]);
+        // The blank cell draws nothing, the full one all eight.
+        assert_eq!(dots('\u{2800}'), []);
+        assert_eq!(dots('\u{28ff}').len(), 8);
+        // Six dots, the top three rows of both columns.
+        assert_eq!(
+            dots('\u{283f}'),
+            [(0, 0), (1, 0), (2, 0), (0, 1), (1, 1), (2, 1)]
+        );
     }
 }
