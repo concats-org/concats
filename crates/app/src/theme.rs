@@ -98,8 +98,9 @@ pub enum SettingsError {
     #[error("unknown theme {name:?} — try one of: {known}")]
     UnknownTheme { name: String, known: String },
     #[error(
-        "font not found: {spec:?} — use an absolute path to a .ttf/.otf/.ttc, \
-         or a family name as shown in Font Book"
+        "no font found in {spec:?} — list them the way CSS does, most wanted \
+         first, each an absolute path to a .ttf/.otf/.ttc or a family name as \
+         shown in Font Book"
     )]
     FontNotFound { spec: String },
 }
@@ -127,15 +128,12 @@ pub fn apply_settings_text(text: &str) -> Result<String, SettingsError> {
         None => "",
         Some(f) => f.as_str().ok_or_else(|| wrong("font", "a string"))?,
     };
-    let font_path = if font_spec.trim().is_empty() {
-        None
-    } else {
-        Some(
-            resolve_font_path(font_spec).ok_or_else(|| SettingsError::FontNotFound {
-                spec: font_spec.to_string(),
-            })?,
-        )
-    };
+    let font_paths = resolve_font_paths(font_spec);
+    if font_paths.is_empty() && !font_specs(font_spec).is_empty() {
+        return Err(SettingsError::FontNotFound {
+            spec: font_spec.to_string(),
+        });
+    }
 
     // font_size (optional): a positive number.
     let size = match v.get("font_size") {
@@ -158,7 +156,7 @@ pub fn apply_settings_text(text: &str) -> Result<String, SettingsError> {
     // Everything validated — only now apply and persist (no partial writes).
     set_active_theme(theme);
     set_active_font(FontSetting {
-        path: font_path,
+        paths: font_paths,
         size,
         wrap,
     });
@@ -196,20 +194,50 @@ pub fn set_active_theme(theme: Theme) {
 
 // ---------------------------------------------------------------------------
 // Font — configurable, loaded from the system. Makepad has no font-name lookup,
-// so a family name is resolved to a file here; an absolute path is used as-is;
-// empty falls back to the bundled JetBrains Mono. `main.rs::install_app_font`
-// feeds the resolved path into the DSL via `mod.app_font`.
+// so a family name is resolved to a file here; an absolute path is used as-is.
+// The setting is a list, the way CSS writes `font-family`, and the embedded
+// fonts always follow it. `main.rs::install_app_font` feeds the resolved paths
+// into the DSL via `mod.app_font`.
 // ---------------------------------------------------------------------------
 
-/// The resolved app font: a file to load (`None` = bundled), plus base size.
+/// The resolved app font: the files to try in order (empty = the embedded
+/// fonts alone), plus base size.
+///
+/// TODO: one size does not fit all three surfaces. The shape to grow into is
+/// a global `font_size` with `ui_font_size`, `editor_font_size` and
+/// `terminal_font_size` beside it, each falling back to the global when
+/// unset — and the same layering for anything else worth varying per
+/// surface, line height first. Today the terminal borrows this family and
+/// pins its own size in the DSL, which is why its cell cannot be tuned.
 #[derive(Clone)]
 pub struct FontSetting {
-    pub path: Option<String>,
+    pub paths: Vec<String>,
     pub size: f64,
     /// Whether a line too long for its row wraps onto the next instead of
     /// running off the edge. It rides with the font because it is a layout
     /// property, and it re-bakes through the same live edit.
     pub wrap: bool,
+}
+
+/// Split a `font` setting the way CSS splits `font-family`: a comma-separated
+/// list, most wanted first. Quotes around a name are decorative and dropped, so
+/// habits carried over from CSS work — but a name or path containing a comma
+/// cannot be written here.
+fn font_specs(spec: &str) -> Vec<&str> {
+    spec.split(',')
+        .map(|name| name.trim().trim_matches(['"', '\'']).trim())
+        .filter(|name| !name.is_empty())
+        .collect()
+}
+
+/// Every font in a `font` setting that this machine actually has, in the order
+/// asked for. A name that resolves to nothing is dropped rather than refused:
+/// the point of a list is that it survives a machine missing one of them.
+fn resolve_font_paths(spec: &str) -> Vec<String> {
+    font_specs(spec)
+        .into_iter()
+        .filter_map(resolve_font_path)
+        .collect()
 }
 
 /// Resolve a `font` spec — absolute path (used as-is if it exists) or family
@@ -303,7 +331,7 @@ fn font_slot() -> &'static RwLock<Arc<FontSetting>> {
     F.get_or_init(|| {
         let (spec, size, wrap) = persisted_font();
         RwLock::new(Arc::new(FontSetting {
-            path: resolve_font_path(&spec),
+            paths: resolve_font_paths(&spec),
             size,
             wrap,
         }))
@@ -324,6 +352,17 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_font_setting_is_a_css_style_list() {
+        assert_eq!(font_specs("SF Mono"), ["SF Mono"]);
+        assert_eq!(font_specs("SF Mono, Menlo"), ["SF Mono", "Menlo"]);
+        // Quotes are habit carried over from CSS, and spacing is free.
+        assert_eq!(font_specs("  'SF Mono' ,\"Menlo\" "), ["SF Mono", "Menlo"]);
+        // Nothing named is nothing to load — the embedded fonts stand alone.
+        assert_eq!(font_specs(""), Vec::<&str>::new());
+        assert_eq!(font_specs("  , ,"), Vec::<&str>::new());
+    }
+
+    #[test]
     fn apply_settings_validates() {
         // Malformed JSON, unknown themes, and a missing key are each rejected
         // with a message — the text the in-app editor surfaces. These error
@@ -332,6 +371,10 @@ mod tests {
         assert!(apply_settings_text("{ not json").is_err());
         assert!(apply_settings_text(r#"{"theme": "Nope"}"#).is_err());
         assert!(apply_settings_text(r#"{"nope": 1}"#).is_err());
+        // A list that names nothing this machine has is refused; one that
+        // resolves to at least one font is not this test's business, since
+        // the success path writes to disk.
+        assert!(apply_settings_text(r#"{"theme": "Concats", "font": "NoSuchFont"}"#).is_err());
         assert!(apply_settings_text(r#"{"theme": 3}"#).is_err());
         // A non-empty font that resolves to nothing is an error (not a silent
         // fallback); bad font_size is rejected too. All fail before touching disk.

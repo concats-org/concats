@@ -533,12 +533,8 @@ impl MatchEvent for App {
     /// exist at all (no Guide without a guide, no Sessions without sessions).
     fn handle_signal(&mut self, cx: &mut Cx) {
         // Terminal output pumps through the same UI signal as the loader.
-        let dirty_terminals = terminal::drain();
+        let dirty_terminals = terminal::take_dirty();
         if !dirty_terminals.is_empty() {
-            // CONCATS_APP_TERM_DEBUG=1: dump each processed frame.
-            if std::env::var("CONCATS_APP_TERM_DEBUG").is_ok_and(|v| !v.is_empty()) {
-                terminal::debug_dump();
-            }
             for window in &self.windows {
                 let dock = window.pane(cx).dock(cx, ids!(dock));
                 for session in dirty_terminals
@@ -546,6 +542,15 @@ impl MatchEvent for App {
                     .filter(|s| s.window == window.state.id)
                 {
                     dock.item(session.tab).redraw(cx);
+                    // What the program in there said about itself: the name it
+                    // wants on its tab, and anything it asked to copy.
+                    let report = terminal::take_report(*session);
+                    if let Some(text) = report.clipboard {
+                        cx.copy_to_clipboard(&text);
+                    }
+                    if let Some(title) = report.title.filter(|t| !t.is_empty()) {
+                        dock.set_tab_title(cx, session.tab, title);
+                    }
                 }
             }
             // Pairs with CONCATS_APP_TERM: re-capture on terminal frames
@@ -1455,31 +1460,57 @@ fn install_app_theme(vm: &mut ScriptVm) {
     });
 }
 
-/// Build `mod.app_font` — the font the DSL TextStyles read — from the active
-/// font setting (theme.rs). A resolved system path loads via `file_resource`;
-/// otherwise the bundled JetBrains Mono. Re-runs on `request_live_edit`, so a
-/// font change re-bakes app-wide. Built before the app + terminal_view blocks.
+/// Build `mod.app_font` — the resources the DSL TextStyles hang their font
+/// members off — from the active font setting (theme.rs). Re-runs on
+/// `request_live_edit`, so a font change re-bakes app-wide. Built before the
+/// app + terminal_view blocks.
+///
+/// Only the resources are built here. A `FontFamily` assembled in this scope
+/// and referenced by name applies as an empty family — every glyph disappears —
+/// so the family literal stays in each TextStyle and this fills its slots.
+///
+/// The embedded fonts always follow the user's, so no setting can leave the app
+/// without box drawing, CJK or emoji. The user's own faces occupy a fixed four
+/// slots because the script block's text is compiled, not generated; a shorter
+/// list repeats, which costs the shaper a duplicate miss on a glyph nobody has
+/// and keeps the block readable.
 fn install_app_font(vm: &mut ScriptVm) {
     let f = theme::active_font();
     let size = f.size;
-    match f.path.clone() {
-        Some(path) => {
-            script_eval!(vm, {
-                mod.app_font = {
-                    res: mod.res.file_resource(#(path))
-                    size: #(size)
-                }
-            });
-        }
-        None => {
-            script_eval!(vm, {
-                mod.app_font = {
-                    res: mod.res.crate_resource("makepad_widgets:resources/jetbrains_mono_variable.ttf")
-                    size: #(size)
-                }
-            });
-        }
+    if f.paths.is_empty() {
+        script_eval!(vm, {
+            mod.app_font = {
+                size: #(size)
+                first: mod.res.crate_resource("makepad_widgets:resources/jetbrains_mono_variable.ttf")
+                second: mod.res.crate_resource("makepad_widgets:resources/jetbrains_mono_variable.ttf")
+                third: mod.res.crate_resource("makepad_widgets:resources/jetbrains_mono_variable.ttf")
+                fourth: mod.res.crate_resource("makepad_widgets:resources/jetbrains_mono_variable.ttf")
+                mono: mod.res.crate_resource("makepad_widgets:resources/jetbrains_mono_variable.ttf")
+                cjk: mod.res.crate_resource("makepad_widgets:resources/LXGWWenKaiRegular.ttf")
+                emoji: mod.res.crate_resource("makepad_widgets:resources/NotoColorEmoji.ttf")
+            }
+        });
+        return;
     }
+    let mut slots = f.paths.iter().cycle();
+    let (a, b, c, d) = (
+        slots.next().cloned().unwrap_or_default(),
+        slots.next().cloned().unwrap_or_default(),
+        slots.next().cloned().unwrap_or_default(),
+        slots.next().cloned().unwrap_or_default(),
+    );
+    script_eval!(vm, {
+        mod.app_font = {
+            size: #(size)
+            first: mod.res.file_resource(#(a))
+            second: mod.res.file_resource(#(b))
+            third: mod.res.file_resource(#(c))
+            fourth: mod.res.file_resource(#(d))
+            mono: mod.res.crate_resource("makepad_widgets:resources/jetbrains_mono_variable.ttf")
+            cjk: mod.res.crate_resource("makepad_widgets:resources/LXGWWenKaiRegular.ttf")
+            emoji: mod.res.crate_resource("makepad_widgets:resources/NotoColorEmoji.ttf")
+        }
+    });
 }
 
 impl AppMain for App {

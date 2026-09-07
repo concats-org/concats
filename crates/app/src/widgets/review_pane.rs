@@ -29,7 +29,7 @@ use crate::{
     },
     service::{self, review, review_state, ReviewCmd},
     terminal,
-    terminal_view::DesktopTerminalViewAction,
+    terminal_view::TerminalViewAction,
     window::WindowState,
     FrameData, WindowScope,
 };
@@ -37,7 +37,7 @@ use crate::{
 script_mod! {
     use mod.prelude.widgets.*
     use mod.widgets.PerfGraph
-    use mod.widgets.DesktopTerminalView
+    use mod.widgets.TerminalView
     use mod.widgets.FileBrowser
     use mod.widgets.ReviewList
     use mod.widgets.SeenBar
@@ -437,7 +437,7 @@ script_mod! {
                 FilesPane := ReviewList { kind: @files }
                 CommentsPane := ReviewList { kind: @comments }
                 FilePane := ReviewList { kind: @file }
-                TerminalPane := DesktopTerminalView {}
+                TerminalPane := TerminalView {}
                 // Opened on demand by the `{ }` status-bar button (not in the
                 // default tab list) — like the `+`-created terminal sessions.
                 SettingsPane := ReviewList { kind: @file }
@@ -1821,29 +1821,11 @@ impl ReviewPane {
                 }
                 _ => {}
             }
-            // The terminal view's whole contract: encoded input bytes out,
-            // viewport geometry in (fires on every draw whose size/scroll
-            // changed — the resize path). The `path` names the session's tab.
+            // The terminal view's whole contract upward: encoded input bytes.
+            // Geometry goes the other way, straight from its draw path.
             match wa.cast() {
-                DesktopTerminalViewAction::Input { path, data } => {
-                    if let Some(session) = terminal::tab_from_path(&path) {
-                        terminal::input(session, data);
-                    }
-                }
-                DesktopTerminalViewAction::RequestViewport {
-                    path,
-                    cols,
-                    rows,
-                    pty_rows,
-                    top_row,
-                } => {
-                    if let Some(session) = terminal::tab_from_path(&path) {
-                        if terminal::request_viewport(session, cols, rows, pty_rows, top_row) {
-                            dock.item(session.tab).redraw(cx);
-                        }
-                    }
-                }
-                DesktopTerminalViewAction::None => {}
+                TerminalViewAction::Input { session, data } => terminal::input(session, data),
+                TerminalViewAction::None => {}
             }
             // The file browser names a path; the pane owns the dock, so
             // turning that into a tab is this side's job.
