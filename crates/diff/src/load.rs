@@ -518,7 +518,11 @@ impl FileLowerer<'_> {
         }
         st.bytes += old_bytes.len() + new_bytes.len();
 
-        let ext = path.rsplit('.').next().unwrap_or("").to_string();
+        let ext = std::path::Path::new(&path)
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .unwrap_or_default()
+            .to_ascii_lowercase();
         let lang = lang_for_ext(&ext);
 
         let old_src = String::from_utf8_lossy(&old_bytes).into_owned();
