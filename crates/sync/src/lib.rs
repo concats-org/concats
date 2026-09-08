@@ -46,13 +46,6 @@
 //! op, so it is on nobody's undo stack — which is what ⌘Z should do after an
 //! agent writes the file under you.
 
-// NOTE: `pedantic` is off here. The code came from a crate that never ran under
-// it, and turning it on means 300+ findings — mostly `must_use_candidate`,
-// numeric casts and missing `# Errors` docs. Worth doing, but not inside a
-// move, where it would hide the move. `all`, `style` and `complexity` are on,
-// as everywhere in the workspace.
-#![allow(clippy::pedantic, clippy::cognitive_complexity)]
-
 use std::ops::Range;
 
 use concats_text::{fnv1a, replacements};
@@ -74,9 +67,13 @@ const TEXT: &str = "text";
 /// It lives here because this is how a document version is named: every
 /// git-side revision of a file is a version, and the oid is the name both sides
 /// use for it.
+///
+/// # Panics
+/// Panics if Git's SHA-1 collision detector rejects the content.
+#[must_use]
 pub fn hash_object(bytes: &[u8]) -> ObjectId {
     gix::objs::compute_hash(gix::hash::Kind::Sha1, gix::objs::Kind::Blob, bytes)
-        .expect("sha1 hashing is infallible")
+        .expect("SHA-1 collision attack detected")
 }
 
 /// The peer id an import's operations are minted under.
@@ -105,6 +102,7 @@ fn import_peer(parent: &Frontiers, tag: &str) -> u64 {
 }
 
 /// A document holding `bytes` as its first version.
+#[must_use]
 pub fn open(bytes: &str) -> (LoroDoc, Frontiers) {
     let doc = LoroDoc::new();
     let version = import(&doc, &Frontiers::default(), bytes);
@@ -116,6 +114,10 @@ pub fn open(bytes: &str) -> (LoroDoc, Frontiers) {
 /// This is the one way anything that is not a keystroke here enters: a blob at
 /// either end of the range, a worktree file, an agent's write, the blob a GitHub
 /// comment was written against. Returns the version reproducing `bytes`.
+#[expect(
+    clippy::must_use_candidate,
+    reason = "Import mutates the document even when the caller does not need its version"
+)]
 pub fn import(doc: &LoroDoc, parent: &Frontiers, bytes: &str) -> Frontiers {
     // The tag is the content's git oid, computed here rather than passed in, so
     // a caller cannot label an import with bytes it does not have.
@@ -186,6 +188,7 @@ pub fn edit(doc: &LoroDoc, range: Range<usize>, insert: &str) {
     doc.commit();
 }
 
+#[must_use]
 pub fn text(doc: &LoroDoc) -> String {
     doc.get_text(TEXT).to_string()
 }
@@ -197,6 +200,7 @@ pub fn text(doc: &LoroDoc) -> String {
 /// comes down with that line when something is inserted above it. (Measured,
 /// not assumed: `Side` turns out not to change this for whole-line inserts, so
 /// there is one of these rather than one per bias.)
+#[must_use]
 pub fn cursor_at(doc: &LoroDoc, byte: usize) -> Option<Cursor> {
     let text = doc.get_text(TEXT);
     let at = text.convert_pos(byte, PosType::Bytes, PosType::Event)?;
@@ -212,6 +216,7 @@ pub fn cursor_at(doc: &LoroDoc, byte: usize) -> Option<Cursor> {
 /// and this is what is next to it". `held` is that distinction. It stays true
 /// across a line edited in place (still the same character) and goes false as
 /// soon as the anchor itself is deleted.
+#[must_use]
 pub fn resolve(doc: &LoroDoc, cursor: &Cursor) -> Option<(usize, bool)> {
     let found = doc.get_cursor_pos(cursor).ok()?;
     let byte = doc
@@ -221,6 +226,7 @@ pub fn resolve(doc: &LoroDoc, cursor: &Cursor) -> Option<(usize, bool)> {
 }
 
 /// Where a cursor sits now, whether or not its content survived.
+#[must_use]
 pub fn byte_of(doc: &LoroDoc, cursor: &Cursor) -> Option<usize> {
     Some(resolve(doc, cursor)?.0)
 }
@@ -231,6 +237,7 @@ pub fn byte_of(doc: &LoroDoc, cursor: &Cursor) -> Option<usize> {
 /// and detaches it, and the buffer on screen must not lurch because something
 /// asked what the file used to look like. The same fork is how a cursor resolves
 /// against an older version — see the test below.
+#[must_use]
 pub fn text_at(doc: &LoroDoc, version: &Frontiers) -> Option<String> {
     Some(text(&doc.fork_at(version).ok()?))
 }
@@ -253,12 +260,14 @@ pub struct Saved {
     pub disk: Vec<u8>,
 }
 
+#[must_use]
 pub fn snapshot(doc: &LoroDoc) -> Option<Vec<u8>> {
     doc.export(ExportMode::snapshot())
         .inspect_err(|error| eprintln!("warning: cannot snapshot a buffer: {error}"))
         .ok()
 }
 
+#[must_use]
 pub fn restore(bytes: &[u8]) -> Option<LoroDoc> {
     let doc = LoroDoc::new();
     doc.import(bytes)
@@ -270,6 +279,7 @@ pub fn restore(bytes: &[u8]) -> Option<LoroDoc> {
 /// A version as `(peer, counter)` pairs. Written out because Loro exposes
 /// frontiers as ids rather than as bytes, and this has to round-trip through a
 /// database column.
+#[must_use]
 pub fn encode_version(version: &Frontiers) -> Vec<u8> {
     let mut out = Vec::new();
     for id in version.iter() {
@@ -279,6 +289,11 @@ pub fn encode_version(version: &Frontiers) -> Vec<u8> {
     out
 }
 
+#[must_use]
+#[expect(
+    clippy::missing_panics_doc,
+    reason = "chunks_exact(12) proves both fixed-width conversions fit"
+)]
 pub fn decode_version(bytes: &[u8]) -> Option<Frontiers> {
     if !bytes.len().is_multiple_of(12) {
         return None;
@@ -294,10 +309,12 @@ pub fn decode_version(bytes: &[u8]) -> Option<Frontiers> {
     )
 }
 
+#[must_use]
 pub fn encode_cursor(cursor: &Cursor) -> Vec<u8> {
     cursor.encode()
 }
 
+#[must_use]
 pub fn decode_cursor(bytes: &[u8]) -> Option<Cursor> {
     Cursor::decode(bytes).ok()
 }
