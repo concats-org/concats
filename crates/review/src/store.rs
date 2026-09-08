@@ -577,44 +577,23 @@ impl Store {
     }
 }
 
-/// The repo's `user.name`, for attributing GUI-posted comments. A minimal
-/// config scan, local first and then the global locations, because this crate
-/// carries no libgit2 and shells out to nothing.
+/// Resolve attribution through Git's layered configuration, including includes.
 pub fn git_user_name(git_dir: &Path) -> Option<String> {
-    let mut candidates = vec![git_dir.join("config")];
-    if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
-        candidates.push(Path::new(&xdg).join("git/config"));
-    }
-    if let Ok(home) = std::env::var("HOME") {
-        candidates.push(Path::new(&home).join(".gitconfig"));
-        candidates.push(Path::new(&home).join(".config/git/config"));
-    }
-    candidates
-        .iter()
-        .filter_map(|p| std::fs::read_to_string(p).ok())
-        .find_map(|text| ini_user_name(&text))
-}
-
-fn ini_user_name(text: &str) -> Option<String> {
-    let mut in_user = false;
-    for line in text.lines() {
-        let line = line.trim();
-        if let Some(section) = line.strip_prefix('[') {
-            in_user = section
-                .trim_end_matches(']')
-                .trim()
-                .eq_ignore_ascii_case("user");
-        } else if in_user
-            && let Some((k, v)) = line.split_once('=')
-            && k.trim().eq_ignore_ascii_case("name")
-        {
-            let v = v.trim().trim_matches('"');
-            if !v.is_empty() {
-                return Some(v.to_string());
-            }
+    match gix::open(git_dir) {
+        Ok(repo) => repo
+            .config_snapshot()
+            .string("user.name")
+            .map(|name| name.to_string())
+            .filter(|name| !name.trim().is_empty()),
+        Err(error) => {
+            // NOTE: Comments can be anonymous when the repository cannot be opened.
+            eprintln!(
+                "warning: cannot read Git author in {}: {error}",
+                git_dir.display()
+            );
+            None
         }
     }
-    None
 }
 
 /// The changed-line keys of a hunk, from its `Row::HunkBar` payload: the del
@@ -1094,15 +1073,22 @@ mod tests {
     }
 
     #[test]
-    fn parses_user_name_from_git_config() {
+    fn author_honors_git_config_includes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = gix::init(tmp.path()).unwrap();
+        std::fs::write(
+            repo.git_dir().join("identity"),
+            "[user]\nname = Included Author\n",
+        )
+        .unwrap();
+        std::fs::write(
+            repo.git_dir().join("config"),
+            "[include]\npath = identity\n",
+        )
+        .unwrap();
         assert_eq!(
-            ini_user_name("[core]\n\tbare = false\n[user]\n\tname = Ada L\n\temail = a@b.c\n"),
-            Some("Ada L".to_string())
-        );
-        assert_eq!(ini_user_name("[user]\n\temail = a@b.c\n"), None);
-        assert_eq!(
-            ini_user_name("[USER]\nname = \"Quoted Name\"\n"),
-            Some("Quoted Name".to_string())
+            git_user_name(repo.git_dir()).as_deref(),
+            Some("Included Author")
         );
     }
 
