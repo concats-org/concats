@@ -4,7 +4,7 @@
 //! Unlike the four fixed streams there is one of these per open file, and it is
 //! the only stream without a `FileHeader`: which file it is lives in the dock
 //! tab, not in a caption over the text. The Settings tab rides the same
-//! mechanism, because editable, highlighted JSON is a file view over text that
+//! mechanism, because editable, highlighted TOML is a file view over text that
 //! just doesn't come from git.
 
 use concats_diff::{load, Blob, Row};
@@ -190,7 +190,7 @@ fn file_rows(d: &ReviewDoc, view: &FileView, comments: &[Comment]) -> Vec<Row> {
     rows
 }
 
-/// Point the Settings tab at `config.json`.
+/// Point the Settings tab at `config.toml`.
 ///
 /// It is a File tab like any other: one blob with an origin, lowered by the
 /// same whole-file path, typed into by the same caret, undone by the same
@@ -200,18 +200,21 @@ fn file_rows(d: &ReviewDoc, view: &FileView, comments: &[Comment]) -> Vec<Row> {
 /// Only what saving means differs, and that lives at the keystroke: the text is
 /// applied as settings, not just written.
 pub(crate) fn open_settings(d: &mut ReviewDoc) {
-    let path = crate::theme::config_file();
+    let Some(path) = crate::theme::config_file() else {
+        d.error = Some("No platform configuration directory".into());
+        return;
+    };
     let text = crate::theme::settings_text();
     let mut blob = Blob::new(
         concats_sync::hash_object(text.as_bytes()),
-        "json".into(),
+        "toml".into(),
         text,
     );
     blob.origin = Some(path.clone());
     let name = path.to_string_lossy().into_owned();
     let index = intern(d, &name, blob);
     let heading = format!(
-        "`config.json` · themes: {}",
+        "`config.toml` · themes: {}",
         crate::theme::theme_names().join(", ")
     );
     // No comments: this file has no place in the repo, so nothing anchors to it.
