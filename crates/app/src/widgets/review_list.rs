@@ -2128,14 +2128,11 @@ impl ReviewList {
             let Some(git_dir) = d.git_dir.clone() else {
                 return false;
             };
-            let (blob, new) = (d.caret.map(|c| c.blob), plan.new);
-            review().send(ReviewCmd::SaveFile { git_dir, plan });
-            // The buffer is the file now. Doing this rather than waiting for
-            // the write to land keeps one truth on screen; a failed write
-            // reports itself on the status line.
-            if let Some(blob) = blob {
-                d.blobs[blob as usize].saved(new);
-            }
+            review().send(ReviewCmd::SaveFile {
+                window: self.state().id,
+                git_dir,
+                plan,
+            });
             true
         });
         if sent {

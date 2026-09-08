@@ -248,6 +248,7 @@ fn place(d: &mut ReviewDoc, mut view: FileView, comments: &[Comment]) {
 /// Pure so the arithmetic is testable: the service performs it, and the two
 /// halves — write the bytes, carry the ticks — must describe the same file.
 pub(crate) struct SavePlan {
+    pub version: concats_sync::Version,
     pub root: std::path::PathBuf,
     pub path: std::path::PathBuf,
     pub text: String,
@@ -269,6 +270,7 @@ pub(crate) fn save_plan(d: &ReviewDoc, blob: u32) -> Option<SavePlan> {
     let lines = b.line_moves(&b.disk, &tip);
     Some(SavePlan {
         root: d.workdir.clone()?,
+        version: tip,
         path,
         text: b.text.clone(),
         old: b.oid,
