@@ -657,19 +657,7 @@ impl TerminalView {
         if text.is_empty() {
             return;
         }
-        let mut bytes = Vec::with_capacity(text.len() + 16);
-        if bracketed {
-            // The payload here is untrusted — the diff/guide text under review,
-            // pasted or dropped into the shell. Strip any embedded end-marker so
-            // it can't close bracketed paste early and inject a command at the
-            // next newline; real terminals filter the terminator the same way.
-            bytes.extend_from_slice(b"\x1b[200~");
-            bytes.extend_from_slice(text.replace("\x1b[201~", "").as_bytes());
-            bytes.extend_from_slice(b"\x1b[201~");
-        } else {
-            bytes.extend_from_slice(text.as_bytes());
-        }
-        self.emit_input_bytes(cx, session, bytes);
+        self.emit_input_bytes(cx, session, paste_bytes(text, bracketed));
     }
 
     fn shell_quote_path(path: &str) -> String {
@@ -686,36 +674,6 @@ impl TerminalView {
         out
     }
 
-    fn hex_nibble(byte: u8) -> Option<u8> {
-        match byte {
-            b'0'..=b'9' => Some(byte - b'0'),
-            b'a'..=b'f' => Some(10 + (byte - b'a')),
-            b'A'..=b'F' => Some(10 + (byte - b'A')),
-            _ => None,
-        }
-    }
-
-    fn decode_percent_escapes(input: &str) -> String {
-        let bytes = input.as_bytes();
-        let mut out = Vec::with_capacity(bytes.len());
-        let mut i = 0usize;
-        while i < bytes.len() {
-            if bytes[i] == b'%' && i + 2 < bytes.len() {
-                if let (Some(hi), Some(lo)) = (
-                    Self::hex_nibble(bytes[i + 1]),
-                    Self::hex_nibble(bytes[i + 2]),
-                ) {
-                    out.push((hi << 4) | lo);
-                    i += 3;
-                    continue;
-                }
-            }
-            out.push(bytes[i]);
-            i += 1;
-        }
-        String::from_utf8(out).unwrap_or_else(|_| input.to_string())
-    }
-
     fn dropped_text_payload(items: &[DragItem]) -> Option<String> {
         if items.is_empty() {
             return None;
@@ -729,8 +687,7 @@ impl TerminalView {
                     payload_parts.push(value.clone());
                 }
                 DragItem::FilePath { path, .. } => {
-                    let decoded = Self::decode_percent_escapes(path);
-                    payload_parts.push(Self::shell_quote_path(&decoded));
+                    payload_parts.push(Self::shell_quote_path(path));
                 }
             }
         }
@@ -992,8 +949,10 @@ impl Widget for TerminalView {
                 self.draw_bg.redraw(cx);
             }
             Hit::KeyDown(e) => {
-                // ⌘V is the app's paste, not a key for the shell.
-                if matches!(e.key_code, KeyCode::KeyV) && e.modifiers.logo {
+                // NOTE: makepad emits a paste for both shortcuts on macOS.
+                if matches!(e.key_code, KeyCode::KeyV)
+                    && (e.modifiers.logo || (cfg!(target_os = "macos") && e.modifiers.control))
+                {
                     return;
                 }
                 if let Some(bytes) = keys::encode(&e, true, mode) {
@@ -1030,9 +989,46 @@ impl Widget for TerminalView {
     }
 }
 
+fn paste_bytes(text: &str, bracketed: bool) -> Vec<u8> {
+    if bracketed {
+        // NOTE: removing ESC and ETX prevents pasted text from ending the
+        // bracketed payload or sending control commands to the foreground app.
+        format!("\x1b[200~{}\x1b[201~", text.replace(['\x1b', '\x03'], "")).into_bytes()
+    } else {
+        text.replace("\r\n", "\n").replace('\n', "\r").into_bytes()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bracketed_paste_cannot_inject_nested_markers_or_controls() {
+        assert_eq!(
+            paste_bytes("\x1b\x1b[201~[201~\x03echo hello\n", true),
+            b"\x1b[200~[201~[201~echo hello\n\x1b[201~"
+        );
+    }
+
+    #[test]
+    fn plain_paste_sends_one_return_per_line_break() {
+        assert_eq!(
+            paste_bytes("one\r\ntwo\nthree\r", false),
+            b"one\rtwo\rthree\r"
+        );
+    }
+
+    #[test]
+    fn dropped_paths_keep_literal_percent_sequences() {
+        assert_eq!(
+            TerminalView::dropped_text_payload(&[DragItem::FilePath {
+                path: "/tmp/it's%41.txt".into(),
+                internal_id: None,
+            }]),
+            Some("'/tmp/it'\\''s%41.txt' ".into())
+        );
+    }
 
     fn dots(c: char) -> Vec<(usize, usize)> {
         braille_dots(c).collect()
