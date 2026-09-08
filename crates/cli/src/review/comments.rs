@@ -238,6 +238,7 @@ fn resolve_anchor(
     let (new_side, _) = interchange::line_maps(file);
     let missing: Vec<u32> = (start..=end)
         .filter(|n| !new_side.contains_key(n))
+        .take(5)
         .collect();
     if !missing.is_empty() {
         let shown: Vec<String> = missing.iter().take(5).map(u32::to_string).collect();
