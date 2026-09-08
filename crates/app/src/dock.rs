@@ -144,10 +144,10 @@ pub(crate) fn load_layout(git_dir: &Path) -> Option<DockLayoutRon> {
         id!(SidebarPane),
     ];
     for item in state.dock_items.values() {
-        if let DockItem::Tab { kind, .. } = item {
-            if !known.contains(kind) {
-                return None;
-            }
+        if let DockItem::Tab { kind, .. } = item
+            && !known.contains(kind)
+        {
+            return None;
         }
     }
     state.dock_items.get(&id!(root))?;

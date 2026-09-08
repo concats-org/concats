@@ -11,7 +11,7 @@
 
 use std::collections::HashSet;
 
-use concats_diff::{stage::StageFile, Blob, CollapsedEnd, LineKind, LoadStats, Row, Side};
+use concats_diff::{Blob, CollapsedEnd, LineKind, LoadStats, Row, Side, stage::StageFile};
 use concats_review::store::{self, Comment};
 use gix::ObjectId;
 
@@ -599,12 +599,10 @@ fn hold_comments(d: &mut ReviewDoc, comments: &[store::Comment]) -> Vec<(u64, st
                 Some((from, to)) => blob.adopt(c.id, from, to),
                 None => false,
             };
-            if !adopted {
-                if let Some((from, to)) = store::run_in(blob, c) {
-                    blob.hold(c.id, from, to);
-                    if c.cursors.is_none() {
-                        minted.extend(blob.cursors_of(c.id).map(|pair| (c.id, pair)));
-                    }
+            if !adopted && let Some((from, to)) = store::run_in(blob, c) {
+                blob.hold(c.id, from, to);
+                if c.cursors.is_none() {
+                    minted.extend(blob.cursors_of(c.id).map(|pair| (c.id, pair)));
                 }
             }
         }
@@ -1009,14 +1007,15 @@ pub(crate) fn splice_composer(d: &mut ReviewDoc) {
             let anchor = anchor as i64;
             let mut best: Option<usize> = None;
             for (i, r) in d.active().iter().enumerate() {
-                if let Row::Code { blob: b, line, .. } = r {
-                    if *b == blob && *line == e {
-                        let closer = best.is_none_or(|prev| {
-                            (i as i64 - anchor).abs() < (prev as i64 - anchor).abs()
-                        });
-                        if closer {
-                            best = Some(i);
-                        }
+                if let Row::Code { blob: b, line, .. } = r
+                    && *b == blob
+                    && *line == e
+                {
+                    let closer = best.is_none_or(|prev| {
+                        (i as i64 - anchor).abs() < (prev as i64 - anchor).abs()
+                    });
+                    if closer {
+                        best = Some(i);
                     }
                 }
             }
@@ -1419,10 +1418,11 @@ mod tests {
 
         // A remainder under two steps goes in one click, and the run with it.
         expand_collapsed(&mut d, Tab::Files, 21, CollapsedEnd::Head);
-        assert!(!d
-            .files_rows
-            .iter()
-            .any(|r| matches!(r, Row::Collapsed { .. })));
+        assert!(
+            !d.files_rows
+                .iter()
+                .any(|r| matches!(r, Row::Collapsed { .. }))
+        );
         assert_eq!(numbers_at(&d.files_rows, 21), (31, 41, 40));
         assert_eq!(numbers_at(&d.files_rows, 50), (60, 70, 69));
     }

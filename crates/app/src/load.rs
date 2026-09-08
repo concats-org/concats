@@ -7,8 +7,8 @@
 //! carry-over is most of this file.
 
 use concats_diff::{
-    load::{Loaded, INDEX_REV, WORKTREE_REV},
     Blob, Row, Side,
+    load::{INDEX_REV, Loaded, WORKTREE_REV},
 };
 use concats_review::{guide, sessions, store};
 use concats_state::Target;
@@ -17,9 +17,9 @@ use crate::{
     file_view::{open_file, open_settings, read_file_sides},
     makepad_widgets::makepad_platform::thread::SignalToUI,
     review_doc::{
-        changed_keys, splice_comments, splice_composer, Caret, Compose, Composing, ReviewDoc, Tab,
+        Caret, Compose, Composing, ReviewDoc, Tab, changed_keys, splice_comments, splice_composer,
     },
-    service::{review, review_state, ReviewCmd},
+    service::{ReviewCmd, review, review_state},
     window::WindowState,
 };
 
@@ -118,10 +118,10 @@ pub(crate) fn spawn_load(
         // switches, without colliding with other windows on the same repo.
         // After the staleness check, so a superseded load can never overwrite
         // the range the winning load published.
-        if next.error.is_none() {
-            if let Some(conn) = concats_state::open_app_db() {
-                concats_state::publish_window_range(&conn, &state.key, &target);
-            }
+        if next.error.is_none()
+            && let Some(conn) = concats_state::open_app_db()
+        {
+            concats_state::publish_window_range(&conn, &state.key, &target);
         }
         // Publish: the lock is held for a swap, nothing more. Fold state is
         // the view's, not the document's, so it rides across the reload.

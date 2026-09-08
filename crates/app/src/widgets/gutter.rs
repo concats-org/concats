@@ -11,7 +11,7 @@ use concats_diff::LineKind;
 // the (public) `widget` module — hence the long path.
 use crate::makepad_widgets::widget::WidgetActionData;
 use crate::{
-    frame_theme, makepad_widgets::*, row_bg, row_marker, row_selected_bg, theme::paint, ROW_PAD,
+    ROW_PAD, frame_theme, makepad_widgets::*, row_bg, row_marker, row_selected_bg, theme::paint,
 };
 
 script_mod! {

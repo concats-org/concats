@@ -44,8 +44,8 @@ use dock::{create_stream_tab, load_layout, stream_tab_spec};
 use load::{resplice_comments, spawn_load};
 pub use makepad_widgets;
 use makepad_widgets::*;
-use review_doc::{status_line, ReviewDoc, Tab};
-use service::{review, review_state, ReviewCmd, ReviewUpdate};
+use review_doc::{ReviewDoc, Tab, status_line};
+use service::{ReviewCmd, ReviewUpdate, review, review_state};
 use widgets::ReviewPane;
 use window::WindowState;
 
@@ -429,18 +429,17 @@ impl MatchEvent for App {
         // be laid over a design frame of the same size without rescaling — the
         // layout itself changes with width, so a resized screenshot is not the
         // same picture. Startup only; makepad ignores it later.
-        if let Ok(spec) = crate::dev_hooks::var("CONCATS_APP_SIZE") {
-            if let Some((w, h)) = spec.split_once('x') {
-                if let (Ok(w), Ok(h)) = (w.parse::<f64>(), h.parse::<f64>()) {
-                    self.ui.window(cx, ids!(window_a)).configure_window(
-                        cx,
-                        Vec2d { x: w, y: h },
-                        Vec2d { x: 80.0, y: 80.0 },
-                        false,
-                        "concats app".to_string(),
-                    );
-                }
-            }
+        if let Ok(spec) = crate::dev_hooks::var("CONCATS_APP_SIZE")
+            && let Some((w, h)) = spec.split_once('x')
+            && let (Ok(w), Ok(h)) = (w.parse::<f64>(), h.parse::<f64>())
+        {
+            self.ui.window(cx, ids!(window_a)).configure_window(
+                cx,
+                Vec2d { x: w, y: h },
+                Vec2d { x: 80.0, y: 80.0 },
+                false,
+                "concats app".to_string(),
+            );
         }
         // The platform installs a menu bar holding nothing but Quit
         // (`init_quit_menu`), and `update_macos_menu` replaces it whole — so
@@ -577,12 +576,10 @@ impl MatchEvent for App {
             // blank panel.
             if self.shot_done
                 && crate::dev_hooks::var("CONCATS_APP_TERM").is_ok_and(|v| !v.is_empty())
+                && let Ok(path) = crate::dev_hooks::var("CONCATS_APP_SHOT")
+                && !path.is_empty()
             {
-                if let Ok(path) = crate::dev_hooks::var("CONCATS_APP_SHOT") {
-                    if !path.is_empty() {
-                        cx.capture_next_frame_to_file(path.into());
-                    }
-                }
+                cx.capture_next_frame_to_file(path.into());
             }
         }
         let mut dirty = false;
@@ -808,12 +805,10 @@ impl AppWindow {
                         }
                     }
                     dock.load_state(cx, layout.dock_items);
-                    if open {
-                        if let Some(mut p) = pane.borrow_mut::<ReviewPane>() {
-                            // A restored-open panel needs its shell running;
-                            // extra session tabs respawn when pressed.
-                            p.open_terminal(cx, id!(terminal_tab));
-                        }
+                    if open && let Some(mut p) = pane.borrow_mut::<ReviewPane>() {
+                        // A restored-open panel needs its shell running;
+                        // extra session tabs respawn when pressed.
+                        p.open_terminal(cx, id!(terminal_tab));
                     }
                 }
             }
@@ -897,19 +892,19 @@ impl AppWindow {
         {
             let pane = self.pane(cx);
             let dock = pane.dock(cx, ids!(dock));
-            if dock.check_and_clear_need_save() {
-                if let Some(git_dir) = self.layout_git_dir.clone() {
-                    let restores = pane
-                        .borrow::<ReviewPane>()
-                        .map(|p| (p.bottom_restore, p.sidebar_restore))
-                        .unwrap_or((0.0, 0.0));
-                    if let Some(items) = dock.clone_state() {
-                        review().send(ReviewCmd::SaveLayout {
-                            git_dir,
-                            dock_items: items,
-                            restores,
-                        });
-                    }
+            if dock.check_and_clear_need_save()
+                && let Some(git_dir) = self.layout_git_dir.clone()
+            {
+                let restores = pane
+                    .borrow::<ReviewPane>()
+                    .map(|p| (p.bottom_restore, p.sidebar_restore))
+                    .unwrap_or((0.0, 0.0));
+                if let Some(items) = dock.clone_state() {
+                    review().send(ReviewCmd::SaveLayout {
+                        git_dir,
+                        dock_items: items,
+                        restores,
+                    });
                 }
             }
         }
@@ -1202,10 +1197,10 @@ impl AppMain for App {
                 dq.response.set(WindowDragQueryResponse::Caption);
             }
         }
-        if let Event::MacosMenuCommand(command) = event {
-            if *command == live_id!(new_window) {
-                self.open_new_window(cx);
-            }
+        if let Event::MacosMenuCommand(command) = event
+            && *command == live_id!(new_window)
+        {
+            self.open_new_window(cx);
         }
         // After `Root` has dropped the widget, so the window is gone from both.
         if let Event::WindowClosed(e) = event {

@@ -10,7 +10,7 @@
 use concats_diff::LineKind;
 use concats_syntax::Span;
 
-use crate::{frame_theme, makepad_widgets::*, row_bg, row_selected_bg, theme::paint, ROW_PAD};
+use crate::{ROW_PAD, frame_theme, makepad_widgets::*, row_bg, row_selected_bg, theme::paint};
 
 script_mod! {
     use mod.prelude.widgets.*

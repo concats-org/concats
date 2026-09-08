@@ -7,10 +7,10 @@
 //! mechanism, because editable, highlighted TOML is a file view over text that
 //! just doesn't come from git.
 
-use concats_diff::{load, Blob, Row};
+use concats_diff::{Blob, Row, load};
 use concats_review::store::{self, Comment};
 
-use crate::review_doc::{finalize_cards, strip_composer, FileView, ReviewDoc};
+use crate::review_doc::{FileView, ReviewDoc, finalize_cards, strip_composer};
 
 /// Both sides of one file for the File tab: its content at the range's base
 /// (`None` when the range creates it) and at its head.
@@ -312,7 +312,7 @@ mod tests {
     use gix::ObjectId;
 
     use super::*;
-    use crate::review_doc::{reveal_removed, type_at, Caret, Tab};
+    use crate::review_doc::{Caret, Tab, reveal_removed, type_at};
 
     fn oid(n: u8) -> ObjectId {
         ObjectId::from_hex(format!("{n:040x}").as_bytes()).expect("valid hex")
@@ -697,9 +697,11 @@ mod tests {
         // Reused by oid, not appended. Sharing the index is what lets one
         // comment render in the file view and in the diff.
         assert_eq!(d.blobs.len(), 2);
-        assert!(opened(&d)
-            .iter()
-            .all(|r| !matches!(r, Row::Code { blob, .. } if *blob != 1)));
+        assert!(
+            opened(&d)
+                .iter()
+                .all(|r| !matches!(r, Row::Code { blob, .. } if *blob != 1))
+        );
         assert_eq!(d.blob_paths.get(&1).map(String::as_str), Some("src/a.rs"));
     }
 
