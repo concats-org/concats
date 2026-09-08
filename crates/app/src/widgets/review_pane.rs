@@ -13,8 +13,9 @@ use std::{collections::HashSet, sync::Arc};
 use concats_diff::{CollapsedEnd, LineKind, Row, Side};
 use concats_review::{interchange, store};
 
-use super::{review_list::ReviewItemAction, FileBrowserAction, GutterAction, ReviewList, SeenBar};
+use super::{FileBrowserAction, GutterAction, ReviewList, SeenBar, review_list::ReviewItemAction};
 use crate::{
+    FrameData, WindowScope,
     dock::{
         create_stream_tab, drag_source_tab_id, file_tab_id, is_terminal_dock_tab, model_tab_of,
         stream_tab_spec,
@@ -23,15 +24,14 @@ use crate::{
     load::{resplice_comments, spawn_load},
     makepad_widgets::*,
     review_doc::{
-        blob_label, card_keys, comment_anchor, derive_compose, expand_collapsed, reveal_removed,
-        seen_progress, splice_composer, stream_has_composer, strip_composer, Compose, Composing,
-        Tab,
+        Compose, Composing, Tab, blob_label, card_keys, comment_anchor, derive_compose,
+        expand_collapsed, reveal_removed, seen_progress, splice_composer, stream_has_composer,
+        strip_composer,
     },
-    service::{self, review, review_state, ReviewCmd},
+    service::{self, ReviewCmd, review, review_state},
     terminal,
     terminal_view::TerminalViewAction,
     window::WindowState,
-    FrameData, WindowScope,
 };
 
 script_mod! {
@@ -976,10 +976,10 @@ impl ReviewPane {
         let mut dialog = rfd::FileDialog::new().set_title("Choose a repository");
         // Start the browser next to the current repo, not the cwd.
         let current = self.state().read(|d| d.repo.clone());
-        if let Some(parent) = std::path::Path::new(&current).parent() {
-            if !parent.as_os_str().is_empty() {
-                dialog = dialog.set_directory(parent);
-            }
+        if let Some(parent) = std::path::Path::new(&current).parent()
+            && !parent.as_os_str().is_empty()
+        {
+            dialog = dialog.set_directory(parent);
         }
         let picked = dialog.pick_folder();
         // The modal swallowed the row's mouse-up/hover-out; snap it back so the
@@ -1564,11 +1564,7 @@ impl ReviewPane {
             Panel::Bottom => (self.bottom_restore, 220.0),
             Panel::Sidebar => (self.sidebar_restore, 260.0),
         };
-        if last > 1.0 {
-            last
-        } else {
-            default
-        }
+        if last > 1.0 { last } else { default }
     }
 
     fn start_slide(&mut self, cx: &mut Cx, panel: Panel, to: f64) {
@@ -1675,12 +1671,12 @@ impl ReviewPane {
             }
         }
         for (i, ids) in repo_rows!().into_iter().enumerate() {
-            if self.view.button(cx, ids).clicked(actions) {
-                if let Some(repo) = self.recents.get(i).cloned() {
-                    let (base, head) = self.current_range();
-                    self.repo_close(cx);
-                    self.combo_load(cx, repo, base, head);
-                }
+            if self.view.button(cx, ids).clicked(actions)
+                && let Some(repo) = self.recents.get(i).cloned()
+            {
+                let (base, head) = self.current_range();
+                self.repo_close(cx);
+                self.combo_load(cx, repo, base, head);
             }
         }
         if self.view.button(cx, ids!(open_dir_row)).clicked(actions) {
@@ -2188,15 +2184,15 @@ impl Widget for ReviewPane {
         // the next keystroke to the other one's shell. Makepad's hit test
         // keeps them apart with the `handled` flag, but a widget that tests
         // raw coordinates never consults it.
-        if let Some(window_id) = pointer_window(event) {
-            if self.state().platform != Some(window_id) {
-                return;
-            }
+        if let Some(window_id) = pointer_window(event)
+            && self.state().platform != Some(window_id)
+        {
+            return;
         }
-        if let Event::NextFrame(ne) = event {
-            if self.slide_next_frame.is_event(event).is_some() {
-                self.step_slide(cx, ne.time);
-            }
+        if let Event::NextFrame(ne) = event
+            && self.slide_next_frame.is_event(event).is_some()
+        {
+            self.step_slide(cx, ne.time);
         }
         // Only which window, not the whole frame: this runs on every mouse
         // move, and rebuilding the rest of `FrameData` there would cost a

@@ -15,11 +15,11 @@ use std::collections::{HashMap, HashSet};
 use concats_diff::Row;
 
 use crate::{
+    FrameData,
     makepad_widgets::{
         file_tree::{FileTree, GitStatusDotKind},
         *,
     },
-    FrameData,
 };
 
 script_mod! {
@@ -166,11 +166,7 @@ fn status_dots(
 
 /// Two different kinds under one folder: that is what `Mixed` means.
 fn merge(a: GitStatusDotKind, b: GitStatusDotKind) -> GitStatusDotKind {
-    if a == b {
-        a
-    } else {
-        GitStatusDotKind::Mixed
-    }
+    if a == b { a } else { GitStatusDotKind::Mixed }
 }
 
 /// Materialize `path` and every folder above it, folding `status` into each

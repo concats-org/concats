@@ -2,8 +2,7 @@
 name = "concats-app"
 publish.workspace = true
 version.workspace = true
-# Ported from the makepad-tree POC as-is; 2024 migration is a follow-up.
-edition = "2021"
+edition.workspace = true
 # License intentionally unset (crate is never published): whether this app is
 # open source or fair source is still undecided. See README.md.
 

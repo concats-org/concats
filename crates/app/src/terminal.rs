@@ -15,8 +15,8 @@ use std::{
     collections::{HashMap, HashSet},
     path::Path,
     sync::{
-        atomic::{AtomicBool, Ordering},
         Arc, Mutex, OnceLock,
+        atomic::{AtomicBool, Ordering},
     },
 };
 
@@ -28,7 +28,7 @@ use alacritty_terminal::{
     term::{ClipboardType, Config, Term},
     tty,
 };
-use makepad_widgets::{makepad_platform::thread::SignalToUI, LiveId};
+use makepad_widgets::{LiveId, makepad_platform::thread::SignalToUI};
 
 pub mod colors;
 pub mod keys;

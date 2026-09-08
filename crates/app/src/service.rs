@@ -21,7 +21,7 @@ use concats_highlight::Highlighter;
 use concats_review::store::{self, Anchor, Comment, LineKey, Store};
 use concats_syntax::LineSpans;
 use gix::ObjectId;
-use makepad_service::{notify, Service, Shared, Worker};
+use makepad_service::{Service, Shared, Worker, notify};
 use makepad_widgets::{DockItem, LiveId};
 
 /// What the UI can ask of the store. Every variant is an effect the UI thread

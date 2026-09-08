@@ -106,18 +106,18 @@ impl App {
         }
         // CONCATS_APP_SCROLL=N: start the list at row N — lets a
         // test screenshot the sticky header without a pointer.
-        if let Ok(n) = crate::dev_hooks::var("CONCATS_APP_SCROLL") {
-            if let Ok(n) = n.parse::<usize>() {
-                let Some(t) = self.primary().map(|w| w.state.read(|d| d.tab)) else {
-                    return;
-                };
-                let pane = self.ui.widget(cx, ids!(pane_a));
-                let content = pane.dock(cx, ids!(dock)).item(stream_tab_spec(t).0);
-                let list = content.portal_list(cx, ids!(list));
-                if let Some(mut pl) = list.borrow_mut() {
-                    pl.set_first_id_and_scroll(n, 0.0);
-                };
-            }
+        if let Ok(n) = crate::dev_hooks::var("CONCATS_APP_SCROLL")
+            && let Ok(n) = n.parse::<usize>()
+        {
+            let Some(t) = self.primary().map(|w| w.state.read(|d| d.tab)) else {
+                return;
+            };
+            let pane = self.ui.widget(cx, ids!(pane_a));
+            let content = pane.dock(cx, ids!(dock)).item(stream_tab_spec(t).0);
+            let list = content.portal_list(cx, ids!(list));
+            if let Some(mut pl) = list.borrow_mut() {
+                pl.set_first_id_and_scroll(n, 0.0);
+            };
         }
         // CONCATS_APP_TERM=1: pre-open the terminal panel (and its
         // shell) so it can be screenshotted without a pointer.
@@ -145,11 +145,11 @@ impl App {
                 };
             }
         }
-        if let Ok(path) = crate::dev_hooks::var("CONCATS_APP_SHOT") {
-            if !path.is_empty() {
-                self.shot_done = true;
-                cx.capture_next_frame_to_file(path.into());
-            }
+        if let Ok(path) = crate::dev_hooks::var("CONCATS_APP_SHOT")
+            && !path.is_empty()
+        {
+            self.shot_done = true;
+            cx.capture_next_frame_to_file(path.into());
         }
     }
     /// `CONCATS_APP_CLICK=x,y`: hover, press and release at those logical
@@ -207,15 +207,15 @@ impl App {
             // one that never happened, and a difference can't tell a right
             // answer from a wrong one.
             1 => {
-                if let Ok(path) = crate::dev_hooks::var("CONCATS_APP_SHOT_BEFORE") {
-                    if !path.is_empty() {
-                        let path = PathBuf::from(path);
-                        let _ = std::fs::remove_file(&path);
-                        cx.capture_next_frame_to_file(path.clone());
-                        self.shot_pending = Some(path);
-                        // Guarantee the draw that writes it, and the tick after.
-                        self.ui.redraw(cx);
-                    }
+                if let Ok(path) = crate::dev_hooks::var("CONCATS_APP_SHOT_BEFORE")
+                    && !path.is_empty()
+                {
+                    let path = PathBuf::from(path);
+                    let _ = std::fs::remove_file(&path);
+                    cx.capture_next_frame_to_file(path.clone());
+                    self.shot_pending = Some(path);
+                    // Guarantee the draw that writes it, and the tick after.
+                    self.ui.redraw(cx);
                 }
             }
             2 => {
@@ -277,13 +277,13 @@ impl App {
             // in six. Landing the first proves the pipeline is flushed, so the
             // frame behind the second is drawn after everything settled.
             6 | 7 => {
-                if let Ok(path) = crate::dev_hooks::var("CONCATS_APP_SHOT") {
-                    if !path.is_empty() {
-                        let path = PathBuf::from(path);
-                        let _ = std::fs::remove_file(&path);
-                        cx.capture_next_frame_to_file(path.clone());
-                        self.shot_pending = Some(path);
-                    }
+                if let Ok(path) = crate::dev_hooks::var("CONCATS_APP_SHOT")
+                    && !path.is_empty()
+                {
+                    let path = PathBuf::from(path);
+                    let _ = std::fs::remove_file(&path);
+                    cx.capture_next_frame_to_file(path.clone());
+                    self.shot_pending = Some(path);
                 }
                 // Guarantee one more draw, so the tick that exits below is
                 // reached: these ticks advance per DRAW, and once the capture is

@@ -11,19 +11,19 @@ use concats_diff::{Blob, LineKind, Row};
 use concats_review::store::{self, LineKey};
 
 use super::{
+    DiffLine, Gutter,
     collapsed_run::CollapsedRun,
     drop_shadow::{DropShadow, ShadowUp},
-    DiffLine, Gutter,
 };
 use crate::{
+    FrameData, FrameTheme,
     file_view::{relower_edited, save_plan},
     makepad_widgets::*,
     review_doc::{
-        caret_row, compose_title, step_row, type_at, Caret, Composing, FileView, ReviewDoc, Step,
-        Tab,
+        Caret, Composing, FileView, ReviewDoc, Step, Tab, caret_row, compose_title, step_row,
+        type_at,
     },
-    service::{highlight, review, HighlightCmd, ReviewCmd},
-    FrameData, FrameTheme,
+    service::{HighlightCmd, ReviewCmd, highlight, review},
 };
 
 thread_local! {
@@ -2158,10 +2158,10 @@ impl ReviewList {
                     );
                 }
             }
-            if applied.is_ok() {
-                if let Some(caret) = d.caret {
-                    d.blobs[caret.blob as usize].saved(concats_sync::hash_object(text.as_bytes()));
-                }
+            if applied.is_ok()
+                && let Some(caret) = d.caret
+            {
+                d.blobs[caret.blob as usize].saved(concats_sync::hash_object(text.as_bytes()));
             }
             d.rows_rev += 1;
         });
@@ -2195,7 +2195,7 @@ impl ReviewList {
                 self.state().with(|d| undo_at(d, ke.modifiers.shift))
             }
             KeyCode::KeyS if ke.modifiers.logo || ke.modifiers.control => {
-                return Some(self.save(cx))
+                return Some(self.save(cx));
             }
             _ => return None,
         };
@@ -2352,8 +2352,8 @@ fn step_caret(d: &mut ReviewDoc, tab: Tab, caret: Caret, step: Step) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        anchor_entry, hits_in, row_at_y, sticky_offsets, CARD_END_EDGE, FILE_HEADER_TOP_PADDING,
-        STICKY_FADE, STICKY_HEIGHT, STICKY_TOP_GAP,
+        CARD_END_EDGE, FILE_HEADER_TOP_PADDING, STICKY_FADE, STICKY_HEIGHT, STICKY_TOP_GAP,
+        anchor_entry, hits_in, row_at_y, sticky_offsets,
     };
 
     #[test]

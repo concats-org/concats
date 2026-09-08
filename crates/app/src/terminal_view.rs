@@ -19,12 +19,12 @@
 use std::collections::HashMap;
 
 use alacritty_terminal::{
+    Term,
     grid::{Dimensions, Scroll},
     index::{Column, Point, Side},
     selection::{Selection, SelectionType},
-    term::{cell::Flags, point_to_viewport, viewport_to_point, TermMode},
+    term::{TermMode, cell::Flags, point_to_viewport, viewport_to_point},
     vte::ansi::CursorShape,
-    Term,
 };
 
 use crate::{
@@ -32,7 +32,7 @@ use crate::{
         text::{geom::Point as TextPoint, rasterizer::RasterizedGlyph},
         *,
     },
-    terminal::{colors, keys, mouse, Proxy, Session, Size},
+    terminal::{Proxy, Session, Size, colors, keys, mouse},
 };
 
 script_mod! {
@@ -507,23 +507,22 @@ impl TerminalView {
             } else if indexed.cell.c != ' '
                 && !indexed.cell.c.is_control()
                 && !flags.contains(Flags::HIDDEN)
+                && let Some(glyph) = self.cached_terminal_glyph(cx, indexed.cell.c)
             {
-                if let Some(glyph) = self.cached_terminal_glyph(cx, indexed.cell.c) {
-                    let baseline_y = y
-                        + self.cell_offset_y
-                        + self.text_y_offset
-                        + glyph.baseline_offset_in_lpxs as f64;
-                    self.draw_text.draw_rasterized_glyph_abs(
-                        cx,
-                        TextPoint::new(
-                            (x + glyph.x_offset_in_lpxs as f64) as f32,
-                            baseline_y as f32,
-                        ),
-                        glyph.font_size_in_lpxs,
-                        glyph.rasterized,
-                        fg,
-                    );
-                }
+                let baseline_y = y
+                    + self.cell_offset_y
+                    + self.text_y_offset
+                    + glyph.baseline_offset_in_lpxs as f64;
+                self.draw_text.draw_rasterized_glyph_abs(
+                    cx,
+                    TextPoint::new(
+                        (x + glyph.x_offset_in_lpxs as f64) as f32,
+                        baseline_y as f32,
+                    ),
+                    glyph.font_size_in_lpxs,
+                    glyph.rasterized,
+                    fg,
+                );
             }
 
             if flags.intersects(Flags::ALL_UNDERLINES | Flags::STRIKEOUT) {
@@ -779,10 +778,11 @@ impl Widget for TerminalView {
             max_scroll + self.viewport_rect.size.y,
         );
         self.scroll_bars.end(cx);
-        if session.is_some() && cx.has_key_focus(self.scroll_bars.area()) {
-            if let Some(ime_pos) = self.ime_pos {
-                cx.show_text_ime(self.scroll_bars.area(), ime_pos);
-            }
+        if session.is_some()
+            && cx.has_key_focus(self.scroll_bars.area())
+            && let Some(ime_pos) = self.ime_pos
+        {
+            cx.show_text_ime(self.scroll_bars.area(), ime_pos);
         }
         DrawStep::done()
     }
@@ -817,27 +817,27 @@ impl Widget for TerminalView {
 
         // The wheel belongs to the application while it is tracking the
         // pointer, or on the alt screen; otherwise it scrolls our scrollback.
-        if let Event::Scroll(e) = event {
-            if self.scroll_bars.area().clipped_rect(cx).contains(e.abs) {
-                let (_, cell_height) = self.cell_metrics();
-                self.scroll_accum += e.scroll.y;
-                let lines = (self.scroll_accum / cell_height).abs() as usize;
-                if lines > 0 {
-                    let up = self.scroll_accum < 0.0;
-                    let (point, _) = self.point_at(e.abs, display_offset, columns, screen_lines);
-                    match mouse::wheel(up, lines, &e.modifiers, point, mode) {
-                        Some(bytes) => {
-                            self.scroll_accum -=
-                                self.scroll_accum.signum() * lines as f64 * cell_height;
-                            self.emit_input_bytes(cx, session, bytes);
-                            e.handled_y.set(true);
-                            self.draw_bg.redraw(cx);
-                            return;
-                        }
-                        // The bar below takes this one, so what is left of a
-                        // line here would only fire late.
-                        None => self.scroll_accum = 0.0,
+        if let Event::Scroll(e) = event
+            && self.scroll_bars.area().clipped_rect(cx).contains(e.abs)
+        {
+            let (_, cell_height) = self.cell_metrics();
+            self.scroll_accum += e.scroll.y;
+            let lines = (self.scroll_accum / cell_height).abs() as usize;
+            if lines > 0 {
+                let up = self.scroll_accum < 0.0;
+                let (point, _) = self.point_at(e.abs, display_offset, columns, screen_lines);
+                match mouse::wheel(up, lines, &e.modifiers, point, mode) {
+                    Some(bytes) => {
+                        self.scroll_accum -=
+                            self.scroll_accum.signum() * lines as f64 * cell_height;
+                        self.emit_input_bytes(cx, session, bytes);
+                        e.handled_y.set(true);
+                        self.draw_bg.redraw(cx);
+                        return;
                     }
+                    // The bar below takes this one, so what is left of a
+                    // line here would only fire late.
+                    None => self.scroll_accum = 0.0,
                 }
             }
         }
@@ -911,10 +911,9 @@ impl Widget for TerminalView {
                     self.draw_bg.redraw(cx);
                 } else if mouse::wants_pointer(&e.modifiers, mode)
                     && mouse::wants_motion(self.held.is_some(), mode)
+                    && let Some(bytes) = mouse::motion(self.held, &e.modifiers, point, mode)
                 {
-                    if let Some(bytes) = mouse::motion(self.held, &e.modifiers, point, mode) {
-                        self.emit_input_bytes(cx, session, bytes);
-                    }
+                    self.emit_input_bytes(cx, session, bytes);
                 }
             }
             Hit::FingerUp(e) => {
@@ -922,10 +921,9 @@ impl Widget for TerminalView {
                 if let Some(button) = self
                     .held
                     .filter(|_| mouse::wants_pointer(&e.modifiers, mode))
+                    && let Some(bytes) = mouse::report(button, false, &e.modifiers, point, mode)
                 {
-                    if let Some(bytes) = mouse::report(button, false, &e.modifiers, point, mode) {
-                        self.emit_input_bytes(cx, session, bytes);
-                    }
+                    self.emit_input_bytes(cx, session, bytes);
                 }
                 self.selecting = false;
                 self.held = None;

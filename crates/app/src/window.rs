@@ -7,8 +7,8 @@
 //! should see one set of comments and ticks.
 
 use std::sync::{
-    atomic::{AtomicBool, AtomicU64, Ordering},
     Arc, RwLock,
+    atomic::{AtomicBool, AtomicU64, Ordering},
 };
 
 use crate::{

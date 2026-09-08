@@ -15,7 +15,7 @@ use alacritty_terminal::{
     vte::ansi::{Color, NamedColor, Rgb},
 };
 use concats_theme::Rgba;
-use makepad_widgets::{vec4, Vec4f};
+use makepad_widgets::{Vec4f, vec4};
 
 use crate::theme::Theme;
 
