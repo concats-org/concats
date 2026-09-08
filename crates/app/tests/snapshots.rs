@@ -7,8 +7,8 @@
 //! such states could only be checked by looking at a picture.
 //!
 //! ```text
-//! cargo test -p concats-app --test snapshots -- --ignored          # run them
-//! SNAPSHOT_BLESS=1 cargo test -p concats-app --test snapshots -- --ignored
+//! cargo test -p concats-app --features dev-hooks --test snapshots -- --ignored          # run them
+//! SNAPSHOT_BLESS=1 cargo test -p concats-app --features dev-hooks --test snapshots -- --ignored
 //! ```
 //!
 //! Ignored by default: every test spawns a GPU process and needs a window
@@ -65,6 +65,8 @@
 //! that comparison: a per-channel delta and a budget of differing pixels, which
 //! catches real misalignment (padding, line height, colour) and ignores how
 //! glyphs were rendered.
+
+#![cfg(all(target_os = "macos", feature = "dev-hooks"))]
 
 use std::{
     path::{Path, PathBuf},

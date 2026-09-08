@@ -92,6 +92,7 @@ tempfile = { workspace = true }
 image = { version = "0.25", default-features = false, features = ["png"] }
 
 [features]
+dev-hooks = []
 # Highlighting is native-only: the grammars are C and do not build for wasm32.
 # Off, the engine answers in unstyled runs.
 default = ["treesitter"]

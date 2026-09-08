@@ -173,7 +173,7 @@ fn theme_slot() -> &'static RwLock<Arc<Theme>> {
     T.get_or_init(|| {
         // CONCATS_APP_THEME overrides the persisted selection — dev/screenshot
         // convenience, matching the app's other CONCATS_APP_* env knobs.
-        let initial = std::env::var("CONCATS_APP_THEME")
+        let initial = crate::dev_hooks::var("CONCATS_APP_THEME")
             .ok()
             .or_else(persisted_selection)
             .and_then(|name| by_name(&name))
