@@ -12,13 +12,6 @@
 //! answers in unstyled runs, which is what the web target needs (the C grammars
 //! do not build for wasm32).
 
-// NOTE: `pedantic` is off here, not because it is wrong but because this code
-// arrived from a crate that never ran under it — 300+ findings, almost all
-// `must_use_candidate`, numeric casts and missing-`# Errors` docs. Turning it on
-// is worth doing; doing it inside a move would hide the move. Everything else
-// the workspace enables (`all`, `style`, `complexity`) is enforced.
-#![allow(clippy::pedantic, clippy::cognitive_complexity)]
-
 use std::collections::HashMap;
 
 #[cfg(feature = "treesitter")]
@@ -43,9 +36,10 @@ pub struct HlStats {
 
 impl HlStats {
     /// Sorted slowest-first — the table the bench prints.
+    #[must_use]
     pub fn ranked(&self) -> Vec<LangStat> {
         let mut v: Vec<_> = self.per_lang.values().cloned().collect();
-        v.sort_by(|a, b| b.ms.partial_cmp(&a.ms).unwrap());
+        v.sort_by(|a, b| b.ms.total_cmp(&a.ms));
         v
     }
 }
@@ -56,6 +50,7 @@ impl HlStats {
 /// and reaching up for its types is the coupling that would stop this from
 /// being its own crate.
 #[cfg(feature = "treesitter")]
+#[derive(Clone, Copy)]
 pub struct Buffer<'a> {
     /// The content this buffer was read as. Stable while it is typed into (the
     /// oid only moves on a save), which is what makes it an identity.
@@ -182,6 +177,7 @@ impl Default for Highlighter {
 }
 
 impl Highlighter {
+    #[must_use]
     pub fn new() -> Self {
         Self {
             #[cfg(feature = "treesitter")]
@@ -193,6 +189,7 @@ impl Highlighter {
     }
 
     /// Number of extensions mapped to a grammar.
+    #[must_use]
     pub fn grammar_count(&self) -> usize {
         #[cfg(feature = "treesitter")]
         {
