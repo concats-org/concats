@@ -57,6 +57,7 @@ pub(crate) enum ReviewCmd {
     /// everything anchored to its old content across to its new hash. Both
     /// halves belong to the one owner of the store, and both are I/O.
     SaveFile {
+        window: LiveId,
         git_dir: PathBuf,
         plan: crate::file_view::SavePlan,
     },
@@ -98,6 +99,7 @@ pub(crate) enum ReviewCmd {
     },
     /// Share → "Stage seen hunks": `git add -p` driven by the seen ticks.
     StageSeen {
+        window: LiveId,
         git_dir: PathBuf,
         workdir: PathBuf,
         files: Vec<concats_diff::stage::StageFile>,
@@ -163,7 +165,16 @@ pub(crate) enum ReviewUpdate {
     },
     /// A staging run finished, or a guide landed for another range — either
     /// way, one line for the status bar.
-    Status(String),
+    Status {
+        window: LiveId,
+        message: String,
+    },
+    FileSaved {
+        window: LiveId,
+        path: PathBuf,
+        oid: ObjectId,
+        version: concats_sync::Version,
+    },
     /// A blob finished highlighting off the UI thread. `rev` is the blob's
     /// edit counter as it was when the work started — spans computed against
     /// text that has since been typed over are dropped, not drawn.
@@ -389,7 +400,11 @@ impl Service for ReviewService {
                 self.comments_rev += 1;
                 self.publish(&git_dir);
             }
-            ReviewCmd::SaveFile { git_dir, plan } => {
+            ReviewCmd::SaveFile {
+                window,
+                git_dir,
+                plan,
+            } => {
                 let save = || {
                     let relative = plan
                         .path
@@ -401,10 +416,10 @@ impl Service for ReviewService {
                         .map_err(|source| concats_diff::Error::Io { path, source })
                 };
                 if let Err(error) = save() {
-                    notify(ReviewUpdate::Status(format!(
-                        "cannot save {}: {error}",
-                        plan.path.display()
-                    )));
+                    notify(ReviewUpdate::Status {
+                        window,
+                        message: format!("cannot save {}: {error}", plan.path.display()),
+                    });
                     return;
                 }
                 // Only after the bytes landed: an anchor moved to a hash no
@@ -413,13 +428,22 @@ impl Service for ReviewService {
                     self.comments_rev += 1;
                 }
                 self.publish(&git_dir);
-                notify(ReviewUpdate::Status(format!(
-                    "saved {}",
-                    plan.path.file_name().map_or_else(
-                        || plan.path.display().to_string(),
-                        |n| n.to_string_lossy().into_owned()
-                    )
-                )));
+                notify(ReviewUpdate::Status {
+                    window,
+                    message: format!(
+                        "saved {}",
+                        plan.path.file_name().map_or_else(
+                            || plan.path.display().to_string(),
+                            |n| n.to_string_lossy().into_owned()
+                        )
+                    ),
+                });
+                notify(ReviewUpdate::FileSaved {
+                    window,
+                    path: plan.path,
+                    oid: plan.new,
+                    version: plan.version,
+                });
             }
             ReviewCmd::Rehome {
                 git_dir,
@@ -460,9 +484,9 @@ impl Service for ReviewService {
                         // Something was submitted, but not for this range: say
                         // so, don't switch the diff under the reviewer.
                         None if !store::guides(&git_dir).is_empty() => {
-                            notify(ReviewUpdate::Status(
+                            notify(ReviewUpdate::Status { window, message:
                                 "a guide was submitted for a different range — open it via the diff picker".into(),
-                            ));
+                            });
                         }
                         None => {}
                     }
@@ -479,6 +503,7 @@ impl Service for ReviewService {
                 }
             }
             ReviewCmd::StageSeen {
+                window,
                 git_dir,
                 workdir,
                 files,
@@ -498,7 +523,10 @@ impl Service for ReviewService {
                     }
                     Err(e) => format!("stage failed: {e}"),
                 };
-                notify(ReviewUpdate::Status(status));
+                notify(ReviewUpdate::Status {
+                    window,
+                    message: status,
+                });
             }
             ReviewCmd::SaveLayout {
                 git_dir,

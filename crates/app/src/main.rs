@@ -352,12 +352,30 @@ impl MatchEvent for App {
                         w.worktree_changed(cx, *fp);
                     }
                 }
-                Some(ReviewUpdate::Status(msg)) => {
-                    for window in &self.windows {
+                Some(ReviewUpdate::Status { window, message }) => {
+                    if let Some(window) = self.window_mut(*window) {
                         window
                             .pane(cx)
                             .label(cx, ids!(status_label))
-                            .set_text(cx, msg);
+                            .set_text(cx, message);
+                        window.window.redraw(cx);
+                    }
+                }
+                Some(ReviewUpdate::FileSaved {
+                    window,
+                    path,
+                    oid,
+                    version,
+                }) => {
+                    if let Some(window) = self.window_mut(*window) {
+                        window.state.with(|d| {
+                            if let Some(blob) =
+                                d.blobs.iter_mut().find(|b| b.origin.as_ref() == Some(path))
+                            {
+                                blob.saved_at(*oid, version.clone());
+                                d.rows_rev += 1;
+                            }
+                        });
                         window.window.redraw(cx);
                     }
                 }

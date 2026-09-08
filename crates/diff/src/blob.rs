@@ -190,10 +190,25 @@ impl Blob {
     /// `intern` stops keeping this buffer apart from the diff's copy of the
     /// same file.
     pub fn saved(&mut self, oid: ObjectId) {
-        self.oid = oid;
-        if let Some(doc) = &self.doc {
-            self.disk = doc.oplog_frontiers();
+        let version = self
+            .doc
+            .as_ref()
+            .map_or_else(|| self.disk.clone(), loro::LoroDoc::oplog_frontiers);
+        self.saved_at(oid, version);
+    }
+
+    /// Acknowledge the version written by a save without clearing later edits.
+    pub fn saved_at(&mut self, oid: ObjectId, version: document::Version) {
+        // NOTE: a save reply can arrive after a reload replaced this document.
+        if self
+            .doc
+            .as_ref()
+            .is_some_and(|doc| doc.frontiers_to_vv(&version).is_none())
+        {
+            return;
         }
+        self.oid = oid;
+        self.disk = version;
         self.group_open = false;
     }
 
@@ -902,6 +917,35 @@ mod tests {
             "# Intro\n## Getting Started, Quickly\nsome prose\n"
         );
         assert!(!after.dirty(), "nothing unsaved: the file is what it is");
+    }
+
+    #[test]
+    fn a_save_completion_keeps_later_typing_dirty() {
+        let mut b = blob("before\n");
+        b.edit(0..0, "saved\n");
+        let version = b.doc.as_ref().unwrap().oplog_frontiers();
+        let saved_oid = concats_sync::hash_object(b.text.as_bytes());
+        b.edit(0..0, "later\n");
+        b.saved_at(saved_oid, version);
+        assert_eq!(b.text, "later\nsaved\nbefore\n");
+        assert!(b.dirty());
+        assert_eq!(b.oid, saved_oid);
+        let version = b.doc.as_ref().unwrap().oplog_frontiers();
+        b.saved_at(concats_sync::hash_object(b.text.as_bytes()), version);
+        assert!(!b.dirty());
+    }
+
+    #[test]
+    fn a_save_reply_cannot_mark_a_replacement_document_clean() {
+        let mut previous = blob("before\n");
+        previous.edit(0..0, "saved\n");
+        let version = previous.doc.as_ref().unwrap().oplog_frontiers();
+        let mut replacement = blob("reloaded\n");
+        replacement.edit(0..0, "new typing\n");
+        replacement.saved_at(oid(2), version);
+        assert_eq!(replacement.oid, oid(1));
+        assert!(replacement.dirty());
+        assert_eq!(replacement.text, "new typing\nreloaded\n");
     }
 
     #[test]

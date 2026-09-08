@@ -1177,6 +1177,7 @@ impl ReviewPane {
         // Rewriting the index is git I/O: the service does it and posts the
         // report back for the status bar.
         review().send(ReviewCmd::StageSeen {
+            window: self.state().id,
             git_dir,
             workdir,
             files,
