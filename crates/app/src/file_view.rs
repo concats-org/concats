@@ -26,7 +26,11 @@ pub(crate) fn read_file_sides(
 ) -> Result<(Option<Blob>, Blob), concats_diff::Error> {
     let repo = std::path::Path::new(repo);
     let (base, head) = range;
-    let ext = path.rsplit('.').next().unwrap_or("").to_string();
+    let ext = std::path::Path::new(&path)
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
     let blob = |oid, bytes: Vec<u8>| {
         Blob::new(
             oid,
