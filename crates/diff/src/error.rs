@@ -27,6 +27,10 @@ pub enum Error {
     NotInTree { path: String },
     #[error("{path} is binary")]
     Binary { path: String },
+    #[error("refusing non-regular worktree path: {}", .0.display())]
+    UnsafeWorktreePath(PathBuf),
+    #[error("{path} exceeds the {limit}-byte review limit")]
+    TooLarge { path: String, limit: u64 },
     #[error("{}: {source}", .path.display())]
     Io {
         path: PathBuf,

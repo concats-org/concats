@@ -13,7 +13,7 @@ use gix::{ObjectId, Repository, bstr::BStr};
 
 use crate::{
     Error,
-    load::{open_repo, worktree_status},
+    load::{open_repo, read, read_worktree, worktree_file, worktree_status},
 };
 
 /// One file of a WORKTREE load, as `stage_seen` needs it: the exact endpoint
@@ -63,6 +63,10 @@ pub fn stage_seen(
     let mut touched = false;
 
     for f in files {
+        worktree_file(workdir, &f.path)?;
+        if let Some(from) = &f.from {
+            worktree_file(workdir, from)?;
+        }
         // The unit is the hunk, like its tick box: it stages when every one of
         // its changed lines is seen, and not at all otherwise. Files do stage
         // partially — any subset of their hunks — see `blend`.
@@ -103,7 +107,15 @@ pub fn stage_seen(
                 unstage_file(&mut index, entry_path);
             }
             Some(new_oid) => {
-                let disk = std::fs::read(workdir.join(&f.path)).ok();
+                let disk = match read_worktree(workdir, &f.path) {
+                    Ok(bytes) => Some(bytes),
+                    Err(Error::Io { source, .. })
+                        if source.kind() == std::io::ErrorKind::NotFound =>
+                    {
+                        None
+                    }
+                    Err(error) => return Err(error),
+                };
                 if disk.as_deref().map(hash_object) != Some(new_oid) {
                     rep.skipped
                         .push(format!("{} — changed on disk since load", f.path));
@@ -129,10 +141,7 @@ pub fn stage_seen(
                         ));
                         continue;
                     };
-                    let old_bytes = repo
-                        .find_blob(old_oid)
-                        .map_err(|e| Error::git("blob", e))?
-                        .take_data();
+                    let old_bytes = read(&repo, None, Some(old_oid))?;
                     let blended =
                         blend(&old_bytes, disk.as_deref().unwrap_or(&[]), &f.hunks, &take);
                     let oid = repo
@@ -256,12 +265,12 @@ pub(crate) fn stage_file(
     index: &mut gix::index::File,
     path: &str,
 ) -> Result<(), Error> {
-    let file = workdir.join(path);
+    let file = worktree_file(workdir, path)?;
     let io = |source| Error::Io {
         path: file.clone(),
         source,
     };
-    let bytes = std::fs::read(&file).map_err(io)?;
+    let bytes = read_worktree(workdir, path)?;
     let oid = repo
         .write_blob(&bytes)
         .map_err(|e| Error::git("write blob", e))?

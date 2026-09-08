@@ -9,7 +9,8 @@
 
 use std::{
     collections::{HashMap, HashSet},
-    path::{Path, PathBuf},
+    io::Read,
+    path::{Component, Path, PathBuf},
     time::Instant,
 };
 
@@ -23,6 +24,66 @@ use crate::{Blob, Error, FileChange, Hunk, LineKind, LoadStats, Row, Side, stage
 
 /// Unchanged lines kept either side of a change before collapsing.
 const CONTEXT: usize = 3;
+const MAX_FILE_BYTES: u64 = 16 << 20;
+
+/// Resolve a regular worktree file without following symlinks.
+///
+/// # Errors
+/// Returns an error for paths outside the root, symlinks, non-files, or failed metadata reads.
+pub fn worktree_file(root: &Path, path: &str) -> Result<PathBuf, Error> {
+    let relative = Path::new(path);
+    if path.is_empty()
+        || relative
+            .components()
+            .any(|c| !matches!(c, Component::Normal(_)))
+    {
+        return Err(Error::UnsafeWorktreePath(relative.to_path_buf()));
+    }
+    let target = root.join(relative);
+    let mut file = root.to_path_buf();
+    for component in relative.components() {
+        file.push(component);
+        match std::fs::symlink_metadata(&file) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                return Err(Error::UnsafeWorktreePath(file));
+            }
+            Ok(metadata) if file == target && !metadata.is_file() => {
+                return Err(Error::UnsafeWorktreePath(file));
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => break,
+            Err(source) => return Err(Error::Io { path: file, source }),
+        }
+    }
+    Ok(target)
+}
+
+pub(crate) fn read_worktree(root: &Path, path: &str) -> Result<Vec<u8>, Error> {
+    let file = worktree_file(root, path)?;
+    let io = |source| Error::Io {
+        path: file.clone(),
+        source,
+    };
+    let reader = std::fs::File::open(&file).map_err(io)?;
+    if reader.metadata().map_err(io)?.len() > MAX_FILE_BYTES {
+        return Err(Error::TooLarge {
+            path: file.display().to_string(),
+            limit: MAX_FILE_BYTES,
+        });
+    }
+    let mut bytes = Vec::new();
+    reader
+        .take(MAX_FILE_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(io)?;
+    if bytes.len() as u64 > MAX_FILE_BYTES {
+        return Err(Error::TooLarge {
+            path: file.display().to_string(),
+            limit: MAX_FILE_BYTES,
+        });
+    }
+    Ok(bytes)
+}
 
 /// Sentinel revisions: `INDEX...WORKTREE` reviews the unstaged changes,
 /// `<commit>...WORKTREE` (say `HEAD...WORKTREE`) everything uncommitted.
@@ -209,41 +270,18 @@ fn load_worktree(repo_path: &Path, base_rev: &str) -> Result<Loaded, Error> {
     paths.sort();
     paths.dedup();
 
-    // Unlike a commit load, the new side here is arbitrary worktree content
-    // that nothing has vetted. So check size and binaryness before reading,
-    // hashing or cloning: a daemon's half-gigabyte scratch file should cost one
-    // stat, not seconds of SHA1 per load. (Binary blobs from the object
-    // database are still caught later, in the lowerer.)
-    const MAX_WORKTREE_BYTES: u64 = 16 << 20;
     let mut overlay: HashMap<ObjectId, Vec<u8>> = HashMap::new();
     let mut changes: Vec<Change> = Vec::new();
     for path in paths {
         let old = base_of.get(&path).copied();
-        let file = root.join(&path);
-        let new = match std::fs::symlink_metadata(&file) {
-            // Missing (or a broken symlink): deleted.
-            Err(_) => None,
-            // A symlink's target is outside our control — never read through it
-            // into the review (a hostile repo could point a "changed" path at
-            // ~/.ssh/…). Skip it, like a binary.
-            Ok(m) if m.file_type().is_symlink() => {
+        let new = match read_worktree(&root, &path) {
+            Ok(bytes) if !bytes.contains(&0) => Some((hash_object(&bytes), bytes)),
+            Ok(_) | Err(Error::UnsafeWorktreePath(_) | Error::TooLarge { .. }) => {
                 st.skipped_binary += 1;
                 continue;
             }
-            Ok(m) if m.len() > MAX_WORKTREE_BYTES => {
-                st.skipped_binary += 1;
-                continue;
-            }
-            Ok(_) => match std::fs::read(&file) {
-                Ok(bytes) => {
-                    if bytes.contains(&0) {
-                        st.skipped_binary += 1;
-                        continue;
-                    }
-                    Some((hash_object(&bytes), bytes))
-                }
-                Err(_) => None,
-            },
+            Err(Error::Io { source, .. }) if source.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => return Err(error),
         };
         match (old, new) {
             (None, None) => {}
@@ -289,7 +327,7 @@ fn load_worktree(repo_path: &Path, base_rev: &str) -> Result<Loaded, Error> {
         .collect();
     for blob in &mut blobs {
         if let Some(path) = from_worktree.get(&blob.oid) {
-            blob.origin = Some(root.join(path));
+            blob.origin = Some(worktree_file(&root, &path.to_string_lossy())?);
         }
     }
 
@@ -815,14 +853,12 @@ fn detect_renames(
 
     if !rem_a.is_empty()
         && !rem_d.is_empty()
-        && rem_a.len() * rem_d.len() <= RENAME_LIMIT * RENAME_LIMIT
+        && rem_a.len() <= RENAME_LIMIT
+        && rem_d.len() <= RENAME_LIMIT
     {
         // line-hash multisets, computed once per file
         let sig = |repo: &Repository, oid: &ObjectId| -> Option<HashMap<u64, u32>> {
-            let bytes = match overlay.and_then(|m| m.get(oid)) {
-                Some(b) => b.clone(),
-                None => repo.find_blob(*oid).ok()?.take_data(),
-            };
+            let bytes = read(repo, overlay, Some(*oid)).ok()?;
             if bytes.contains(&0) {
                 return None; // binary
             }
@@ -909,7 +945,7 @@ fn similarity(a: &HashMap<u64, u32>, b: &HashMap<u64, u32>) -> u8 {
     ((common as f64 / denom as f64) * 100.0).round() as u8
 }
 
-fn read(
+pub(crate) fn read(
     repo: &Repository,
     overlay: Option<&HashMap<ObjectId, Vec<u8>>>,
     oid: Option<ObjectId>,
@@ -917,10 +953,23 @@ fn read(
     match oid {
         Some(o) => match overlay.and_then(|m| m.get(&o)) {
             Some(bytes) => Ok(bytes.clone()),
-            None => Ok(repo
-                .find_blob(o)
-                .map_err(|e| Error::git("blob", e))?
-                .take_data()),
+            None => {
+                if repo
+                    .find_header(o)
+                    .map_err(|e| Error::git("blob header", e))?
+                    .size()
+                    > MAX_FILE_BYTES
+                {
+                    return Err(Error::TooLarge {
+                        path: o.to_string(),
+                        limit: MAX_FILE_BYTES,
+                    });
+                }
+                Ok(repo
+                    .find_blob(o)
+                    .map_err(|e| Error::git("blob", e))?
+                    .take_data())
+            }
         },
         None => Ok(Vec::new()),
     }
@@ -939,8 +988,7 @@ pub fn read_at_head(
 ) -> Result<(ObjectId, Vec<u8>), Error> {
     let root = discover(repo_path).ok_or_else(|| Error::NoRepository(repo_path.to_path_buf()))?;
     let Some(head) = head else {
-        let file = root.join(path);
-        let bytes = std::fs::read(&file).map_err(|source| Error::Io { path: file, source })?;
+        let bytes = read_worktree(&root, path)?;
         return Ok((hash_object(&bytes), bytes));
     };
     let repo = open_repo(&root)?;
@@ -955,11 +1003,7 @@ pub fn read_at_head(
             path: path.to_string(),
         })?;
     let oid = entry.object_id();
-    let bytes = entry
-        .object()
-        .map_err(|e| Error::git("blob", e))?
-        .detach()
-        .data;
+    let bytes = read(&repo, None, Some(oid))?;
     Ok((oid, bytes))
 }
 
@@ -992,10 +1036,7 @@ pub fn read_at_base(
             .map(|e| e.id),
     };
     let Some(oid) = oid else { return Ok(None) };
-    let bytes = repo
-        .find_blob(oid)
-        .map_err(|e| Error::git("blob", e))?
-        .take_data();
+    let bytes = read(&repo, None, Some(oid))?;
     Ok(Some((oid, bytes)))
 }
 
@@ -1228,6 +1269,62 @@ pub(crate) fn worktree_status(repo: &Repository) -> Result<Vec<(String, u8)>, Er
 mod tests {
     use super::*;
     use crate::fixture::{add, commit, init_repo};
+
+    #[test]
+    fn worktree_reads_reject_paths_outside_the_repository() {
+        let (_tmp, root) = init_repo();
+        for path in [
+            "",
+            ".",
+            "..",
+            "../outside",
+            "a/../../outside",
+            "/etc/passwd",
+        ] {
+            assert!(matches!(
+                read_at_head(&root, None, path),
+                Err(Error::UnsafeWorktreePath(_))
+            ));
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn worktree_reads_reject_symlinks_in_any_component() {
+        let (_tmp, root) = init_repo();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("private"), "outside").unwrap();
+        std::os::unix::fs::symlink(outside.path(), root.join("linked")).unwrap();
+        std::os::unix::fs::symlink(outside.path().join("private"), root.join("file")).unwrap();
+        for path in ["linked/private", "file"] {
+            assert!(matches!(
+                read_at_head(&root, None, path),
+                Err(Error::UnsafeWorktreePath(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn whole_file_and_object_reads_enforce_the_same_size_limit() {
+        let (_tmp, root) = init_repo();
+        std::fs::File::create(root.join("large"))
+            .unwrap()
+            .set_len(MAX_FILE_BYTES + 1)
+            .unwrap();
+        assert!(matches!(
+            read_at_head(&root, None, "large"),
+            Err(Error::TooLarge { .. })
+        ));
+        let repo = gix::open(&root).unwrap();
+        let oid = repo
+            .write_blob(vec![b'a'; (MAX_FILE_BYTES + 1) as usize])
+            .unwrap()
+            .detach();
+        assert!(matches!(
+            read(&repo, None, Some(oid)),
+            Err(Error::TooLarge { .. })
+        ));
+    }
 
     /// Two changes closer together than twice `CONTEXT` share the unchanged
     /// run between them. Each hunk used to take its own full copy of that run —

@@ -45,7 +45,8 @@ pub(crate) fn read_file_sides(
     // file would silently drop the buffer and every comment cursor in it.
     let origin = head
         .is_none()
-        .then(|| load::discover(repo).as_deref().unwrap_or(repo).join(path));
+        .then(|| load::worktree_file(load::discover(repo).as_deref().unwrap_or(repo), path))
+        .transpose()?;
     // Refused rather than rendered as mojibake — the same screen the lowerer
     // applies to a diff's blobs.
     if head_bytes.contains(&0) {
@@ -244,6 +245,7 @@ fn place(d: &mut ReviewDoc, mut view: FileView, comments: &[Comment]) {
 /// Pure so the arithmetic is testable: the service performs it, and the two
 /// halves — write the bytes, carry the ticks — must describe the same file.
 pub(crate) struct SavePlan {
+    pub root: std::path::PathBuf,
     pub path: std::path::PathBuf,
     pub text: String,
     pub old: gix::ObjectId,
@@ -263,6 +265,7 @@ pub(crate) fn save_plan(d: &ReviewDoc, blob: u32) -> Option<SavePlan> {
     let tip = b.doc.as_ref()?.oplog_frontiers();
     let lines = b.line_moves(&b.disk, &tip);
     Some(SavePlan {
+        root: d.workdir.clone()?,
         path,
         text: b.text.clone(),
         old: b.oid,
@@ -409,7 +412,10 @@ mod tests {
     /// that the file changed.
     #[test]
     fn a_save_plan_maps_every_surviving_line_to_where_it_sits_now() {
-        let mut d = ReviewDoc::default();
+        let mut d = ReviewDoc {
+            workdir: Some("/tmp".into()),
+            ..ReviewDoc::default()
+        };
         let mut head = Blob::new(oid(2), "rs".into(), "a\nb\nc\n".into());
         head.origin = Some("/tmp/a.rs".into());
         d.blobs.push(head);
@@ -435,7 +441,10 @@ mod tests {
 
     #[test]
     fn a_line_typed_away_leaves_its_anchor_behind() {
-        let mut d = ReviewDoc::default();
+        let mut d = ReviewDoc {
+            workdir: Some("/tmp".into()),
+            ..ReviewDoc::default()
+        };
         let mut head = Blob::new(oid(2), "rs".into(), "a\nb\nc\n".into());
         head.origin = Some("/tmp/a.rs".into());
         d.blobs.push(head);
