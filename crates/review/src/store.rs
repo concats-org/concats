@@ -27,7 +27,7 @@ use std::{
 
 use concats_diff::{Blob, Row, Side};
 use gix::ObjectId;
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 
 use crate::Error;
 
@@ -204,8 +204,18 @@ fn common_dir(git_dir: &Path) -> std::path::PathBuf {
 /// Shared by the guide functions below — every connection to `store.db` goes through here.
 pub(crate) fn open_db(git_dir: &Path) -> rusqlite::Result<Connection> {
     let dir = common_dir(git_dir).join("concats-app");
-    if let Err(error) = std::fs::create_dir_all(&dir) {
-        eprintln!("warning: cannot create {}: {error}", dir.display());
+    let cannot_open = |error: std::io::Error| {
+        rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_CANTOPEN),
+            Some(format!("cannot prepare {}: {error}", dir.display())),
+        )
+    };
+    std::fs::create_dir_all(&dir).map_err(cannot_open)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))
+            .map_err(cannot_open)?;
     }
     let conn = Connection::open(dir.join("store.db"))?;
     conn.pragma_update(None, "journal_mode", "WAL")?;
@@ -216,6 +226,11 @@ pub(crate) fn open_db(git_dir: &Path) -> rusqlite::Result<Connection> {
 }
 
 impl Store {
+    /// Persist a buffer using this store's existing database connection.
+    pub fn save_buffer(&self, origin: &Path, saved: &concats_sync::Saved) {
+        save_buffer_on(&self.conn, origin, saved);
+    }
+
     /// Open the store for a repo. Never fails: when the database cannot be
     /// opened (read-only filesystem, exotic breakage) the store runs on an
     /// in-memory database — fully functional, nothing persists, one warning.
@@ -816,21 +831,32 @@ pub fn latest_guide(git_dir: &Path, merge_base: &ObjectId, head: &ObjectId) -> O
 
 // --- the between-runs buffer cache -------------------------------------------
 //
-// Its own connection rather than the `Store`, the way the guide functions read: the
-// loader thread needs it before any of the GUI's state exists.
+// NOTE: the loader can read a cache before the GUI opens its Store. Periodic
+// writes reuse the worker-owned Store connection.
 //
-// A cache, and only ever a cache. The file is the content; this holds the
-// operation ids a comment's cursor names, which is the one thing a file cannot
-// hold. A miss means a thread whose line was edited between runs reads as
-// outdated until it is placed again; it never costs correctness, so every
-// failure here is a warning and a fall-through.
+// NOTE: snapshots include unsaved typing as well as comment cursors. There
+// is no age-based pruning: an old snapshot may be the only copy of an edit.
 
 /// Keep `origin`'s document, so its comments' cursors and unsaved typing outlive
 /// the process.
 pub fn save_buffer(git_dir: &Path, origin: &Path, saved: &concats_sync::Saved) {
-    let Ok(conn) = open_db(git_dir) else {
-        return;
+    let conn = match open_db(git_dir) {
+        Ok(conn) => conn,
+        Err(error) => {
+            // NOTE: A cache failure must not interrupt editing.
+            eprintln!("warning: cannot open buffer cache: {error}");
+            return;
+        }
     };
+    save_buffer_on(&conn, origin, saved);
+}
+
+fn save_buffer_on(conn: &Connection, origin: &Path, saved: &concats_sync::Saved) {
+    const MAX_SNAPSHOT_BYTES: usize = 64 << 20;
+    if saved.snapshot.len() > MAX_SNAPSHOT_BYTES {
+        eprintln!("warning: buffer cache exceeds 64 MiB: {}", origin.display());
+        return;
+    }
     let key = origin.to_string_lossy();
     let write = conn.execute(
         "INSERT INTO buffers (origin, snapshot, disk, updated_at) VALUES (?1,?2,?3,?4)
@@ -838,12 +864,16 @@ pub fn save_buffer(git_dir: &Path, origin: &Path, saved: &concats_sync::Saved) {
         (&key, &saved.snapshot, &saved.disk, now()),
     );
     if let Err(error) = write {
+        // NOTE: a cache failure leaves the live buffer editable; the next snapshot retries.
         eprintln!("warning: cannot cache {}: {error}", origin.display());
     }
 }
 
 pub fn load_buffer(git_dir: &Path, origin: &Path) -> Option<concats_sync::Saved> {
-    let conn = open_db(git_dir).ok()?;
+    // NOTE: cache failures must not prevent opening the file itself.
+    let conn = open_db(git_dir)
+        .inspect_err(|error| eprintln!("warning: cannot open buffer cache: {error}"))
+        .ok()?;
     let key = origin.to_string_lossy();
     let (snapshot, disk) = conn
         .query_row(
@@ -851,7 +881,9 @@ pub fn load_buffer(git_dir: &Path, origin: &Path) -> Option<concats_sync::Saved>
             [&key],
             |row| Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, Vec<u8>>(1)?)),
         )
-        .ok()?;
+        .optional()
+        .inspect_err(|error| eprintln!("warning: cannot load cached {}: {error}", origin.display()))
+        .ok()??;
     Some(concats_sync::Saved { snapshot, disk })
 }
 
@@ -1074,6 +1106,21 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn the_review_directory_is_private_to_its_owner() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("concats-app");
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        drop(Store::open(tmp.path()));
+        assert_eq!(
+            std::fs::metadata(dir).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+    }
+
     #[test]
     fn a_cached_buffer_round_trips_and_is_replaced_wholesale() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1082,7 +1129,8 @@ mod tests {
             snapshot: vec![1, 2, 3],
             disk: vec![4, 5],
         };
-        save_buffer(tmp.path(), origin, &saved);
+        let store = Store::open(tmp.path());
+        store.save_buffer(origin, &saved);
         let back = load_buffer(tmp.path(), origin).expect("cached");
         assert_eq!(back.snapshot, saved.snapshot);
         assert_eq!(back.disk, saved.disk);
