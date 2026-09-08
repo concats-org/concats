@@ -80,6 +80,7 @@ gix = { workspace = true }
 # list. The per-repo review store is `concats_review`'s.
 rusqlite = { workspace = true }
 serde_json = { workspace = true }
+toml = { workspace = true }
 thiserror = { workspace = true }
 
 # Native folder picker behind the header's repo name.

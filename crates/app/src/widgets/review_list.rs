@@ -2113,16 +2113,17 @@ impl ReviewList {
     /// plan over the document, and the service, which alone owns the store,
     /// performs the write and the anchor moves.
     fn save(&mut self, cx: &mut Cx) -> bool {
+        let settings = self.state().read(|d| {
+            let path = crate::theme::config_file()?;
+            let blob = d.blobs.get(d.caret?.blob as usize)?;
+            (blob.dirty() && blob.origin.as_ref() == Some(&path)).then(|| blob.text.clone())
+        });
+        if let Some(text) = settings {
+            return self.apply_settings(cx, &text);
+        }
         let Some(plan) = self.state().with(|d| save_plan(d, d.caret?.blob)) else {
             return false;
         };
-        // config.json is applied, not just written: a theme change has to take
-        // effect, and text that is not settings must never reach the file. That
-        // is the one thing the Settings tab does not share with every other
-        // file tab.
-        if plan.path == crate::theme::config_file() {
-            return self.apply_settings(cx, plan);
-        }
         let sent = self.state().with(|d| {
             let Some(git_dir) = d.git_dir.clone() else {
                 return false;
@@ -2146,8 +2147,8 @@ impl ReviewList {
     /// Saving the settings: parse them first, and only then let them land.
     /// A parse error is spliced in as the loud row the document already has
     /// for "this does not refer to anything real".
-    fn apply_settings(&mut self, cx: &mut Cx, plan: crate::file_view::SavePlan) -> bool {
-        let applied = crate::theme::apply_settings_text(&plan.text);
+    fn apply_settings(&mut self, cx: &mut Cx, text: &str) -> bool {
+        let applied = crate::theme::apply_settings_text(text);
         self.state().with(|d| {
             if let Some(rows) = d.stream_mut(Tab::File(crate::dock::settings_tab_id().0)) {
                 rows.retain(|r| !matches!(r, Row::Warning { .. }));
@@ -2162,7 +2163,7 @@ impl ReviewList {
             }
             if applied.is_ok() {
                 if let Some(caret) = d.caret {
-                    d.blobs[caret.blob as usize].saved(plan.new);
+                    d.blobs[caret.blob as usize].saved(concats_sync::hash_object(text.as_bytes()));
                 }
             }
             d.rows_rev += 1;

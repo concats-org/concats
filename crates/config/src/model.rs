@@ -20,6 +20,8 @@ pub struct Config {
     /// Sync settings (auto-push session turn refs to remote).
     #[serde(default)]
     pub sync: SyncConfig,
+    #[serde(default)]
+    pub app: AppConfig,
 }
 
 #[allow(clippy::unnecessary_wraps)]
@@ -57,6 +59,7 @@ impl Default for Config {
             agents: default_agents(),
             workspace: None,
             sync: SyncConfig::default(),
+            app: AppConfig::default(),
         }
     }
 }
@@ -107,6 +110,27 @@ impl AgentConfig {
     }
 }
 
+/// Desktop presentation settings; independent of the renderer and CLI features.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct AppConfig {
+    pub theme: String,
+    pub font: String,
+    pub font_size: f64,
+    pub wrap: bool,
+}
+
+impl Default for AppConfig {
+    fn default() -> Self {
+        Self {
+            theme: "Concats".into(),
+            font: String::new(),
+            font_size: 9.0,
+            wrap: false,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use pretty_assertions::assert_eq;
@@ -135,6 +159,7 @@ mod tests {
             agents,
             workspace: Some(PathBuf::from("/work")),
             sync: SyncConfig::default(),
+            app: AppConfig::default(),
         };
 
         let toml_str = toml::to_string_pretty(&config).expect("should serialize config");

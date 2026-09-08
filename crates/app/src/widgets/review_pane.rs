@@ -607,7 +607,7 @@ script_mod! {
                 draw_icon.svg: crate_resource("self:resources/icons/plus.svg")
             }
             Divider {}
-            // The settings editor: a JSON view of the app config.
+            // The settings editor: a TOML view of the shared config.
             settings_button := BarButton {
                 draw_icon.svg: crate_resource("self:resources/icons/settings.svg")
             }
@@ -1893,9 +1893,9 @@ impl ReviewPane {
             self.stage_seen_hunks(cx);
         }
 
-        // Settings: a JSON editor over the app config. The toggle opens it with
+        // Settings: a TOML editor over the shared config. The toggle opens it with
         // the current config and a hint listing theme names; Apply parses the
-        // JSON, switches theme, persists, and re-themes live — the Rust-side
+        // TOML, switches theme, persists, and re-themes live — the Rust-side
         // colors (they read active_theme() on draw), the DSL chrome (via
         // request_live_edit re-running script_mod), and the open terminals.
         if self.view.button(cx, ids!(settings_button)).clicked(actions) {

@@ -41,7 +41,10 @@ pub fn new_window_id() -> String {
 /// config home is unusable: callers lose the affordance, nothing else.
 #[must_use]
 pub fn open_app_db() -> Option<rusqlite::Connection> {
-    let dir = concats_config::config_dir();
+    let Some(dir) = concats_config::config_dir() else {
+        eprintln!("concats-app: no platform configuration directory");
+        return None;
+    };
     if let Err(error) = std::fs::create_dir_all(&dir) {
         eprintln!("concats-app: cannot create {}: {error}", dir.display());
         return None;

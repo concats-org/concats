@@ -34,19 +34,33 @@ pub(crate) fn paint(c: Rgba) -> Vec4f {
     }
 }
 
-fn themes_dir() -> PathBuf {
-    concats_config::config_dir().join("themes")
+pub(crate) fn config_file() -> Option<PathBuf> {
+    concats_config::config_dir().map(|dir| dir.join("config.toml"))
 }
 
-pub(crate) fn config_file() -> PathBuf {
-    concats_config::config_dir().join("config.json")
+fn settings() -> &'static concats_config::Config {
+    static SETTINGS: OnceLock<concats_config::Config> = OnceLock::new();
+    SETTINGS.get_or_init(|| {
+        concats_config::load_config(&concats_config::ConfigCliArgs::default()).unwrap_or_else(
+            |error| {
+                eprintln!("cannot load settings: {error}");
+                concats_config::Config::default()
+            },
+        )
+    })
 }
 
 /// The process-wide theme registry (built once): the built-in default, the
 /// bundled themes, then the user's own. Order is the picker's order.
 pub fn registry() -> &'static [Theme] {
     static R: OnceLock<Vec<Theme>> = OnceLock::new();
-    R.get_or_init(|| concats_theme::registry(Some(&themes_dir())))
+    R.get_or_init(|| {
+        concats_theme::registry(
+            concats_config::config_dir()
+                .map(|dir| dir.join("themes"))
+                .as_deref(),
+        )
+    })
 }
 
 /// Find a theme by name in the registry, cloned.
@@ -59,42 +73,25 @@ pub fn theme_names() -> Vec<String> {
     registry().iter().map(|t| t.name.clone()).collect()
 }
 
-/// The persisted selection (`config.json`'s `theme`), if any.
-fn persisted_selection() -> Option<String> {
-    let v: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(config_file()).ok()?).ok()?;
-    v.get("theme")?.as_str().map(|s| s.to_string())
-}
-
-/// The settings text to show in the in-app JSON editor — the persisted
-/// `config.json` if present, else a default naming the active theme.
+/// The shared TOML configuration edited by both the CLI and desktop app.
 pub fn settings_text() -> String {
-    if let Ok(text) = std::fs::read_to_string(config_file()) {
-        if !text.trim().is_empty() {
-            return text;
-        }
-    }
-    let f = active_font();
-    serde_json::to_string_pretty(&serde_json::json!({
-        "theme": active_theme().name,
-        "font": "",
-        "font_size": f.size,
-    }))
-    .unwrap_or_else(|_| "{\n  \"theme\": \"Concats\"\n}".into())
+    config_file()
+        .and_then(|path| std::fs::read_to_string(path).ok())
+        .unwrap_or_else(|| {
+            toml::to_string_pretty(&concats_config::Config::default())
+                .expect("configuration is serializable")
+        })
 }
 
 /// Why a settings text was refused. Each message is what the editor shows.
 #[derive(Debug, thiserror::Error)]
 pub enum SettingsError {
-    #[error("invalid JSON: {0}")]
-    Json(#[from] serde_json::Error),
-    #[error("missing \"theme\"")]
-    MissingTheme,
-    #[error("\"{key}\" must be {expected}")]
-    WrongType {
-        key: &'static str,
-        expected: &'static str,
-    },
+    #[error("invalid TOML: {0}")]
+    Toml(#[from] toml::de::Error),
+    #[error("font_size must be a positive finite number")]
+    FontSize,
+    #[error("cannot save configuration: {0}")]
+    Persist(String),
     #[error("unknown theme {name:?} — try one of: {known}")]
     UnknownTheme { name: String, known: String },
     #[error(
@@ -105,67 +102,30 @@ pub enum SettingsError {
     FontNotFound { spec: String },
 }
 
-/// Parse edited settings JSON, switch to its `theme`, and persist the raw text.
-/// Returns the applied theme name; the caller triggers the live refresh
-/// (`request_live_edit` and the terminal retheme).
+/// Validate the shared configuration before persisting or changing the UI.
 pub fn apply_settings_text(text: &str) -> Result<String, SettingsError> {
-    let v: serde_json::Value = serde_json::from_str(text)?;
-    let wrong = |key, expected| SettingsError::WrongType { key, expected };
-
-    // theme (required): a string naming a registered theme.
-    let name = match v.get("theme") {
-        None => return Err(SettingsError::MissingTheme),
-        Some(t) => t.as_str().ok_or_else(|| wrong("theme", "a string"))?,
-    };
-    let theme = by_name(name).ok_or_else(|| SettingsError::UnknownTheme {
-        name: name.to_string(),
+    let config: concats_config::Config = toml::from_str(text)?;
+    let settings = &config.app;
+    let theme = by_name(&settings.theme).ok_or_else(|| SettingsError::UnknownTheme {
+        name: settings.theme.clone(),
         known: theme_names().join(", "),
     })?;
-
-    // font (optional): "" or absent = bundled; otherwise a family name or an
-    // absolute path that must resolve to a font file on disk.
-    let font_spec = match v.get("font") {
-        None => "",
-        Some(f) => f.as_str().ok_or_else(|| wrong("font", "a string"))?,
-    };
-    let font_paths = resolve_font_paths(font_spec);
-    if font_paths.is_empty() && !font_specs(font_spec).is_empty() {
+    let paths = resolve_font_paths(&settings.font);
+    if paths.is_empty() && !font_specs(&settings.font).is_empty() {
         return Err(SettingsError::FontNotFound {
-            spec: font_spec.to_string(),
+            spec: settings.font.clone(),
         });
     }
-
-    // font_size (optional): a positive number.
-    let size = match v.get("font_size") {
-        None => 9.0,
-        Some(s) => {
-            let n = s.as_f64().ok_or_else(|| wrong("font_size", "a number"))?;
-            if !(n.is_finite() && n > 0.0) {
-                return Err(wrong("font_size", "a positive number"));
-            }
-            n
-        }
-    };
-
-    // wrap (optional): whether long lines break instead of running off.
-    let wrap = match v.get("wrap") {
-        None => false,
-        Some(w) => w.as_bool().ok_or_else(|| wrong("wrap", "true or false"))?,
-    };
-
-    // Everything validated — only now apply and persist (no partial writes).
+    let size = font_size(settings.font_size)?;
+    concats_config::save_config(&config)
+        .map_err(|error| SettingsError::Persist(error.to_string()))?;
     set_active_theme(theme);
     set_active_font(FontSetting {
-        paths: font_paths,
+        paths,
         size,
-        wrap,
+        wrap: settings.wrap,
     });
-    let path = config_file();
-    if let Some(dir) = path.parent() {
-        let _ = std::fs::create_dir_all(dir);
-    }
-    let _ = std::fs::write(&path, text);
-    Ok(name.to_string())
+    Ok(settings.theme.clone())
 }
 
 fn theme_slot() -> &'static RwLock<Arc<Theme>> {
@@ -175,7 +135,7 @@ fn theme_slot() -> &'static RwLock<Arc<Theme>> {
         // convenience, matching the app's other CONCATS_APP_* env knobs.
         let initial = crate::dev_hooks::var("CONCATS_APP_THEME")
             .ok()
-            .or_else(persisted_selection)
+            .or_else(|| Some(settings().app.theme.clone()))
             .and_then(|name| by_name(&name))
             .unwrap_or_else(Theme::concats);
         RwLock::new(Arc::new(initial))
@@ -255,7 +215,7 @@ fn resolve_font_path(spec: &str) -> Option<String> {
     let norm = |s: &str| -> String {
         s.chars()
             .filter(|c| c.is_alphanumeric())
-            .flat_map(|c| c.to_lowercase())
+            .flat_map(char::to_lowercase)
             .collect()
     };
     let want = norm(spec);
@@ -309,31 +269,26 @@ fn resolve_font_path(spec: &str) -> Option<String> {
     best.map(|(.., p)| p)
 }
 
-/// The `font`/`font_size` persisted in `config.json` (spec, size).
-fn persisted_font() -> (String, f64, bool) {
-    let read = || -> Option<(String, f64, bool)> {
-        let v: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(config_file()).ok()?).ok()?;
-        Some((
-            v.get("font")
-                .and_then(|f| f.as_str())
-                .unwrap_or("")
-                .to_string(),
-            v.get("font_size").and_then(|s| s.as_f64()).unwrap_or(9.0),
-            v.get("wrap").and_then(|w| w.as_bool()).unwrap_or(false),
-        ))
-    };
-    read().unwrap_or_else(|| (String::new(), 9.0, false))
+fn font_size(size: f64) -> Result<f64, SettingsError> {
+    if size.is_finite() && size > 0.0 {
+        Ok(size)
+    } else {
+        Err(SettingsError::FontSize)
+    }
 }
 
 fn font_slot() -> &'static RwLock<Arc<FontSetting>> {
     static F: OnceLock<RwLock<Arc<FontSetting>>> = OnceLock::new();
     F.get_or_init(|| {
-        let (spec, size, wrap) = persisted_font();
+        let config = &settings().app;
         RwLock::new(Arc::new(FontSetting {
-            paths: resolve_font_paths(&spec),
-            size,
-            wrap,
+            paths: resolve_font_paths(&config.font),
+            size: font_size(config.font_size).unwrap_or_else(|error| {
+                // NOTE: an invalid persisted size must not reach text layout.
+                eprintln!("cannot apply font size: {error}");
+                concats_config::AppConfig::default().font_size
+            }),
+            wrap: config.wrap,
         }))
     })
 }
@@ -364,24 +319,16 @@ mod tests {
 
     #[test]
     fn apply_settings_validates() {
-        // Malformed JSON, unknown themes, and a missing key are each rejected
-        // with a message — the text the in-app editor surfaces. These error
-        // paths return before touching disk (the success path persists
-        // config.json, so it's left to the runtime rather than the test).
-        assert!(apply_settings_text("{ not json").is_err());
-        assert!(apply_settings_text(r#"{"theme": "Nope"}"#).is_err());
-        assert!(apply_settings_text(r#"{"nope": 1}"#).is_err());
-        // A list that names nothing this machine has is refused; one that
-        // resolves to at least one font is not this test's business, since
-        // the success path writes to disk.
-        assert!(apply_settings_text(r#"{"theme": "Concats", "font": "NoSuchFont"}"#).is_err());
-        assert!(apply_settings_text(r#"{"theme": 3}"#).is_err());
-        // A non-empty font that resolves to nothing is an error (not a silent
-        // fallback); bad font_size is rejected too. All fail before touching disk.
-        assert!(apply_settings_text(r#"{"theme":"Concats","font":"No Such Font 9Z"}"#).is_err());
-        assert!(apply_settings_text(r#"{"theme":"Concats","font_size":"big"}"#).is_err());
-        assert!(apply_settings_text(r#"{"theme":"Concats","font_size":-3}"#).is_err());
-        // The default theme is always resolvable by name.
-        assert!(by_name("Concats").is_some());
+        for text in [
+            "not = [toml",
+            "[app]\ntheme = 'Nope'",
+            "[app]\ntheme = 3",
+            "[app]\nfont = 'No Such Font 9Z'",
+            "[app]\nfont_size = -3",
+            "[app]\nfont_size = 'big'",
+            "[app]\nwrap = 'yes'",
+        ] {
+            assert!(apply_settings_text(text).is_err(), "{text}");
+        }
     }
 }
