@@ -390,7 +390,17 @@ impl Service for ReviewService {
                 self.publish(&git_dir);
             }
             ReviewCmd::SaveFile { git_dir, plan } => {
-                if let Err(error) = std::fs::write(&plan.path, &plan.text) {
+                let save = || {
+                    let relative = plan
+                        .path
+                        .strip_prefix(&plan.root)
+                        .map_err(|_| concats_diff::Error::UnsafeWorktreePath(plan.path.clone()))?;
+                    let path =
+                        concats_diff::load::worktree_file(&plan.root, &relative.to_string_lossy())?;
+                    std::fs::write(&path, &plan.text)
+                        .map_err(|source| concats_diff::Error::Io { path, source })
+                };
+                if let Err(error) = save() {
                     notify(ReviewUpdate::Status(format!(
                         "cannot save {}: {error}",
                         plan.path.display()
