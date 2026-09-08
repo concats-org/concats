@@ -276,7 +276,7 @@ fn carry_caret(d: &mut ReviewDoc, prev: &ReviewDoc) {
 /// (0-based) pre-opens the composer on those lines, so the comment dialog can
 /// be screenshotted without a pointer.
 fn compose_from_env(d: &mut ReviewDoc) {
-    let Ok(spec) = std::env::var("CONCATS_APP_COMPOSE") else {
+    let Ok(spec) = crate::dev_hooks::var("CONCATS_APP_COMPOSE") else {
         return;
     };
     let mut it = spec.rsplitn(3, ':');
