@@ -889,7 +889,7 @@ impl AppWindow {
             });
             if self.cached_rev != rev {
                 self.cached_rev = rev;
-                self.state.read(load::cache_buffers);
+                review().send(ReviewCmd::CacheBuffers(self.state.clone()));
             }
         }
         // Persist the dock layout when it changed (tab moves/selection,

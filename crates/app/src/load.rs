@@ -550,21 +550,6 @@ fn restore_cached_buffers(d: &mut ReviewDoc) -> bool {
     restored
 }
 
-/// Cache the document of every editable buffer that has one.
-///
-/// Called off the ~1s poll rather than per keystroke: this writes a snapshot, and
-/// the point is surviving a restart, not being current to the millisecond.
-pub(crate) fn cache_buffers(d: &ReviewDoc) {
-    let Some(git_dir) = d.git_dir.clone() else {
-        return;
-    };
-    for blob in d.blobs.iter().filter(|b| b.doc.is_some()) {
-        if let (Some(origin), Some(saved)) = (blob.origin.as_deref(), blob.saved_state()) {
-            store::save_buffer(&git_dir, origin, &saved);
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use concats_diff::Blob;

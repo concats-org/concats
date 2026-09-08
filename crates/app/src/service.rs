@@ -27,6 +27,7 @@ use makepad_widgets::{DockItem, LiveId};
 /// What the UI can ask of the store. Every variant is an effect the UI thread
 /// must not perform itself.
 pub(crate) enum ReviewCmd {
+    CacheBuffers(Arc<crate::window::WindowState>),
     /// Adopt a repo: open its store and publish what is already recorded.
     Open(PathBuf),
     ToggleSeen {
@@ -351,6 +352,19 @@ impl Service for ReviewService {
 
     fn handle(&mut self, cmd: ReviewCmd) {
         match cmd {
+            ReviewCmd::CacheBuffers(state) => {
+                let doc = state.snapshot();
+                if let Some(git_dir) = &doc.git_dir {
+                    let store = self.store(git_dir);
+                    for blob in doc.blobs.iter().filter(|blob| blob.doc.is_some()) {
+                        if let (Some(origin), Some(saved)) =
+                            (blob.origin.as_deref(), blob.saved_state())
+                        {
+                            store.save_buffer(origin, &saved);
+                        }
+                    }
+                }
+            }
             ReviewCmd::Open(git_dir) => {
                 self.comments_rev += 1;
                 self.publish(&git_dir);
