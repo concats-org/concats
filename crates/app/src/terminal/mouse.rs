@@ -26,8 +26,8 @@ const WHEEL_DOWN: u8 = 65;
 
 /// Whether the application is tracking the pointer. Holding shift takes it
 /// back, the way every terminal lets you select over a full-screen app.
-pub fn wants_pointer(mods: &KeyModifiers, mode: TermMode) -> bool {
-    mode.intersects(TermMode::MOUSE_MODE) && !mods.shift
+pub fn wants_pointer(modifiers: KeyModifiers, mode: TermMode) -> bool {
+    mode.intersects(TermMode::MOUSE_MODE) && !modifiers.shift
 }
 
 /// Whether motion should be reported: with a button held (1002), or with none
@@ -40,22 +40,32 @@ pub fn wants_motion(held: bool, mode: TermMode) -> bool {
 pub fn report(
     button: MouseButton,
     pressed: bool,
-    mods: &KeyModifiers,
+    modifiers: KeyModifiers,
     point: Point,
     mode: TermMode,
 ) -> Option<Vec<u8>> {
-    encode(code(button)? + modifiers(mods), pressed, point, mode)
+    encode(
+        code(button)? + modifier_bits(modifiers),
+        pressed,
+        point,
+        mode,
+    )
 }
 
 /// The pointer moving, with whichever button is held.
 pub fn motion(
     held: Option<MouseButton>,
-    mods: &KeyModifiers,
+    modifiers: KeyModifiers,
     point: Point,
     mode: TermMode,
 ) -> Option<Vec<u8>> {
     let button = held.and_then(code).unwrap_or(NONE);
-    encode(button + modifiers(mods) + MOTION, true, point, mode)
+    encode(
+        button + modifier_bits(modifiers) + MOTION,
+        true,
+        point,
+        mode,
+    )
 }
 
 /// The wheel: a report per line while the application is tracking, arrow keys
@@ -64,22 +74,22 @@ pub fn motion(
 pub fn wheel(
     up: bool,
     lines: usize,
-    mods: &KeyModifiers,
+    modifiers: KeyModifiers,
     point: Point,
     mode: TermMode,
 ) -> Option<Vec<u8>> {
     if lines == 0 {
         return None;
     }
-    if wants_pointer(mods, mode) {
-        let button = if up { WHEEL_UP } else { WHEEL_DOWN } + modifiers(mods);
+    if wants_pointer(modifiers, mode) {
+        let button = if up { WHEEL_UP } else { WHEEL_DOWN } + modifier_bits(modifiers);
         let mut out = Vec::new();
         for _ in 0..lines {
             out.extend(encode(button, true, point, mode)?);
         }
         return Some(out);
     }
-    if mode.contains(TermMode::ALT_SCREEN | TermMode::ALTERNATE_SCROLL) && !mods.shift {
+    if mode.contains(TermMode::ALT_SCREEN | TermMode::ALTERNATE_SCROLL) && !modifiers.shift {
         // The same bytes the arrow keys send in application cursor mode.
         let arrow = if up { b'A' } else { b'B' };
         return Some(
@@ -104,15 +114,15 @@ fn code(button: MouseButton) -> Option<u8> {
     }
 }
 
-fn modifiers(mods: &KeyModifiers) -> u8 {
+fn modifier_bits(modifiers: KeyModifiers) -> u8 {
     let mut bits = 0;
-    if mods.shift {
+    if modifiers.shift {
         bits += SHIFT;
     }
-    if mods.alt {
+    if modifiers.alt {
         bits += ALT;
     }
-    if mods.control {
+    if modifiers.control {
         bits += CONTROL;
     }
     bits
@@ -120,10 +130,7 @@ fn modifiers(mods: &KeyModifiers) -> u8 {
 
 fn encode(button: u8, pressed: bool, point: Point, mode: TermMode) -> Option<Vec<u8>> {
     // The scrollback is the panel's business, not the application's.
-    if point.line < alacritty_terminal::index::Line(0) {
-        return None;
-    }
-    let line = point.line.0 as usize;
+    let line = usize::try_from(point.line.0).ok()?;
     let column = point.column.0;
 
     if mode.contains(TermMode::SGR_MOUSE) {
@@ -146,12 +153,16 @@ fn encode(button: u8, pressed: bool, point: Point, mode: TermMode) -> Option<Vec
     };
     let mut msg = vec![0x1b, b'[', b'M', 32 + button];
     for pos in [column, line] {
-        if utf8 && pos >= 95 {
-            let pos = 32 + 1 + pos;
-            msg.push((0xC0 + pos / 64) as u8);
-            msg.push((0x80 + (pos & 63)) as u8);
+        let coordinate = u32::try_from(pos + 33).ok()?;
+        if utf8 {
+            let mut bytes = [0; 4];
+            msg.extend_from_slice(
+                char::from_u32(coordinate)?
+                    .encode_utf8(&mut bytes)
+                    .as_bytes(),
+            );
         } else {
-            msg.push(32 + 1 + pos as u8);
+            msg.push(u8::try_from(coordinate).ok()?);
         }
     }
     Some(msg)
@@ -180,12 +191,12 @@ mod tests {
 
     #[test]
     fn tracking_is_off_until_asked_for_and_shift_takes_it_back() {
-        assert!(!wants_pointer(&KeyModifiers::default(), TermMode::empty()));
+        assert!(!wants_pointer(KeyModifiers::default(), TermMode::empty()));
         assert!(wants_pointer(
-            &KeyModifiers::default(),
+            KeyModifiers::default(),
             TermMode::MOUSE_REPORT_CLICK
         ));
-        assert!(!wants_pointer(&shift(), TermMode::MOUSE_REPORT_CLICK));
+        assert!(!wants_pointer(shift(), TermMode::MOUSE_REPORT_CLICK));
     }
 
     #[test]
@@ -194,7 +205,7 @@ mod tests {
         let down = report(
             MouseButton::PRIMARY,
             true,
-            &KeyModifiers::default(),
+            KeyModifiers::default(),
             point(4, 2),
             mode,
         );
@@ -202,7 +213,7 @@ mod tests {
         let up = report(
             MouseButton::PRIMARY,
             false,
-            &KeyModifiers::default(),
+            KeyModifiers::default(),
             point(4, 2),
             mode,
         );
@@ -215,7 +226,7 @@ mod tests {
         let down = report(
             MouseButton::SECONDARY,
             true,
-            &KeyModifiers::default(),
+            KeyModifiers::default(),
             point(0, 0),
             mode,
         );
@@ -223,14 +234,42 @@ mod tests {
     }
 
     #[test]
+    fn packed_coordinates_preserve_ascii_utf8_and_legacy_byte_limits() {
+        let utf8 = TermMode::UTF8_MOUSE;
+        for (column, encoded) in [
+            (94, b"\x7f!".as_slice()),
+            (95, b"\xc2\x80!"),
+            (2014, b"\xdf\xbf!"),
+        ] {
+            assert_eq!(
+                encode(0, true, point(column, 0), utf8).unwrap(),
+                [b"\x1b[M ", encoded].concat()
+            );
+        }
+        assert_eq!(encode(0, true, point(2015, 0), utf8), None);
+        assert_eq!(encode(0, true, point(0, 2015), utf8), None);
+        assert_eq!(
+            encode(0, true, point(222, 0), TermMode::empty()).unwrap(),
+            b"\x1b[M \xff!"
+        );
+        assert_eq!(encode(0, true, point(223, 0), TermMode::empty()), None);
+    }
+
+    #[test]
     fn modifiers_ride_in_the_button_code() {
         let mode = TermMode::MOUSE_REPORT_CLICK | TermMode::SGR_MOUSE;
-        let mods = KeyModifiers {
+        let modifiers = KeyModifiers {
             control: true,
             ..Default::default()
         };
         assert_eq!(
-            text(report(MouseButton::PRIMARY, true, &mods, point(0, 0), mode)),
+            text(report(
+                MouseButton::PRIMARY,
+                true,
+                modifiers,
+                point(0, 0),
+                mode
+            )),
             "\x1b[<16;1;1M"
         );
     }
@@ -243,14 +282,14 @@ mod tests {
         assert_eq!(
             text(motion(
                 Some(MouseButton::PRIMARY),
-                &KeyModifiers::default(),
+                KeyModifiers::default(),
                 point(1, 1),
                 mode
             )),
             "\x1b[<32;2;2M"
         );
         assert_eq!(
-            text(motion(None, &KeyModifiers::default(), point(1, 1), mode)),
+            text(motion(None, KeyModifiers::default(), point(1, 1), mode)),
             "\x1b[<35;2;2M"
         );
     }
@@ -262,7 +301,7 @@ mod tests {
             text(wheel(
                 true,
                 2,
-                &KeyModifiers::default(),
+                KeyModifiers::default(),
                 point(0, 0),
                 tracked
             )),
@@ -271,7 +310,7 @@ mod tests {
 
         let alt = TermMode::ALT_SCREEN | TermMode::ALTERNATE_SCROLL;
         assert_eq!(
-            text(wheel(false, 2, &KeyModifiers::default(), point(0, 0), alt)),
+            text(wheel(false, 2, KeyModifiers::default(), point(0, 0), alt)),
             "\x1bOB\x1bOB"
         );
 
@@ -280,7 +319,7 @@ mod tests {
             wheel(
                 true,
                 2,
-                &KeyModifiers::default(),
+                KeyModifiers::default(),
                 point(0, 0),
                 TermMode::empty()
             ),
@@ -295,7 +334,7 @@ mod tests {
             report(
                 MouseButton::PRIMARY,
                 true,
-                &KeyModifiers::default(),
+                KeyModifiers::default(),
                 point(0, -3),
                 mode
             ),

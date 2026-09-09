@@ -2,8 +2,12 @@
 //! and the per-repo layout persistence under `.git/`. Free functions over
 //! makepad's `Dock`, called by the `App`/`ReviewPane` widgets in `main.rs`.
 
-use std::{collections::HashMap, path::Path};
+use std::{collections::HashMap, io::Write, path::Path};
 
+#[allow(
+    clippy::wildcard_imports,
+    reason = "Makepad macros and derives expand against the widget prelude in this scope."
+)]
 use crate::{
     makepad_widgets::{makepad_micro_serde::*, *},
     review_doc::Stream,
@@ -20,6 +24,7 @@ pub(crate) fn model_tab_of(tab_id: LiveId, open: &[u64]) -> Option<Stream> {
         .find(|t| stream_tab_spec(*t).id == tab_id)
 }
 
+#[derive(Clone, Copy)]
 pub(crate) struct TabSpec<'a> {
     pub id: LiveId,
     pub kind: LiveId,
@@ -195,11 +200,17 @@ pub(crate) fn save_layout(
     git_dir: &Path,
     dock_items: HashMap<LiveId, DockItem>,
     restores: (f64, f64),
-) {
+) -> std::io::Result<()> {
     let state = DockLayoutRon {
         dock_items,
         bottom_restore: restores.0,
         sidebar_restore: restores.1,
     };
-    let _ = std::fs::write(git_dir.join(LAYOUT_FILE), state.serialize_ron());
+    let mut pending = tempfile::NamedTempFile::new_in(git_dir)?;
+    pending.write_all(state.serialize_ron().as_bytes())?;
+    pending.as_file().sync_all()?;
+    pending
+        .persist(git_dir.join(LAYOUT_FILE))
+        .map_err(|error| error.error)?;
+    Ok(())
 }

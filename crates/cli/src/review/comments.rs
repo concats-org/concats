@@ -48,7 +48,7 @@ pub(crate) fn run(
             author,
             dry_run,
             range,
-        }) => import(&input, author, dry_run, &range),
+        }) => import(&input, author.as_deref(), dry_run, &range),
         None => list(repo, delete),
     }
 }
@@ -432,7 +432,7 @@ fn endpoint(oid: Option<gix::ObjectId>, sentinel: &str) -> String {
 /// cannot anchor is a mistake worth stopping for. A pull request's outdated
 /// threads come with the source, so those are reported and skipped instead of
 /// failing the batch.
-fn import(input: &str, author: Option<String>, dry: bool, range: &RangeArgs) -> Outcome {
+fn import(input: &str, author: Option<&str>, dry: bool, range: &RangeArgs) -> Outcome {
     let text = read_input(input)?;
     // A payload, not a document: `gh api` output starts with its array.
     let from_pull_request = text.trim_start().starts_with(['[', '{']);
@@ -467,21 +467,18 @@ fn import(input: &str, author: Option<String>, dry: bool, range: &RangeArgs) -> 
 
     // Roots must anchor; a reply anchors where it can and otherwise takes its
     // root's place, so an outdated line number in a reply cannot fail a batch.
-    let (roots, replies): (Vec<_>, Vec<_>) = doc.entries.iter().partition(|e| e.reply_to.is_none());
-    let (resolved, failed) = resolve_roots(&roots, &loaded, input, &root, from_pull_request);
-    if failed > 0 {
-        if !from_pull_request {
-            eprintln!(
-                "\n{failed} of {} entr{} failed to resolve — nothing imported",
-                doc.entries.len(),
-                if doc.entries.len() == 1 { "y" } else { "ies" }
-            );
-            return Err(ExitCode::from(FINDINGS));
-        }
-        eprintln!("\n{failed} thread(s) do not anchor in this range — skipped");
-    }
+    let replies: Vec<_> = doc
+        .entries
+        .iter()
+        .filter(|e| e.reply_to.is_some())
+        .collect();
+    let resolved = if from_pull_request {
+        resolve_pull_request_roots(&doc.entries, &loaded, input)
+    } else {
+        resolve_document_roots(&doc.entries, &loaded, input, &root)?
+    };
 
-    write_entries(&loaded, &resolved, &replies, (author, dry));
+    write_entries(&loaded, &resolved, &replies, author, dry);
     Ok(())
 }
 
@@ -524,58 +521,95 @@ fn warn_on_range_mismatch(doc: &interchange::Document, loaded: &concats_diff::lo
     }
 }
 
-/// Every root entry that anchors, and how many did not. A failure gets the same
-/// reviewable-ranges help `add` prints, so the fix is a copy.
-fn resolve_roots<'a>(
-    roots: &[&'a interchange::Entry],
-    loaded: &concats_diff::load::Loaded,
+fn resolve_document_roots<'a>(
+    entries: &'a [interchange::Entry],
+    loaded: &Loaded,
     input: &str,
     root: &str,
-    from_pull_request: bool,
+) -> Result<Vec<(&'a interchange::Entry, interchange::ResolvedEntry)>, ExitCode> {
+    let (resolved, failed) = resolve_roots(entries, loaded, |entry, error| {
+        print_resolution_error(entry, error, input, "error");
+        if let interchange::ResolveError::MissingLines { file, .. } = error {
+            print_reviewable_ranges(file, root);
+        }
+    });
+    if failed > 0 {
+        eprintln!(
+            "\n{failed} of {} entr{} failed to resolve — nothing imported",
+            entries.len(),
+            if entries.len() == 1 { "y" } else { "ies" }
+        );
+        return Err(ExitCode::from(FINDINGS));
+    }
+    Ok(resolved)
+}
+
+fn resolve_pull_request_roots<'a>(
+    entries: &'a [interchange::Entry],
+    loaded: &Loaded,
+    input: &str,
+) -> Vec<(&'a interchange::Entry, interchange::ResolvedEntry)> {
+    let (resolved, failed) = resolve_roots(entries, loaded, |entry, error| {
+        print_resolution_error(entry, error, input, "warning");
+    });
+    if failed > 0 {
+        eprintln!("\n{failed} thread(s) do not anchor in this range — skipped");
+    }
+    resolved
+}
+
+fn resolve_roots<'a>(
+    entries: &'a [interchange::Entry],
+    loaded: &Loaded,
+    mut on_error: impl FnMut(&interchange::Entry, &interchange::ResolveError<'_>),
 ) -> (
     Vec<(&'a interchange::Entry, interchange::ResolvedEntry)>,
     usize,
 ) {
-    let level = if from_pull_request {
-        "warning"
-    } else {
-        "error"
-    };
-    let mut resolved = Vec::new();
-    let mut failed = 0usize;
-    for entry in roots {
-        match interchange::resolve_entry(loaded, entry) {
-            Ok(r) => resolved.push((*entry, r)),
-            Err(interchange::ResolveError::UnknownPath) => {
+    let mut failed = 0;
+    let resolved = entries
+        .iter()
+        .filter(|e| e.reply_to.is_none())
+        .filter_map(|entry| match interchange::resolve_entry(loaded, entry) {
+            Ok(anchor) => Some((entry, anchor)),
+            Err(error) => {
                 failed += 1;
-                eprintln!(
-                    "{level}: {input}:{}: `{}` is not part of this diff",
-                    entry.line, entry.path
-                );
+                on_error(entry, &error);
+                None
             }
-            Err(interchange::ResolveError::MissingLines { file, missing }) => {
-                failed += 1;
-                let shown: Vec<String> = missing.iter().take(5).map(u32::to_string).collect();
-                let side = if entry.side == interchange::Side::Old {
-                    "old-side "
-                } else {
-                    ""
-                };
-                eprintln!(
-                    "{level}: {input}:{}: {side}line(s) {} of {} are not part of this diff",
-                    entry.line,
-                    shown.join(", "),
-                    file.path
-                );
-                // Ranges to copy help someone fixing a document; nobody can fix
-                // a pull request comment that the diff has moved past.
-                if !from_pull_request {
-                    print_reviewable_ranges(file, root);
-                }
-            }
+        })
+        .collect();
+    (resolved, failed)
+}
+
+fn print_resolution_error(
+    entry: &interchange::Entry,
+    error: &interchange::ResolveError<'_>,
+    input: &str,
+    level: &str,
+) {
+    match error {
+        interchange::ResolveError::UnknownPath => {
+            eprintln!(
+                "{level}: {input}:{}: `{}` is not part of this diff",
+                entry.line, entry.path
+            );
+        }
+        interchange::ResolveError::MissingLines { file, missing } => {
+            let shown: Vec<String> = missing.iter().take(5).map(u32::to_string).collect();
+            let side = if entry.side == interchange::Side::Old {
+                "old-side "
+            } else {
+                ""
+            };
+            eprintln!(
+                "{level}: {input}:{}: {side}line(s) {} of {} are not part of this diff",
+                entry.line,
+                shown.join(", "),
+                file.path
+            );
         }
     }
-    (resolved, failed)
 }
 
 /// Write the batch, roots first so a reply threads onto the root this run just
@@ -585,7 +619,8 @@ fn write_entries(
     loaded: &concats_diff::load::Loaded,
     resolved: &[(&interchange::Entry, interchange::ResolvedEntry)],
     replies: &[&interchange::Entry],
-    (fallback_author, dry): (Option<String>, bool),
+    fallback_author: Option<&str>,
+    dry: bool,
 ) {
     let mut store = Store::open(&loaded.git_dir);
     let mut tally = Tally::default();
@@ -629,14 +664,16 @@ fn write_entries(
             continue;
         }
 
-        let author = entry.author.clone().or_else(|| fallback_author.clone());
+        let author = entry
+            .author
+            .clone()
+            .or_else(|| fallback_author.map(str::to_string));
         // A dry run still records what each entry would become, so a reply
         // finds the root it would have threaded onto and the counts match a
         // real run. The placeholder is never used as a parent: nothing writes.
         let id = if dry {
             0
-        } else if let Some(stored) =
-            store_entry(&mut store, loaded, entry, (anchor, parent, author))
+        } else if let Some(stored) = store_entry(&mut store, loaded, entry, anchor, parent, author)
         {
             stored
         } else {
@@ -703,11 +740,9 @@ fn store_entry(
     store: &mut Store,
     loaded: &concats_diff::load::Loaded,
     entry: &interchange::Entry,
-    (anchor, parent, author): (
-        Option<&interchange::ResolvedEntry>,
-        Option<u64>,
-        Option<String>,
-    ),
+    anchor: Option<&interchange::ResolvedEntry>,
+    parent: Option<u64>,
+    author: Option<String>,
 ) -> Option<u64> {
     let created_at = entry.created_at.unwrap_or_else(store::now);
     let Some(r) = anchor else {

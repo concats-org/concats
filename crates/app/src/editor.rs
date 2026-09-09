@@ -32,7 +32,7 @@ pub(crate) fn type_text(d: &mut ReviewDoc, input: &str) -> bool {
                 return false;
             }
             if let Some(caret) = d.caret.as_mut() {
-                caret.byte -= close.len() as u32;
+                caret.byte -= close.len();
             }
             true
         }
@@ -40,7 +40,7 @@ pub(crate) fn type_text(d: &mut ReviewDoc, input: &str) -> bool {
         // it instead of doubling it.
         None if steps_over(d, input) => {
             if let Some(caret) = d.caret.as_mut() {
-                caret.byte += input.len() as u32;
+                caret.byte += input.len();
             }
             true
         }
@@ -58,7 +58,7 @@ pub(crate) fn edit_key(d: &mut ReviewDoc, ke: &KeyEvent) -> Option<bool> {
             // Typing a block would be a pain otherwise.
             let indent = d.caret.map_or(String::new(), |c| {
                 let line = d.blobs[c.blob as usize].line_text(c.line as usize);
-                line[..c.byte as usize]
+                line[..c.byte]
                     .chars()
                     .take_while(|ch| *ch == ' ' || *ch == '\t')
                     .collect()
@@ -92,7 +92,7 @@ pub(crate) fn move_caret(d: &mut ReviewDoc, tab: Stream, ke: &KeyEvent) -> bool 
         d.selection_anchor = None;
     }
     let text = d.blobs[caret.blob as usize].line_text(caret.line as usize);
-    let byte = caret.byte as usize;
+    let byte = caret.byte;
     let moved = match ke.key_code {
         KeyCode::ArrowUp => step_caret(d, tab, caret, Step::Up),
         KeyCode::ArrowDown => step_caret(d, tab, caret, Step::Down),
@@ -119,10 +119,7 @@ pub(crate) fn move_caret(d: &mut ReviewDoc, tab: Stream, ke: &KeyEvent) -> bool 
 }
 
 fn set_byte(d: &mut ReviewDoc, caret: Caret, byte: usize) -> bool {
-    d.caret = Some(Caret {
-        byte: byte as u32,
-        ..caret
-    });
+    d.caret = Some(Caret { byte, ..caret });
     true
 }
 
@@ -139,7 +136,7 @@ pub(crate) fn caret_at(d: &ReviewDoc, tab: Stream, row: usize, byte: usize) -> O
     Some(Caret {
         blob: *blob,
         line: *line,
-        byte: text.floor_char_boundary(byte) as u32,
+        byte: text.floor_char_boundary(byte),
     })
 }
 
@@ -154,7 +151,7 @@ fn delete_forward(d: &mut ReviewDoc) -> bool {
     };
     let blob = &d.blobs[caret.blob as usize];
     let line = blob.line_text(caret.line as usize);
-    let at = caret.byte as usize;
+    let at = caret.byte;
     // Off the end of the line, the character to delete is the newline itself,
     // which joins the line below onto this one.
     let width = match (at + 1..=line.len()).find(|i| line.is_char_boundary(*i)) {
@@ -174,6 +171,10 @@ fn delete_forward(d: &mut ReviewDoc) -> bool {
     true
 }
 
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "The diff row model uses u32 line indices; a buffer cannot practically contain 2^32 lines."
+)]
 fn undo_at(d: &mut ReviewDoc, redo: bool) -> bool {
     let Some(caret) = d.caret else {
         return false;
@@ -186,7 +187,7 @@ fn undo_at(d: &mut ReviewDoc, redo: bool) -> bool {
     d.caret = Some(Caret {
         blob: caret.blob,
         line: line as u32,
-        byte: (at - blob.line_starts[line] as usize) as u32,
+        byte: at - blob.line_starts[line] as usize,
     });
     true
 }
@@ -210,7 +211,7 @@ fn steps_over(d: &ReviewDoc, input: &str) -> bool {
     d.caret.is_some_and(|caret| {
         d.blobs[caret.blob as usize]
             .line_text(caret.line as usize)
-            .get(caret.byte as usize..)
+            .get(caret.byte..)
             .is_some_and(|rest| rest.starts_with(input))
     })
 }
@@ -232,7 +233,7 @@ fn step_caret(d: &mut ReviewDoc, tab: Stream, caret: Caret, step: Step) -> bool 
     d.caret = Some(Caret {
         blob,
         line,
-        byte: text.floor_char_boundary(caret.byte as usize) as u32,
+        byte: text.floor_char_boundary(caret.byte),
     });
     true
 }
@@ -285,7 +286,7 @@ pub(crate) fn replace_one(d: &mut ReviewDoc, tab: Stream, query: &str, insert: &
     if !blob.editable() {
         return false;
     }
-    let at = blob.line_starts[caret.line as usize] as usize + caret.byte as usize;
+    let at = blob.line_starts[caret.line as usize] as usize + caret.byte;
     let hay = blob.text.to_ascii_lowercase();
     let query = query.to_ascii_lowercase();
     let Some((start, _)) = hay
@@ -354,6 +355,10 @@ mod tests {
 
     use super::*;
 
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "This test fixture contains only a few lines."
+    )]
     fn document(text: &str) -> ReviewDoc {
         let mut blob = Blob::new(
             concats_sync::hash_object(text.as_bytes()),

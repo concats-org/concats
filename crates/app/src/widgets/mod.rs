@@ -30,6 +30,7 @@ use crate::makepad_widgets::ScriptVm;
 /// before the app window layout that embeds `ReviewPane`.
 pub fn script_mod(vm: &mut ScriptVm) {
     styles::script_mod(vm);
+    crate::terminal_view::script_mod(vm);
     card_cap::script_mod(vm);
     drop_shadow::script_mod(vm);
     diff_line::script_mod(vm);

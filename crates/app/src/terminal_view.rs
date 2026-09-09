@@ -11,22 +11,28 @@
 //! the draw path puts it where the display is, and a drag turns back into a
 //! `Scroll`.
 //!
-//! TODO: find in the scrollback. `alacritty_terminal::term::search` is the
-//! whole mechanism, but the panel should reuse the review list's find rather
-//! than grow a second one — and that interaction wants rework of its own
-//! first, which is not this change's to do.
 
 use std::collections::HashMap;
 
 use alacritty_terminal::{
     Term,
     grid::{Dimensions, Scroll},
-    index::{Column, Point, Side},
+    index::{Boundary, Column, Direction, Point, Side},
     selection::{Selection, SelectionType},
-    term::{TermMode, cell::Flags, point_to_viewport, viewport_to_point},
+    term::{
+        TermMode,
+        cell::Flags,
+        point_to_viewport,
+        search::{Match, RegexSearch},
+        viewport_to_point,
+    },
     vte::ansi::CursorShape,
 };
 
+#[allow(
+    clippy::wildcard_imports,
+    reason = "Makepad macros and derives expand against the widget prelude in this scope."
+)]
 use crate::{
     makepad_widgets::{
         text::{geom::Point as TextPoint, rasterizer::RasterizedGlyph},
@@ -117,6 +123,9 @@ script_mod! {
             draw_call_group: @text
             text_style: TERM_FONT
         }
+        find_bar: mod.widgets.FindBar {
+            find_input +: { empty_text: "Find in terminal" }
+        }
         link_tooltip: mod.widgets.Tooltip {
             content +: {
                 padding: 8
@@ -187,11 +196,20 @@ const BEAM_WIDTH: f64 = 2.0;
 /// This and [`display_offset_for`] are inverses, and between them the only
 /// description of how the bar and the scrollback relate. Writing that mapping
 /// out twice is how it came to disagree with itself.
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "Scrollback line counts are converted to approximate pixel positions."
+)]
 fn scroll_pos_for(offset: usize, max_scroll: f64, cell_height: f64) -> f64 {
     (max_scroll - offset as f64 * cell_height).max(0.0)
 }
 
 /// How far back the display is for a bar sitting at `scroll_y`.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "The offset is rounded to whole lines and clamped nonnegative."
+)]
 fn display_offset_for(scroll_y: f64, max_scroll: f64, cell_height: f64) -> usize {
     ((max_scroll - scroll_y) / cell_height).round().max(0.0) as usize
 }
@@ -234,6 +252,17 @@ pub struct TerminalView {
     scroll_bars: ScrollBars,
     #[live]
     link_tooltip: Tooltip,
+    #[live]
+    #[find]
+    find_bar: View,
+    #[rust]
+    find: Option<String>,
+    #[rust]
+    focus_find: bool,
+    #[rust]
+    find_regex: Option<RegexSearch>,
+    #[rust]
+    find_match: Option<Match>,
     #[layout]
     layout: Layout,
     #[redraw]
@@ -287,6 +316,39 @@ pub struct TerminalView {
     ime_pos: Option<Vec2d>,
 }
 
+fn next_terminal_match<T>(
+    term: &Term<T>,
+    regex: &mut RegexSearch,
+    previous: Option<&Match>,
+    direction: Direction,
+) -> Option<Match> {
+    let origin = previous.map_or_else(
+        || viewport_to_point(term.grid().display_offset(), Point::new(0, Column(0))),
+        |found| match direction {
+            Direction::Right => {
+                found
+                    .end()
+                    .grid_clamp(term, Boundary::Grid)
+                    .add(term, Boundary::None, 1)
+            }
+            Direction::Left => {
+                found
+                    .start()
+                    .grid_clamp(term, Boundary::Grid)
+                    .sub(term, Boundary::None, 1)
+            }
+        },
+    );
+    term.search_next(regex, origin, direction, direction.opposite(), None)
+}
+
+/// Typing pulls the view back to the prompt, the way every terminal does.
+fn scroll_to_bottom(session: Session) {
+    if let Some(shared) = crate::terminal::term(session) {
+        shared.lock().scroll_display(Scroll::Bottom);
+    }
+}
+
 impl ScriptHook for TerminalView {
     fn on_after_apply(
         &mut self,
@@ -302,6 +364,34 @@ impl ScriptHook for TerminalView {
 }
 
 impl TerminalView {
+    fn seek_match(&mut self, cx: &mut Cx, direction: Direction) {
+        let Some(shared) = self.session.and_then(crate::terminal::term) else {
+            return;
+        };
+        let Some(regex) = &mut self.find_regex else {
+            return;
+        };
+        let mut term = shared.lock();
+        self.find_match = next_terminal_match(&term, regex, self.find_match.as_ref(), direction);
+        term.selection = None;
+        if let Some(found) = &self.find_match {
+            let mut selection = Selection::new(SelectionType::Simple, *found.start(), Side::Left);
+            selection.update(*found.end(), Side::Right);
+            term.selection = Some(selection);
+            term.scroll_to_point(*found.start());
+        }
+        drop(term);
+        self.find_bar.label(cx, ids!(find_count)).set_text(
+            cx,
+            if self.find_match.is_some() {
+                "Match · Enter next / Shift-Enter previous"
+            } else {
+                "No matches"
+            },
+        );
+        self.redraw(cx);
+    }
+
     /// Which terminal session this widget instance shows: the nearest
     /// enclosing dock tab with a live session (the widget tree path contains
     /// the dock item ids).
@@ -354,15 +444,20 @@ impl TerminalView {
     }
 
     /// The widget's geometry in cells, for the term and the PTY.
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "Pixel geometry is rounded, clamped positive, and saturated into PTY dimensions."
+    )]
     fn size(&self) -> Size {
         let (cell_width, cell_height) = (self.cell_width, self.cell_height);
         Size {
             columns: ((self.viewport_rect.size.x - self.pad_x * 2.0) / cell_width)
                 .floor()
-                .max(1.0) as usize,
+                .max(1.0) as u16,
             screen_lines: ((self.viewport_rect.size.y - self.pad_y * 2.0) / cell_height)
                 .floor()
-                .max(1.0) as usize,
+                .max(1.0) as u16,
             cell_width: cell_width.round().max(1.0) as u16,
             cell_height: cell_height.round().max(1.0) as u16,
         }
@@ -370,6 +465,10 @@ impl TerminalView {
 
     /// How far the scroll bar can travel over a grid of `total_lines`: the
     /// content it stands for, less the part already on screen.
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "Line counts are converted to approximate pixel heights."
+    )]
     fn max_scroll(&self, total_lines: usize) -> f64 {
         let (_, cell_height) = (self.cell_width, self.cell_height);
         let content_height =
@@ -407,6 +506,13 @@ impl TerminalView {
 
     /// Walk the visible grid: a background where a cell asked for one, the
     /// glyph, whatever rules its flags call for, and the cursor on top.
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_precision_loss,
+        clippy::cognitive_complexity,
+        clippy::too_many_lines,
+        reason = "One locked grid snapshot is painted in background, cursor, and glyph order; the renderer uses f32 pixels."
+    )]
     fn draw_grid(&mut self, cx: &mut Cx2d, term: &Term<Proxy>, focused: bool) {
         let theme = crate::theme::active_theme();
         let content = term.renderable_content();
@@ -497,7 +603,7 @@ impl TerminalView {
                 }
                 self.cache_terminal_glyphs(cx, &text);
                 if let Some(glyphs) = self.glyph_cache.get(&text) {
-                    for glyph in glyphs.iter() {
+                    for glyph in glyphs {
                         let baseline_y =
                             y + self.cell_offset_y + f64::from(glyph.baseline_offset_in_lpxs);
                         self.draw_text.draw_rasterized_glyph_abs(
@@ -544,6 +650,10 @@ impl TerminalView {
     /// block, the one on this platform that does is a proportional symbol face
     /// whose dots do not line up between adjacent cells — and the pattern is
     /// already in the codepoint. Alacritty draws its own for the same reasons.
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "Braille row and column values are bounded to a four-by-two cell."
+    )]
     fn draw_braille(&mut self, cx: &mut Cx2d, c: char, x: f64, y: f64) {
         let (cell_width, cell_height) = (self.cell_width, self.cell_height);
         let (step_x, step_y) = (cell_width / 2.0, cell_height / 4.0);
@@ -562,6 +672,10 @@ impl TerminalView {
         }
     }
 
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "Viewport cell coordinates are converted to approximate pixel positions."
+    )]
     fn draw_cursor_at(
         &mut self,
         cx: &mut Cx2d,
@@ -611,6 +725,12 @@ impl TerminalView {
 
     /// The cell under the pointer, and which half of it — the side decides
     /// whether a selection takes the character or stops before it.
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_precision_loss,
+        clippy::cast_sign_loss,
+        reason = "Pointer positions are clamped nonnegative, floored, and bounded to the visible grid."
+    )]
     fn point_at(&self, abs: Vec2d, term: &Term<Proxy>) -> (Point, Side) {
         let (cell_width, cell_height) = (self.cell_width, self.cell_height);
         let origin = self.origin();
@@ -712,13 +832,6 @@ impl TerminalView {
             _ => false,
         }
     }
-
-    /// Typing pulls the view back to the prompt, the way every terminal does.
-    fn scroll_to_bottom(&self, session: Session) {
-        if let Some(shared) = crate::terminal::term(session) {
-            shared.lock().scroll_display(Scroll::Bottom);
-        }
-    }
 }
 
 impl Widget for TerminalView {
@@ -769,10 +882,100 @@ impl Widget for TerminalView {
                 cx.hide_text_ime();
             }
         }
+        if self.find.is_some() {
+            let width = self.viewport_rect.size.x.min(320.0);
+            self.find_bar.draw_walk(
+                cx,
+                scope,
+                Walk {
+                    abs_pos: Some(dvec2(
+                        self.viewport_rect.pos.x + self.viewport_rect.size.x - width,
+                        self.viewport_rect.pos.y,
+                    )),
+                    width: crate::makepad_widgets::Size::Fixed(width),
+                    height: crate::makepad_widgets::Size::fit(),
+                    ..Walk::default()
+                },
+            )?;
+            if std::mem::take(&mut self.focus_find) {
+                let input = self.find_bar.text_input(cx, ids!(find_input));
+                input.set_text(cx, self.find.as_deref().unwrap_or_default());
+                input.set_key_focus(cx);
+            }
+        }
         self.link_tooltip.draw_walk(cx, scope, Walk::default())
     }
 
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_possible_wrap,
+        clippy::cast_precision_loss,
+        clippy::cast_sign_loss,
+        clippy::cognitive_complexity,
+        clippy::too_many_lines,
+        reason = "Focus, terminal modes, and scroll handling are ordered here; pixel deltas are approximate and history is bounded to 100000 lines."
+    )]
     fn handle_event(&mut self, cx: &mut Cx, event: &Event, scope: &mut Scope) {
+        let input = self.find_bar.text_input(cx, ids!(find_input));
+        if let Event::KeyDown(key) = event
+            && [self.scroll_bars.area(), input.area()]
+                .into_iter()
+                .any(|area| area != Area::Empty && cx.has_key_focus(area))
+        {
+            match key.key_code {
+                KeyCode::KeyF if key.modifiers.logo || key.modifiers.control => {
+                    self.find.get_or_insert_default();
+                    self.focus_find = true;
+                    self.redraw(cx);
+                    return;
+                }
+                KeyCode::Escape if self.find.is_some() => {
+                    self.find = None;
+                    self.find_regex = None;
+                    self.find_match = None;
+                    cx.set_key_focus(self.scroll_bars.area());
+                    self.redraw(cx);
+                    return;
+                }
+                _ => {}
+            }
+        }
+        if self.find.is_some() {
+            self.find_bar.handle_event(cx, event, scope);
+            if let Event::Actions(actions) = event {
+                if let Some(query) = input.changed(actions) {
+                    self.find_match = None;
+                    self.find_regex = None;
+                    if query.is_empty() {
+                        self.find_bar.label(cx, ids!(find_count)).set_text(cx, "");
+                    } else {
+                        match RegexSearch::new(&format!("(?i:{})", regex::escape(&query))) {
+                            Ok(regex) => {
+                                self.find_regex = Some(regex);
+                                self.seek_match(cx, Direction::Right);
+                            }
+                            Err(error) => self
+                                .find_bar
+                                .label(cx, ids!(find_count))
+                                .set_text(cx, &format!("Cannot search: {error}")),
+                        }
+                    }
+                    self.find = Some(query);
+                    self.redraw(cx);
+                }
+                if let Some((_, modifiers)) = input.returned(actions) {
+                    self.seek_match(
+                        cx,
+                        if modifiers.shift {
+                            Direction::Left
+                        } else {
+                            Direction::Right
+                        },
+                    );
+                }
+            }
+        }
+
         self.link_tooltip.handle_event(cx, event, scope);
         let mut scroll_actions = Vec::new();
         self.scroll_bars
@@ -815,7 +1018,7 @@ impl Widget for TerminalView {
                 let bytes = {
                     let term = shared.lock();
                     let (point, _) = self.point_at(e.abs, &term);
-                    mouse::wheel(up, lines, &e.modifiers, point, *term.mode())
+                    mouse::wheel(up, lines, e.modifiers, point, *term.mode())
                 };
                 match bytes {
                     Some(bytes) => {
@@ -860,7 +1063,7 @@ impl Widget for TerminalView {
                     let uri = {
                         let term = shared.lock();
                         let (point, _) = self.point_at(e.abs, &term);
-                        (!mouse::wants_pointer(&e.modifiers, *term.mode()))
+                        (!mouse::wants_pointer(e.modifiers, *term.mode()))
                             .then(|| {
                                 term.grid()[point]
                                     .hyperlink()
@@ -881,7 +1084,7 @@ impl Widget for TerminalView {
                     if let Some(target) = target {
                         match target {
                             crate::links::Target::External(url) => {
-                                cx.open_url(url.as_str(), OpenUrlInPlace::No)
+                                cx.open_url(url.as_str(), OpenUrlInPlace::No);
                             }
                             crate::links::Target::File(path) => cx.widget_action(
                                 self.widget_uid(),
@@ -898,9 +1101,9 @@ impl Widget for TerminalView {
                     let mode = *term.mode();
                     if let Some(button) = self
                         .held
-                        .filter(|_| mouse::wants_pointer(&e.modifiers, mode))
+                        .filter(|_| mouse::wants_pointer(e.modifiers, mode))
                     {
-                        mouse::report(button, true, &e.modifiers, point, mode)
+                        mouse::report(button, true, e.modifiers, point, mode)
                     } else {
                         let ty = if e.modifiers.control && e.modifiers.alt {
                             SelectionType::Block
@@ -932,10 +1135,10 @@ impl Widget for TerminalView {
                             selection.update(point, side);
                         }
                         None
-                    } else if mouse::wants_pointer(&e.modifiers, mode)
+                    } else if mouse::wants_pointer(e.modifiers, mode)
                         && mouse::wants_motion(self.held.is_some(), mode)
                     {
-                        mouse::motion(self.held, &e.modifiers, point, mode)
+                        mouse::motion(self.held, e.modifiers, point, mode)
                     } else {
                         None
                     }
@@ -953,8 +1156,8 @@ impl Widget for TerminalView {
                     let (point, _) = self.point_at(e.abs, &term);
                     let mode = *term.mode();
                     self.held
-                        .filter(|_| mouse::wants_pointer(&e.modifiers, mode))
-                        .and_then(|button| mouse::report(button, false, &e.modifiers, point, mode))
+                        .filter(|_| mouse::wants_pointer(e.modifiers, mode))
+                        .and_then(|button| mouse::report(button, false, e.modifiers, point, mode))
                 };
                 if let Some(bytes) = bytes {
                     self.emit_input_bytes(cx, session, bytes);
@@ -966,7 +1169,7 @@ impl Widget for TerminalView {
                 let uri = {
                     let term = shared.lock();
                     let (point, _) = self.point_at(e.abs, &term);
-                    (!mouse::wants_pointer(&e.modifiers, *term.mode()))
+                    (!mouse::wants_pointer(e.modifiers, *term.mode()))
                         .then(|| {
                             term.grid()[point]
                                 .hyperlink()
@@ -1012,7 +1215,7 @@ impl Widget for TerminalView {
                 self.draw_bg.redraw(cx);
             }
             Hit::KeyFocusLost(_) => {
-                cx.hide_text_ime();
+                // NOTE: the newly focused input owns the IME now.
                 self.draw_bg.redraw(cx);
             }
             Hit::KeyDown(e) => {
@@ -1024,7 +1227,7 @@ impl Widget for TerminalView {
                 }
                 if let Some(bytes) = keys::encode(&e, true, mode) {
                     self.emit_input_bytes(cx, session, bytes);
-                    self.scroll_to_bottom(session);
+                    scroll_to_bottom(session);
                     self.draw_bg.redraw(cx);
                 }
             }
@@ -1045,7 +1248,7 @@ impl Widget for TerminalView {
                 {
                     self.emit_input_bytes(cx, session, bytes);
                 }
-                self.scroll_to_bottom(session);
+                scroll_to_bottom(session);
                 self.draw_bg.redraw(cx);
             }
             Hit::TextCopy(e) => {
@@ -1068,7 +1271,49 @@ fn paste_bytes(text: &str, bracketed: bool) -> Vec<u8> {
 
 #[cfg(test)]
 mod tests {
+    use alacritty_terminal::{term::Config, vte::ansi::Processor};
+
     use super::*;
+
+    #[test]
+    fn terminal_search_visits_scrollback_and_wraps_in_both_directions() {
+        let size = Size {
+            columns: 40,
+            screen_lines: 3,
+            cell_width: 8,
+            cell_height: 16,
+        };
+        let mut term = Term::new(
+            Config::default(),
+            &size,
+            alacritty_terminal::event::VoidListener,
+        );
+        let mut parser: Processor = Processor::default();
+        parser.advance(
+            &mut term,
+            "[needle] 界\r\nother\r\n[needle] again\r\nfiller\r\nfiller\r\nfiller\r\n".as_bytes(),
+        );
+        let mut regex = RegexSearch::new(r"\[needle\]").unwrap();
+        let first = next_terminal_match(&term, &mut regex, None, Direction::Right).unwrap();
+        assert!(first.start().line.0 < 0, "the match is in scrollback");
+        assert_eq!(
+            term.bounds_to_string(*first.start(), *first.end()),
+            "[needle]"
+        );
+        let second =
+            next_terminal_match(&term, &mut regex, Some(&first), Direction::Right).unwrap();
+        assert_ne!(first, second);
+        assert_eq!(
+            next_terminal_match(&term, &mut regex, Some(&second), Direction::Right),
+            Some(first.clone())
+        );
+        assert_eq!(
+            next_terminal_match(&term, &mut regex, Some(&first), Direction::Left),
+            Some(second)
+        );
+        let mut missing = RegexSearch::new("absent").unwrap();
+        assert!(next_terminal_match(&term, &mut missing, None, Direction::Right).is_none());
+    }
 
     #[test]
     fn bracketed_paste_cannot_inject_nested_markers_or_controls() {
@@ -1106,6 +1351,10 @@ mod tests {
     /// used to be derived from the bar's own position, which made it always
     /// zero, and every scroll snapped to the bottom.
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "These fixture coordinates and expected offsets are exactly representable in binary."
+    )]
     fn the_bar_and_the_scrollback_agree_in_both_directions() {
         let (cell_height, max_scroll) = (15.0, 1500.0);
         for offset in [0usize, 1, 7, 50, 99, 100] {

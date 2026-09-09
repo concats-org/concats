@@ -17,6 +17,10 @@
 //! over the last few points before it pins, so the shadow arrives continuously
 //! instead of snapping on.
 
+#[allow(
+    clippy::wildcard_imports,
+    reason = "Makepad macros and derives expand against the widget prelude in this scope."
+)]
 use crate::{frame_theme, makepad_widgets::*, theme::paint};
 
 script_mod! {

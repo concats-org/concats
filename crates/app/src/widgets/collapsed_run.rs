@@ -14,6 +14,10 @@
 
 use concats_diff::CollapsedEnd;
 
+#[allow(
+    clippy::wildcard_imports,
+    reason = "Makepad macros and derives expand against the widget prelude in this scope."
+)]
 use crate::{
     frame_theme,
     makepad_widgets::{widget::WidgetActionData, *},
@@ -148,9 +152,8 @@ impl CollapsedRun {
     /// Top of a band within the indicator: the down arrow is always first.
     fn band_y(&self, end: CollapsedEnd) -> f64 {
         match end {
-            CollapsedEnd::Head => 0.0,
             CollapsedEnd::Tail if self.head => BAND,
-            CollapsedEnd::Tail => 0.0,
+            CollapsedEnd::Head | CollapsedEnd::Tail => 0.0,
         }
     }
 }
@@ -185,6 +188,10 @@ impl Widget for CollapsedRun {
         }
     }
 
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "The shader stores pixel dimensions as f32."
+    )]
     fn draw_walk(&mut self, cx: &mut Cx2d, scope: &mut Scope, walk: Walk) -> DrawStep {
         let Some(t) = frame_theme(scope) else {
             return DrawStep::done();
@@ -205,7 +212,7 @@ impl Widget for CollapsedRun {
         } else {
             (BAND - 1.0) as f32
         };
-        self.draw_bg.hover_y = self.hover.map(|end| self.band_y(end)).unwrap_or(0.0) as f32;
+        self.draw_bg.hover_y = self.hover.map_or(0.0, |end| self.band_y(end)) as f32;
         self.draw_bg.hover_on = f32::from(self.hover.is_some());
         self.draw_bg.draw_walk(
             cx,

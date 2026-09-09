@@ -78,7 +78,7 @@ fn load_document(target: &Target, guide: Option<String>) -> ReviewDoc {
         repo,
         base: target.base.clone(),
         head: target.head.clone(),
-        guide_path: guide.clone(),
+        guide_path: guide,
         ..Default::default()
     };
     match concats_diff::load::load(
@@ -90,10 +90,10 @@ fn load_document(target: &Target, guide: Option<String>) -> ReviewDoc {
             next.stats = loaded.stats.clone();
             next.merge_base_oid = loaded.merge_base;
             next.head_oid = loaded.head;
-            next.workdir = loaded.workdir.clone();
-            next.stage = loaded.stage.clone();
+            next.workdir.clone_from(&loaded.workdir);
+            next.stage.clone_from(&loaded.stage);
             next.refs = picker_refs(&loaded);
-            let guide = guide_for(guide.as_deref(), &loaded);
+            let guide = guide_for(next.guide_path.as_deref(), &loaded);
             next.applied_guide_at = guide.as_ref().and_then(|(_, at)| *at);
             build_review(&mut next, loaded, target, guide.map(|(md, _)| md));
         }
@@ -151,14 +151,12 @@ fn picker_refs(loaded: &Loaded) -> Vec<String> {
 /// means no Guide tab. The stamp is what the poll compares to notice a newer
 /// submission.
 fn guide_for(path: Option<&str>, loaded: &Loaded) -> Option<(String, Option<u64>)> {
-    match path {
-        Some(path) => Some((std::fs::read_to_string(path).ok()?, None)),
-        None => {
-            let (base, head) = store::guide_key(loaded.merge_base, loaded.head);
-            let guide = store::latest_guide(&loaded.git_dir, &base, &head)?;
-            Some((guide.markdown, Some(guide.created_at)))
-        }
+    if let Some(path) = path {
+        return Some((std::fs::read_to_string(path).ok()?, None));
     }
+    let (base, head) = store::guide_key(loaded.merge_base, loaded.head);
+    let guide = store::latest_guide(&loaded.git_dir, &base, &head)?;
+    Some((guide.markdown, Some(guide.created_at)))
 }
 
 /// Re-open the File tabs the previous document had, over the fresh blob table.
@@ -189,13 +187,17 @@ fn reopen_files(d: &mut ReviewDoc, open: Vec<(u64, String)>, target: &Target) {
 /// edited buffer has a hash no load produces). Inside a document it travels as
 /// a cursor, which carries it through an external write landing above it;
 /// clamping a line number would slide it onto other code.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "Caret remapping uses the diff model’s u32 blob and line indices."
+)]
 fn carry_caret(d: &ReviewDoc, prev: &ReviewDoc, caret: Caret) -> Option<Caret> {
     let (oid, origin, cursor) = (|| {
         let blob = prev.blobs.get(caret.blob as usize)?;
         let at = blob
             .line_starts
             .get(caret.line as usize)
-            .map(|start| *start as usize + caret.byte as usize);
+            .map(|start| *start as usize + caret.byte);
         let cursor = blob
             .doc
             .as_ref()
@@ -220,13 +222,10 @@ fn carry_caret(d: &ReviewDoc, prev: &ReviewDoc, caret: Caret) -> Option<Caret> {
     let (line, byte) = if let Some(at) = at {
         let line = blob.line_of(at);
         let column = at.saturating_sub(blob.line_starts[line] as usize);
-        (line as u32, column as u32)
+        (line as u32, column)
     } else {
         let line = caret.line.min(blob.line_count().saturating_sub(1) as u32);
-        (
-            line,
-            caret.byte.min(blob.line_text(line as usize).len() as u32),
-        )
+        (line, caret.byte.min(blob.line_text(line as usize).len()))
     };
     Some(Caret {
         blob: i as u32,
@@ -328,7 +327,7 @@ pub(crate) fn carry_forward(d: &mut ReviewDoc, prev: &ReviewDoc) {
     }
 }
 
-/// Dev affordance, pairs with CONCATS_APP_SHOT: `CONCATS_APP_COMPOSE=path:start:end`
+/// Dev affordance, pairs with `CONCATS_APP_SHOT`: `CONCATS_APP_COMPOSE=path:start:end`
 /// (0-based) pre-opens the composer on those lines, so the comment dialog can
 /// be screenshotted without a pointer.
 fn compose_from_env(d: &mut ReviewDoc) {
@@ -373,6 +372,10 @@ fn compose_from_env(d: &mut ReviewDoc) {
 /// Assemble the review document: every tab's stream over one blob table. The
 /// Guide tab is the agent's guide when one exists for the range (`guide_md`);
 /// without one there is no Guide tab.
+#[expect(
+    clippy::cognitive_complexity,
+    reason = "Each document stream is assembled once over the shared loaded blobs."
+)]
 pub(crate) fn build_review(
     d: &mut ReviewDoc,
     mut loaded: Loaded,

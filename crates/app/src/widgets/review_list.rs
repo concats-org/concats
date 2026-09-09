@@ -5,7 +5,7 @@
 //! card header that has scrolled past the top so its path and tick box stay in
 //! reach. Both headers emit the same actions, addressed by file path.
 
-use std::{collections::HashSet, sync::Arc};
+use std::{cell::Cell, collections::HashSet, sync::Arc};
 
 use concats_diff::{Blob, LineKind, Row};
 use concats_review::store::{self, LineKey};
@@ -16,6 +16,10 @@ use super::{
     drop_shadow::{DropShadow, ShadowUp},
     gutter::RowMarks,
 };
+#[allow(
+    clippy::wildcard_imports,
+    reason = "Makepad macros and derives expand against the widget prelude in this scope."
+)]
 use crate::{
     FrameData, FrameTheme, editor,
     file_view::{relower_edited, save_plan},
@@ -152,9 +156,9 @@ fn sticky_offsets(header_top: Option<f64>, end_top: Option<f64>) -> (f64, f64) {
     // Leaving: once the card's bottom edge reaches the top, the copy slides out
     // with it instead of covering the next card — the handoff CSS `position:
     // sticky` gives you for free.
-    let leave = end_top
-        .map(|top| (top + CARD_END_EDGE - STICKY_HEIGHT).clamp(-STICKY_HEIGHT, STICKY_TOP_GAP))
-        .unwrap_or(STICKY_TOP_GAP);
+    let leave = end_top.map_or(STICKY_TOP_GAP, |top| {
+        (top + CARD_END_EDGE - STICKY_HEIGHT).clamp(-STICKY_HEIGHT, STICKY_TOP_GAP)
+    });
     let push = if arrive > STICKY_TOP_GAP {
         arrive
     } else {
@@ -163,9 +167,9 @@ fn sticky_offsets(header_top: Option<f64>, end_top: Option<f64>) -> (f64, f64) {
     // How far the header floats above its resting place, 0..1 — the shadow's
     // opacity. It is continuous, so there is no scroll position where the
     // shadow suddenly appears.
-    let lift = natural
-        .map(|top| ((STICKY_TOP_GAP - top) / STICKY_FADE).clamp(0.0, 1.0))
-        .unwrap_or(1.0);
+    let lift = natural.map_or(1.0, |top| {
+        ((STICKY_TOP_GAP - top) / STICKY_FADE).clamp(0.0, 1.0)
+    });
     (push, lift)
 }
 
@@ -875,7 +879,7 @@ pub struct ReviewList {
     /// The composer field's widget, while one is on screen. Every other control
     /// in a row carries the `ReviewItemAction` that says what it is, but
     /// makepad's `TextInput` has no `#[action_data]` field — `set_action_data`
-    /// on it is a no-op — so its keystrokes arrive unlabelled and ReviewPane
+    /// on it is a no-op — so its keystrokes arrive unlabelled and `ReviewPane`
     /// matches them by uid instead. Uids come off a counter and are never
     /// reused, so a stale one is inert rather than wrong.
     #[rust]
@@ -950,8 +954,7 @@ struct CardMeta {
     header: usize,
     end: usize,
     keys: Vec<LineKey>,
-    all_seen: bool,
-    any_seen: bool,
+    seen: Cell<Option<(bool, bool)>>,
 }
 
 impl CardIndex {
@@ -963,8 +966,7 @@ impl CardIndex {
                     header: row,
                     end: row,
                     keys: Vec::new(),
-                    all_seen: false,
-                    any_seen: false,
+                    seen: Cell::new(None),
                 }),
                 Row::HunkBar { old, new } => {
                     if let Some(card) = self.cards.last_mut() {
@@ -997,11 +999,24 @@ impl CardIndex {
             .and_then(|index| self.cards.get(index))
     }
 
-    fn update_seen(&mut self, seen: &HashSet<LineKey>) {
+    fn invalidate_seen(&mut self) {
         for card in &mut self.cards {
-            card.all_seen = !card.keys.is_empty() && card.keys.iter().all(|key| seen.contains(key));
-            card.any_seen = card.keys.iter().any(|key| seen.contains(key));
+            card.seen.set(None);
         }
+    }
+}
+
+impl CardMeta {
+    fn seen_state(&self, seen: &HashSet<LineKey>) -> (bool, bool) {
+        if let Some(state) = self.seen.get() {
+            return state;
+        }
+        let state = (
+            !self.keys.is_empty() && self.keys.iter().all(|key| seen.contains(key)),
+            self.keys.iter().any(|key| seen.contains(key)),
+        );
+        self.seen.set(Some(state));
+        state
     }
 }
 
@@ -1098,6 +1113,10 @@ fn outdated_label(hidden: usize, showing: bool) -> String {
 }
 
 /// What every row of one draw pass reads: the frame, resolved once.
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "Wrapping, selection, and composer focus are independent draw properties."
+)]
 struct DrawPass<'a> {
     doc: &'a Arc<ReviewDoc>,
     /// `doc.stream(tab)`, resolved once: for a File tab that is a scan of the
@@ -1362,7 +1381,7 @@ impl ReviewList {
                 .as_ref()
                 .is_none_or(|seen| !Arc::ptr_eq(seen, &pass.review.seen))
         {
-            self.cards.update_seen(&pass.review.seen);
+            self.cards.invalidate_seen();
             self.mapped_seen = Some(pass.review.seen.clone());
         }
         let first = if self.visible.is_empty() {
@@ -1390,6 +1409,10 @@ impl ReviewList {
     }
 
     /// One list entry: the row it maps to, drawn with that row's template.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "The exhaustive row dispatch keeps each template beside its row data."
+    )]
     fn draw_row(&mut self, cx: &mut Cx2d, list: &mut PortalList, entry: usize, pass: &DrawPass) {
         let Some(r) = self.row_at(entry) else {
             return;
@@ -1451,7 +1474,10 @@ impl ReviewList {
             // which stops at a collapsed run.
             Row::Spacer => {
                 let item = list.item(cx, entry, id!(Spacer));
-                let seen = self.cards.containing(r).is_some_and(|card| card.all_seen);
+                let seen = self
+                    .cards
+                    .containing(r)
+                    .is_some_and(|card| card.seen_state(&pass.review.seen).0);
                 item.view(cx, ids!(sp_mark)).set_visible(cx, seen);
                 item.draw_all(cx, &mut Scope::with_props(theme));
             }
@@ -1572,7 +1598,7 @@ impl ReviewList {
         let (all, any) = self
             .cards
             .at(r)
-            .map(|card| (card.all_seen, card.any_seen))
+            .map(|card| card.seen_state(&pass.review.seen))
             .unwrap_or_default();
         item.check_box(cx, ids!(seen_box))
             .set_active(cx, all, Animate::No);
@@ -1624,7 +1650,10 @@ impl ReviewList {
         // dashed line rather than one border. Review state is still keyed per
         // changed line; this is just how a fully seen card renders.
         let seen = pass.review.seen.contains(&(b.oid, *line))
-            || self.cards.containing(r).is_some_and(|c| c.all_seen);
+            || self
+                .cards
+                .containing(r)
+                .is_some_and(|c| c.seen_state(&pass.review.seen).0);
         // Inside the range being composed: marker + tint. Deleted rows check
         // the old side, everything else the new side. A reply selects no
         // lines — it holds its root's, which are already marked.
@@ -1654,7 +1683,7 @@ impl ReviewList {
         let caret = d
             .caret
             .filter(|c| c.blob == *blob && c.line == *line)
-            .map(|c| c.byte as usize);
+            .map(|c| c.byte);
 
         item.widget(cx, ids!(gut))
             .set_action_data(ReviewItemAction::Gutter {
@@ -1794,6 +1823,10 @@ impl ReviewList {
     /// node needs to borrow this widget's children — impossible while the draw
     /// loop holds the list, where the lookup silently returns an empty ref and
     /// every set on it is a no-op.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "The shader stores pixel dimensions as f32."
+    )]
     fn draw_sticky(&mut self, cx: &mut Cx2d, pass: &DrawPass, push: f64, lift: f64) {
         let sticky = self.view.view(cx, ids!(sticky));
         let pinned = self
@@ -1835,7 +1868,7 @@ impl ReviewList {
         let (all, any) = self
             .cards
             .at(header)
-            .map(|card| (card.all_seen, card.any_seen))
+            .map(|card| card.seen_state(&pass.review.seen))
             .unwrap_or_default();
         self.view
             .check_box(cx, ids!(st_seen))
@@ -2279,9 +2312,38 @@ fn row_at_y(drawn: &[DrawnRow], y: f64) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::{
-        Band, CARD_END_EDGE, DrawnRow, FILE_HEADER_TOP_PADDING, STICKY_FADE, STICKY_HEIGHT,
-        STICKY_TOP_GAP, anchor_entry, hits_in, row_at_y, sticky_offsets,
+        Band, CARD_END_EDGE, CardIndex, CardMeta, Cell, DrawnRow, FILE_HEADER_TOP_PADDING, HashSet,
+        STICKY_FADE, STICKY_HEIGHT, STICKY_TOP_GAP, anchor_entry, hits_in, row_at_y,
+        sticky_offsets,
     };
+
+    #[test]
+    fn seen_summaries_only_visit_requested_cards_and_follow_invalidations() {
+        let oid = gix::ObjectId::from_hex(&[b'1'; 40]).unwrap();
+        let mut index = CardIndex {
+            cards: (0..2)
+                .map(|header| CardMeta {
+                    header,
+                    end: header,
+                    keys: vec![(oid, 0), (oid, 1)],
+                    seen: Cell::new(None),
+                })
+                .collect(),
+        };
+        let mut seen = HashSet::new();
+        assert_eq!(index.at(0).unwrap().seen_state(&seen), (false, false));
+        assert_eq!(index.at(1).unwrap().seen.get(), None);
+
+        seen.insert((oid, 0));
+        index.invalidate_seen();
+        assert_eq!(index.at(0).unwrap().seen_state(&seen), (false, true));
+        assert_eq!(index.at(1).unwrap().seen.get(), None);
+
+        seen.insert((oid, 1));
+        index.invalidate_seen();
+        assert_eq!(index.at(0).unwrap().seen_state(&seen), (true, true));
+        assert_eq!(index.at(1).unwrap().seen_state(&seen), (true, true));
+    }
 
     fn band(entry: usize, top: f64, height: f64) -> Band {
         Band { entry, top, height }
@@ -2304,6 +2366,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "These fixture coordinates and expected offsets are exactly representable in binary."
+    )]
     fn the_pinned_copy_rides_the_real_header_while_it_is_on_screen() {
         let (push, lift) = sticky_offsets(Some(100.0), None);
         assert_eq!(push, 100.0 + FILE_HEADER_TOP_PADDING);
@@ -2316,6 +2382,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "These fixture coordinates and expected offsets are exactly representable in binary."
+    )]
     fn the_cards_bottom_edge_pushes_the_copy_out_instead_of_over_the_next_card() {
         // The card's end just above the top edge: the copy slides out with it…
         let end_top = STICKY_HEIGHT - CARD_END_EDGE - 20.0;
@@ -2326,6 +2396,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "These fixture coordinates and expected offsets are exactly representable in binary."
+    )]
     fn the_shadow_ramps_continuously_as_the_header_lifts_away() {
         let lift_at = |top: f64| sticky_offsets(Some(top), None).1;
         let start = STICKY_TOP_GAP - FILE_HEADER_TOP_PADDING;
