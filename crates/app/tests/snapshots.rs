@@ -479,3 +479,214 @@ fn an_offscreen_composer_is_revealed_before_typing() {
     assert_eq!(data["dirty_buffers"], 0);
     assert_eq!(data["focus_pending"], false);
 }
+
+#[test]
+#[ignore = "spawns a GPU process; run with --ignored on a desktop"]
+fn search_stays_in_its_tab_without_a_code_caret() {
+    for (name, hooks, expected) in [
+        (
+            "find-diff",
+            vec![("CONCATS_APP_TAB", "files"), ("CONCATS_APP_FIND", "needle")],
+            "2 matches",
+        ),
+        (
+            "find-file",
+            vec![
+                ("CONCATS_APP_FILE", "editor.rs"),
+                ("CONCATS_APP_FIND", "needle"),
+            ],
+            "1 match",
+        ),
+    ] {
+        let shot = capture(name, &hooks, |repo| {
+            std::fs::write(repo.join("editor.rs"), "// a needle in the editor\n")
+                .expect("editor fixture");
+            std::fs::write(repo.join("README.md"), "A needle in the README\n")
+                .expect("readme fixture");
+        });
+        let data: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(shot.with_file_name("state.json")).expect("captured state"),
+        )
+        .expect("state JSON");
+        assert_eq!(data["find_query"], "needle", "{name}");
+        assert_eq!(data["find_count"], expected, "{name}");
+        assert_eq!(
+            data["has_caret"], false,
+            "search does not need a code caret"
+        );
+        assert_eq!(
+            data["dirty_buffers"], 0,
+            "the query must reach the find input"
+        );
+    }
+}
+
+#[test]
+#[ignore = "spawns a GPU process; run with --ignored on a desktop"]
+fn find_does_not_take_keys_from_the_composer() {
+    let shot = capture(
+        "find-composer",
+        &[
+            ("CONCATS_APP_COMPOSE", "editor.rs:12:12"),
+            ("CONCATS_APP_TYPE", "before"),
+            ("CONCATS_APP_FIND", "after"),
+            ("CONCATS_APP_FIND_KEEP_FOCUS", "1"),
+        ],
+        |_| {},
+    );
+    let data: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(shot.with_file_name("state.json")).expect("captured state"),
+    )
+    .expect("state JSON");
+    assert_eq!(data["find_query"], "");
+    assert_eq!(data["draft"], "beforeafter");
+    assert_eq!(data["dirty_buffers"], 0);
+    assert_eq!(data["composer_open"], true);
+}
+
+#[test]
+#[ignore = "spawns a GPU process; run with --ignored on a desktop"]
+fn the_pinned_seen_control_marks_its_file() {
+    let shot = capture(
+        "pinned-seen",
+        &[
+            ("CONCATS_APP_SCROLL", "60"),
+            ("CONCATS_APP_CLICK_SEEN", "1"),
+        ],
+        |repo| {
+            let text = (1..=200)
+                .map(|n| format!("// changed line {n}\n"))
+                .collect::<String>();
+            std::fs::write(repo.join("editor.rs"), text).expect("long file fixture");
+        },
+    );
+    let data: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(shot.with_file_name("state.json")).expect("captured state"),
+    )
+    .expect("state JSON");
+    assert!(
+        data["seen_lines"].as_u64().unwrap() >= 200,
+        "the header marks the entire file"
+    );
+    assert_eq!(data["dirty_buffers"], 0);
+}
+
+#[test]
+#[ignore = "spawns a GPU process; run with --ignored on a desktop"]
+fn file_tab_titles_follow_typing_and_save_acknowledgements() {
+    for (name, save) in [("title-dirty", ""), ("title-saved", "1")] {
+        let shot = capture(
+            name,
+            &[
+                ("CONCATS_APP_FILE", "editor.rs"),
+                ("CONCATS_APP_CLICK", "200,98"),
+                ("CONCATS_APP_TYPE", " // edited"),
+                ("CONCATS_APP_SAVE", save),
+            ],
+            |_| {},
+        );
+        let data: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(shot.with_file_name("state.json")).expect("captured state"),
+        )
+        .expect("state JSON");
+        let before: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(shot.with_file_name("state-before-refresh.json"))
+                .expect("state before saving"),
+        )
+        .expect("state JSON");
+        assert_eq!(
+            before["dirty_buffers"], 1,
+            "the native keystroke edited the file"
+        );
+        let dirty = save.is_empty();
+        assert_eq!(data["dirty_buffers"], u64::from(dirty));
+        let expected = if dirty {
+            "• editor.rs · worktree"
+        } else {
+            "editor.rs · worktree"
+        };
+        assert!(
+            data["tab_titles"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|title| title == expected),
+            "{data}"
+        );
+    }
+}
+
+#[test]
+#[ignore = "needs a macOS window server"]
+fn terminal_draws_combining_marks_and_unicode() {
+    let shot = capture(
+        "terminal_unicode",
+        &[
+            ("CONCATS_APP_TERM", "1"),
+            ("CONCATS_APP_CLICK", "300,690"),
+            ("CONCATS_APP_TERM_SCRIPT", ".git/terminal-fixture.sh"),
+        ],
+        |repo| {
+            std::fs::write(repo.join(".git/terminal-fixture.sh"),
+                "printf 'ASCII: hello\\nCombining: é å ñ\\nWide: 世界 👩‍💻\\nBraille: ⠁⠃⠇⠏\\nCursor: X\\r\\033[8C'\nread -r answer\n"
+            ).expect("terminal fixture");
+        },
+    );
+    let state: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(shot.with_file_name("state.json")).expect("captured state"),
+    )
+    .expect("state JSON");
+    assert!(
+        state["terminal_height"].as_f64().unwrap() > 100.0,
+        "terminal must be visible: {state}"
+    );
+    assert_eq!(
+        state["terminal_cursor"], "X",
+        "fixture cursor must cover a glyph"
+    );
+    assert_matches("terminal_unicode", &shot, EXACT);
+}
+
+#[test]
+#[ignore = "needs a macOS window server"]
+fn terminal_link_hover_shows_the_destination() {
+    let shot = capture(
+        "terminal_link_hover",
+        &[
+            ("CONCATS_APP_TERM", "1"),
+            ("CONCATS_APP_TERM_SCRIPT", ".git/terminal-fixture.sh"),
+            ("CONCATS_APP_HOVER", "50,673"),
+        ],
+        |repo| {
+            std::fs::write(repo.join(".git/terminal-fixture.sh"),
+                "printf '\\033]8;;https://example.com/review\\007Review changes\\033]8;;\\007\\n'\nread -r answer\n"
+            ).expect("link fixture");
+        },
+    );
+    assert_matches("terminal_link_hover", &shot, EXACT);
+}
+
+#[test]
+#[ignore = "needs a macOS window server"]
+fn loading_another_window_keeps_typing_in_the_clicked_window() {
+    let shot = capture(
+        "two_windows",
+        &[
+            ("CONCATS_APP_WINDOWS", "2"),
+            ("CONCATS_APP_CLICK", "200,222"),
+            ("CONCATS_APP_TYPE", "/* primary */"),
+        ],
+        |_| {},
+    );
+    let state: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(shot.with_file_name("state.json")).expect("captured state"),
+    )
+    .expect("state JSON");
+    assert_eq!(
+        state["windows"],
+        serde_json::json!([
+            {"loaded": true, "dirty_buffers": 1},
+            {"loaded": true, "dirty_buffers": 0},
+        ])
+    );
+}

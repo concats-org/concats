@@ -51,7 +51,6 @@ script_mod! {
     set_type_default() do #(DrawTerminalCursor::script_shader(vm)) {
         ..mod.draw.DrawQuad
         color: mod.app_theme.color_cursor
-        color_unfocused: mod.app_theme.color_cursor
         focus: 0.0
         border_width: 1.0
         pixel: fn() {
@@ -60,7 +59,7 @@ script_mod! {
             }
             let sdf = Sdf2d.viewport(self.pos * self.rect_size)
             let inset = self.border_width * 0.5
-            let color = self.color_unfocused
+            let color = self.color
             sdf.box(
                 inset
                 inset
@@ -101,13 +100,6 @@ script_mod! {
     mod.widgets.TerminalView = set_type_default() do mod.widgets.TerminalViewBase {
         width: Fill
         height: Fill
-        font_size: 9.0
-        cell_width_factor: 0.6
-        cell_height_factor: 1.32
-        pad_x: 6.0
-        pad_y: 4.0
-        text_y_offset: 0.0
-        cursor_y_offset: 0.0
         // The comment-blue at low alpha — the app's selection tint.
         selection_color_focus: mod.app_theme.color_sel_focus
         selection_color_unfocus: mod.app_theme.color_sel_unfocus
@@ -125,6 +117,19 @@ script_mod! {
             draw_call_group: @text
             text_style: TERM_FONT
         }
+        link_tooltip: mod.widgets.Tooltip {
+            content +: {
+                padding: 8
+                draw_bg +: {
+                    color: mod.app_theme.color_card
+                    border_color: mod.app_theme.color_border
+                }
+                tooltip_label +: {
+                    width: 300
+                    draw_text +: {text_style: TERM_FONT color: mod.app_theme.color_text}
+                }
+            }
+        }
         draw_cell_bg +: {}
         draw_cursor +: {}
     }
@@ -132,6 +137,7 @@ script_mod! {
 
 #[derive(Clone, Debug, Default)]
 pub enum TerminalViewAction {
+    OpenFile(String),
     Input {
         session: Session,
         data: Vec<u8>,
@@ -156,8 +162,6 @@ struct DrawTerminalCursor {
     draw_super: DrawQuad,
     #[live]
     color: Vec4f,
-    #[live]
-    color_unfocused: Vec4f,
     #[live]
     focus: f32,
     #[live]
@@ -228,6 +232,8 @@ pub struct TerminalView {
     walk: Walk,
     #[live]
     scroll_bars: ScrollBars,
+    #[live]
+    link_tooltip: Tooltip,
     #[layout]
     layout: Layout,
     #[redraw]
@@ -239,20 +245,10 @@ pub struct TerminalView {
     draw_cursor: DrawTerminalCursor,
     #[live]
     draw_cell_bg: DrawTerminalCellBg,
-    #[live(9.0)]
-    font_size: f64,
-    #[live(0.6)]
-    cell_width_factor: f64,
-    #[live(1.32)]
-    cell_height_factor: f64,
-    #[live(4.0)]
+    #[live(6.0)]
     pad_x: f64,
-    #[live(2.0)]
+    #[live(4.0)]
     pad_y: f64,
-    #[live(0.0)]
-    text_y_offset: f64,
-    #[live(0.0)]
-    cursor_y_offset: f64,
     #[live]
     selection_color_focus: Vec4f,
     #[live]
@@ -268,7 +264,9 @@ pub struct TerminalView {
     #[rust]
     cell_offset_y: f64,
     #[rust]
-    glyph_cache: HashMap<char, CachedTerminalGlyph>,
+    session: Option<Session>,
+    #[rust]
+    glyph_cache: HashMap<String, Vec<CachedTerminalGlyph>>,
     #[rust]
     glyph_cache_font_size: f32,
     #[rust]
@@ -289,7 +287,19 @@ pub struct TerminalView {
     ime_pos: Option<Vec2d>,
 }
 
-impl ScriptHook for TerminalView {}
+impl ScriptHook for TerminalView {
+    fn on_after_apply(
+        &mut self,
+        _vm: &mut ScriptVm,
+        _apply: &Apply,
+        _scope: &mut Scope,
+        _value: ScriptValue,
+    ) {
+        // NOTE: live edits can replace the font family without changing its size or DPI.
+        self.cell_width = 0.0;
+        self.glyph_cache.clear();
+    }
+}
 
 impl TerminalView {
     /// Which terminal session this widget instance shows: the nearest
@@ -299,71 +309,53 @@ impl TerminalView {
     /// `window` comes from the scope the pane put there. The tab ids are the
     /// same in every window, so without it this resolves to whichever window
     /// opened that tab first.
-    fn session_for_widget(cx: &Cx, widget_uid: WidgetUid, window: LiveId) -> Option<Session> {
-        cx.widget_tree()
-            .path_to(widget_uid)
-            .iter()
-            .rev()
-            .map(|node| Session { window, tab: *node })
-            .find(|session| crate::terminal::is_open(*session))
-    }
-
-    fn fallback_cell_metrics(&self) -> (f64, f64) {
-        let w = (self.font_size * self.cell_width_factor).max(1.0);
-        let h = (self.font_size * self.cell_height_factor).max(1.0);
-        (w, h)
+    fn session_for_widget(&mut self, cx: &Cx, window: LiveId) -> Option<Session> {
+        self.session = self
+            .session
+            .filter(|session| session.window == window)
+            .or_else(|| {
+                cx.widget_tree()
+                    .path_to(self.widget_uid())
+                    .iter()
+                    .rev()
+                    .map(|node| Session { window, tab: *node })
+                    .find(|session| crate::terminal::is_open(*session))
+            });
+        self.session
     }
 
     fn refresh_cell_metrics(&mut self, cx: &mut Cx2d) {
-        self.draw_text.text_style.font_size = self.font_size as f32;
-        let (fallback_w, fallback_h) = self.fallback_cell_metrics();
-
+        let font_size = self.draw_text.text_style.font_size;
+        let font_scale = self.draw_text.font_scale;
+        let dpi_factor = cx.current_dpi_factor();
+        if self.cell_width > 0.0
+            && self.glyph_cache_font_size.to_bits() == font_size.to_bits()
+            && self.glyph_cache_font_scale.to_bits() == font_scale.to_bits()
+            && self.glyph_cache_dpi_factor.to_bits() == dpi_factor.to_bits()
+        {
+            return;
+        }
         let layout = self
             .draw_text
             .layout(cx, 0.0, 0.0, None, false, Align::default(), "M");
-        let Some(first_glyph) = layout.rows.first().and_then(|row| row.glyphs.first()) else {
-            self.cell_width = fallback_w;
-            self.cell_height = fallback_h;
-            self.cell_offset_y = 0.0;
-            return;
-        };
-
-        let width_in_lpxs = first_glyph.advance_in_lpxs();
-        let glyph_h_in_lpxs = first_glyph.ascender_in_lpxs() - first_glyph.descender_in_lpxs();
-        let line_spacing_in_lpxs = glyph_h_in_lpxs * self.draw_text.text_style.line_spacing;
-
-        self.cell_width = if width_in_lpxs > 0.0 {
-            width_in_lpxs as f64
-        } else {
-            fallback_w
-        };
-        self.cell_height = if line_spacing_in_lpxs > 0.0 {
-            line_spacing_in_lpxs as f64
-        } else {
-            fallback_h
-        };
-        self.cell_offset_y = ((self.cell_height - glyph_h_in_lpxs as f64) * 0.5).max(0.0);
-    }
-
-    fn cell_metrics(&self) -> (f64, f64) {
-        let (fallback_w, fallback_h) = self.fallback_cell_metrics();
-        (
-            if self.cell_width > 0.0 {
-                self.cell_width
-            } else {
-                fallback_w
-            },
-            if self.cell_height > 0.0 {
-                self.cell_height
-            } else {
-                fallback_h
-            },
-        )
+        let glyph = layout
+            .rows
+            .first()
+            .and_then(|row| row.glyphs.first())
+            .expect("the bundled terminal font contains M");
+        let glyph_height = (glyph.ascender_in_lpxs() - glyph.descender_in_lpxs()) * font_scale;
+        self.cell_width = f64::from(glyph.advance_in_lpxs() * font_scale);
+        self.cell_height = f64::from(glyph_height * self.draw_text.text_style.line_spacing);
+        self.cell_offset_y = ((self.cell_height - f64::from(glyph_height)) * 0.5).max(0.0);
+        self.glyph_cache.clear();
+        self.glyph_cache_font_size = font_size;
+        self.glyph_cache_font_scale = font_scale;
+        self.glyph_cache_dpi_factor = dpi_factor;
     }
 
     /// The widget's geometry in cells, for the term and the PTY.
     fn size(&self) -> Size {
-        let (cell_width, cell_height) = self.cell_metrics();
+        let (cell_width, cell_height) = (self.cell_width, self.cell_height);
         Size {
             columns: ((self.viewport_rect.size.x - self.pad_x * 2.0) / cell_width)
                 .floor()
@@ -379,7 +371,7 @@ impl TerminalView {
     /// How far the scroll bar can travel over a grid of `total_lines`: the
     /// content it stands for, less the part already on screen.
     fn max_scroll(&self, total_lines: usize) -> f64 {
-        let (_, cell_height) = self.cell_metrics();
+        let (_, cell_height) = (self.cell_width, self.cell_height);
         let content_height =
             (total_lines as f64 * cell_height + self.pad_y * 2.0).max(self.viewport_rect.size.y);
         content_height - self.viewport_rect.size.y
@@ -393,38 +385,24 @@ impl TerminalView {
         )
     }
 
-    fn invalidate_glyph_cache_if_needed(&mut self, cx: &Cx2d) {
-        let font_size = self.draw_text.text_style.font_size;
-        let font_scale = self.draw_text.font_scale;
-        let dpi_factor = cx.current_dpi_factor();
-        if self.glyph_cache_font_size.to_bits() == font_size.to_bits()
-            && self.glyph_cache_font_scale.to_bits() == font_scale.to_bits()
-            && self.glyph_cache_dpi_factor.to_bits() == dpi_factor.to_bits()
-        {
+    fn cache_terminal_glyphs(&mut self, cx: &mut Cx2d, text: &str) {
+        if self.glyph_cache.contains_key(text) {
             return;
         }
-        self.glyph_cache.clear();
-        self.glyph_cache_font_size = font_size;
-        self.glyph_cache_font_scale = font_scale;
-        self.glyph_cache_dpi_factor = dpi_factor;
-    }
-
-    fn cached_terminal_glyph(&mut self, cx: &mut Cx2d, ch: char) -> Option<CachedTerminalGlyph> {
-        if let Some(cached) = self.glyph_cache.get(&ch) {
-            return Some(*cached);
-        }
-        let mut utf8 = [0u8; 4];
-        let text = ch.encode_utf8(&mut utf8);
-        let run = self.draw_text.prepare_single_line_run(cx, text)?;
-        let glyph = run.glyphs.first()?;
-        let cached = CachedTerminalGlyph {
-            rasterized: glyph.rasterized,
-            font_size_in_lpxs: glyph.font_size_in_lpxs,
-            x_offset_in_lpxs: glyph.pen_x_in_lpxs + glyph.offset_x_in_lpxs,
-            baseline_offset_in_lpxs: run.ascender_in_lpxs,
+        let Some(run) = self.draw_text.prepare_single_line_run(cx, text) else {
+            return;
         };
-        self.glyph_cache.insert(ch, cached);
-        Some(cached)
+        let glyphs = run
+            .glyphs
+            .iter()
+            .map(|glyph| CachedTerminalGlyph {
+                rasterized: glyph.rasterized,
+                font_size_in_lpxs: glyph.font_size_in_lpxs,
+                x_offset_in_lpxs: glyph.pen_x_in_lpxs + glyph.offset_x_in_lpxs,
+                baseline_offset_in_lpxs: run.ascender_in_lpxs,
+            })
+            .collect();
+        self.glyph_cache.insert(text.to_owned(), glyphs);
     }
 
     /// Walk the visible grid: a background where a cell asked for one, the
@@ -434,15 +412,16 @@ impl TerminalView {
         let content = term.renderable_content();
         let (display_offset, cursor, selection) =
             (content.display_offset, content.cursor, content.selection);
-        let (cell_width, cell_height) = self.cell_metrics();
+        let (cell_width, cell_height) = (self.cell_width, self.cell_height);
         let origin = self.origin();
 
         self.draw_cell_bg.new_draw_call(cx);
         self.draw_cursor.new_draw_call(cx);
+        self.draw_cursor_at(cx, cursor.shape, cursor.point, display_offset, focused);
         self.draw_text.new_draw_call(cx);
         self.draw_text.begin_many_instances(cx);
-        self.invalidate_glyph_cache_if_needed(cx);
 
+        let mut text = String::new();
         for indexed in content.display_iter {
             let flags = indexed.cell.flags;
             // The second half of a wide character is not drawn: the glyph in
@@ -487,6 +466,9 @@ impl TerminalView {
                 });
             }
 
+            if focused && cursor.shape == CursorShape::Block && indexed.point == cursor.point {
+                fg = crate::theme::paint(theme.terminal_bg);
+            }
             if let Some(color) = bg {
                 self.draw_cell_bg.color = color;
                 self.draw_cell_bg.draw_abs(
@@ -504,25 +486,32 @@ impl TerminalView {
             if is_braille(indexed.cell.c) && !flags.contains(Flags::HIDDEN) {
                 self.draw_cell_bg.color = fg;
                 self.draw_braille(cx, indexed.cell.c, x, y);
-            } else if indexed.cell.c != ' '
+            } else if (indexed.cell.c != ' ' || indexed.cell.zerowidth().is_some())
                 && !indexed.cell.c.is_control()
                 && !flags.contains(Flags::HIDDEN)
-                && let Some(glyph) = self.cached_terminal_glyph(cx, indexed.cell.c)
             {
-                let baseline_y = y
-                    + self.cell_offset_y
-                    + self.text_y_offset
-                    + glyph.baseline_offset_in_lpxs as f64;
-                self.draw_text.draw_rasterized_glyph_abs(
-                    cx,
-                    TextPoint::new(
-                        (x + glyph.x_offset_in_lpxs as f64) as f32,
-                        baseline_y as f32,
-                    ),
-                    glyph.font_size_in_lpxs,
-                    glyph.rasterized,
-                    fg,
-                );
+                text.clear();
+                text.push(indexed.cell.c);
+                if let Some(marks) = indexed.cell.zerowidth() {
+                    text.extend(marks);
+                }
+                self.cache_terminal_glyphs(cx, &text);
+                if let Some(glyphs) = self.glyph_cache.get(&text) {
+                    for glyph in glyphs.iter() {
+                        let baseline_y =
+                            y + self.cell_offset_y + f64::from(glyph.baseline_offset_in_lpxs);
+                        self.draw_text.draw_rasterized_glyph_abs(
+                            cx,
+                            TextPoint::new(
+                                (x + f64::from(glyph.x_offset_in_lpxs)) as f32,
+                                baseline_y as f32,
+                            ),
+                            glyph.font_size_in_lpxs,
+                            glyph.rasterized,
+                            fg,
+                        );
+                    }
+                }
             }
 
             if flags.intersects(Flags::ALL_UNDERLINES | Flags::STRIKEOUT) {
@@ -539,8 +528,6 @@ impl TerminalView {
             }
         }
         self.draw_text.end_many_instances(cx);
-
-        self.draw_cursor_at(cx, cursor.shape, cursor.point, display_offset, focused);
     }
 
     fn draw_rule(&mut self, cx: &mut Cx2d, x: f64, y: f64, width: f64) {
@@ -558,7 +545,7 @@ impl TerminalView {
     /// whose dots do not line up between adjacent cells — and the pattern is
     /// already in the codepoint. Alacritty draws its own for the same reasons.
     fn draw_braille(&mut self, cx: &mut Cx2d, c: char, x: f64, y: f64) {
-        let (cell_width, cell_height) = self.cell_metrics();
+        let (cell_width, cell_height) = (self.cell_width, self.cell_height);
         let (step_x, step_y) = (cell_width / 2.0, cell_height / 4.0);
         let dot = (step_x.min(step_y) * 0.7).max(1.0);
         for (row, column) in braille_dots(c) {
@@ -583,17 +570,23 @@ impl TerminalView {
         display_offset: usize,
         focused: bool,
     ) {
+        self.ime_pos = None;
         if shape == CursorShape::Hidden {
             return;
         }
         let Some(viewport) = point_to_viewport(display_offset, point) else {
             return;
         };
-        let (cell_width, cell_height) = self.cell_metrics();
+        let (cell_width, cell_height) = (self.cell_width, self.cell_height);
         let origin = self.origin();
         let x = origin.x + viewport.column.0 as f64 * cell_width;
-        let y = origin.y + viewport.line as f64 * cell_height + self.cursor_y_offset;
+        let y = origin.y + viewport.line as f64 * cell_height;
 
+        if y < self.viewport_rect.pos.y
+            || y + cell_height > self.viewport_rect.pos.y + self.viewport_rect.size.y
+        {
+            return;
+        }
         let (pos, size) = match shape {
             CursorShape::Beam => (dvec2(x, y), dvec2(BEAM_WIDTH, cell_height)),
             CursorShape::Underline => (
@@ -618,26 +611,23 @@ impl TerminalView {
 
     /// The cell under the pointer, and which half of it — the side decides
     /// whether a selection takes the character or stops before it.
-    fn point_at(
-        &self,
-        abs: Vec2d,
-        display_offset: usize,
-        columns: usize,
-        screen_lines: usize,
-    ) -> (Point, Side) {
-        let (cell_width, cell_height) = self.cell_metrics();
+    fn point_at(&self, abs: Vec2d, term: &Term<Proxy>) -> (Point, Side) {
+        let (cell_width, cell_height) = (self.cell_width, self.cell_height);
         let origin = self.origin();
         let x = (abs.x - origin.x).max(0.0);
         let y = (abs.y - origin.y).max(0.0);
-        let column = ((x / cell_width).floor() as usize).min(columns.saturating_sub(1));
-        let line = ((y / cell_height).floor() as usize).min(screen_lines.saturating_sub(1));
+        let column = ((x / cell_width).floor() as usize).min(term.columns().saturating_sub(1));
+        let line = ((y / cell_height).floor() as usize).min(term.screen_lines().saturating_sub(1));
         let side = if x - (column as f64 * cell_width) > cell_width / 2.0 {
             Side::Right
         } else {
             Side::Left
         };
         (
-            viewport_to_point(display_offset, Point::new(line, Column(column))),
+            viewport_to_point(
+                term.grid().display_offset(),
+                Point::new(line, Column(column)),
+            ),
             side,
         )
     }
@@ -701,14 +691,8 @@ impl TerminalView {
         }
     }
 
-    fn handle_drop(
-        &mut self,
-        cx: &mut Cx,
-        session: Session,
-        event: &Event,
-        mode: TermMode,
-    ) -> bool {
-        match event.drag_hits(cx, self.scroll_bars.area()) {
+    fn handle_drop(&mut self, cx: &mut Cx, session: Session, hit: DragHit, mode: TermMode) -> bool {
+        match hit {
             DragHit::Drag(drag) => {
                 if Self::dropped_text_payload(drag.items.as_ref()).is_none() {
                     return false;
@@ -748,7 +732,7 @@ impl Widget for TerminalView {
         let window = crate::frame_state(scope)
             .map(|state| state.id)
             .unwrap_or_default();
-        let session = Self::session_for_widget(cx, self.widget_uid(), window);
+        let session = self.session_for_widget(cx, window);
 
         self.draw_bg.draw_abs(cx, self.unscrolled_rect);
 
@@ -766,7 +750,7 @@ impl Widget for TerminalView {
 
         // The bar follows the display: content is every line the grid holds,
         // and the offset counts up from the bottom.
-        let (_, cell_height) = self.cell_metrics();
+        let (_, cell_height) = (self.cell_width, self.cell_height);
         let max_scroll = self.max_scroll(total_lines);
         let scroll_y = scroll_pos_for(display_offset, max_scroll, cell_height);
         let _ = self
@@ -778,40 +762,43 @@ impl Widget for TerminalView {
             max_scroll + self.viewport_rect.size.y,
         );
         self.scroll_bars.end(cx);
-        if session.is_some()
-            && cx.has_key_focus(self.scroll_bars.area())
-            && let Some(ime_pos) = self.ime_pos
-        {
-            cx.show_text_ime(self.scroll_bars.area(), ime_pos);
+        if session.is_some() && cx.has_key_focus(self.scroll_bars.area()) {
+            if let Some(ime_pos) = self.ime_pos {
+                cx.show_text_ime(self.scroll_bars.area(), ime_pos);
+            } else {
+                cx.hide_text_ime();
+            }
         }
-        DrawStep::done()
+        self.link_tooltip.draw_walk(cx, scope, Walk::default())
     }
 
     fn handle_event(&mut self, cx: &mut Cx, event: &Event, scope: &mut Scope) {
-        let window = crate::frame_state(scope)
-            .map(|state| state.id)
-            .unwrap_or_default();
-        let session = Self::session_for_widget(cx, self.widget_uid(), window);
+        self.link_tooltip.handle_event(cx, event, scope);
+        let mut scroll_actions = Vec::new();
+        self.scroll_bars
+            .handle_main_event(cx, event, scope, &mut scroll_actions);
+        let hit = event.hits(cx, self.scroll_bars.area());
+        let drag = event.drag_hits(cx, self.scroll_bars.area());
+        if matches!(hit, Hit::Nothing)
+            && matches!(drag, DragHit::NoHit)
+            && scroll_actions.is_empty()
+        {
+            return;
+        }
+        let state = crate::frame_state(scope);
+        let window = state.as_ref().map(|state| state.id).unwrap_or_default();
+        let session = self.session_for_widget(cx, window);
         let Some((session, shared)) =
             session.and_then(|s| crate::terminal::term(s).map(|term| (s, term)))
         else {
-            self.scroll_bars.handle_event(cx, event, scope);
+            self.scroll_bars
+                .handle_scroll_event(cx, event, scope, &mut scroll_actions);
             return;
         };
 
-        // One read of everything the handlers need, so no lock is held while
-        // an action is emitted.
-        let (mode, display_offset, columns, screen_lines) = {
-            let term = shared.lock();
-            (
-                *term.mode(),
-                term.grid().display_offset(),
-                term.columns(),
-                term.screen_lines(),
-            )
-        };
+        let mode = *shared.lock().mode();
 
-        if self.handle_drop(cx, session, event, mode) {
+        if self.handle_drop(cx, session, drag, mode) {
             return;
         }
 
@@ -820,13 +807,17 @@ impl Widget for TerminalView {
         if let Event::Scroll(e) = event
             && self.scroll_bars.area().clipped_rect(cx).contains(e.abs)
         {
-            let (_, cell_height) = self.cell_metrics();
+            let (_, cell_height) = (self.cell_width, self.cell_height);
             self.scroll_accum += e.scroll.y;
             let lines = (self.scroll_accum / cell_height).abs() as usize;
             if lines > 0 {
                 let up = self.scroll_accum < 0.0;
-                let (point, _) = self.point_at(e.abs, display_offset, columns, screen_lines);
-                match mouse::wheel(up, lines, &e.modifiers, point, mode) {
+                let bytes = {
+                    let term = shared.lock();
+                    let (point, _) = self.point_at(e.abs, &term);
+                    mouse::wheel(up, lines, &e.modifiers, point, *term.mode())
+                };
+                match bytes {
                     Some(bytes) => {
                         self.scroll_accum -=
                             self.scroll_accum.signum() * lines as f64 * cell_height;
@@ -842,11 +833,12 @@ impl Widget for TerminalView {
             }
         }
 
-        let scroll_actions = self.scroll_bars.handle_event(cx, event, scope);
+        self.scroll_bars
+            .handle_scroll_event(cx, event, scope, &mut scroll_actions);
         if !scroll_actions.is_empty() {
             // A drag or a wheel the bar took: turn the new position back into
             // a display offset, which is where the scrollback really lives.
-            let (_, cell_height) = self.cell_metrics();
+            let (_, cell_height) = (self.cell_width, self.cell_height);
             let mut term = shared.lock();
             let max_scroll = self.max_scroll(term.grid().total_lines());
             let wanted =
@@ -860,85 +852,162 @@ impl Widget for TerminalView {
             self.draw_bg.redraw(cx);
         }
 
-        match event.hits(cx, self.scroll_bars.area()) {
+        match hit {
             Hit::FingerDown(e) => {
                 cx.set_key_focus(self.scroll_bars.area());
                 self.held = e.device.mouse_button();
-                let (point, side) = self.point_at(e.abs, display_offset, columns, screen_lines);
-
-                // ⌘-click follows a link the program marked with OSC 8, the
-                // way every terminal that understands them does.
                 if e.modifiers.logo {
-                    let uri = shared.lock().grid()[point]
-                        .hyperlink()
-                        .map(|link| link.uri().to_string());
-                    if let Some(uri) = uri {
-                        cx.open_url(&uri, OpenUrlInPlace::No);
+                    let uri = {
+                        let term = shared.lock();
+                        let (point, _) = self.point_at(e.abs, &term);
+                        (!mouse::wants_pointer(&e.modifiers, *term.mode()))
+                            .then(|| {
+                                term.grid()[point]
+                                    .hyperlink()
+                                    .map(|link| link.uri().to_owned())
+                            })
+                            .flatten()
+                    };
+                    let target = uri.as_deref().and_then(|uri| {
+                        state.as_ref()?.read(|d| {
+                            crate::links::target(
+                                uri,
+                                d.workdir
+                                    .as_deref()
+                                    .unwrap_or_else(|| std::path::Path::new(&d.repo)),
+                            )
+                        })
+                    });
+                    if let Some(target) = target {
+                        match target {
+                            crate::links::Target::External(url) => {
+                                cx.open_url(url.as_str(), OpenUrlInPlace::No)
+                            }
+                            crate::links::Target::File(path) => cx.widget_action(
+                                self.widget_uid(),
+                                TerminalViewAction::OpenFile(path),
+                            ),
+                        }
                         return;
                     }
                 }
 
-                if let Some(button) = self
-                    .held
-                    .filter(|_| mouse::wants_pointer(&e.modifiers, mode))
-                {
-                    if let Some(bytes) = mouse::report(button, true, &e.modifiers, point, mode) {
-                        self.emit_input_bytes(cx, session, bytes);
-                    }
-                } else {
-                    let ty = match e.tap_count {
-                        1 => SelectionType::Simple,
-                        2 => SelectionType::Semantic,
-                        _ => SelectionType::Lines,
-                    };
-                    let ty = if e.modifiers.control && e.modifiers.alt {
-                        SelectionType::Block
+                let bytes = {
+                    let mut term = shared.lock();
+                    let (point, side) = self.point_at(e.abs, &term);
+                    let mode = *term.mode();
+                    if let Some(button) = self
+                        .held
+                        .filter(|_| mouse::wants_pointer(&e.modifiers, mode))
+                    {
+                        mouse::report(button, true, &e.modifiers, point, mode)
                     } else {
-                        ty
-                    };
-                    self.selecting = true;
-                    shared.lock().selection = Some(Selection::new(ty, point, side));
+                        let ty = if e.modifiers.control && e.modifiers.alt {
+                            SelectionType::Block
+                        } else {
+                            match e.tap_count {
+                                1 => SelectionType::Simple,
+                                2 => SelectionType::Semantic,
+                                _ => SelectionType::Lines,
+                            }
+                        };
+                        self.selecting = true;
+                        term.selection = Some(Selection::new(ty, point, side));
+                        None
+                    }
+                };
+                if let Some(bytes) = bytes {
+                    self.emit_input_bytes(cx, session, bytes);
                 }
                 self.draw_bg.redraw(cx);
             }
             Hit::FingerMove(e) => {
                 cx.set_cursor(MouseCursor::Text);
-                let (point, side) = self.point_at(e.abs, display_offset, columns, screen_lines);
-                if self.selecting {
-                    if let Some(selection) = shared.lock().selection.as_mut() {
-                        selection.update(point, side);
+                let bytes = {
+                    let mut term = shared.lock();
+                    let (point, side) = self.point_at(e.abs, &term);
+                    let mode = *term.mode();
+                    if self.selecting {
+                        if let Some(selection) = term.selection.as_mut() {
+                            selection.update(point, side);
+                        }
+                        None
+                    } else if mouse::wants_pointer(&e.modifiers, mode)
+                        && mouse::wants_motion(self.held.is_some(), mode)
+                    {
+                        mouse::motion(self.held, &e.modifiers, point, mode)
+                    } else {
+                        None
                     }
+                };
+                if self.selecting {
                     self.draw_bg.redraw(cx);
-                } else if mouse::wants_pointer(&e.modifiers, mode)
-                    && mouse::wants_motion(self.held.is_some(), mode)
-                    && let Some(bytes) = mouse::motion(self.held, &e.modifiers, point, mode)
-                {
+                }
+                if let Some(bytes) = bytes {
                     self.emit_input_bytes(cx, session, bytes);
                 }
             }
             Hit::FingerUp(e) => {
-                let (point, _) = self.point_at(e.abs, display_offset, columns, screen_lines);
-                if let Some(button) = self
-                    .held
-                    .filter(|_| mouse::wants_pointer(&e.modifiers, mode))
-                    && let Some(bytes) = mouse::report(button, false, &e.modifiers, point, mode)
-                {
+                let bytes = {
+                    let term = shared.lock();
+                    let (point, _) = self.point_at(e.abs, &term);
+                    let mode = *term.mode();
+                    self.held
+                        .filter(|_| mouse::wants_pointer(&e.modifiers, mode))
+                        .and_then(|button| mouse::report(button, false, &e.modifiers, point, mode))
+                };
+                if let Some(bytes) = bytes {
                     self.emit_input_bytes(cx, session, bytes);
                 }
                 self.selecting = false;
                 self.held = None;
             }
             Hit::FingerHoverIn(e) | Hit::FingerHoverOver(e) => {
-                // The hand is the only hint that a link is there to be taken.
-                let (point, _) = self.point_at(e.abs, display_offset, columns, screen_lines);
-                let over_link =
-                    e.modifiers.logo && shared.lock().grid()[point].hyperlink().is_some();
-                cx.set_cursor(if over_link {
+                let uri = {
+                    let term = shared.lock();
+                    let (point, _) = self.point_at(e.abs, &term);
+                    (!mouse::wants_pointer(&e.modifiers, *term.mode()))
+                        .then(|| {
+                            term.grid()[point]
+                                .hyperlink()
+                                .map(|link| link.uri().to_owned())
+                        })
+                        .flatten()
+                };
+                let target = uri.as_deref().and_then(|uri| {
+                    state.as_ref()?.read(|d| {
+                        crate::links::target(
+                            uri,
+                            d.workdir
+                                .as_deref()
+                                .unwrap_or_else(|| std::path::Path::new(&d.repo)),
+                        )
+                    })
+                });
+                if let Some(target) = &target {
+                    let label = match target {
+                        crate::links::Target::External(url) => url.as_str(),
+                        crate::links::Target::File(path) => path,
+                    };
+                    let pos = dvec2(
+                        e.abs
+                            .x
+                            .min(self.viewport_rect.pos.x + self.viewport_rect.size.x - 320.0)
+                            .max(self.viewport_rect.pos.x),
+                        (e.abs.y + 20.0)
+                            .min(self.viewport_rect.pos.y + self.viewport_rect.size.y - 70.0),
+                    );
+                    self.link_tooltip.show_with_options(cx, pos, label);
+                } else {
+                    self.link_tooltip.hide(cx);
+                }
+                cx.set_cursor(if e.modifiers.logo && target.is_some() {
                     MouseCursor::Hand
                 } else {
                     MouseCursor::Text
                 });
             }
+            Hit::FingerHoverOut(_) => self.link_tooltip.hide(cx),
             Hit::KeyFocus(_) => {
                 self.draw_bg.redraw(cx);
             }

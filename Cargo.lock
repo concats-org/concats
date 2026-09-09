@@ -646,6 +646,7 @@ version = "0.0.0"
 dependencies = [
  "alacritty_terminal",
  "bitflags 2.13.1",
+ "clap",
  "concats-config",
  "concats-diff",
  "concats-highlight",
@@ -665,6 +666,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.20",
  "toml",
+ "url",
 ]
 
 [[package]]

@@ -232,12 +232,14 @@ pub fn open(session: Session, cwd: &Path, env: &[(&str, &str)]) {
     // alacritty, not with us.
     environment.insert("TERM".to_string(), "xterm-256color".to_string());
     environment.insert("COLORTERM".to_string(), "truecolor".to_string());
-    // NOTE: terminal tests exercise the PTY without running personal shell startup files.
-    #[cfg(test)]
-    environment.extend([
-        ("ENV".to_string(), "/dev/null".to_string()),
-        ("PS1".to_string(), String::new()),
-    ]);
+    let fixture = crate::dev_hooks::var("CONCATS_APP_TERM_SCRIPT").ok();
+    // NOTE: PTY and visual tests must not run personal shell startup files.
+    if cfg!(test) || fixture.is_some() {
+        environment.extend([
+            ("ENV".to_string(), "/dev/null".to_string()),
+            ("PS1".to_string(), String::new()),
+        ]);
+    }
 
     // A seed: the view resizes to its real geometry on the first draw.
     let size = Size {
@@ -247,10 +249,10 @@ pub fn open(session: Session, cwd: &Path, env: &[(&str, &str)]) {
         cell_height: 16,
     };
     let options = tty::Options {
-        shell: if cfg!(test) {
+        shell: if cfg!(test) || fixture.is_some() {
             Some(tty::Shell::new(
                 "/bin/sh".to_string(),
-                vec!["-i".to_string()],
+                vec![fixture.unwrap_or_else(|| "-i".to_string())],
             ))
         } else {
             None

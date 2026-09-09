@@ -149,14 +149,9 @@ pub(crate) fn open_file(
 /// The revision sits here rather than over the text because the tab is the only
 /// chrome an editor has. A worktree range has no commit to name, and that is
 /// also when the file can be typed into.
-pub(crate) fn file_tab_title(d: &ReviewDoc, path: &str) -> String {
+pub(crate) fn file_tab_title(path: &str, head: Option<gix::ObjectId>, dirty: bool) -> String {
     let name = path.rsplit('/').next().unwrap_or(path);
-    let dirty = d
-        .files_open
-        .iter()
-        .find(|f| f.path == path)
-        .is_some_and(|f| d.blobs[f.head as usize].dirty());
-    let at = match d.head_oid {
+    let at = match head {
         Some(oid) => oid.to_string()[..7].to_string(),
         None => "worktree".into(),
     };
@@ -422,7 +417,7 @@ mod tests {
             "no header, no caption and no card cap — just the file"
         );
         // What the header used to say, said by the tab instead.
-        let title = file_tab_title(&d, "src/a.rs");
+        let title = file_tab_title("src/a.rs", d.head_oid, false);
         assert!(title.starts_with("a.rs"), "{title}");
         assert!(title.contains(&oid(9).to_string()[..7]), "{title}");
         assert!(

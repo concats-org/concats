@@ -70,6 +70,8 @@ pub struct DiffLine {
     spans: Vec<Span>,
     #[rust]
     selected: bool,
+    #[rust]
+    pub wrap: bool,
 
     /// This row's laid-out runs, rebuilt every draw. Maps a click to a byte
     /// offset and a byte range back to highlight rects.
@@ -221,7 +223,7 @@ impl Widget for DiffLine {
         // it is the only thing that can break between them without applying the
         // offset twice. A line breaks at a run boundary. In code that is a
         // token boundary, which is where you would break it by hand anyway.
-        let flow = if crate::theme::active_font().wrap {
+        let flow = if self.wrap {
             Layout::flow_right_wrap()
         } else {
             Layout::flow_right()

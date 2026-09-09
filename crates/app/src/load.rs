@@ -574,13 +574,8 @@ pub(crate) fn hold_minted(git_dir: Option<&std::path::Path>, cursors: Vec<(u64, 
     }
 }
 
-/// Bring back the cached document of any editable file that has none in this
-/// process yet — the first load after a restart.
-///
-/// Without this, a restart is where anchoring falls back to recognizing text by
-/// hash and loses the threads whose lines were edited while the app was closed.
-/// The restore imports the file as it is now onto the version the cache last
-/// saw, so those edits arrive as operations with the anchors riding them.
+// NOTE: Restoring the CRDT history lets held comment cursors follow disk edits
+// made while the app was closed. A fresh document cannot resolve those cursors.
 fn restore_cached_buffers(d: &mut ReviewDoc) -> bool {
     let Some(git_dir) = d.git_dir.clone() else {
         return false;
