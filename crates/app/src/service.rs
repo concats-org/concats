@@ -243,16 +243,15 @@ impl Service for HighlightService {
         if !self.completed.insert((blob, rev)) {
             return;
         }
-        let Some((ext, text)) = ({
+        let Some(current) = ({
             (doc.generation == generation)
                 .then(|| doc.blobs.get(blob as usize))
                 .flatten()
                 .filter(|blob| blob.edit_rev == rev)
-                .map(|blob| (blob.ext.clone(), blob.text.clone()))
         }) else {
             return;
         };
-        let spans = self.highlighter.compute(&ext, &text);
+        let spans = self.highlighter.compute(&current.ext, &current.text);
         notify(ReviewUpdate::HighlightReady {
             window,
             generation,
@@ -328,7 +327,15 @@ impl ReviewService {
     /// Publish the repo's state and wake the UI.
     fn publish(&mut self, git_dir: &Path) {
         let rev = self.comments_rev;
+        let output = review_state(Some(git_dir));
+        let published = output.load();
         let st = self.store(git_dir);
+        // NOTE: unchanged seen state must not invalidate every list's card cache.
+        let seen = if *published.seen == st.seen {
+            published.seen.clone()
+        } else {
+            Arc::new(st.seen.clone())
+        };
         let comments = st.comments.clone();
         let commented = comments
             .iter()
@@ -337,12 +344,12 @@ impl ReviewService {
             .collect();
         let state = ReviewState {
             git_dir: Some(git_dir.to_path_buf()),
-            seen: Arc::new(st.seen.clone()),
+            seen,
             comments: Arc::new(comments),
             commented: Arc::new(commented),
             comments_rev: rev,
         };
-        review_state(Some(git_dir)).publish(state);
+        output.publish(state);
         notify(ReviewUpdate::State);
     }
 }
@@ -472,7 +479,7 @@ impl Service for ReviewService {
             }
             ReviewCmd::HoldComments { git_dir, cursors } => {
                 self.store(&git_dir).set_cursors(&cursors);
-                self.comments_rev += 1;
+                // NOTE: The rows were placed before these cursors were minted.
                 self.publish(&git_dir);
             }
             ReviewCmd::Poll {
@@ -591,6 +598,66 @@ mod tests {
 
         svc.handle(ReviewCmd::ToggleSeen { git_dir, keys });
         assert_eq!(out.load().seen.len(), 0);
+    }
+
+    #[test]
+    fn unchanged_seen_state_keeps_its_published_snapshot() {
+        let (tmp, mut svc, out) = service();
+        let git_dir = tmp.path().to_path_buf();
+        svc.handle(ReviewCmd::ToggleSeen {
+            git_dir: git_dir.clone(),
+            keys: vec![(oid(1), 0)],
+        });
+        let seen = out.load().seen.clone();
+
+        svc.handle(ReviewCmd::AddComment {
+            git_dir: git_dir.clone(),
+            path: "a.rs".into(),
+            anchor: Anchor {
+                blob: oid(1),
+                start: 0,
+                end: 0,
+            },
+            body: "keep this seen".into(),
+            cursors: None,
+        });
+        assert!(Arc::ptr_eq(&seen, &out.load().seen));
+
+        svc.handle(ReviewCmd::ToggleSeen {
+            git_dir,
+            keys: vec![(oid(1), 0)],
+        });
+        assert!(!Arc::ptr_eq(&seen, &out.load().seen));
+        assert!(out.load().seen.is_empty());
+    }
+
+    #[test]
+    fn persisting_comment_cursors_does_not_invalidate_the_rendered_rows() {
+        let (tmp, mut svc, out) = service();
+        let git_dir = tmp.path().to_path_buf();
+        svc.handle(ReviewCmd::AddComment {
+            git_dir: git_dir.clone(),
+            path: "a.rs".into(),
+            anchor: Anchor {
+                blob: oid(2),
+                start: 0,
+                end: 0,
+            },
+            body: "keep this line".into(),
+            cursors: None,
+        });
+        let before = out.load();
+        let mut blob = concats_diff::Blob::new(oid(2), "rs".into(), "line\n".into());
+        let cursors = blob.cursors_at(0, 0).unwrap();
+        svc.handle(ReviewCmd::HoldComments {
+            git_dir: git_dir.clone(),
+            cursors: vec![(before.comments[0].id, cursors.clone())],
+        });
+        let after = out.load();
+        assert_eq!(after.comments_rev, before.comments_rev);
+        assert_eq!(after.comments[0].cursors, Some(cursors.clone()));
+        assert_eq!(after.commented, before.commented);
+        assert_eq!(Store::open(&git_dir).comments[0].cursors, Some(cursors));
     }
 
     #[test]

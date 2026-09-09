@@ -232,6 +232,12 @@ pub fn open(session: Session, cwd: &Path, env: &[(&str, &str)]) {
     // alacritty, not with us.
     environment.insert("TERM".to_string(), "xterm-256color".to_string());
     environment.insert("COLORTERM".to_string(), "truecolor".to_string());
+    // NOTE: terminal tests exercise the PTY without running personal shell startup files.
+    #[cfg(test)]
+    environment.extend([
+        ("ENV".to_string(), "/dev/null".to_string()),
+        ("PS1".to_string(), String::new()),
+    ]);
 
     // A seed: the view resizes to its real geometry on the first draw.
     let size = Size {
@@ -241,7 +247,14 @@ pub fn open(session: Session, cwd: &Path, env: &[(&str, &str)]) {
         cell_height: 16,
     };
     let options = tty::Options {
-        shell: None,
+        shell: if cfg!(test) {
+            Some(tty::Shell::new(
+                "/bin/sh".to_string(),
+                vec!["-i".to_string()],
+            ))
+        } else {
+            None
+        },
         working_directory: Some(cwd.to_path_buf()),
         drain_on_exit: false,
         env: environment,
@@ -406,7 +419,7 @@ mod tests {
         let session = session(0xC0FFEE01);
         open(session, Path::new("."), &[]);
         assert!(is_open(session), "shell failed to spawn");
-        input(session, b"echo concats_ok\r".to_vec());
+        input(session, b"printf 'concats_%s\\n' ok\r".to_vec());
 
         assert!(until(|| screen(session).contains("concats_ok")));
         close(session);

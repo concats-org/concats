@@ -10,7 +10,7 @@
 use concats_diff::{Blob, Row, load};
 use concats_review::store::{self, Comment};
 
-use crate::review_doc::{FileView, ReviewDoc, finalize_cards, strip_composer};
+use crate::review_doc::{FileView, ReviewDoc, hold_comments, splice_stream, strip_composer};
 
 /// Both sides of one file for the File tab: its content at the range's base
 /// (`None` when the range creates it) and at its head.
@@ -25,8 +25,11 @@ pub(crate) fn read_file_sides(
     path: &str,
 ) -> Result<(Option<Blob>, Blob), concats_diff::Error> {
     let repo = std::path::Path::new(repo);
+    let root = load::discover(repo)
+        .ok_or_else(|| concats_diff::Error::NoRepository(repo.to_path_buf()))?;
+    let repo = load::open_repo(&root)?;
     let (base, head) = range;
-    let ext = std::path::Path::new(&path)
+    let ext = std::path::Path::new(path)
         .extension()
         .and_then(|ext| ext.to_str())
         .unwrap_or_default()
@@ -39,7 +42,7 @@ pub(crate) fn read_file_sides(
         )
     };
 
-    let (head_oid, head_bytes) = load::read_at_head(repo, head, path)?;
+    let (head_oid, head_bytes) = load::read_at_head(&repo, head, path)?;
     // With no head commit the bytes came off the working tree, so this side is
     // the file itself and can be written back; with one they came out of the
     // object database, and there is nothing to write to. The path is taken off
@@ -47,10 +50,11 @@ pub(crate) fn read_file_sides(
     // `--repo` argument, which may be relative or a symlink: `origin` is the
     // key an open buffer is carried across reloads by, and two spellings of one
     // file would silently drop the buffer and every comment cursor in it.
-    let origin = head
-        .is_none()
-        .then(|| load::worktree_file(load::discover(repo).as_deref().unwrap_or(repo), path))
-        .transpose()?;
+    let origin = if head.is_none() {
+        Some(load::worktree_file(&root, path)?)
+    } else {
+        None
+    };
     // Refused rather than rendered as mojibake — the same screen the lowerer
     // applies to a diff's blobs.
     if head_bytes.contains(&0) {
@@ -58,7 +62,7 @@ pub(crate) fn read_file_sides(
             path: path.to_string(),
         });
     }
-    let base = load::read_at_base(repo, base, path)?
+    let base = load::read_at_base(&repo, base, path)?
         .filter(|(_, bytes)| !bytes.contains(&0))
         .map(|(oid, bytes)| blob(oid, bytes));
     let mut head = blob(head_oid, head_bytes);
@@ -73,7 +77,7 @@ pub(crate) fn read_file_sides(
 /// More importantly, a changed file's head blob resolves to the index the diff
 /// already gave it, so one comment thread renders in the file view and in the
 /// diff view alike.
-fn intern(d: &mut ReviewDoc, path: &str, blob: Blob) -> u32 {
+pub(crate) fn intern(d: &mut ReviewDoc, path: &str, blob: Blob) -> u32 {
     // Two rules for reuse. A blob that names a file in the working tree is that
     // file's buffer, whatever revision its oid names right now, so it is
     // matched by path: every stream then shares one entry, one document, one
@@ -122,7 +126,7 @@ pub(crate) fn open_file(
     path: &str,
     sides: (Option<Blob>, Blob),
     comments: &[Comment],
-) {
+) -> Vec<(u64, store::Cursors)> {
     let (old, new) = sides;
     let old = old.map(|b| intern(d, path, b));
     let index = intern(d, path, new);
@@ -136,10 +140,7 @@ pub(crate) fn open_file(
         head: index,
         heading: None,
     };
-    place(d, view, comments);
-    // `rows_rev`, not `generation`: this is not a landed load, and every cache
-    // keyed by row index is stale — see the field's doc on `ReviewDoc`.
-    d.rows_rev += 1;
+    place(d, view, comments)
 }
 
 /// What a File tab is called: the file, the revision its content is at, and
@@ -169,7 +170,11 @@ pub(crate) fn file_tab_title(d: &ReviewDoc, path: &str) -> String {
 /// would throw the edit away. Re-lowering also keeps the add/removed marks
 /// right while you type; they come out of the diff, not out of a patch applied
 /// to the rows.
-fn file_rows(d: &ReviewDoc, view: &FileView, comments: &[Comment]) -> Vec<Row> {
+fn file_rows(
+    d: &ReviewDoc,
+    view: &FileView,
+    comments: &[Comment],
+) -> (Vec<Row>, std::collections::HashSet<u64>) {
     let index = view.head;
     let code = load::whole_file_rows(&d.blobs, view.base, index);
     // No card header and no caption: a File tab is an editor, so path, revision
@@ -181,17 +186,14 @@ fn file_rows(d: &ReviewDoc, view: &FileView, comments: &[Comment]) -> Vec<Row> {
         .map(|md| Row::Prose { md: md.clone() })
         .collect();
     rows.extend(code);
-    // The two steps resplice_comments runs per stream — here rather than
-    // resplicing all five, which walks every row of every stream on a click.
-    store::inject_comments(
+    let placed = splice_stream(
         &mut rows,
         &d.blobs,
         comments,
         &d.show_all_comments,
         Some(&view.path),
     );
-    finalize_cards(&mut rows);
-    rows
+    (rows, placed)
 }
 
 /// Point the Settings tab at `config.toml`.
@@ -236,8 +238,15 @@ pub(crate) fn open_settings(d: &mut ReviewDoc) {
 /// Lower a file view and put it in the document, replacing the one its tab
 /// already holds. The one place a tab's content is established, so opening a
 /// file and opening the settings differ only in the view they hand over.
-fn place(d: &mut ReviewDoc, mut view: FileView, comments: &[Comment]) {
-    view.rows = file_rows(d, &view, comments);
+pub(crate) fn place(
+    d: &mut ReviewDoc,
+    mut view: FileView,
+    comments: &[Comment],
+) -> Vec<(u64, store::Cursors)> {
+    let minted = hold_comments(d, comments);
+    let (rows, placed) = file_rows(d, &view, comments);
+    view.rows = rows;
+    d.placed_threads.extend(placed);
     match d.files_open.iter_mut().find(|f| f.tab == view.tab) {
         Some(open) => *open = view,
         None => d.files_open.push(view),
@@ -245,6 +254,7 @@ fn place(d: &mut ReviewDoc, mut view: FileView, comments: &[Comment]) {
     // `rows_rev`, not `generation`: this is not a landed load, and every cache
     // keyed by row index is stale — see the field's doc on `ReviewDoc`.
     d.rows_rev += 1;
+    minted
 }
 
 /// What a save has to do, worked out before anything touches the disk.
@@ -304,8 +314,9 @@ pub(crate) fn relower_edited(d: &mut ReviewDoc, comments: &[Comment]) {
     // a row index into the old one. You are typing code, not a comment.
     strip_composer(d);
     for i in edited {
-        let rows = file_rows(d, &d.files_open[i], comments);
+        let (rows, placed) = file_rows(d, &d.files_open[i], comments);
         d.files_open[i].rows = rows;
+        d.placed_threads.extend(placed);
     }
     d.rows_rev += 1;
 }
@@ -316,7 +327,7 @@ mod tests {
     use gix::ObjectId;
 
     use super::*;
-    use crate::review_doc::{Caret, Tab, reveal_removed, type_at};
+    use crate::review_doc::{Caret, Stream, reveal_removed, type_at};
 
     fn oid(n: u8) -> ObjectId {
         ObjectId::from_hex(format!("{n:040x}").as_bytes()).expect("valid hex")
@@ -340,6 +351,43 @@ mod tests {
                 _ => None,
             })
             .collect()
+    }
+
+    #[test]
+    fn opening_a_file_holds_its_comments_before_the_first_edit() {
+        let mut d = ReviewDoc::default();
+        let mut blob = Blob::new(oid(1), "rs".into(), "first\nmarked\nlast\n".into());
+        blob.origin = Some("/repo/a.rs".into());
+        let comments = [Comment {
+            id: 1,
+            path: "a.rs".into(),
+            anchor: store::Anchor {
+                blob: oid(1),
+                start: 1,
+                end: 1,
+            },
+            body: "keep this attached".into(),
+            author: None,
+            created_at: 0,
+            parent: None,
+            external: None,
+            cursors: None,
+        }];
+        let minted = open_file(&mut d, "a.rs", (None, blob), &comments);
+        assert_eq!(d.rows_rev, 1);
+        assert_eq!(minted.len(), 1);
+        assert_eq!(minted[0].0, 1);
+        assert!(d.placed_threads.contains(&1));
+        let head = d.files_open[0].head;
+        assert!(d.blobs[head as usize].holds(1));
+        d.blobs[head as usize].edit(0..0, "inserted\n");
+        relower_edited(&mut d, &comments);
+        let rows = &d.files_open[0].rows;
+        let at = rows
+            .iter()
+            .position(|row| matches!(row, Row::Comment { id: 1, .. }))
+            .unwrap();
+        assert!(matches!(rows[at - 1], Row::Code { line: 2, .. }));
     }
 
     #[test]
@@ -660,7 +708,7 @@ mod tests {
             .expect("the removal is marked");
         let marked = d.rows_rev;
 
-        let tab = Tab::File(d.files_open[0].tab);
+        let tab = Stream::File(d.files_open[0].tab);
         reveal_removed(&mut d, tab, at);
 
         // The marker is gone and its lines stand in its place, on the old blob

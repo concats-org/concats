@@ -74,17 +74,17 @@ impl App {
         // specific tab, so each one can be screenshotted.
         if let Ok(tab) = crate::dev_hooks::var("CONCATS_APP_TAB") {
             let t = match tab.as_str() {
-                "guide" => Some(Tab::Guide),
-                "sessions" => Some(Tab::Sessions),
-                "commits" => Some(Tab::Commits),
-                "comments" => Some(Tab::Comments),
-                "files" => Some(Tab::Files),
+                "guide" => Some(Stream::Guide),
+                "sessions" => Some(Stream::Sessions),
+                "commits" => Some(Stream::Commits),
+                "comments" => Some(Stream::Comments),
+                "files" => Some(Stream::Files),
                 _ => None,
             };
             if let Some(t) = t {
                 let pane = self.ui.widget(cx, ids!(pane_a));
                 pane.dock(cx, ids!(dock))
-                    .select_tab(cx, stream_tab_spec(t).0);
+                    .select_tab(cx, stream_tab_spec(t).id);
                 if let Some(mut p) = pane.borrow_mut::<ReviewPane>() {
                     p.set_gesture_tab(cx, t);
                 };
@@ -113,7 +113,7 @@ impl App {
                 return;
             };
             let pane = self.ui.widget(cx, ids!(pane_a));
-            let content = pane.dock(cx, ids!(dock)).item(stream_tab_spec(t).0);
+            let content = pane.dock(cx, ids!(dock)).item(stream_tab_spec(t).id);
             let list = content.portal_list(cx, ids!(list));
             if let Some(mut pl) = list.borrow_mut() {
                 pl.set_first_id_and_scroll(n, 0.0);
@@ -267,9 +267,48 @@ impl App {
                 );
                 cx.end_mouse_up(MouseButton::PRIMARY);
             }
-            3 => self.type_hook(cx),
-            4 => self.save_hook(cx),
-            5 => self.find_hook(cx),
+            3 => self.type_hook(cx, "CONCATS_APP_TYPE"),
+            4 => {
+                self.state_hook(cx, "state-before-refresh.json");
+                self.save_hook(cx);
+                if var("CONCATS_APP_COMPOSER_REFRESH").is_ok_and(|value| !value.is_empty()) {
+                    state.with(|d| {
+                        let Some(review_doc::Composing::Lines(compose)) = d.compose else {
+                            return;
+                        };
+                        let Some(side) = review_doc::comment_anchor(compose) else {
+                            return;
+                        };
+                        let comment = concats_review::store::Comment {
+                            id: 999,
+                            path: review_doc::blob_label(d, side.blob),
+                            anchor: concats_review::store::Anchor {
+                                blob: d.blobs[side.blob as usize].oid,
+                                start: side.start,
+                                end: side.start,
+                            },
+                            body: "A comment arrived while typing".into(),
+                            author: Some("Fixture".into()),
+                            created_at: 0,
+                            parent: None,
+                            external: None,
+                            cursors: None,
+                        };
+                        // NOTE: This fixture stays in memory; its cursors must
+                        // not be published to the review worker.
+                        drop(review_doc::splice_comments(d, &[comment]));
+                    });
+                    self.ui
+                        .widget(cx, ids!(pane_a))
+                        .dock(cx, ids!(dock))
+                        .item(stream_tab_spec(state.read(|d| d.tab)).id)
+                        .redraw(cx);
+                }
+            }
+            5 => {
+                self.find_hook(cx);
+                self.type_hook(cx, "CONCATS_APP_TYPE_AFTER_REFRESH");
+            }
             // Two captures, and the second is the one kept. A request is
             // answered by the next frame to PRESENT, and that frame can have
             // been encoded before the last hook's redraw was painted — which
@@ -297,12 +336,47 @@ impl App {
             // it catches the capture taken when the load landed, before any of
             // these ticks ran.
             8 => {
+                self.state_hook(cx, "state.json");
                 if crate::dev_hooks::var("CONCATS_APP_EXIT_AFTER_SHOT").is_ok_and(|v| !v.is_empty())
                 {
                     std::process::exit(0);
                 }
             }
             _ => {}
+        }
+    }
+
+    fn state_hook(&self, cx: &mut Cx, name: &str) {
+        let (Ok(path), Some(window)) = (var("CONCATS_APP_STATE"), self.primary()) else {
+            return;
+        };
+        let state = &window.state;
+        let owner = state.read(|d| d.composer_tab);
+        let input = owner.and_then(|tab| {
+            self.ui
+                .widget(cx, ids!(pane_a))
+                .dock(cx, ids!(dock))
+                .item(stream_tab_spec(tab).id)
+                .borrow::<widgets::ReviewList>()
+                .and_then(|list| list.composer_input)
+                .map(|uid| uid.0)
+        });
+        let data = state.read(|d| {
+            serde_json::json!({
+                "draft": *state.compose_draft.read().unwrap(),
+                "composer_open": d.composer_tab.is_some(),
+                "composer_input": input,
+                "focus_pending": d.compose_focus,
+                "dirty_buffers": d.blobs.iter().filter(|blob| blob.dirty()).count(),
+            })
+        });
+        let path = PathBuf::from(path).with_file_name(name);
+        if let Err(error) = std::fs::write(&path, data.to_string()) {
+            eprintln!(
+                "concats: could not write test state to {}: {error}",
+                path.display()
+            );
+            std::process::exit(1);
         }
     }
 
@@ -364,8 +438,8 @@ impl App {
     ///
     /// `\n` in the value is a real newline, so a multi-line edit (the thing
     /// that moves every line after it) is drivable too.
-    pub(super) fn type_hook(&mut self, cx: &mut Cx) {
-        let Ok(text) = crate::dev_hooks::var("CONCATS_APP_TYPE") else {
+    pub(super) fn type_hook(&mut self, cx: &mut Cx, name: &str) {
+        let Ok(text) = crate::dev_hooks::var(name) else {
             return;
         };
         if text.is_empty() {

@@ -24,18 +24,12 @@ const DIM: f32 = 0.66;
 
 /// A cell's foreground, with bold and dim folded into the colour.
 pub fn foreground(color: Color, flags: Flags, colors: &Colors, theme: &Theme) -> Vec4f {
-    let bold = flags.contains(Flags::BOLD);
-    let dim = flags.contains(Flags::DIM);
     let rgba = match color {
         // A true colour says exactly what it wants; only dim still touches it.
+        Color::Spec(rgb) if flags.contains(Flags::DIM) => dimmed(from_rgb(rgb)),
         Color::Spec(rgb) => from_rgb(rgb),
-        Color::Named(named) => index(shade(named, bold, dim) as usize, colors, theme),
-        Color::Indexed(idx) => index(shade_indexed(idx, bold, dim), colors, theme),
-    };
-    let rgba = if dim && matches!(color, Color::Spec(_)) {
-        dimmed(rgba)
-    } else {
-        rgba
+        Color::Named(named) => index(shade(named, flags) as usize, colors, theme),
+        Color::Indexed(idx) => index(shade_indexed(idx, flags), colors, theme),
     };
     to_vec4(rgba)
 }
@@ -55,21 +49,22 @@ pub fn background(color: Color, colors: &Colors, theme: &Theme) -> Option<Vec4f>
 }
 
 /// The palette slot for a named colour once bold and dim have had their say.
-fn shade(named: NamedColor, bold: bool, dim: bool) -> NamedColor {
-    match (bold, dim) {
-        (true, false) => named.to_bright(),
-        (false, true) => named.to_dim(),
+fn shade(named: NamedColor, flags: Flags) -> NamedColor {
+    match flags & (Flags::BOLD | Flags::DIM) {
+        Flags::BOLD => named.to_bright(),
+        Flags::DIM => named.to_dim(),
         _ => named,
     }
 }
 
 /// The same for the indexed colours, where bright and dim are eight apart.
-fn shade_indexed(idx: u8, bold: bool, dim: bool) -> usize {
-    match (bold, dim, idx) {
-        (true, false, 0..=7) => idx as usize + 8,
-        (false, true, 8..=15) => idx as usize - 8,
-        (false, true, 0..=7) => NamedColor::DimBlack as usize + idx as usize,
-        _ => idx as usize,
+fn shade_indexed(idx: u8, flags: Flags) -> usize {
+    let idx = idx as usize;
+    match (flags & (Flags::BOLD | Flags::DIM), idx) {
+        (Flags::BOLD, 0..=7) => idx + 8,
+        (Flags::DIM, 8..=15) => idx - 8,
+        (Flags::DIM, 0..=7) => NamedColor::DimBlack as usize + idx,
+        _ => idx,
     }
 }
 
@@ -92,14 +87,14 @@ fn index(idx: usize, colors: &Colors, theme: &Theme) -> Rgba {
             let v = ((idx - 232) * 10 + 8) as u8;
             Rgba::opaque(v, v, v)
         }
-        // No bright foreground of its own, so bold text on the default colour
-        // stays the default colour.
-        256 | 267 => theme.terminal_fg,
         257 => theme.terminal_bg,
         258 => theme.terminal_cursor,
         // The eight dim slots sit right after the cursor, in ANSI order.
         259..=266 => dimmed(theme.ansi[idx - NamedColor::DimBlack as usize]),
         268 => dimmed(theme.terminal_fg),
+        // The foreground (256) and its bright form (267): there is no bright
+        // foreground of its own, so bold text on the default colour stays the
+        // default colour.
         _ => theme.terminal_fg,
     }
 }

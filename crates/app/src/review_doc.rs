@@ -2,7 +2,7 @@
 //! and selection over them, and the comment being written.
 //!
 //! [`ReviewDoc`] is the app's state, not the diff's. A diff has blobs and rows;
-//! a pane has four streams of them, a caret, folded cards and a composer. The
+//! a pane has fixed streams of them, a caret, folded cards and a composer. The
 //! content comes from [`concats_diff`]; how it is laid out is decided here.
 //!
 //! Nothing here touches a widget or `Cx`. The widgets in `main.rs` call these
@@ -50,7 +50,7 @@ pub enum Composing {
 /// One of the pane's document streams. Each dock tab renders one stream;
 /// `ReviewDoc::tab` tracks the stream that owns the composer/current gesture.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
-pub enum Tab {
+pub enum Stream {
     /// The agent's guide: its layout of the diff.
     #[default]
     Guide,
@@ -68,7 +68,7 @@ pub enum Tab {
     /// You can comment on it like on a diff, because a comment anchors to a
     /// blob oid rather than to a hunk; the file need not have changed at all.
     ///
-    /// There is one of these per open file, unlike the four fixed streams, so
+    /// There is one of these per open file, unlike the fixed streams, so
     /// the variant says which: the raw id of the dock tab showing it. The tab
     /// is the identity. That is how the list inside it finds its own stream, by
     /// walking up the widget tree — the same way a terminal pane finds its
@@ -78,6 +78,14 @@ pub enum Tab {
     /// plain value. The widgets wrap it back where they need one.
     File(u64),
 }
+
+pub(crate) const STREAMS: [Stream; 5] = [
+    Stream::Guide,
+    Stream::Sessions,
+    Stream::Commits,
+    Stream::Files,
+    Stream::Comments,
+];
 
 #[derive(Clone, Default)]
 pub struct ReviewDoc {
@@ -102,7 +110,7 @@ pub struct ReviewDoc {
     /// The open File tabs, in the order they were opened — one per file, like
     /// an editor. Each renders over the same blob table as every other stream.
     pub files_open: Vec<FileView>,
-    pub tab: Tab,
+    pub tab: Stream,
     /// Whether an agent's guide exists for this range. Per the design, the
     /// Guide tab is hidden otherwise.
     pub has_guide: bool,
@@ -152,14 +160,13 @@ pub struct ReviewDoc {
     /// further gutter clicks on the same file while the composer is open), or
     /// a reply into an existing thread.
     pub compose: Option<Composing>,
+    /// The only stream containing a composer row, independent of the current gesture.
+    pub composer_tab: Option<Stream>,
     /// The stream row the gesture started on — the drag's fixed end and the
     /// reference row for mapping drag distance to lines, or the comment row
     /// whose Reply was pressed.
     pub compose_anchor: usize,
-    /// The composer's text, mirrored on every keystroke so the virtualized
-    /// list can recreate the input without losing the draft.
-    pub compose_draft: String,
-    /// One-shot: focus the composer's input on its next draw.
+    /// Pending until the owning list draws and focuses the composer's input.
     pub compose_focus: bool,
     /// Every changed line of this range, as review-state keys — the
     /// denominator of the status bar's progress. Built once by the loader,
@@ -212,17 +219,17 @@ impl ReviewDoc {
     /// The row stream of one specific tab. The dock renders every stream in
     /// its own list, so rendering accesses by tab; `active()` remains for the
     /// composer/gesture path, which follows `self.tab`.
-    pub fn stream(&self, tab: Tab) -> &[Row] {
+    pub fn stream(&self, tab: Stream) -> &[Row] {
         match tab {
-            Tab::Guide => &self.guide_rows,
-            Tab::Files => &self.files_rows,
-            Tab::Sessions => &self.sessions_rows,
-            Tab::Commits => &self.commits_rows,
-            Tab::Comments => &self.comments_rows,
+            Stream::Guide => &self.guide_rows,
+            Stream::Files => &self.files_rows,
+            Stream::Sessions => &self.sessions_rows,
+            Stream::Commits => &self.commits_rows,
+            Stream::Comments => &self.comments_rows,
             // A tab the document no longer has a file for — closed, or
             // restored from a saved layout this range never filled — reads as
             // empty rather than as someone else's stream.
-            Tab::File(tab) => self.file(tab).map_or(&[], |f| &f.rows),
+            Stream::File(tab) => self.file(tab).map_or(&[], |f| &f.rows),
         }
     }
 
@@ -233,14 +240,14 @@ impl ReviewDoc {
     /// `None` for a File tab with no file behind it — a stream that does not
     /// exist cannot be mutated, and silently mutating a substitute would put
     /// the edit somewhere the user is not looking.
-    pub fn stream_mut(&mut self, tab: Tab) -> Option<&mut Vec<Row>> {
+    pub fn stream_mut(&mut self, tab: Stream) -> Option<&mut Vec<Row>> {
         match tab {
-            Tab::Guide => Some(&mut self.guide_rows),
-            Tab::Files => Some(&mut self.files_rows),
-            Tab::Sessions => Some(&mut self.sessions_rows),
-            Tab::Commits => Some(&mut self.commits_rows),
-            Tab::Comments => Some(&mut self.comments_rows),
-            Tab::File(tab) => self
+            Stream::Guide => Some(&mut self.guide_rows),
+            Stream::Files => Some(&mut self.files_rows),
+            Stream::Sessions => Some(&mut self.sessions_rows),
+            Stream::Commits => Some(&mut self.commits_rows),
+            Stream::Comments => Some(&mut self.comments_rows),
+            Stream::File(tab) => self
                 .files_open
                 .iter_mut()
                 .find(|f| f.tab == tab)
@@ -261,7 +268,7 @@ impl ReviewDoc {
     /// it is the one stream whose path cannot be read off its own rows.
     pub fn for_each_stream(
         &mut self,
-        mut f: impl FnMut(&mut Vec<Row>, &[Blob], &HashSet<String>, Option<&str>, Tab),
+        mut f: impl FnMut(&mut Vec<Row>, &[Blob], &HashSet<String>, Option<&str>, Stream),
     ) {
         let Self {
             guide_rows,
@@ -275,11 +282,11 @@ impl ReviewDoc {
             ..
         } = self;
         for (stream, tab) in [
-            (guide_rows, Tab::Guide),
-            (files_rows, Tab::Files),
-            (sessions_rows, Tab::Sessions),
-            (commits_rows, Tab::Commits),
-            (comments_rows, Tab::Comments),
+            (guide_rows, Stream::Guide),
+            (files_rows, Stream::Files),
+            (sessions_rows, Stream::Sessions),
+            (commits_rows, Stream::Commits),
+            (comments_rows, Stream::Comments),
         ] {
             f(stream, blobs, show_all_comments, None, tab);
         }
@@ -289,7 +296,7 @@ impl ReviewDoc {
                 blobs,
                 show_all_comments,
                 Some(&view.path),
-                Tab::File(view.tab),
+                Stream::File(view.tab),
             );
         }
     }
@@ -307,7 +314,7 @@ impl ReviewDoc {
 /// One file open in its own tab: what it is, and its rows.
 #[derive(Clone)]
 pub struct FileView {
-    /// Raw id of the dock tab showing it — the identity, see [`Tab::File`].
+    /// Raw id of the dock tab showing it — the identity, see [`Stream::File`].
     pub tab: u64,
     pub path: String,
     pub rows: Vec<Row>,
@@ -335,19 +342,31 @@ fn offset_of(d: &ReviewDoc, at: Caret) -> Option<usize> {
     Some(*blob.line_starts.get(at.line as usize)? as usize + at.byte as usize)
 }
 
-/// The selected byte range, as `(blob, from, to)` with `from < to`.
+/// The selected byte range, with `from < to`.
 ///
 /// `None` when there is no selection, when it is empty, or when its two ends
 /// sit on different blobs. A range spanning the old and new sides of a diff is
 /// fine to read, but it cannot be replaced: the text between its ends exists in
 /// neither blob.
-pub fn selection(d: &ReviewDoc) -> Option<(u32, usize, usize)> {
+pub fn selection(d: &ReviewDoc) -> Option<Selection> {
     let (head, anchor) = (d.caret?, d.selection_anchor?);
     if head.blob != anchor.blob {
         return None;
     }
     let (at, from) = (offset_of(d, head)?, offset_of(d, anchor)?);
-    (at != from).then(|| (head.blob, at.min(from), at.max(from)))
+    (at != from).then(|| Selection {
+        blob: head.blob,
+        from: at.min(from),
+        to: at.max(from),
+    })
+}
+
+/// Selected bytes in one blob, as a nonempty half-open range.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Selection {
+    pub blob: u32,
+    pub from: usize,
+    pub to: usize,
 }
 
 /// The part of the selection on one line, as offsets into that line.
@@ -357,7 +376,11 @@ pub fn selection(d: &ReviewDoc) -> Option<(u32, usize, usize)> {
 /// reports its whole width, the first and last report a part, a line outside
 /// reports nothing.
 pub fn selection_on(d: &ReviewDoc, blob: u32, line: u32) -> Option<(usize, usize)> {
-    let (selected, from, to) = selection(d)?;
+    let Selection {
+        blob: selected,
+        from,
+        to,
+    } = selection(d)?;
     if selected != blob {
         return None;
     }
@@ -388,7 +411,7 @@ fn caret_to(d: &mut ReviewDoc, blob: u32, at: usize) {
 /// clipboard. `false` when there is nothing selected, so the caller falls
 /// through to its own single-position behaviour.
 pub fn replace_selection(d: &mut ReviewDoc, insert: &str) -> bool {
-    let Some((blob, from, to)) = selection(d) else {
+    let Some(Selection { blob, from, to }) = selection(d) else {
         return false;
     };
     if !d.blobs[blob as usize].editable() {
@@ -505,6 +528,41 @@ pub fn derive_compose(rows: &[Row], lo: usize, hi: usize) -> Option<Compose> {
     }
 }
 
+pub(crate) fn widen_compose(
+    d: &ReviewDoc,
+    kind: LineKind,
+    blob: u32,
+    line: u32,
+) -> Option<Compose> {
+    let Some(Composing::Lines(mut compose)) = d.compose else {
+        return None;
+    };
+    let (side, other) = match kind {
+        LineKind::Del => (&mut compose.old, compose.new),
+        _ => (&mut compose.new, compose.old),
+    };
+    match side {
+        Some(side) if side.blob == blob => {
+            side.start = side.start.min(line);
+            side.end = side.end.max(line);
+        }
+        None if other.is_some_and(|other| {
+            d.blob_paths
+                .get(&other.blob)
+                .is_some_and(|path| Some(path) == d.blob_paths.get(&blob))
+        }) =>
+        {
+            *side = Some(Side {
+                blob,
+                start: line,
+                end: line,
+            });
+        }
+        _ => return None,
+    }
+    Some(compose)
+}
+
 /// The lines a selection comments on: the new side when there is one — the
 /// comment renders below its last line — otherwise the old side. A selection
 /// dragged across a hunk's deleted→added boundary anchors on the added lines:
@@ -532,7 +590,7 @@ pub(crate) fn status_line(d: &ReviewDoc) -> String {
     if d.loading {
         return "loading…".into();
     }
-    if d.files_rows.is_empty() {
+    if d.git_dir.is_none() {
         return "click the repo name to open a repository".into();
     }
     String::new()
@@ -579,7 +637,13 @@ pub(crate) fn seen_progress(d: &ReviewDoc, st: &crate::service::ReviewState) -> 
 ///
 /// Returns the pairs it minted for comments that had none — older ones — so
 /// the caller can hand them to the store.
-fn hold_comments(d: &mut ReviewDoc, comments: &[store::Comment]) -> Vec<(u64, store::Cursors)> {
+pub(crate) fn hold_comments(
+    d: &mut ReviewDoc,
+    comments: &[store::Comment],
+) -> Vec<(u64, store::Cursors)> {
+    if comments.is_empty() {
+        return Vec::new();
+    }
     let mut minted = Vec::new();
     let editable: Vec<(u32, String)> = d
         .blobs
@@ -621,6 +685,8 @@ pub(crate) fn splice_comments(
     d: &mut ReviewDoc,
     comments: &[store::Comment],
 ) -> Vec<(u64, store::Cursors)> {
+    let had_composer = d.composer_tab.is_some();
+    strip_composer(d);
     let minted = hold_comments(d, comments);
     // The Comments tab is rebuilt here rather than patched: which threads
     // exist, where their content lives now and who answered last all change
@@ -635,63 +701,46 @@ pub(crate) fn splice_comments(
         // The Comments tab always shows every thread — an outdated conversation
         // is what it exists to keep track of — so its cards reveal outdated
         // threads without asking the per-card toggles.
-        let show = if tab == Tab::Comments {
+        let show = if tab == Stream::Comments {
             &outdated_paths
         } else {
             show_all
         };
-        placed.extend(store::inject_comments(rows, blobs, comments, show, about));
-        finalize_cards(rows);
+        placed.extend(splice_stream(rows, blobs, comments, show, about));
     });
     d.placed_threads = placed;
+    if had_composer {
+        splice_composer(d);
+    }
     minted
+}
+
+pub(crate) fn splice_stream(
+    rows: &mut Vec<Row>,
+    blobs: &[Blob],
+    comments: &[store::Comment],
+    show_all: &HashSet<String>,
+    about: Option<&str>,
+) -> HashSet<u64> {
+    let placed = store::inject_comments(rows, blobs, comments, show_all, about);
+    finalize_cards(rows);
+    placed
+}
+
+fn context_header(path: &str) -> Row {
+    Row::FileHeader {
+        path: path.to_string(),
+        lang: "plain",
+        adds: 0,
+        dels: 0,
+        from: None,
+        similarity: None,
+    }
 }
 
 /// Lines of context shown either side of a thread's code in the Comments tab —
 /// the same margin a standard hunk keeps.
 const COMMENT_CONTEXT: u32 = 3;
-
-/// Where a thread's content sits right now, for the Comments tab: the blob
-/// index and the inclusive line run. `members` is the thread newest-first, so a
-/// reply written on the lines a fix moved to is what places it.
-///
-/// Mirrors the order of `store`'s placement (a live buffer holding the thread
-/// wins, then the blob a comment names). Kept alongside rather than shared
-/// because this needs the
-/// run and the splice needs only the render line. If the two ever answer
-/// differently, the splice is the authority: a thread this misplaces still
-/// lands under whatever line the splice chose, inside these context rows.
-fn thread_run(
-    members: &[&store::Comment],
-    blobs: &[Blob],
-    path_blobs: &[u32],
-) -> Option<(u32, u32, u32)> {
-    for comment in members {
-        let width = comment.anchor.end.saturating_sub(comment.anchor.start);
-        for &i in path_blobs {
-            let blob = &blobs[i as usize];
-            if blob.holds(comment.id) {
-                let last = blob.held_line(comment.id)?;
-                return Some((i, last.saturating_sub(width), last));
-            }
-        }
-    }
-    members.iter().find_map(|comment| {
-        let own = path_blobs
-            .iter()
-            .find(|&&i| blobs[i as usize].oid == comment.anchor.blob);
-        own.into_iter()
-            .chain(
-                path_blobs
-                    .iter()
-                    .filter(|&&i| blobs[i as usize].oid != comment.anchor.blob),
-            )
-            .find_map(|&i| {
-                let (from, to) = store::run_in(&blobs[i as usize], comment)?;
-                Some((i, from, to))
-            })
-    })
-}
 
 /// The Comments tab's rows: every thread as a card of its code with
 /// [`COMMENT_CONTEXT`] lines either side, overlapping threads sharing one card,
@@ -768,21 +817,24 @@ fn comments_stream(
         // Locate each thread, then merge threads whose context overlaps into
         // one card — the same line must not render in two cards, or the splice
         // would attach every thread at both occurrences.
-        let mut located: Vec<(&store::Comment, u32, u32, u32)> = Vec::new();
+        let mut located: Vec<(&store::Comment, Side)> = Vec::new();
         let mut unplaced: Vec<&store::Comment> = Vec::new();
         for root in group {
-            // The thread newest-first: the root, then its replies, reversed.
+            // NOTE: Use the store's newest-placeable-comment order.
             let mut members: Vec<&store::Comment> = comments
                 .iter()
                 .filter(|c| c.id == root.id || c.parent == Some(root.id))
                 .collect();
-            members.reverse();
-            match thread_run(&members, blobs, path_blobs) {
-                Some((blob, from, to)) => located.push((root, blob, from, to)),
+            members.sort_by_key(|comment| std::cmp::Reverse(comment.id));
+            match members
+                .iter()
+                .find_map(|comment| store::place(comment, blobs, path_blobs))
+            {
+                Some(run) => located.push((root, run)),
                 None => unplaced.push(root),
             }
         }
-        located.sort_by_key(|(c, blob, from, _)| (*blob, *from, c.id));
+        located.sort_by_key(|(c, run)| (run.blob, run.start, c.id));
         unanswered += group
             .iter()
             .filter(|c| !comments.iter().any(|r| r.parent == Some(c.id)))
@@ -790,18 +842,26 @@ fn comments_stream(
 
         let mut i = 0usize;
         while i < located.len() {
-            let (_, blob, from, mut to) = located[i];
+            let (
+                _,
+                Side {
+                    blob,
+                    start: from,
+                    end: mut to,
+                },
+            ) = located[i];
             let line_count = blobs[blob as usize].line_count() as u32;
             let ctx_from = from.saturating_sub(COMMENT_CONTEXT);
             let mut members = vec![located[i].0];
             let mut j = i + 1;
             while j < located.len() {
-                let (c, b, f, t) = located[j];
-                let joined = b == blob && f.saturating_sub(COMMENT_CONTEXT) <= to + COMMENT_CONTEXT;
+                let (c, next) = located[j];
+                let joined = next.blob == blob
+                    && next.start.saturating_sub(COMMENT_CONTEXT) <= to + COMMENT_CONTEXT;
                 if !joined {
                     break;
                 }
-                to = to.max(t);
+                to = to.max(next.end);
                 members.push(c);
                 j += 1;
             }
@@ -821,14 +881,7 @@ fn comments_stream(
             cards.push(Row::Prose {
                 md: lines.join("  \n"),
             });
-            cards.push(Row::FileHeader {
-                path: path.to_string(),
-                lang: "plain",
-                adds: 0,
-                dels: 0,
-                from: None,
-                similarity: None,
-            });
+            cards.push(context_header(path));
             for line in ctx_from..=ctx_to {
                 cards.push(Row::Code {
                     kind: LineKind::Context,
@@ -857,14 +910,7 @@ fn comments_stream(
             cards.push(Row::Prose {
                 md: lines.join("  \n"),
             });
-            cards.push(Row::FileHeader {
-                path: path.to_string(),
-                lang: "plain",
-                adds: 0,
-                dels: 0,
-                from: None,
-                similarity: None,
-            });
+            cards.push(context_header(path));
         }
     }
 
@@ -963,22 +1009,35 @@ pub(crate) fn card_keys(rows: &[Row], header_idx: usize, blobs: &[Blob]) -> Vec<
     keys
 }
 
+pub(crate) fn code_row_near(rows: &[Row], blob: u32, line: u32, near: usize) -> Option<usize> {
+    rows.iter()
+        .enumerate()
+        .filter_map(|(row, item)| match item {
+            Row::Code {
+                blob: current,
+                line: current_line,
+                ..
+            } if *current == blob && *current_line == line => Some(row),
+            _ => None,
+        })
+        .min_by_key(|row| row.abs_diff(near))
+}
+
 pub(crate) fn stream_has_composer(rows: &[Row]) -> bool {
     rows.iter().any(|r| matches!(r, Row::Composer))
 }
 
-/// Remove the composer row from every stream (at most one exists).
+/// Remove the composer from its owning stream.
 pub(crate) fn strip_composer(d: &mut ReviewDoc) {
-    let mut removed = false;
-    d.for_each_stream(|rows, _, _, _, _| {
-        let before = rows.len();
-        rows.retain(|r| !matches!(r, Row::Composer));
-        removed |= rows.len() != before;
-    });
-    // Only when a row actually went: this is called speculatively on paths that
-    // may have nothing to strip, and a revision that moves without the stream
-    // moving costs every list a rebuild and a scroll re-anchor.
-    if removed {
+    let Some(tab) = d.composer_tab.take() else {
+        return;
+    };
+    let Some(rows) = d.stream_mut(tab) else {
+        return;
+    };
+    let before = rows.len();
+    rows.retain(|row| !matches!(row, Row::Composer));
+    if rows.len() != before {
         d.rows_rev += 1;
     }
 }
@@ -989,9 +1048,8 @@ pub(crate) fn strip_composer(d: &mut ReviewDoc) {
 /// already anchored there. When the same line renders in several places, the
 /// occurrence nearest to where the drag started wins.
 ///
-/// A reply needs no search: `compose_anchor` is the comment row that was
-/// pressed, so the composer goes below the last row of that thread —
-/// `inject_comments` emits a thread's rows contiguously.
+/// Replies follow their thread id. The old row is only a proximity hint when
+/// a guide renders the same thread more than once.
 pub(crate) fn splice_composer(d: &mut ReviewDoc) {
     strip_composer(d);
     let Some(c) = d.compose else {
@@ -1000,26 +1058,10 @@ pub(crate) fn splice_composer(d: &mut ReviewDoc) {
     let anchor = d.compose_anchor;
     let at = match c {
         Composing::Lines(c) => {
-            let Some(side) = c.new.or(c.old) else {
+            let Some(side) = comment_anchor(c) else {
                 return;
             };
-            let (blob, e) = (side.blob, side.end);
-            let anchor = anchor as i64;
-            let mut best: Option<usize> = None;
-            for (i, r) in d.active().iter().enumerate() {
-                if let Row::Code { blob: b, line, .. } = r
-                    && *b == blob
-                    && *line == e
-                {
-                    let closer = best.is_none_or(|prev| {
-                        (i as i64 - anchor).abs() < (prev as i64 - anchor).abs()
-                    });
-                    if closer {
-                        best = Some(i);
-                    }
-                }
-            }
-            let Some(mut at) = best else {
+            let Some(mut at) = code_row_near(d.active(), side.blob, side.end, anchor) else {
                 d.compose = None;
                 return;
             };
@@ -1029,14 +1071,19 @@ pub(crate) fn splice_composer(d: &mut ReviewDoc) {
             at
         }
         Composing::Reply(root) => {
-            // A resplice between the click and here can have moved the rows
-            // out from under the anchor. Dropping the composer beats putting
-            // it somewhere the reviewer did not point at.
-            if !matches!(d.active().get(anchor), Some(Row::Comment { .. })) {
+            let Some(mut at) = d
+                .active()
+                .iter()
+                .enumerate()
+                .filter_map(|(row, item)| match item {
+                    Row::Comment { id, parent, .. } if parent.unwrap_or(*id) == root => Some(row),
+                    _ => None,
+                })
+                .min_by_key(|row| row.abs_diff(anchor))
+            else {
                 d.compose = None;
                 return;
-            }
-            let mut at = anchor;
+            };
             while matches!(
                 d.active().get(at + 1),
                 Some(Row::Comment { id, parent, .. }) if parent.unwrap_or(*id) == root
@@ -1050,6 +1097,7 @@ pub(crate) fn splice_composer(d: &mut ReviewDoc) {
         return;
     };
     rows.insert(at + 1, Row::Composer);
+    d.composer_tab = Some(d.tab);
     d.rows_rev += 1;
 }
 
@@ -1062,7 +1110,7 @@ const EXPAND_STEP: u32 = 20;
 /// rows against the code they join, and the `Skipped` row keeps whatever stays
 /// hidden — or goes, when the run is exhausted. Row indices below the run shift,
 /// so this announces the new shape like the composer's splice does.
-pub(crate) fn expand_collapsed(d: &mut ReviewDoc, tab: Tab, row: usize, end: CollapsedEnd) {
+pub(crate) fn expand_collapsed(d: &mut ReviewDoc, tab: Stream, row: usize, end: CollapsedEnd) {
     let Some(&Row::Collapsed {
         blob,
         old_start,
@@ -1119,24 +1167,13 @@ pub(crate) fn expand_collapsed(d: &mut ReviewDoc, tab: Tab, row: usize, end: Col
             out.extend(revealed);
         }
     }
-    let grew = out.len() - 1;
-    let Some(rows) = d.stream_mut(tab) else {
-        return;
-    };
-    rows.splice(row..row + 1, out);
-    // The composer's anchor is a row index into its stream, so rows inserted
-    // above it make it name a different row now. The composer row itself rides
-    // along with its neighbours; only the index needs correcting.
-    if tab == d.tab && d.compose_anchor > row {
-        d.compose_anchor += grew;
-    }
-    d.rows_rev += 1;
+    replace_row(d, tab, row, out);
 }
 
 /// Reveal what a `Removed` marker stands for: its lines, as del rows, in its
 /// place. One-way, like expanding a collapsed run — a reload puts the marker
 /// back.
-pub(crate) fn reveal_removed(d: &mut ReviewDoc, tab: Tab, row: usize) {
+pub(crate) fn reveal_removed(d: &mut ReviewDoc, tab: Stream, row: usize) {
     let Some(&Row::Removed { blob, start, end }) = d.stream(tab).get(row) else {
         return;
     };
@@ -1149,13 +1186,17 @@ pub(crate) fn reveal_removed(d: &mut ReviewDoc, tab: Tab, row: usize) {
             line,
         })
         .collect();
-    let grew = revealed.len() - 1;
+    replace_row(d, tab, row, revealed);
+}
+
+fn replace_row(d: &mut ReviewDoc, tab: Stream, row: usize, with: Vec<Row>) {
+    let grew = with.len() - 1;
     let Some(rows) = d.stream_mut(tab) else {
         return;
     };
-    rows.splice(row..row + 1, revealed);
-    // The composer's anchor is a row index, so rows inserted above it make it
-    // name a different row — the same correction `expand_collapsed` makes.
+    rows.splice(row..=row, with);
+    // NOTE: Inserting rows above a gesture moves its index; the composer row
+    // itself moves with the rest of the stream.
     if tab == d.tab && d.compose_anchor > row {
         d.compose_anchor += grew;
     }
@@ -1183,7 +1224,7 @@ pub(crate) fn compose_title(d: &ReviewDoc, comments: &[Comment]) -> String {
             };
         }
     };
-    let Some(side) = c.new.or(c.old) else {
+    let Some(side) = comment_anchor(c) else {
         return "Add a comment".into();
     };
     let path = blob_label(d, side.blob);
@@ -1221,6 +1262,16 @@ pub(crate) fn compose_title(d: &ReviewDoc, comments: &[Comment]) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn an_empty_loaded_diff_does_not_ask_for_a_repository() {
+        let d = ReviewDoc {
+            git_dir: Some(std::path::PathBuf::from(".git")),
+            ..Default::default()
+        };
+        assert!(status_line(&d).is_empty());
+        assert!(status_line(&ReviewDoc::default()).contains("open a repository"));
+    }
+
     use std::collections::HashMap;
 
     use concats_diff::{Blob, LineKind, Side};
@@ -1293,7 +1344,7 @@ mod tests {
                 },
                 ctx(200),
             ],
-            tab: Tab::Files,
+            tab: Stream::Files,
             ..Default::default()
         }
     }
@@ -1404,7 +1455,7 @@ mod tests {
     fn expanding_the_head_reveals_the_first_hidden_lines() {
         let mut d = doc_with_run(50);
         let at_rest = d.rows_rev;
-        expand_collapsed(&mut d, Tab::Files, 1, CollapsedEnd::Head);
+        expand_collapsed(&mut d, Stream::Files, 1, CollapsedEnd::Head);
         assert!(
             d.rows_rev > at_rest,
             "inserting rows shifts every index after"
@@ -1417,7 +1468,7 @@ mod tests {
         assert_eq!(skipped_at(&d.files_rows, 21), (30, 40, 30));
 
         // A remainder under two steps goes in one click, and the run with it.
-        expand_collapsed(&mut d, Tab::Files, 21, CollapsedEnd::Head);
+        expand_collapsed(&mut d, Stream::Files, 21, CollapsedEnd::Head);
         assert!(
             !d.files_rows
                 .iter()
@@ -1432,7 +1483,7 @@ mod tests {
     #[test]
     fn expanding_the_tail_reveals_the_last_hidden_lines() {
         let mut d = doc_with_run(50);
-        expand_collapsed(&mut d, Tab::Files, 1, CollapsedEnd::Tail);
+        expand_collapsed(&mut d, Stream::Files, 1, CollapsedEnd::Tail);
 
         // The run stays put, shortened…
         assert_eq!(skipped_at(&d.files_rows, 1), (10, 20, 30));
@@ -1458,7 +1509,7 @@ mod tests {
         };
         let mut d = ReviewDoc {
             files_rows: vec![code(0), code(1)],
-            tab: Tab::Files,
+            tab: Stream::Files,
             compose: Some(Composing::Lines(Compose {
                 old: None,
                 new: Some(Side {
@@ -1492,6 +1543,114 @@ mod tests {
         let stripped = d.rows_rev;
         strip_composer(&mut d);
         assert_eq!(d.rows_rev, stripped);
+    }
+
+    #[test]
+    fn a_gutter_drag_keeps_its_pressed_line_when_an_earlier_composer_is_removed() {
+        let mut d = ReviewDoc {
+            tab: Stream::Files,
+            files_rows: vec![
+                Row::Composer,
+                code(LineKind::Add, 0, 0),
+                code(LineKind::Add, 1, 0),
+                code(LineKind::Add, 1, 1),
+            ],
+            composer_tab: Some(Stream::Files),
+            ..Default::default()
+        };
+        let pressed = code_row_near(d.active(), 1, 0, 2).unwrap();
+        strip_composer(&mut d);
+        let anchor = code_row_near(d.active(), 1, 0, pressed).unwrap();
+        let selection = derive_compose(d.active(), anchor, anchor + 1).unwrap();
+        assert_eq!(
+            selection.new,
+            Some(Side {
+                blob: 1,
+                start: 0,
+                end: 1
+            })
+        );
+    }
+
+    #[test]
+    fn stripping_a_composer_uses_its_owner_after_the_active_stream_changes() {
+        let mut d = ReviewDoc {
+            tab: Stream::Guide,
+            guide_rows: vec![code(LineKind::Add, 0, 0)],
+            compose: Some(Composing::Lines(Compose {
+                old: None,
+                new: Some(Side {
+                    blob: 0,
+                    start: 0,
+                    end: 0,
+                }),
+            })),
+            ..Default::default()
+        };
+        splice_composer(&mut d);
+        assert_eq!(d.composer_tab, Some(Stream::Guide));
+        splice_comments(&mut d, &[]);
+        assert_eq!(d.composer_tab, Some(Stream::Guide));
+        assert!(stream_has_composer(&d.guide_rows));
+        d.tab = Stream::Files;
+        strip_composer(&mut d);
+        assert!(!stream_has_composer(&d.guide_rows));
+        assert_eq!(d.composer_tab, None);
+        let revision = d.rows_rev;
+        strip_composer(&mut d);
+        assert_eq!(d.rows_rev, revision);
+    }
+
+    #[test]
+    fn replying_follows_the_thread_after_a_composer_shifts_its_rows() {
+        let comment = |id, parent| Row::Comment {
+            id,
+            parent,
+            body: String::new(),
+            meta: String::new(),
+        };
+        let mut d = ReviewDoc {
+            tab: Stream::Files,
+            files_rows: vec![
+                Row::Composer,
+                comment(1, None),
+                comment(2, Some(1)),
+                comment(9, None),
+            ],
+            compose: Some(Composing::Reply(1)),
+            composer_tab: Some(Stream::Files),
+            compose_anchor: 2,
+            ..Default::default()
+        };
+        splice_composer(&mut d);
+        assert!(matches!(d.files_rows[2], Row::Composer));
+        assert!(matches!(d.files_rows[3], Row::Comment { id: 9, .. }));
+
+        d.compose = Some(Composing::Reply(999));
+        splice_composer(&mut d);
+        assert!(d.compose.is_none());
+        assert!(!stream_has_composer(&d.files_rows));
+    }
+
+    #[test]
+    fn a_repeated_thread_replies_at_the_nearest_occurrence() {
+        let comment = Row::Comment {
+            id: 1,
+            parent: None,
+            body: String::new(),
+            meta: String::new(),
+        };
+        for near in [0, 3] {
+            let mut d = ReviewDoc {
+                tab: Stream::Guide,
+                guide_rows: vec![comment.clone(), Row::Spacer, Row::Spacer, comment.clone()],
+                compose: Some(Composing::Reply(1)),
+                compose_anchor: near,
+                ..Default::default()
+            };
+            splice_composer(&mut d);
+            assert!(matches!(d.guide_rows[near + 1], Row::Composer));
+        }
     }
 
     fn blob(text: &str) -> Blob {
@@ -1641,12 +1800,33 @@ mod tests {
         // "b" on the second line, both ways round: which end moved is not what
         // decides the range.
         let forward = with_selection("aa\nbb\ncc\n", (1, 2), Some((1, 0)));
-        assert_eq!(selection(&forward), Some((0, 3, 5)));
+        assert_eq!(
+            selection(&forward),
+            Some(Selection {
+                blob: 0,
+                from: 3,
+                to: 5
+            })
+        );
         let backward = with_selection("aa\nbb\ncc\n", (1, 0), Some((1, 2)));
-        assert_eq!(selection(&backward), Some((0, 3, 5)));
+        assert_eq!(
+            selection(&backward),
+            Some(Selection {
+                blob: 0,
+                from: 3,
+                to: 5
+            })
+        );
         // Across lines.
         let across = with_selection("aa\nbb\ncc\n", (2, 1), Some((0, 1)));
-        assert_eq!(selection(&across), Some((0, 1, 7)));
+        assert_eq!(
+            selection(&across),
+            Some(Selection {
+                blob: 0,
+                from: 1,
+                to: 7
+            })
+        );
         // No anchor, or an empty range, is not a selection.
         assert_eq!(selection(&with_selection("aa\n", (0, 1), None)), None);
         assert_eq!(
@@ -1722,6 +1902,54 @@ mod tests {
             blob,
             line,
         }
+    }
+
+    #[test]
+    fn widening_a_comment_returns_a_selection_within_the_same_file() {
+        let mut d = ReviewDoc {
+            blob_paths: HashMap::from([
+                (0, "a.rs".to_owned()),
+                (1, "a.rs".to_owned()),
+                (2, "b.rs".to_owned()),
+            ]),
+            compose: Some(Composing::Lines(Compose {
+                old: Some(Side {
+                    blob: 0,
+                    start: 3,
+                    end: 4,
+                }),
+                new: None,
+            })),
+            ..Default::default()
+        };
+        assert!(widen_compose(&d, LineKind::Add, 2, 6).is_none());
+        let wider = widen_compose(&d, LineKind::Del, 0, 1).unwrap();
+        assert_eq!(
+            wider.old,
+            Some(Side {
+                blob: 0,
+                start: 1,
+                end: 4
+            })
+        );
+        let Some(Composing::Lines(original)) = d.compose else {
+            panic!()
+        };
+        assert_eq!(original.old.unwrap().start, 3);
+
+        d.compose = Some(Composing::Lines(wider));
+        let both = widen_compose(&d, LineKind::Add, 1, 6).unwrap();
+        assert_eq!(both.old, wider.old);
+        assert_eq!(
+            both.new,
+            Some(Side {
+                blob: 1,
+                start: 6,
+                end: 6
+            })
+        );
+        d.compose = Some(Composing::Reply(1));
+        assert!(widen_compose(&d, LineKind::Add, 1, 6).is_none());
     }
 
     #[test]
@@ -1846,6 +2074,29 @@ mod tests {
             .collect();
         let expect: Vec<(u32, Option<u32>)> = (6..=13).map(|n| (n, Some(n + 1))).collect();
         assert_eq!(code, expect);
+    }
+
+    #[test]
+    fn comment_context_uses_the_newest_anchor_regardless_of_input_order() {
+        let text: String = (0..20).map(|n| format!("line {n}\n")).collect();
+        let blobs = vec![Blob::new(oid(1), "rs".into(), text)];
+        let paths = HashMap::from([(0, "a.rs".to_string())]);
+        let root = stored(1, "a.rs", oid(1), 0, 0);
+        let reply = Comment {
+            parent: Some(1),
+            ..stored(2, "a.rs", oid(1), 8, 8)
+        };
+        for comments in [[root.clone(), reply.clone()], [reply, root]] {
+            let (rows, _) = comments_stream(&blobs, &paths, &comments);
+            let lines: Vec<u32> = rows
+                .iter()
+                .filter_map(|row| match row {
+                    Row::Code { line, .. } => Some(*line),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(lines, (5..=11).collect::<Vec<_>>());
+        }
     }
 
     #[test]
