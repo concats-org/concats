@@ -20,7 +20,7 @@ use crate::{
     file_view::{relower_edited, save_plan},
     makepad_widgets::*,
     review_doc::{
-        Caret, Composing, FileView, ReviewDoc, Step, Tab, caret_row, compose_title, step_row,
+        Caret, Composing, FileView, ReviewDoc, Step, Stream, caret_row, compose_title, step_row,
         type_at,
     },
     service::{HighlightCmd, ReviewCmd, highlight, review},
@@ -158,14 +158,14 @@ fn sticky_offsets(header_top: Option<f64>, end_top: Option<f64>) -> (f64, f64) {
 
 #[derive(Clone, Debug, PartialEq)]
 pub(super) enum ReviewItemAction {
-    Seen { tab: Tab, row: usize },
-    Fold { tab: Tab, row: usize },
-    Delete { tab: Tab, row: usize },
-    Reply { tab: Tab, row: usize },
-    Outdated { tab: Tab, row: usize },
-    Gutter { tab: Tab, row: usize },
-    Expand { tab: Tab, row: usize },
-    Reveal { tab: Tab, row: usize },
+    Seen { tab: Stream, row: usize },
+    Fold { tab: Stream, row: usize },
+    Delete { id: u64 },
+    Reply { tab: Stream, id: u64, near: usize },
+    Outdated { tab: Stream, row: usize },
+    Gutter { tab: Stream, row: usize },
+    Expand { tab: Stream, row: usize },
+    Reveal { tab: Stream, row: usize },
     Post,
     Cancel,
 }
@@ -846,6 +846,8 @@ pub struct ReviewList {
     /// reused, so a stale one is inert rather than wrong.
     #[rust]
     pub composer_input: Option<WidgetUid>,
+    #[rust]
+    composer: TextInputRef,
     /// Stream index per list entry while cards are folded shut. Empty means
     /// the identity mapping — no card is folded, the common case.
     #[rust]
@@ -898,7 +900,7 @@ pub struct ReviewList {
     /// instance fell back to the same answer, and gating a keystroke on that
     /// applied it once per instance. So it is captured here.
     #[rust]
-    drawn_tab: Option<Tab>,
+    drawn_tab: Option<Stream>,
 }
 
 #[derive(Default)]
@@ -969,12 +971,9 @@ impl ReviewList {
     /// The window these rows belong to. Detached until the first event carries
     /// one down from the pane, which is before any gesture can reach a row.
     fn state(&self) -> &std::sync::Arc<crate::window::WindowState> {
-        static DETACHED: std::sync::OnceLock<std::sync::Arc<crate::window::WindowState>> =
-            std::sync::OnceLock::new();
-        match self.state.as_ref() {
-            Some(state) => state,
-            None => DETACHED.get_or_init(|| crate::window::WindowState::new(LiveId(0), None)),
-        }
+        self.state
+            .as_ref()
+            .unwrap_or_else(|| crate::window::WindowState::detached())
     }
 
     /// The stream row a list entry renders. Folding hides rows, so an entry
@@ -1021,24 +1020,24 @@ impl ReviewList {
 /// looking for its own dock tab in the widget tree path, the way a terminal
 /// pane finds its session (`TerminalView::session_for_widget`). A
 /// pane whose tab the document has no file for renders an empty stream.
-fn tab_of(cx: &Cx, uid: WidgetUid, kind: LiveId, open: &[FileView]) -> Tab {
-    if kind == id!(review) {
-        Tab::Guide
+fn tab_of(cx: &Cx, uid: WidgetUid, kind: LiveId, open: &[FileView]) -> Stream {
+    if kind == id!(guide) {
+        Stream::Guide
     } else if kind == id!(sessions) {
-        Tab::Sessions
+        Stream::Sessions
     } else if kind == id!(commits) {
-        Tab::Commits
+        Stream::Commits
     } else if kind == id!(comments) {
-        Tab::Comments
+        Stream::Comments
     } else if kind == id!(file) {
         let path = cx.widget_tree().path_to(uid);
         let tab = path
             .iter()
             .rev()
             .find(|node| open.iter().any(|f| f.tab == node.0));
-        Tab::File(tab.map_or(0, |t| t.0))
+        Stream::File(tab.map_or(0, |t| t.0))
     } else {
-        Tab::Files
+        Stream::Files
     }
 }
 
@@ -1111,7 +1110,10 @@ impl Widget for ReviewList {
         // here is how a header ends up disagreeing with the rows right under
         // it.
         let placed = &d.placed_threads;
-        let focus_composer = frame.focus_composer == Some(tab);
+        let focus_composer = frame.focus_composer == Some(tab)
+            || (d.composer_tab == Some(tab)
+                && !matches!(self.composer.area(), Area::Empty)
+                && cx.has_key_focus(self.composer.area()));
         let row_frame = FrameTheme(frame.theme.clone());
         if self.highlight_generation != d.generation {
             self.highlight_generation = d.generation;
@@ -1233,6 +1235,20 @@ impl Widget for ReviewList {
                     list.set_first_id_and_scroll(remapped_first.min(entries - 1), 0.0);
                 }
 
+                if frame.focus_composer == Some(tab)
+                    && let Some(row) = d
+                        .stream(tab)
+                        .iter()
+                        .position(|row| matches!(row, Row::Composer))
+                    && let Some(entry) = if self.visible.is_empty() {
+                        Some(row)
+                    } else {
+                        self.visible.binary_search(&row).ok()
+                    }
+                {
+                    list.set_first_id_and_scroll(entry, 0.0);
+                }
+
                 while let Some(i) = list.next_visible_item(cx) {
                     drawn.push(i);
                     let Some(r) = self.row_at(i) else {
@@ -1272,6 +1288,7 @@ impl Widget for ReviewList {
                         // names the range being commented on and goes away as
                         // soon as there is a draft to read.
                         let input = item.text_input(cx, ids!(comp_input));
+                        let recreated = self.composer.widget_uid() != input.widget_uid();
                         self.composer_input = Some(input.widget_uid());
                         item.widget(cx, ids!(comp_post))
                             .set_action_data(ReviewItemAction::Post);
@@ -1280,18 +1297,21 @@ impl Widget for ReviewList {
                         input.set_empty_text(cx, compose_title(d, &review.comments));
                         // The virtualized list may have recreated this item —
                         // restore the draft the keystroke mirror kept.
-                        if input.text().is_empty() && !d.compose_draft.is_empty() {
-                            input.set_text(cx, &d.compose_draft);
+                        if input.text() != frame.compose_draft {
+                            input.set_text(cx, &frame.compose_draft);
+                        }
+                        if recreated {
+                            input.set_selection(cx, self.composer.selection());
                         }
                         item.draw_all(cx, &mut Scope::with_props(&row_frame));
-                        // After the draw, not before: key focus is an Area, and
-                        // a list item drawn for the first time has none until
-                        // it is laid out. Focusing early aims at `Area::Empty`,
-                        // which `update_area_refs` refuses to migrate, so the
-                        // composer opened unfocused every time.
+                        // NOTE: A new input has no focusable Area until it is drawn.
                         if focus_composer {
                             input.set_key_focus(cx);
+                            if frame.focus_composer == Some(tab) {
+                                frame.state.with(|d| d.compose_focus = false);
+                            }
                         }
+                        self.composer = input;
                         continue;
                     }
 
@@ -1515,7 +1535,10 @@ impl Widget for ReviewList {
                         // `meta` is the byline, not the range — the blue bar
                         // spanning the range already tells that.
                         Row::Comment {
-                            parent, body, meta, ..
+                            id,
+                            parent,
+                            body,
+                            meta,
                         } => {
                             let template = if parent.is_some() {
                                 id!(Reply)
@@ -1523,10 +1546,15 @@ impl Widget for ReviewList {
                                 id!(Comment)
                             };
                             let item = list.item(cx, i, template);
-                            item.widget(cx, ids!(cm_reply))
-                                .set_action_data(ReviewItemAction::Reply { tab, row: r });
+                            item.widget(cx, ids!(cm_reply)).set_action_data(
+                                ReviewItemAction::Reply {
+                                    tab,
+                                    id: *id,
+                                    near: r,
+                                },
+                            );
                             item.widget(cx, ids!(cm_delete))
-                                .set_action_data(ReviewItemAction::Delete { tab, row: r });
+                                .set_action_data(ReviewItemAction::Delete { id: *id });
                             item.label(cx, ids!(cm_meta)).set_text(cx, meta);
                             item.label(cx, ids!(cm_body)).set_text(cx, body);
                             item.draw_all(cx, &mut Scope::with_props(&row_frame));
@@ -1821,10 +1849,7 @@ impl ReviewList {
                 d.tab = tab;
                 focus = true;
             }
-            // A drag keeps both ends: the caret at the moving one, the anchor
-            // at the fixed one. It used to keep neither, which is why a
-            // selection could be copied but never edited: an edit needs to know
-            // the range it replaces, and only the document is asked that.
+            // NOTE: Editing needs both endpoints to replace the selected text.
             d.selection_anchor = tail;
             d.caret = head;
         });
@@ -1893,7 +1918,9 @@ impl ReviewList {
         let area = list.area();
         !matches!(area, Area::Empty)
             && cx.has_key_focus(area)
-            && self.state().read(|d| d.caret.is_some() && d.tab == tab)
+            && self
+                .state()
+                .read(|d| d.caret.is_some() && d.tab == tab && d.composer_tab != Some(tab))
     }
 
     /// The list's own selection and the caret are two claims about where typing
@@ -1988,13 +2015,10 @@ impl ReviewList {
         took
     }
 
-    /// Cmd-F and Escape. Gated on this list owning the caret's stream rather
-    /// than on key focus, which the composer or the find field itself may hold.
     fn find_keys(&mut self, cx: &mut Cx, ke: &KeyEvent) -> bool {
-        let mine = self
-            .state()
-            .read(|d| d.caret.is_some() && self.drawn_tab == Some(d.tab));
-        if !mine {
+        let find_area = self.view.text_input(cx, ids!(find_input)).area();
+        let find_focused = !matches!(find_area, Area::Empty) && cx.has_key_focus(find_area);
+        if !self.caret_focused(cx) && !find_focused {
             return false;
         }
         match ke.key_code {
@@ -2147,7 +2171,7 @@ impl ReviewList {
     fn apply_settings(&mut self, cx: &mut Cx, text: &str) -> bool {
         let applied = crate::theme::apply_settings_text(text);
         self.state().with(|d| {
-            if let Some(rows) = d.stream_mut(Tab::File(crate::dock::settings_tab_id().0)) {
+            if let Some(rows) = d.stream_mut(Stream::File(crate::dock::settings_tab_id().0)) {
                 rows.retain(|r| !matches!(r, Row::Warning { .. }));
                 if let Err(message) = &applied {
                     rows.insert(
@@ -2331,7 +2355,7 @@ fn row_at_y(drawn: &[(usize, f64, f64)], y: f64) -> Option<usize> {
 /// the new line is long enough. Walks the row stream rather than line numbers:
 /// a diff interleaves two blobs' lines and puts prose between them, so "the
 /// line above" is a property of the stream, not of the file.
-fn step_caret(d: &mut ReviewDoc, tab: Tab, caret: Caret, step: Step) -> bool {
+fn step_caret(d: &mut ReviewDoc, tab: Stream, caret: Caret, step: Step) -> bool {
     let rows = d.stream(tab);
     let landed = caret_row(rows, caret)
         .and_then(|row| step_row(rows, row, step))

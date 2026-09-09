@@ -17,7 +17,8 @@ use crate::{
     file_view::{open_file, open_settings, read_file_sides},
     makepad_widgets::makepad_platform::thread::SignalToUI,
     review_doc::{
-        Caret, Compose, Composing, ReviewDoc, Tab, changed_keys, splice_comments, splice_composer,
+        Caret, Compose, Composing, ReviewDoc, Stream, changed_keys, splice_comments,
+        splice_composer,
     },
     service::{ReviewCmd, review, review_state},
     window::WindowState,
@@ -39,95 +40,77 @@ pub(crate) fn spawn_load(
     // bumps generation and signals again, which stops it.
     SignalToUI::set_ui_signal();
     std::thread::spawn(move || {
-        let result = concats_diff::load::load(
-            std::path::Path::new(&target.repo),
-            &target.base,
-            &target.head,
-        );
-
-        // The next document is built OFF the docs lock and swapped in under it
-        // at the end. Building takes the better part of a second on a real
-        // range, and the UI thread snapshots the document every frame — built
-        // under the lock, the window would beachball instead of showing its
-        // loading state.
-        let repo = std::fs::canonicalize(&target.repo)
-            .unwrap_or_else(|_| std::path::PathBuf::from(&target.repo))
-            .to_string_lossy()
-            .into_owned();
-        let mut next = ReviewDoc {
-            repo,
-            base: target.base.clone(),
-            head: target.head.clone(),
-            guide_path: guide.clone(),
-            ..Default::default()
-        };
-        let d = &mut next;
-        match result {
-            Ok(loaded) => {
-                d.stats = loaded.stats.clone();
-                d.merge_base_oid = loaded.merge_base;
-                d.head_oid = loaded.head;
-                d.workdir = loaded.workdir.clone();
-                d.stage = loaded.stage.clone();
-                d.refs = picker_refs(&loaded);
-                let guide = guide_for(guide.as_deref(), &loaded);
-                d.applied_guide_at = guide.as_ref().and_then(|(_, at)| *at);
-                // Every buffer that had become a document goes back in, with
-                // what is now on disk merged into it, before comments are
-                // resolved against the table — see `carry_live_buffers`. Held
-                // cursors are the only thing that survives a writer editing the
-                // very line a conversation is on.
-                // The document being replaced, read once: everything that
-                // carries over comes out of it.
-                let prev = state.snapshot();
-                let live: Vec<Blob> = prev
-                    .blobs
+        let mut next = load_document(&target, guide);
+        if next.error.is_none() && state.load_is_current(request) {
+            let open = state.read(|d| {
+                d.files_open
                     .iter()
-                    .filter(|b| b.doc.is_some())
-                    .cloned()
-                    .collect();
-                build_review(d, loaded, &target, guide.map(|(md, _)| md));
-                // In-process buffers first, then the cache for anything this
-                // process has not opened yet — which on the first load after a
-                // restart is every file.
-                if carry_live_buffers(d, &live) | restore_cached_buffers(d) {
-                    // The splice ran inside `build_review` against the fresh
-                    // read; redo it now that the real buffers are back.
-                    resplice_comments(d, &review_state(d.git_dir.as_deref()).load().comments);
-                }
-                reopen_files(d, &prev, &target);
-                carry_caret(d, &prev);
-                compose_from_env(d);
-            }
-            Err(e) => {
-                d.error = Some(e.to_string());
-                d.tab = Tab::Files;
-                d.files_rows.push(Row::Title {
-                    text: "# Could not load that diff".into(),
-                });
-                d.files_rows.push(Row::Prose {
-                    md: format!("```\n{e}\n```"),
-                });
-            }
+                    .filter(|_| d.repo == next.repo)
+                    .map(|f| (f.tab, f.path.clone()))
+                    .collect()
+            });
+            reopen_files(&mut next, open, &target);
+            restore_cached_buffers(&mut next);
         }
-        if !state.load_is_current(request) {
+        if !state.land(request, next) {
             return;
         }
-        // Publish the open range under this window's id, so bare CLI commands
-        // (an agent in the built-in terminal) follow the window across range
-        // switches, without colliding with other windows on the same repo.
-        // After the staleness check, so a superseded load can never overwrite
-        // the range the winning load published.
-        if next.error.is_none()
+        // NOTE: The document lock also orders new load requests, so an older
+        // worker cannot publish its range after a newer one has started.
+        let document = state.write();
+        if state.load_is_current(request)
+            && document.error.is_none()
             && let Some(conn) = concats_state::open_app_db()
         {
             concats_state::publish_window_range(&conn, &state.key, &target);
         }
-        // Publish: the lock is held for a swap, nothing more. Fold state is
-        // the view's, not the document's, so it rides across the reload.
-        state.land(next);
+        drop(document);
         SignalToUI::set_ui_signal();
     });
+}
+
+fn load_document(target: &Target, guide: Option<String>) -> ReviewDoc {
+    let repo = std::fs::canonicalize(&target.repo)
+        .unwrap_or_else(|_| std::path::PathBuf::from(&target.repo))
+        .to_string_lossy()
+        .into_owned();
+    let mut next = ReviewDoc {
+        repo,
+        base: target.base.clone(),
+        head: target.head.clone(),
+        guide_path: guide.clone(),
+        ..Default::default()
+    };
+    match concats_diff::load::load(
+        std::path::Path::new(&target.repo),
+        &target.base,
+        &target.head,
+    ) {
+        Ok(loaded) => {
+            next.stats = loaded.stats.clone();
+            next.merge_base_oid = loaded.merge_base;
+            next.head_oid = loaded.head;
+            next.workdir = loaded.workdir.clone();
+            next.stage = loaded.stage.clone();
+            next.refs = picker_refs(&loaded);
+            let guide = guide_for(guide.as_deref(), &loaded);
+            next.applied_guide_at = guide.as_ref().and_then(|(_, at)| *at);
+            build_review(&mut next, loaded, target, guide.map(|(md, _)| md));
+        }
+        Err(error) => {
+            next.error = Some(error.to_string());
+            next.tab = Stream::Files;
+            next.files_rows = vec![
+                Row::Title {
+                    text: "# Could not load that diff".into(),
+                },
+                Row::Prose {
+                    md: format!("```\n{error}\n```"),
+                },
+            ];
+        }
+    }
+    next
 }
 
 /// The diff picker's candidates: the worktree presets, then branches and tags,
@@ -181,16 +164,7 @@ fn guide_for(path: Option<&str>, loaded: &Loaded) -> Option<(String, Option<u64>
 /// Re-open the File tabs the previous document had, over the fresh blob table.
 /// A WORKTREE review reloads on every save; a file that blanked out once a
 /// second while being read would be unusable.
-fn reopen_files(d: &mut ReviewDoc, prev: &ReviewDoc, target: &Target) {
-    let open: Vec<(u64, String)> = prev
-        .files_open
-        .iter()
-        .map(|f| (f.tab, f.path.clone()))
-        .collect();
-    if open.is_empty() {
-        return;
-    }
-    let comments = review_state(d.git_dir.as_deref()).load().comments.clone();
+fn reopen_files(d: &mut ReviewDoc, open: Vec<(u64, String)>, target: &Target) {
     for (tab, path) in open {
         if tab == crate::dock::settings_tab_id().0 {
             // Not a path in this repo — its content comes from the config
@@ -198,18 +172,14 @@ fn reopen_files(d: &mut ReviewDoc, prev: &ReviewDoc, target: &Target) {
             open_settings(d);
             continue;
         }
-        // NOTE: an error here is the file being gone from the head (deleted,
-        // or the range moved off it) — that tab empties rather than showing
-        // content this range never had.
-        let Ok((base, fresh)) =
-            read_file_sides(&target.repo, (d.merge_base_oid, d.head_oid), &path)
-        else {
-            continue;
-        };
-        // `fresh`, not a carried copy: `intern` recognizes an editable blob by
-        // its worktree path, so this resolves to the entry `carry_live_buffers`
-        // already put back — one document per file, shared by every stream.
-        open_file(d, &path, (base, fresh), &comments);
+        // NOTE: A removed file has no fresh side; landing can still preserve
+        // the open buffer and any unsaved edits.
+        match read_file_sides(&target.repo, (d.merge_base_oid, d.head_oid), &path) {
+            Ok(sides) => {
+                open_file(d, &path, sides, &[]);
+            }
+            Err(error) => eprintln!("concats: could not reload {path}: {error}"),
+        }
     }
 }
 
@@ -219,9 +189,8 @@ fn reopen_files(d: &mut ReviewDoc, prev: &ReviewDoc, target: &Target) {
 /// edited buffer has a hash no load produces). Inside a document it travels as
 /// a cursor, which carries it through an external write landing above it;
 /// clamping a line number would slide it onto other code.
-fn carry_caret(d: &mut ReviewDoc, prev: &ReviewDoc) {
-    let Some((oid, origin, caret, cursor, tab)) = (|| {
-        let caret = prev.caret?;
+fn carry_caret(d: &ReviewDoc, prev: &ReviewDoc, caret: Caret) -> Option<Caret> {
+    let (oid, origin, cursor) = (|| {
         let blob = prev.blobs.get(caret.blob as usize)?;
         let at = blob
             .line_starts
@@ -232,44 +201,131 @@ fn carry_caret(d: &mut ReviewDoc, prev: &ReviewDoc) {
             .as_ref()
             .zip(at)
             .and_then(|(doc, at)| concats_sync::cursor_at(doc, at));
-        Some((blob.oid, blob.origin.clone(), caret, cursor, prev.tab))
-    })() else {
-        return;
-    };
-    let Some(i) = d.blobs.iter().position(|b| b.oid == oid).or_else(|| {
-        d.blobs
-            .iter()
-            .position(|b| b.origin == origin && origin.is_some())
-    }) else {
-        return;
-    };
+        Some((blob.oid, blob.origin.clone(), cursor))
+    })()?;
+    let path = prev.blob_paths.get(&caret.blob);
+    let i = d
+        .blobs
+        .iter()
+        .enumerate()
+        .position(|(i, b)| match origin.as_ref() {
+            Some(origin) => b.origin.as_ref() == Some(origin),
+            None => b.oid == oid && d.blob_paths.get(&(i as u32)) == path,
+        })?;
     let blob = &d.blobs[i];
     let at = cursor
         .as_ref()
         .zip(blob.doc.as_ref())
         .and_then(|(cursor, doc)| concats_sync::byte_of(doc, cursor));
-    let (line, byte) = match at {
-        Some(at) => {
-            let line = blob.line_of(at);
-            let column = at.saturating_sub(blob.line_starts[line] as usize);
-            (line as u32, column as u32)
-        }
-        None => {
-            let line = caret.line.min(blob.line_count().saturating_sub(1) as u32);
-            (
-                line,
-                caret.byte.min(blob.line_text(line as usize).len() as u32),
-            )
-        }
+    let (line, byte) = if let Some(at) = at {
+        let line = blob.line_of(at);
+        let column = at.saturating_sub(blob.line_starts[line] as usize);
+        (line as u32, column as u32)
+    } else {
+        let line = caret.line.min(blob.line_count().saturating_sub(1) as u32);
+        (
+            line,
+            caret.byte.min(blob.line_text(line as usize).len() as u32),
+        )
     };
-    d.caret = Some(Caret {
+    Some(Caret {
         blob: i as u32,
         line,
         byte,
-    });
-    // …and the stream that owns it, which is what routes keystrokes to one
-    // list rather than to every instance.
-    d.tab = tab;
+    })
+}
+
+fn carry_side(d: &ReviewDoc, prev: &ReviewDoc, side: Side) -> Option<Side> {
+    let [Some(start), Some(end)] = [side.start, side.end].map(|line| {
+        carry_caret(
+            d,
+            prev,
+            Caret {
+                blob: side.blob,
+                line,
+                byte: 0,
+            },
+        )
+    }) else {
+        return None;
+    };
+    Some(Side {
+        blob: start.blob,
+        start: start.line,
+        end: end.line,
+    })
+}
+
+pub(crate) fn carry_forward(d: &mut ReviewDoc, prev: &ReviewDoc) {
+    if d.repo == prev.repo {
+        carry_live_buffers(d, &prev.blobs);
+        let fresh_files = std::mem::take(&mut d.files_open);
+        for view in &prev.files_open {
+            let (base, head) = match fresh_files.iter().find(|f| f.tab == view.tab) {
+                Some(fresh) => (fresh.base, fresh.head),
+                None => (
+                    view.base.map(|i| {
+                        crate::file_view::intern(d, &view.path, prev.blobs[i as usize].clone())
+                    }),
+                    crate::file_view::intern(d, &view.path, prev.blobs[view.head as usize].clone()),
+                ),
+            };
+            crate::file_view::place(
+                d,
+                crate::review_doc::FileView {
+                    tab: view.tab,
+                    path: view.path.clone(),
+                    rows: Vec::new(),
+                    base,
+                    head,
+                    heading: view.heading.clone(),
+                },
+                &[],
+            );
+        }
+        for blob in prev.blobs.iter().filter(|blob| blob.dirty()) {
+            let Some(origin) = &blob.origin else {
+                continue;
+            };
+            if d.blobs
+                .iter()
+                .any(|candidate| candidate.origin.as_ref() == Some(origin))
+            {
+                continue;
+            }
+            let Ok(path) = origin.strip_prefix(&d.repo) else {
+                continue;
+            };
+            let path = path.to_string_lossy().into_owned();
+            open_file(d, &path, (None, blob.clone()), &[]);
+        }
+        d.tab = prev.tab;
+        d.caret = prev.caret.and_then(|at| carry_caret(d, prev, at));
+        d.selection_anchor = prev
+            .selection_anchor
+            .and_then(|at| carry_caret(d, prev, at));
+        d.compose = prev.compose.map(|c| match c {
+            Composing::Reply(id) => Composing::Reply(id),
+            Composing::Lines(c) => Composing::Lines(Compose {
+                old: c.old.and_then(|side| carry_side(d, prev, side)),
+                new: c.new.and_then(|side| carry_side(d, prev, side)),
+            }),
+        });
+        d.compose_anchor = prev.compose_anchor;
+        d.compose_focus = prev.compose_focus;
+    }
+    resplice_comments(d, &review_state(d.git_dir.as_deref()).load().comments);
+    d.changed_keys = changed_keys(d);
+    if d.repo == prev.repo
+        && let Some(owner) = prev.composer_tab
+    {
+        let gesture = d.tab;
+        d.tab = owner;
+        splice_composer(d);
+        d.tab = gesture;
+    } else if d.compose.is_none() {
+        compose_from_env(d);
+    }
 }
 
 /// Dev affordance, pairs with CONCATS_APP_SHOT: `CONCATS_APP_COMPOSE=path:start:end`
@@ -311,6 +367,7 @@ fn compose_from_env(d: &mut ReviewDoc) {
     }));
     d.compose_anchor = 0;
     splice_composer(d);
+    d.compose_focus = true;
 }
 
 /// Assemble the review document: every tab's stream over one blob table. The
@@ -425,13 +482,11 @@ pub(crate) fn build_review(
 
     // The default tab: the guide when one exists, otherwise the plain file
     // diff. A hidden tab is never left active.
-    d.tab = if d.has_guide { Tab::Guide } else { Tab::Files };
-
-    // Stored review state: splice comments below their anchor lines, in every
-    // stream, then close each file card. Called under the docs lock — lock
-    // order is docs, then stores.
-    resplice_comments(d, &review_state(d.git_dir.as_deref()).load().comments);
-    d.changed_keys = changed_keys(d);
+    d.tab = if d.has_guide {
+        Stream::Guide
+    } else {
+        Stream::Files
+    };
 }
 
 /// Put the buffers that were already open back into a freshly loaded blob
@@ -448,7 +503,7 @@ pub(crate) fn build_review(
 /// file; the oid names one revision of it and changes under us.
 fn carry_live_buffers(d: &mut ReviewDoc, live: &[Blob]) -> bool {
     let mut carried = false;
-    for prev in live {
+    for prev in live.iter().filter(|blob| blob.doc.is_some()) {
         let Some(origin) = prev.origin.as_deref() else {
             continue;
         };
@@ -459,7 +514,16 @@ fn carry_live_buffers(d: &mut ReviewDoc, live: &[Blob]) -> bool {
         else {
             continue;
         };
-        let (text, oid) = (d.blobs[at].text.clone(), d.blobs[at].oid);
+        let fresh = &d.blobs[at];
+        // NOTE: Cache restoration may have added an older unsaved draft.
+        // Only the disk version belongs in the merge with the live buffer.
+        let text = fresh.doc.as_ref().map_or_else(
+            || fresh.text.clone(),
+            |doc| {
+                concats_sync::text_at(doc, &fresh.disk).expect("buffer contains its disk version")
+            },
+        );
+        let oid = fresh.oid;
         let mut buffer = prev.clone();
         let (was_oid, was_disk) = (buffer.oid, buffer.disk.clone());
         buffer.merge_disk(&text, oid);
@@ -498,10 +562,14 @@ fn rehome_seen(
 /// now on — in the CLI too.
 pub(crate) fn resplice_comments(d: &mut ReviewDoc, comments: &[concats_review::store::Comment]) {
     let minted = splice_comments(d, comments);
-    if let (false, Some(git_dir)) = (minted.is_empty(), &d.git_dir) {
+    hold_minted(d.git_dir.as_deref(), minted);
+}
+
+pub(crate) fn hold_minted(git_dir: Option<&std::path::Path>, cursors: Vec<(u64, store::Cursors)>) {
+    if let (false, Some(git_dir)) = (cursors.is_empty(), git_dir) {
         review().send(ReviewCmd::HoldComments {
-            git_dir: git_dir.clone(),
-            cursors: minted,
+            git_dir: git_dir.to_path_buf(),
+            cursors,
         });
     }
 }
@@ -581,6 +649,36 @@ mod tests {
             head.dirty(),
             "still unsaved — the typed line is not on disk"
         );
+    }
+
+    #[test]
+    fn a_live_buffer_does_not_treat_an_older_cached_draft_as_disk_content() {
+        let origin = std::path::Path::new("/repo/a.rs");
+        let initial = "first\nlast\n";
+        let mut buffer = Blob::new(
+            concats_sync::hash_object(initial.as_bytes()),
+            "rs".into(),
+            initial.into(),
+        );
+        buffer.origin = Some(origin.into());
+        buffer.edit(0..0, "cached\n");
+        let cached = buffer.saved_state().unwrap();
+        buffer.edit(0..7, "latest\n");
+        let disk = "first\nexternal\nlast\n";
+        let disk_oid = concats_sync::hash_object(disk.as_bytes());
+        let mut d = loaded_with(origin, disk, disk_oid);
+        assert!(d.blobs[0].restore_state(&cached, disk_oid));
+        assert!(d.blobs[0].text.contains("cached"));
+        assert!(carry_live_buffers(&mut d, &[buffer]));
+        let landed = &d.blobs[0];
+        assert!(landed.text.contains("latest"));
+        assert!(landed.text.contains("external"));
+        assert!(!landed.text.contains("cached"));
+        assert_eq!(
+            concats_sync::text_at(landed.doc.as_ref().unwrap(), &landed.disk).unwrap(),
+            disk
+        );
+        assert!(landed.dirty());
     }
 
     /// The case that detached conversations: nothing was unsaved, so the buffer

@@ -6,53 +6,56 @@ use std::{collections::HashMap, path::Path};
 
 use crate::{
     makepad_widgets::{makepad_micro_serde::*, *},
-    review_doc::Tab,
+    review_doc::Stream,
 };
 
-/// The document stream a dock tab renders. `Tab` names the stream, the dock's
+/// The document stream a dock tab renders. `Stream` names the stream, the dock's
 /// `LiveId` names the tab. `open` lists the document's open file tabs: a File
 /// tab is its dock tab, so the caller has to say which ids are live, or a
 /// terminal's tab would answer to one.
-pub(crate) fn model_tab_of(tab_id: LiveId, open: &[u64]) -> Option<Tab> {
-    [
-        Tab::Guide,
-        Tab::Sessions,
-        Tab::Commits,
-        Tab::Files,
-        Tab::Comments,
-    ]
-    .into_iter()
-    .chain(open.iter().map(|id| Tab::File(*id)))
-    .find(|t| stream_tab_spec(*t).0 == tab_id)
+pub(crate) fn model_tab_of(tab_id: LiveId, open: &[u64]) -> Option<Stream> {
+    crate::review_doc::STREAMS
+        .into_iter()
+        .chain(open.iter().map(|id| Stream::File(*id)))
+        .find(|t| stream_tab_spec(*t).id == tab_id)
 }
 
-/// One stream tab's dock wiring: (tab id, content kind, tab template, name).
-pub(crate) fn stream_tab_spec(tab: Tab) -> (LiveId, LiveId, LiveId, &'static str) {
-    match tab {
-        Tab::Guide => (id!(guide_tab), id!(GuidePane), id!(GuideTab), "Guide"),
-        Tab::Sessions => (
+pub(crate) struct TabSpec<'a> {
+    pub id: LiveId,
+    pub kind: LiveId,
+    pub template: LiveId,
+    pub title: &'a str,
+}
+
+pub(crate) fn stream_tab_spec(tab: Stream) -> TabSpec<'static> {
+    let (id, kind, template, title) = match tab {
+        Stream::Guide => (id!(guide_tab), id!(GuidePane), id!(GuideTab), "Guide"),
+        Stream::Sessions => (
             id!(sessions_tab),
             id!(SessionsPane),
             id!(SessionsTab),
             "Sessions",
         ),
-        Tab::Commits => (
+        Stream::Commits => (
             id!(commits_tab),
             id!(CommitsPane),
             id!(CommitsTab),
             "Commits",
         ),
-        Tab::Files => (id!(files_tab), id!(FilesPane), id!(FilesTab), "File Diff"),
-        Tab::Comments => (
+        Stream::Files => (id!(files_tab), id!(FilesPane), id!(FilesTab), "File Diff"),
+        Stream::Comments => (
             id!(comments_tab),
             id!(CommentsPane),
             id!(CommentsTab),
             "Comments",
         ),
-        // The tab id comes from the variant, not from a table: there is one
-        // per open file. The name is a placeholder — `open_file_tab` titles
-        // each tab with the file it holds.
-        Tab::File(tab) => (LiveId(tab), id!(FilePane), id!(FileTab), "File"),
+        Stream::File(tab) => (LiveId(tab), id!(FilePane), id!(FileTab), "File"),
+    };
+    TabSpec {
+        id,
+        kind,
+        template,
+        title,
     }
 }
 
@@ -70,25 +73,39 @@ pub(crate) fn file_tab_id(path: &str) -> LiveId {
     LiveId::from_str(&format!("file:{path}"))
 }
 
-/// (Re)create a stream tab: anchored on whichever stream tabs are still open
-/// (before File Diff when it is, after another otherwise), so re-opened tabs
-/// land in the bar the user keeps their views in.
-pub(crate) fn create_stream_tab(cx: &mut Cx, dock: &DockRef, tab: Tab) {
-    let (tab_id, kind, template, name) = stream_tab_spec(tab);
-    if dock.find_tab_bar_of_tab(tab_id).is_some() {
+pub(crate) fn open_tab_beside_streams(cx: &mut Cx, dock: &DockRef, spec: TabSpec<'_>) {
+    if dock.find_tab_bar_of_tab(spec.id).is_some() {
         return;
     }
-    let (bar, insert_after) = if let Some((bar, pos)) = dock.find_tab_bar_of_tab(id!(files_tab)) {
-        (bar, pos.checked_sub(1))
-    } else if let Some((bar, pos)) = [id!(guide_tab), id!(sessions_tab), id!(commits_tab)]
-        .into_iter()
-        .find_map(|t| dock.find_tab_bar_of_tab(t))
-    {
-        (bar, Some(pos))
-    } else {
-        (id!(main_tabs), None)
-    };
-    dock.create_tab(cx, bar, tab_id, kind, name.into(), template, insert_after);
+    // NOTE: keeping File Diff last gives reopened streams a stable position.
+    let (bar, after) = dock
+        .find_tab_bar_of_tab(id!(files_tab))
+        .map(|(bar, position)| (bar, position.checked_sub(1)))
+        .or_else(|| {
+            crate::review_doc::STREAMS.into_iter().find_map(|stream| {
+                dock.find_tab_bar_of_tab(stream_tab_spec(stream).id)
+                    .map(|(bar, position)| (bar, Some(position)))
+            })
+        })
+        .unwrap_or((id!(main_tabs), None));
+    dock.create_tab(
+        cx,
+        bar,
+        spec.id,
+        spec.kind,
+        spec.title.into(),
+        spec.template,
+        after,
+    );
+}
+
+pub(crate) fn sync_stream_tab(cx: &mut Cx, dock: &DockRef, stream: Stream, wanted: bool) {
+    let spec = stream_tab_spec(stream);
+    if wanted {
+        open_tab_beside_streams(cx, dock, spec);
+    } else if dock.find_tab_bar_of_tab(spec.id).is_some() {
+        dock.close_tab(cx, spec.id);
+    }
 }
 
 /// Is this dock tab a terminal pane? Judged by its kind, so it holds for the

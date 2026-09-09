@@ -183,12 +183,7 @@ pub fn load(repo_path: &Path, base_rev: &str, head_rev: &str) -> Result<Loaded, 
 
     let (files, blobs) = lower(&repo, &changes, None, &mut st)?;
 
-    let head_tree = repo
-        .find_commit(head)
-        .map_err(|e| Error::git("commit", e))?
-        .tree_id()
-        .map_err(|e| Error::git("tree", e))?
-        .detach();
+    let head_tree = commit_tree(&repo, head)?;
     let mut tree: Vec<String> = flatten_tree(&repo, head_tree)?.into_keys().collect();
     tree.sort();
 
@@ -240,12 +235,7 @@ fn load_worktree(repo_path: &Path, base_rev: &str) -> Result<Loaded, Error> {
         index_of.clone()
     } else {
         let oid = resolve(&repo, base_rev)?;
-        let tree = repo
-            .find_commit(oid)
-            .map_err(|e| Error::git("commit", e))?
-            .tree_id()
-            .map_err(|e| Error::git("tree", e))?
-            .detach();
+        let tree = commit_tree(&repo, oid)?;
         base_commit = Some(oid);
         flatten_tree(&repo, tree)?
     };
@@ -986,16 +976,17 @@ pub(crate) fn read(
 /// comment left in the file view lands on the same oid the diff recorded and
 /// one thread renders in both views.
 pub fn read_at_head(
-    repo_path: &Path,
+    repo: &Repository,
     head: Option<ObjectId>,
     path: &str,
 ) -> Result<(ObjectId, Vec<u8>), Error> {
-    let root = discover(repo_path).ok_or_else(|| Error::NoRepository(repo_path.to_path_buf()))?;
     let Some(head) = head else {
-        let bytes = read_worktree(&root, path)?;
+        let root = repo
+            .workdir()
+            .ok_or_else(|| Error::NoRepository(repo.git_dir().to_path_buf()))?;
+        let bytes = read_worktree(root, path)?;
         return Ok((hash_object(&bytes), bytes));
     };
-    let repo = open_repo(&root)?;
     let entry = repo
         .find_commit(head)
         .map_err(|e| Error::git("commit", e))?
@@ -1007,7 +998,7 @@ pub fn read_at_head(
             path: path.to_string(),
         })?;
     let oid = entry.object_id();
-    let bytes = read(&repo, None, Some(oid))?;
+    let bytes = read(repo, None, Some(oid))?;
     Ok((oid, bytes))
 }
 
@@ -1018,12 +1009,10 @@ pub fn read_at_head(
 /// added. An unchanged file resolves to the same oid as the head and the diff
 /// against it is empty, so one code path marks every file, changed or not.
 pub fn read_at_base(
-    repo_path: &Path,
+    repo: &Repository,
     base: Option<ObjectId>,
     path: &str,
 ) -> Result<Option<(ObjectId, Vec<u8>)>, Error> {
-    let root = discover(repo_path).ok_or_else(|| Error::NoRepository(repo_path.to_path_buf()))?;
-    let repo = open_repo(&root)?;
     let oid = match base {
         Some(base) => repo
             .find_commit(base)
@@ -1040,7 +1029,7 @@ pub fn read_at_base(
             .map(|e| e.id),
     };
     let Some(oid) = oid else { return Ok(None) };
-    let bytes = read(&repo, None, Some(oid))?;
+    let bytes = read(repo, None, Some(oid))?;
     Ok(Some((oid, bytes)))
 }
 
@@ -1157,7 +1146,10 @@ pub fn resolve(repo: &Repository, rev: &str) -> Result<ObjectId, Error> {
 
 /// Open the repo at `root` with a small object cache — tree and blob reads
 /// repeat heavily during lowering and session mining.
-pub(crate) fn open_repo(root: &Path) -> Result<Repository, Error> {
+///
+/// # Errors
+/// Returns an error when Git cannot open the repository.
+pub fn open_repo(root: &Path) -> Result<Repository, Error> {
     let mut repo = gix::open(root).map_err(|e| Error::git("open", e))?;
     repo.object_cache_size_if_unset(16 * 1024 * 1024);
     Ok(repo)
@@ -1178,20 +1170,21 @@ fn flatten_tree(repo: &Repository, tree: ObjectId) -> Result<HashMap<String, Obj
         .collect())
 }
 
+fn commit_tree(repo: &Repository, commit: ObjectId) -> Result<ObjectId, Error> {
+    repo.find_commit(commit)
+        .map_err(|error| Error::git("commit", error))?
+        .tree_id()
+        .map(|id| id.detach())
+        .map_err(|error| Error::git("tree", error))
+}
+
 /// The diff of two commits: their trees, see [`diff_trees`].
 pub fn diff_commits(
     repo: &Repository,
     base: ObjectId,
     head: ObjectId,
 ) -> Result<Vec<Change>, Error> {
-    let tree_of = |oid: ObjectId| {
-        repo.find_commit(oid)
-            .map_err(|e| Error::git("commit", e))?
-            .tree_id()
-            .map(|id| id.detach())
-            .map_err(|e| Error::git("tree", e))
-    };
-    diff_trees(repo, tree_of(base)?, tree_of(head)?)
+    diff_trees(repo, commit_tree(repo, base)?, commit_tree(repo, head)?)
 }
 
 /// Tree-to-tree diff: Added/Deleted/Modified, no renames (detect_renames runs
@@ -1286,7 +1279,7 @@ mod tests {
             "/etc/passwd",
         ] {
             assert!(matches!(
-                read_at_head(&root, None, path),
+                read_at_head(&open_repo(&root).unwrap(), None, path),
                 Err(Error::UnsafeWorktreePath(_))
             ));
         }
@@ -1302,7 +1295,7 @@ mod tests {
         std::os::unix::fs::symlink(outside.path().join("private"), root.join("file")).unwrap();
         for path in ["linked/private", "file"] {
             assert!(matches!(
-                read_at_head(&root, None, path),
+                read_at_head(&open_repo(&root).unwrap(), None, path),
                 Err(Error::UnsafeWorktreePath(_))
             ));
         }
@@ -1316,7 +1309,7 @@ mod tests {
             .set_len(MAX_FILE_BYTES + 1)
             .unwrap();
         assert!(matches!(
-            read_at_head(&root, None, "large"),
+            read_at_head(&open_repo(&root).unwrap(), None, "large"),
             Err(Error::TooLarge { .. })
         ));
         let repo = gix::open(&root).unwrap();

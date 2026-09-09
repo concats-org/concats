@@ -40,11 +40,11 @@ use std::{path::PathBuf, sync::Arc};
 use concats_diff::LineKind;
 use concats_review::store;
 use concats_state::Target;
-use dock::{create_stream_tab, load_layout, stream_tab_spec};
+use dock::{load_layout, stream_tab_spec, sync_stream_tab};
 use load::{resplice_comments, spawn_load};
 pub use makepad_widgets;
 use makepad_widgets::*;
-use review_doc::{ReviewDoc, Tab, status_line};
+use review_doc::{ReviewDoc, Stream, status_line};
 use service::{ReviewCmd, ReviewUpdate, review, review_state};
 use widgets::ReviewPane;
 use window::WindowState;
@@ -140,7 +140,8 @@ pub(crate) struct FrameData {
     document: Arc<ReviewDoc>,
     review: Arc<service::ReviewState>,
     theme: Arc<theme::Theme>,
-    focus_composer: Option<Tab>,
+    focus_composer: Option<Stream>,
+    compose_draft: String,
     /// The window these rows belong to, so a handler that mutates the document
     /// mutates its own.
     pub(crate) state: Arc<WindowState>,
@@ -714,7 +715,7 @@ impl AppWindow {
             has_sessions: bool,
             has_commits: bool,
             has_comments: bool,
-            tab: Tab,
+            tab: Stream,
             git_dir: Option<PathBuf>,
         }
         let s = {
@@ -791,14 +792,8 @@ impl AppWindow {
                         // closed. (A stream that was merely unavailable at
                         // save time lands here too — self-healing, its
                         // status-bar button brings it back.)
-                        for t in [
-                            Tab::Guide,
-                            Tab::Sessions,
-                            Tab::Commits,
-                            Tab::Comments,
-                            Tab::Files,
-                        ] {
-                            let (tab_id, ..) = stream_tab_spec(t);
+                        for t in crate::review_doc::STREAMS {
+                            let tab_id = stream_tab_spec(t).id;
                             if !layout.dock_items.contains_key(&tab_id) {
                                 p.user_closed.insert(tab_id);
                             }
@@ -821,20 +816,15 @@ impl AppWindow {
                 .map(|p| p.user_closed.clone())
                 .unwrap_or_default();
             for (t, available) in [
-                (Tab::Guide, s.has_guide),
-                (Tab::Sessions, s.has_sessions),
-                (Tab::Commits, s.has_commits),
-                (Tab::Comments, s.has_comments),
-                (Tab::Files, true),
+                (Stream::Guide, s.has_guide),
+                (Stream::Sessions, s.has_sessions),
+                (Stream::Commits, s.has_commits),
+                (Stream::Comments, s.has_comments),
+                (Stream::Files, true),
             ] {
-                let (tab_id, ..) = stream_tab_spec(t);
+                let tab_id = stream_tab_spec(t).id;
                 let want = available && !closed.contains(&tab_id);
-                let exists = dock.find_tab_bar_of_tab(tab_id).is_some();
-                if want && !exists {
-                    create_stream_tab(cx, &dock, t);
-                } else if !want && exists {
-                    dock.close_tab(cx, tab_id);
-                }
+                sync_stream_tab(cx, &dock, t, want);
             }
             // The view buttons mirror stream availability, like the tabs.
             pane.button(cx, ids!(guide_button))
@@ -847,7 +837,7 @@ impl AppWindow {
                 .set_visible(cx, s.has_comments);
             // The default tab for this load: the guide when one exists, the
             // plain diff otherwise (build_review set d.tab accordingly).
-            dock.select_tab(cx, stream_tab_spec(s.tab).0);
+            dock.select_tab(cx, stream_tab_spec(s.tab).id);
             // Seen state is content-addressed, so a fresh load can already be
             // part-reviewed: re-tally the progress bar for this range.
             if let Some(mut p) = pane.borrow_mut::<ReviewPane>() {
@@ -1054,14 +1044,9 @@ impl AppWindow {
                 .map(|p| p.user_closed.clone())
                 .unwrap_or_default();
             let dock = pane.dock(cx, ids!(dock));
-            let (tab_id, ..) = stream_tab_spec(Tab::Comments);
+            let tab_id = stream_tab_spec(Stream::Comments).id;
             let want = has && !closed.contains(&tab_id);
-            let exists = dock.find_tab_bar_of_tab(tab_id).is_some();
-            if want && !exists {
-                create_stream_tab(cx, &dock, Tab::Comments);
-            } else if !want && exists {
-                dock.close_tab(cx, tab_id);
-            }
+            sync_stream_tab(cx, &dock, Stream::Comments, want);
         }
         if let Some(mut p) = self.pane(cx).borrow_mut::<ReviewPane>() {
             p.refresh_progress(cx);

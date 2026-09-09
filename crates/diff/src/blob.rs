@@ -414,12 +414,15 @@ impl Blob {
     /// convention. `None` once the run is empty, which is the one thing that
     /// detaches a conversation — the text it was about is gone.
     pub fn held_line(&self, comment: u64) -> Option<u32> {
+        self.held_lines(comment).map(|(_, end)| end)
+    }
+
+    /// The inclusive line range still held by a comment's live cursors.
+    pub fn held_lines(&self, comment: u64) -> Option<(u32, u32)> {
         let doc = self.doc.as_ref()?;
         let (from, to) = self.held.get(&comment)?;
         let (from, to) = (document::byte_of(doc, from)?, document::byte_of(doc, to)?);
-        // Both ends slid onto the same point: every character between them was
-        // deleted. Editing the run leaves it non-empty, however much changes.
-        (to > from).then(|| self.line_of(to - 1) as u32)
+        (to > from).then(|| (self.line_of(from) as u32, self.line_of(to - 1) as u32))
     }
 
     /// The lines a held comment's run covers in the disk version — what the

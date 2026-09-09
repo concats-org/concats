@@ -972,7 +972,7 @@ impl Widget for TerminalView {
                     let bracketed = mode.contains(TermMode::BRACKETED_PASTE);
                     self.emit_paste_text(cx, session, &e.input, bracketed);
                 } else if let Some(bytes) =
-                    keys::encode_text(&e.input, &KeyModifiers::default(), mode)
+                    keys::encode_text(&e.input, KeyModifiers::default(), mode)
                 {
                     self.emit_input_bytes(cx, session, bytes);
                 }

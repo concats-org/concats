@@ -613,6 +613,8 @@ pub fn hunk_keys(old: Option<Side>, new: Option<Side>, blobs: &[Blob]) -> Vec<Li
 /// Splice comment rows into a row stream, each thread directly below the LAST
 /// line of its range (GitHub's convention) — wherever that line appears, in
 /// any view. Idempotent: strips previously injected comment rows first.
+/// A stream identifies each file with a header, or supplies `about` for a
+/// single file without a header; equal blob contents do not identify a path.
 ///
 /// A thread is one contiguous run, under the newest of its comments this range
 /// can place. Every comment keeps the lines it was written on, so a reply
@@ -654,8 +656,11 @@ pub fn inject_comments(
     let where_blobs = blobs_by_path(rows, about);
     let mut thread_at: HashMap<u64, LineKey> = HashMap::new();
     for comment in &threaded {
-        if let Some(at) = place(comment, blobs, where_blobs.get(comment.path.as_str())) {
-            thread_at.insert(thread_key(comment), at);
+        let path_blobs = where_blobs
+            .get(comment.path.as_str())
+            .map_or(&[][..], Vec::as_slice);
+        if let Some(run) = place(comment, blobs, path_blobs) {
+            thread_at.insert(thread_key(comment), (blobs[run.blob as usize].oid, run.end));
         }
     }
     let mut by_anchor: HashMap<LineKey, Vec<&Comment>> = HashMap::new();
@@ -684,7 +689,12 @@ pub fn inject_comments(
         };
         out.push(row);
         let Some((oid, line)) = anchor else { continue };
-        for c in by_anchor.get(&(oid, line)).into_iter().flatten() {
+        for c in by_anchor
+            .get(&(oid, line))
+            .into_iter()
+            .flatten()
+            .filter(|c| card.as_deref() == Some(c.path.as_str()))
+        {
             placed.insert(thread_key(c));
             out.push(Row::Comment {
                 id: c.id,
@@ -891,26 +901,30 @@ fn blobs_by_path<'a>(rows: &'a [Row], about: Option<&'a str>) -> HashMap<&'a str
     out
 }
 
-/// The line key a comment renders under, or `None` when its lines are not on
-/// screen.
-///
-/// Two answers, in order. A buffer holding the comment as a cursor pair is the
-/// authority: the cursors ride every edit, and when they say the run is gone,
-/// it is gone. Otherwise the comment names a blob and a line, and that is
-/// exact — a git blob never changes, so the line is right for as long as the
-/// blob is on screen. GitHub puts the thread under the last line of its range.
-fn place(comment: &Comment, blobs: &[Blob], path_blobs: Option<&Vec<u32>>) -> Option<LineKey> {
-    let held = path_blobs
-        .into_iter()
-        .flatten()
-        .map(|i| &blobs[*i as usize])
-        .find(|b| b.holds(comment.id));
-    if let Some(blob) = held {
-        return Some((blob.oid, blob.held_line(comment.id)?));
+/// A comment's inclusive line range within its file's visible blobs.
+/// Live cursors take precedence over the original blob and line numbers;
+/// deleting the held text detaches the comment.
+pub fn place(comment: &Comment, blobs: &[Blob], path_blobs: &[u32]) -> Option<Side> {
+    if let Some(&index) = path_blobs
+        .iter()
+        .find(|&&i| blobs[i as usize].holds(comment.id))
+    {
+        let (start, end) = blobs[index as usize].held_lines(comment.id)?;
+        return Some(Side {
+            blob: index,
+            start,
+            end,
+        });
     }
-    let own = blobs.iter().find(|b| b.oid == comment.anchor.blob)?;
-    let line = own.anchor_line(comment.anchor.end)?;
-    Some((comment.anchor.blob, line))
+    let &index = path_blobs
+        .iter()
+        .find(|&&i| blobs[i as usize].oid == comment.anchor.blob)?;
+    let own = &blobs[index as usize];
+    Some(Side {
+        blob: index,
+        start: own.anchor_line(comment.anchor.start)?,
+        end: own.anchor_line(comment.anchor.end)?,
+    })
 }
 
 /// Where a comment's run sits in one blob: its own lines, when the blob is
@@ -1003,6 +1017,60 @@ mod tests {
             external: None,
             cursors: None,
         }
+    }
+
+    #[test]
+    fn placement_tracks_both_ends_when_a_held_range_changes_length() {
+        let mut blob = Blob::new(oid(7), "txt".into(), "a\nb\nc\nd\n".into());
+        let c = Comment {
+            id: 1,
+            ..comment("a.txt", anchor(oid(7), 1, 2), "range")
+        };
+        blob.hold(c.id, 1, 2);
+        blob.edit(4..4, "inserted\n");
+        assert_eq!(
+            place(&c, std::slice::from_ref(&blob), &[0]),
+            Some(Side {
+                blob: 0,
+                start: 1,
+                end: 3
+            })
+        );
+        blob.edit(2..4, "");
+        assert_eq!(
+            place(&c, std::slice::from_ref(&blob), &[0]),
+            Some(Side {
+                blob: 0,
+                start: 1,
+                end: 2
+            })
+        );
+        let end = blob.line_starts[3] as usize;
+        blob.edit(2..end, "");
+        assert!(place(&c, &[blob], &[0]).is_none());
+    }
+
+    #[test]
+    fn identical_content_in_another_file_does_not_duplicate_a_thread() {
+        let blobs = [Blob::new(oid(7), "txt".into(), "same\n".into())];
+        let comments = [Comment {
+            id: 1,
+            ..comment("a.txt", anchor(oid(7), 0, 0), "only a")
+        }];
+        let mut rows = card("a.txt", 0, 1);
+        rows.extend(card("b.txt", 0, 1));
+        let placed = inject_comments(&mut rows, &blobs, &comments, &HashSet::new(), None);
+        assert_eq!(placed, HashSet::from([1]));
+        assert_eq!(
+            rows.iter()
+                .filter(|row| matches!(row, Row::Comment { .. }))
+                .count(),
+            1
+        );
+        assert!(matches!(rows[2], Row::Comment { id: 1, .. }));
+        let mut other = card("b.txt", 0, 1);
+        assert!(inject_comments(&mut other, &blobs, &comments, &HashSet::new(), None).is_empty());
+        assert!(!other.iter().any(|row| matches!(row, Row::Comment { .. })));
     }
 
     #[test]
@@ -1236,12 +1304,12 @@ mod tests {
             author: Some("claude".into()),
             ..comment("a.txt", anchor(oid(7), 0, 1), "range comment")
         }];
-        inject_comments(&mut rows, &blobs, &comments, &HashSet::new(), None);
+        inject_comments(&mut rows, &blobs, &comments, &HashSet::new(), Some("a.txt"));
         assert_eq!(rows.len(), 4);
         assert!(matches!(&rows[2], Row::Comment { body, .. } if body == "range comment"));
         assert!(matches!(&rows[2], Row::Comment { meta, .. } if meta == "claude"));
         // Idempotent: re-injecting does not duplicate.
-        inject_comments(&mut rows, &blobs, &comments, &HashSet::new(), None);
+        inject_comments(&mut rows, &blobs, &comments, &HashSet::new(), Some("a.txt"));
         assert_eq!(rows.len(), 4);
     }
 
@@ -1356,7 +1424,7 @@ mod tests {
                 ..comment("a.txt", at, "reply to the first")
             },
         ];
-        inject_comments(&mut rows, &blobs, &comments, &HashSet::new(), None);
+        inject_comments(&mut rows, &blobs, &comments, &HashSet::new(), Some("a.txt"));
         let bodies: Vec<&str> = rows
             .iter()
             .filter_map(|r| match r {
@@ -1590,7 +1658,7 @@ mod tests {
                     line: line as u32,
                 })
                 .collect();
-            inject_comments(&mut rows, blobs, &comments, &HashSet::new(), None);
+            inject_comments(&mut rows, blobs, &comments, &HashSet::new(), Some("a.md"));
             // The line the comment row now sits under.
             let at = rows.iter().position(|r| matches!(r, Row::Comment { .. }))?;
             match rows.get(at - 1) {

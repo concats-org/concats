@@ -187,12 +187,12 @@ impl Drop for Running {
 /// Drive the app once and return the frames it captured: the state as the load
 /// left it, and the state after the hooks ran.
 fn capture_pair(name: &str, hooks: &[(&str, &str)]) -> (PathBuf, PathBuf) {
-    let after = capture(name, hooks);
+    let after = capture(name, hooks, |_| {});
     (after.with_file_name("before.png"), after)
 }
 
 /// Drive the app once and return the frame it captured.
-fn capture(name: &str, hooks: &[(&str, &str)]) -> PathBuf {
+fn capture(name: &str, hooks: &[(&str, &str)], setup: impl FnOnce(&Path)) -> PathBuf {
     let _serial = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
     // Two directories, because they have opposite lifetimes.
     //
@@ -209,6 +209,7 @@ fn capture(name: &str, hooks: &[(&str, &str)]) -> PathBuf {
     std::fs::create_dir_all(&work).expect("scenario dir");
     let repo = sandbox.path().join("repo");
     fixture(&repo);
+    setup(&repo);
     let shot = work.join("actual.png");
 
     let mut app = Command::new(env!("CARGO_BIN_EXE_concats-app"));
@@ -221,6 +222,7 @@ fn capture(name: &str, hooks: &[(&str, &str)]) -> PathBuf {
         // — the app exits having written nothing. Timer pacing still draws.
         .env("MAKEPAD_DISPLAY_LINK", "0")
         .env("CONCATS_APP_SHOT", &shot)
+        .env("CONCATS_APP_STATE", work.join("state.json"))
         // The app exits once it has written the frame, so waiting for it is an
         // exact signal. Waiting on the file is not: the app also captures when
         // the load lands, so the first frame that appears is the state before
@@ -244,7 +246,7 @@ fn capture(name: &str, hooks: &[(&str, &str)]) -> PathBuf {
         .env("HOME", sandbox.path())
         .env("XDG_CONFIG_HOME", sandbox.path().join(".config"))
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
+        .stderr(std::fs::File::create(work.join("app.log")).expect("app log"));
     for (key, value) in hooks {
         app.env(key, value);
     }
@@ -253,7 +255,12 @@ fn capture(name: &str, hooks: &[(&str, &str)]) -> PathBuf {
     let deadline = Instant::now() + TIMEOUT;
     while Instant::now() < deadline {
         match running.0.try_wait().expect("wait on the app") {
-            Some(_) => {
+            Some(status) => {
+                assert!(
+                    status.success(),
+                    "{name}: app exited with {status}; see {}",
+                    work.join("app.log").display()
+                );
                 assert!(
                     image::open(&shot).is_ok(),
                     "{name}: the app exited without a readable frame — see {}",
@@ -329,7 +336,7 @@ fn assert_matches(name: &str, actual: &Path, tolerance: Tolerance) {
 }
 
 fn snapshot(name: &str, hooks: &[(&str, &str)]) {
-    let actual = capture(name, hooks);
+    let actual = capture(name, hooks, |_| {});
     assert_matches(name, &actual, EXACT);
 }
 
@@ -410,4 +417,65 @@ fn typing_at_the_caret_reaches_the_buffer() {
             ("CONCATS_APP_TYPE", " // edited"),
         ],
     );
+}
+
+#[test]
+#[ignore = "spawns a GPU process; run with --ignored on a desktop"]
+fn typing_reaches_a_composer_recreated_after_a_comment_arrives() {
+    let shot = capture(
+        "composer-refresh",
+        &[
+            ("CONCATS_APP_COMPOSE", "editor.rs:12:12"),
+            ("CONCATS_APP_TYPE", "before"),
+            ("CONCATS_APP_COMPOSER_REFRESH", "1"),
+            ("CONCATS_APP_TYPE_AFTER_REFRESH", "after"),
+        ],
+        |_| {},
+    );
+    let data: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(shot.with_file_name("state.json")).expect("captured state"),
+    )
+    .expect("state JSON");
+    let before: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(shot.with_file_name("state-before-refresh.json"))
+            .expect("state before refresh"),
+    )
+    .expect("state JSON");
+    assert_eq!(before["draft"], "before");
+    assert!(before["composer_input"].is_number());
+    assert!(data["composer_input"].is_number());
+    assert_ne!(before["composer_input"], data["composer_input"]);
+    assert_eq!(data["draft"], "beforeafter");
+    assert_eq!(data["dirty_buffers"], 0);
+    assert_eq!(data["composer_open"], true);
+    assert_eq!(data["focus_pending"], false);
+}
+
+#[test]
+#[ignore = "spawns a GPU process; run with --ignored on a desktop"]
+fn an_offscreen_composer_is_revealed_before_typing() {
+    let shot = capture(
+        "composer-offscreen",
+        &[
+            ("CONCATS_APP_COMPOSE", "editor.rs:200:200"),
+            ("CONCATS_APP_TYPE", "offscreen draft"),
+        ],
+        |repo| {
+            use std::io::Write;
+            let mut file = std::fs::OpenOptions::new()
+                .append(true)
+                .open(repo.join("editor.rs"))
+                .unwrap();
+            for line in 0..220 {
+                writeln!(file, "// fixture line {line}").unwrap();
+            }
+        },
+    );
+    let data: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(shot.with_file_name("state.json")).expect("captured state"),
+    )
+    .expect("state JSON");
+    assert_eq!(data["draft"], "offscreen draft");
+    assert_eq!(data["dirty_buffers"], 0);
+    assert_eq!(data["focus_pending"], false);
 }

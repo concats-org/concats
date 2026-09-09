@@ -15,55 +15,36 @@
 //! instead of composing a character, which is what readline, and every agent's
 //! line editor, expects.
 
+use std::fmt::Write as _;
+
 use alacritty_terminal::term::TermMode;
+use bitflags::bitflags;
 use makepad_widgets::{KeyCode, KeyEvent, KeyModifiers};
 
-/// The modifier bits of a CSI sequence, in the order the protocol numbers them.
-/// Sent as `bits + 1`.
-#[derive(Clone, Copy, PartialEq, Eq)]
-struct Modifiers(u8);
+bitflags! {
+    /// The modifier bits of a CSI sequence, in the order the protocol numbers
+    /// them. Sent as `bits + 1`.
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    struct Modifiers: u8 {
+        const SHIFT = 0b0001;
+        const ALT = 0b0010;
+        const CONTROL = 0b0100;
+        const SUPER = 0b1000;
+    }
+}
 
 impl Modifiers {
-    const SHIFT: u8 = 0b0001;
-    const ALT: u8 = 0b0010;
-    const CONTROL: u8 = 0b0100;
-    const SUPER: u8 = 0b1000;
-
-    fn new(mods: &KeyModifiers) -> Self {
-        let mut bits = 0;
-        if mods.shift {
-            bits |= Self::SHIFT;
-        }
-        if mods.alt {
-            bits |= Self::ALT;
-        }
-        if mods.control {
-            bits |= Self::CONTROL;
-        }
-        if mods.logo {
-            bits |= Self::SUPER;
-        }
-        Self(bits)
-    }
-
-    fn set(&mut self, bit: u8, on: bool) {
-        if on {
-            self.0 |= bit;
-        } else {
-            self.0 &= !bit;
-        }
-    }
-
-    fn contains(self, bit: u8) -> bool {
-        self.0 & bit != 0
-    }
-
-    fn is_empty(self) -> bool {
-        self.0 == 0
+    fn held(modifiers: KeyModifiers) -> Self {
+        let mut bits = Self::empty();
+        bits.set(Self::SHIFT, modifiers.shift);
+        bits.set(Self::ALT, modifiers.alt);
+        bits.set(Self::CONTROL, modifiers.control);
+        bits.set(Self::SUPER, modifiers.logo);
+        bits
     }
 
     fn encode(self) -> u8 {
-        self.0 + 1
+        self.bits() + 1
     }
 }
 
@@ -90,11 +71,11 @@ struct Base {
 }
 
 impl Base {
-    fn new(payload: impl Into<String>, terminator: Terminator) -> Option<Self> {
-        Some(Self {
+    fn new(payload: impl Into<String>, terminator: Terminator) -> Self {
+        Self {
             payload: payload.into(),
             terminator,
-        })
+        }
     }
 }
 
@@ -119,24 +100,34 @@ pub fn encode(key: &KeyEvent, pressed: bool, mode: TermMode) -> Option<Vec<u8>> 
 /// The bytes for text the platform produced: typing, a dead key, an IME
 /// commit. `None` while the kitty protocol is encoding every key itself, since
 /// the press already carried this text.
-pub fn encode_text(text: &str, mods: &KeyModifiers, mode: TermMode) -> Option<Vec<u8>> {
+pub fn encode_text(text: &str, modifiers: KeyModifiers, mode: TermMode) -> Option<Vec<u8>> {
     if text.is_empty() || mode.contains(TermMode::REPORT_ALL_KEYS_AS_ESC) {
         return None;
     }
     let mut bytes = Vec::with_capacity(text.len() + 1);
-    if mods.alt {
+    if modifiers.alt {
         bytes.push(0x1b);
     }
     bytes.extend_from_slice(text.as_bytes());
     Some(bytes)
 }
 
+/// Whether the terminal drives the keyboard itself: any of the kitty protocol's
+/// flags puts every functional key into the CSI form it numbers.
+fn kitty_sequence(mode: TermMode) -> bool {
+    mode.intersects(
+        TermMode::REPORT_ALL_KEYS_AS_ESC
+            | TermMode::DISAMBIGUATE_ESC_CODES
+            | TermMode::REPORT_EVENT_TYPES,
+    )
+}
+
 /// The legacy forms the generic encoder cannot express, which alacritty ships
 /// as default bindings resolved before it. All but plain Backspace step aside
 /// once the terminal drives the keyboard itself.
 fn legacy_binding(key: &KeyEvent, mode: TermMode) -> Option<Vec<u8>> {
-    let mods = &key.modifiers;
-    let unmodified = !mods.shift && !mods.control && !mods.alt && !mods.logo;
+    let modifiers = key.modifiers;
+    let unmodified = !modifiers.shift && !modifiers.control && !modifiers.alt && !modifiers.logo;
     let kitty =
         mode.intersects(TermMode::REPORT_ALL_KEYS_AS_ESC | TermMode::DISAMBIGUATE_ESC_CODES);
 
@@ -144,9 +135,9 @@ fn legacy_binding(key: &KeyEvent, mode: TermMode) -> Option<Vec<u8>> {
     // under disambiguation.
     if key.key_code == KeyCode::Backspace
         && !mode.contains(TermMode::REPORT_ALL_KEYS_AS_ESC)
-        && (unmodified || (mods.shift && !mods.control && !mods.logo))
+        && (unmodified || (modifiers.shift && !modifiers.control && !modifiers.logo))
     {
-        return match (mods.alt, kitty) {
+        return match (modifiers.alt, kitty) {
             (true, false) => Some(b"\x1b\x7f".to_vec()),
             (true, true) => None,
             (false, _) => Some(b"\x7f".to_vec()),
@@ -189,8 +180,8 @@ fn legacy_binding(key: &KeyEvent, mode: TermMode) -> Option<Vec<u8>> {
     }
 
     // Backtab, with alt as meta in front of it.
-    if key.key_code == KeyCode::Tab && mods.shift && !mods.control && !mods.logo {
-        return Some(if mods.alt {
+    if key.key_code == KeyCode::Tab && modifiers.shift && !modifiers.control && !modifiers.logo {
+        return Some(if modifiers.alt {
             b"\x1b\x1b[Z".to_vec()
         } else {
             b"\x1b[Z".to_vec()
@@ -205,9 +196,9 @@ fn should_build_sequence(key: &KeyEvent, mode: TermMode) -> bool {
     if mode.contains(TermMode::REPORT_ALL_KEYS_AS_ESC) {
         return true;
     }
-    let mods = &key.modifiers;
-    let any_mods = mods.shift || mods.control || mods.alt || mods.logo;
-    let only_shift = mods.shift && !mods.control && !mods.alt && !mods.logo;
+    let modifiers = key.modifiers;
+    let any_mods = modifiers.shift || modifiers.control || modifiers.alt || modifiers.logo;
+    let only_shift = modifiers.shift && !modifiers.control && !modifiers.alt && !modifiers.logo;
     let disambiguate = mode.contains(TermMode::DISAMBIGUATE_ESC_CODES)
         && (key.key_code == KeyCode::Escape
             || numpad_code(key.key_code).is_some()
@@ -255,13 +246,17 @@ fn named_without_text(key: KeyCode) -> bool {
 }
 
 fn build_sequence(key: &KeyEvent, pressed: bool, mode: TermMode) -> Option<Vec<u8>> {
-    let mut modifiers = Modifiers::new(&key.modifiers);
-    let kitty_seq = mode.intersects(
-        TermMode::REPORT_ALL_KEYS_AS_ESC
-            | TermMode::DISAMBIGUATE_ESC_CODES
-            | TermMode::REPORT_EVENT_TYPES,
-    );
-    let kitty_encode_all = mode.contains(TermMode::REPORT_ALL_KEYS_AS_ESC);
+    let mut modifiers = Modifiers::held(key.modifiers);
+    // NOTE: modifier key events may omit their own bit; report the state after this event.
+    let own_bit = match key.key_code {
+        KeyCode::Shift => Modifiers::SHIFT,
+        KeyCode::Control => Modifiers::CONTROL,
+        KeyCode::Alt => Modifiers::ALT,
+        KeyCode::Logo => Modifiers::SUPER,
+        _ => Modifiers::empty(),
+    };
+    modifiers.set(own_bit, pressed);
+
     let kitty_event_type =
         mode.contains(TermMode::REPORT_EVENT_TYPES) && (key.is_repeat || !pressed);
 
@@ -277,15 +272,19 @@ fn build_sequence(key: &KeyEvent, pressed: bool, mode: TermMode) -> Option<Vec<u
         .flatten()
         .filter(|c| !c.is_control());
 
-    let base = numpad(key, kitty_seq)
-        .or_else(|| named_kitty(key, kitty_seq))
-        .or_else(|| named_normal(key, modifiers, kitty_event_type, associated_text.is_some()))
-        .or_else(|| control_char_or_mod(key, pressed, kitty_seq, kitty_encode_all, &mut modifiers))
-        .or_else(|| textual(key, modifiers, kitty_seq, mode))?;
+    // Everything after the number is optional, and the number itself defaults
+    // to 1: a bare key sends neither.
+    let has_params = kitty_event_type || !modifiers.is_empty() || associated_text.is_some();
+
+    let base = numpad(key, mode)
+        .or_else(|| named_kitty(key, mode))
+        .or_else(|| named_normal(key, has_params))
+        .or_else(|| control_char_or_mod(key, mode))
+        .or_else(|| textual(key, mode))?;
 
     let mut payload = format!("\x1b[{}", base.payload);
-    if kitty_event_type || !modifiers.is_empty() || associated_text.is_some() {
-        payload.push_str(&format!(";{}", modifiers.encode()));
+    if has_params {
+        let _ = write!(payload, ";{}", modifiers.encode());
     }
     if kitty_event_type {
         payload.push(':');
@@ -296,7 +295,7 @@ fn build_sequence(key: &KeyEvent, pressed: bool, mode: TermMode) -> Option<Vec<u
         });
     }
     if let Some(text) = associated_text {
-        payload.push_str(&format!(";{}", u32::from(text)));
+        let _ = write!(payload, ";{}", u32::from(text));
     }
     payload.push(base.terminator.encode());
     Some(payload.into_bytes())
@@ -327,56 +326,48 @@ fn numpad_code(key: KeyCode) -> Option<&'static str> {
     })
 }
 
-fn numpad(key: &KeyEvent, kitty_seq: bool) -> Option<Base> {
-    if !kitty_seq {
+fn numpad(key: &KeyEvent, mode: TermMode) -> Option<Base> {
+    if !kitty_sequence(mode) {
         return None;
     }
-    Base::new(numpad_code(key.key_code)?, Terminator::Kitty)
+    Some(Base::new(numpad_code(key.key_code)?, Terminator::Kitty))
 }
 
 /// Functional keys the kitty protocol numbers differently from xterm.
-fn named_kitty(key: &KeyEvent, kitty_seq: bool) -> Option<Base> {
-    if !kitty_seq {
+fn named_kitty(key: &KeyEvent, mode: TermMode) -> Option<Base> {
+    if !kitty_sequence(mode) {
         return None;
     }
-    match key.key_code {
+    let (payload, terminator) = match key.key_code {
         // F3 in the kitty protocol diverges from alacritty's terminfo.
-        KeyCode::F3 => Base::new("13", Terminator::Normal('~')),
-        KeyCode::ScrollLock => Base::new("57359", Terminator::Kitty),
-        KeyCode::PrintScreen => Base::new("57361", Terminator::Kitty),
-        KeyCode::Pause => Base::new("57362", Terminator::Kitty),
-        _ => None,
-    }
+        KeyCode::F3 => ("13", Terminator::Normal('~')),
+        KeyCode::ScrollLock => ("57359", Terminator::Kitty),
+        KeyCode::PrintScreen => ("57361", Terminator::Kitty),
+        KeyCode::Pause => ("57362", Terminator::Kitty),
+        _ => return None,
+    };
+    Some(Base::new(payload, terminator))
 }
 
-/// The xterm/DEC table every terminal has spoken for forty years.
-fn named_normal(
-    key: &KeyEvent,
-    modifiers: Modifiers,
-    kitty_event_type: bool,
-    has_associated_text: bool,
-) -> Option<Base> {
-    // The default parameter is 1, so it can be left out when nothing follows.
-    let one_based = if modifiers.is_empty() && !kitty_event_type && !has_associated_text {
-        ""
-    } else {
-        "1"
-    };
+/// The xterm/DEC table every terminal has spoken for forty years. `has_params`
+/// says whether anything follows the number, which is left out otherwise.
+fn named_normal(key: &KeyEvent, has_params: bool) -> Option<Base> {
+    let one = if has_params { "1" } else { "" };
     let (payload, terminator) = match key.key_code {
         KeyCode::PageUp => ("5", Terminator::Normal('~')),
         KeyCode::PageDown => ("6", Terminator::Normal('~')),
         KeyCode::Insert => ("2", Terminator::Normal('~')),
         KeyCode::Delete => ("3", Terminator::Normal('~')),
-        KeyCode::Home => (one_based, Terminator::Normal('H')),
-        KeyCode::End => (one_based, Terminator::Normal('F')),
-        KeyCode::ArrowLeft => (one_based, Terminator::Normal('D')),
-        KeyCode::ArrowRight => (one_based, Terminator::Normal('C')),
-        KeyCode::ArrowUp => (one_based, Terminator::Normal('A')),
-        KeyCode::ArrowDown => (one_based, Terminator::Normal('B')),
-        KeyCode::F1 => (one_based, Terminator::Normal('P')),
-        KeyCode::F2 => (one_based, Terminator::Normal('Q')),
-        KeyCode::F3 => (one_based, Terminator::Normal('R')),
-        KeyCode::F4 => (one_based, Terminator::Normal('S')),
+        KeyCode::Home => (one, Terminator::Normal('H')),
+        KeyCode::End => (one, Terminator::Normal('F')),
+        KeyCode::ArrowLeft => (one, Terminator::Normal('D')),
+        KeyCode::ArrowRight => (one, Terminator::Normal('C')),
+        KeyCode::ArrowUp => (one, Terminator::Normal('A')),
+        KeyCode::ArrowDown => (one, Terminator::Normal('B')),
+        KeyCode::F1 => (one, Terminator::Normal('P')),
+        KeyCode::F2 => (one, Terminator::Normal('Q')),
+        KeyCode::F3 => (one, Terminator::Normal('R')),
+        KeyCode::F4 => (one, Terminator::Normal('S')),
         KeyCode::F5 => ("15", Terminator::Normal('~')),
         KeyCode::F6 => ("17", Terminator::Normal('~')),
         KeyCode::F7 => ("18", Terminator::Normal('~')),
@@ -387,19 +378,13 @@ fn named_normal(
         KeyCode::F12 => ("24", Terminator::Normal('~')),
         _ => return None,
     };
-    Base::new(payload, terminator)
+    Some(Base::new(payload, terminator))
 }
 
 /// Control keys, and the modifier keys themselves once the terminal asked to
 /// hear about every one.
-fn control_char_or_mod(
-    key: &KeyEvent,
-    pressed: bool,
-    kitty_seq: bool,
-    kitty_encode_all: bool,
-    modifiers: &mut Modifiers,
-) -> Option<Base> {
-    if !kitty_encode_all && !kitty_seq {
+fn control_char_or_mod(key: &KeyEvent, mode: TermMode) -> Option<Base> {
+    if !kitty_sequence(mode) {
         return None;
     }
     let control = match key.key_code {
@@ -410,7 +395,8 @@ fn control_char_or_mod(
         KeyCode::Backspace => "127",
         _ => "",
     };
-    if !kitty_encode_all && control.is_empty() {
+    let encode_all = mode.contains(TermMode::REPORT_ALL_KEYS_AS_ESC);
+    if !encode_all && control.is_empty() {
         return None;
     }
 
@@ -423,58 +409,41 @@ fn control_char_or_mod(
         KeyCode::Numlock => "57360",
         _ => control,
     };
-
-    // NOTE: the protocol wants the modifier state from before the press, so a
-    // modifier key reports itself by its own keysym rather than by the state
-    // the platform reports after the fact. Kitty does the same.
-    match key.key_code {
-        KeyCode::Shift => modifiers.set(Modifiers::SHIFT, pressed),
-        KeyCode::Control => modifiers.set(Modifiers::CONTROL, pressed),
-        KeyCode::Alt => modifiers.set(Modifiers::ALT, pressed),
-        KeyCode::Logo => modifiers.set(Modifiers::SUPER, pressed),
-        _ => (),
-    }
-
-    if payload.is_empty() {
-        None
-    } else {
-        Base::new(payload, Terminator::Kitty)
-    }
+    (!payload.is_empty()).then(|| Base::new(payload, Terminator::Kitty))
 }
 
 /// A printing key under the kitty protocol, reported by its unshifted
 /// codepoint — and, when asked, the shifted one beside it.
-fn textual(key: &KeyEvent, modifiers: Modifiers, kitty_seq: bool, mode: TermMode) -> Option<Base> {
-    if !kitty_seq {
+fn textual(key: &KeyEvent, mode: TermMode) -> Option<Base> {
+    if !kitty_sequence(mode) {
         return None;
     }
-    let shift = modifiers.contains(Modifiers::SHIFT);
     let unshifted = key.key_code.to_char(false)?;
-    let alternate = key.key_code.to_char(shift)?;
+    let alternate = key.key_code.to_char(key.modifiers.shift)?;
 
     let payload = if mode.contains(TermMode::REPORT_ALTERNATE_KEYS) && alternate != unshifted {
         format!("{}:{}", u32::from(unshifted), u32::from(alternate))
     } else {
         u32::from(unshifted).to_string()
     };
-    Base::new(payload, Terminator::Kitty)
+    Some(Base::new(payload, Terminator::Kitty))
 }
 
 /// The keys that carry their own byte with no sequence around it: the control
 /// characters, and `ctrl` over a printing key. `alt` puts ESC in front, the
 /// way every line editor reads Meta.
 fn control_bytes(key: &KeyEvent) -> Option<Vec<u8>> {
-    let mods = &key.modifiers;
+    let modifiers = key.modifiers;
     let byte = match key.key_code {
         KeyCode::ReturnKey => Some(b'\r'),
         KeyCode::Tab => Some(b'\t'),
         KeyCode::Escape => Some(0x1b),
         KeyCode::Backspace => Some(0x7f),
-        KeyCode::Space if mods.control => Some(0),
-        _ if mods.control => control_char(key.key_code.to_char(false)?),
+        KeyCode::Space if modifiers.control => Some(0),
+        _ if modifiers.control => control_char(key.key_code.to_char(false)?),
         _ => None,
     }?;
-    Some(if mods.alt {
+    Some(if modifiers.alt {
         vec![0x1b, byte]
     } else {
         vec![byte]
@@ -697,17 +666,17 @@ mod tests {
     #[test]
     fn typed_text_carries_meta_but_steps_aside_for_the_full_protocol() {
         assert_eq!(
-            encode_text("a", &KeyModifiers::default(), TermMode::empty()),
+            encode_text("a", KeyModifiers::default(), TermMode::empty()),
             Some(b"a".to_vec())
         );
         assert_eq!(
-            encode_text("f", &alt(), TermMode::empty()),
+            encode_text("f", alt(), TermMode::empty()),
             Some(b"\x1bf".to_vec())
         );
         assert_eq!(
             encode_text(
                 "a",
-                &KeyModifiers::default(),
+                KeyModifiers::default(),
                 TermMode::REPORT_ALL_KEYS_AS_ESC
             ),
             None

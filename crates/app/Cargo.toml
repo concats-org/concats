@@ -74,6 +74,7 @@ makepad-widgets = { workspace = true }
 alacritty_terminal = { workspace = true }
 
 gix = { workspace = true }
+bitflags = "2"
 
 # `app.db` next to the config: the range each window has open, and the recents
 # list. The per-repo review store is `concats_review`'s.
