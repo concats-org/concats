@@ -1,6 +1,6 @@
 //! Visual snapshot tests for the editor's surfaces.
 //!
-//! Each test drives the real app headlessly, through the same `CONCATS_APP_*`
+//! Each test drives the real app through the same `CONCATS_APP_*`
 //! hooks the capture script uses, and compares the frame to a committed golden
 //! pixel for pixel. A caret that fails to land, a line that moves by one pixel
 //! or a colour that shifts fails the test. That is what we want: before these,
@@ -19,20 +19,15 @@
 //! magenta) are written next to each other under `target/snapshots/`; the
 //! failure message names them.
 //!
-//! ## Known flake: the two interaction scenarios
+//! ## Interaction checks
 //!
-//! The three scenarios without a pointer are stable across runs. The two with
-//! one, `a_click_places_a_caret` and `typing_at_the_caret_reaches_the_buffer`,
-//! still differ between runs. So what is left of the nondeterminism sits in
-//! resolving a click to a caret, not in rendering.
+//! The click and typing scenarios assert the caret and dirty-buffer state as
+//! well as pixels. Hooks wait for the before-frame to reach disk before sending
+//! pointer events, so a capture cannot mistake the initial frame for the result.
 //!
-//! It used to be all five, for another reason: the colours a frame was drawn
-//! from depended on whether the highlight worker had landed. Drawing from one
-//! source fixed that and left this.
-//!
-//! Don't paper over it with a comparison tolerance. Strict equality is there to
-//! notice this kind of difference, and a threshold wide enough to hide it would
-//! hide most regressions worth catching.
+//! NOTE: Finish default cargo checks before running this suite. Both builds
+//! write the same app executable; rebuilding without dev-hooks between native
+//! launches would leave a test driving an app that cannot answer its hooks.
 //!
 //! ## A few thousand pixels off, in the text, everywhere
 //!
@@ -87,6 +82,7 @@ const TIMEOUT: Duration = Duration::from_secs(40);
 static ONE_AT_A_TIME: Mutex<()> = Mutex::new(());
 
 /// How far apart two images may be and still count as matching.
+#[derive(Clone, Copy)]
 struct Tolerance {
     /// Per-channel difference ignored entirely.
     channel: u8,
@@ -193,7 +189,9 @@ fn capture_pair(name: &str, hooks: &[(&str, &str)]) -> (PathBuf, PathBuf) {
 
 /// Drive the app once and return the frame it captured.
 fn capture(name: &str, hooks: &[(&str, &str)], setup: impl FnOnce(&Path)) -> PathBuf {
-    let _serial = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+    let _serial = ONE_AT_A_TIME
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     // Two directories, because they have opposite lifetimes.
     //
     // The sandbox is everything the run writes that nobody wants afterwards:
@@ -266,6 +264,10 @@ fn capture(name: &str, hooks: &[(&str, &str)], setup: impl FnOnce(&Path)) -> Pat
                     "{name}: the app exited without a readable frame — see {}",
                     work.display()
                 );
+                let layout = repo.join(".git/concats-app-layout-2.ron");
+                if layout.exists() {
+                    std::fs::copy(layout, work.join("layout.ron")).expect("capture saved layout");
+                }
                 return shot;
             }
             None => std::thread::sleep(Duration::from_millis(100)),
@@ -379,8 +381,14 @@ fn distance(a: &Path, b: &Path) -> usize {
 /// Together they also survive a bad recording: a golden taken from a run where
 /// the interaction never fired still fails, because before and after are then
 /// identical.
-fn assert_interaction(name: &str, hooks: &[(&str, &str)]) {
+fn assert_interaction(name: &str, hooks: &[(&str, &str)], byte: usize, dirty_buffers: usize) {
     let (before, after) = capture_pair(name, hooks);
+    let data: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(after.with_file_name("state.json")).expect("captured state"),
+    )
+    .expect("state JSON");
+    assert_eq!(data["caret"], serde_json::json!([1, 2, byte]), "{name}");
+    assert_eq!(data["dirty_buffers"], dirty_buffers, "{name}");
     assert!(
         distance(&before, &after) > 0,
         "{name}: the interaction changed nothing on screen — it never happened.\n  \
@@ -402,6 +410,8 @@ fn a_click_places_a_caret() {
             ("CONCATS_APP_FILE", "editor.rs"),
             ("CONCATS_APP_CLICK", "200,98"),
         ],
+        18,
+        0,
     );
 }
 
@@ -416,6 +426,8 @@ fn typing_at_the_caret_reaches_the_buffer() {
             ("CONCATS_APP_CLICK", "200,98"),
             ("CONCATS_APP_TYPE", " // edited"),
         ],
+        28,
+        1,
     );
 }
 
@@ -492,7 +504,8 @@ fn search_stays_in_its_tab_without_a_code_caret() {
         (
             "find-file",
             vec![
-                ("CONCATS_APP_FILE", "editor.rs"),
+                ("CONCATS_APP_FILE", "editor.rs,README.md"),
+                ("CONCATS_APP_TAB", "file:editor.rs"),
                 ("CONCATS_APP_FIND", "needle"),
             ],
             "1 match",
@@ -546,6 +559,36 @@ fn find_does_not_take_keys_from_the_composer() {
 
 #[test]
 #[ignore = "spawns a GPU process; run with --ignored on a desktop"]
+fn file_browser_search_stays_in_its_own_pane() {
+    let shot = capture(
+        "file-browser-search",
+        &[
+            ("CONCATS_APP_CLICK", "1100,64"),
+            ("CONCATS_APP_FIND", "deep/target"),
+            ("CONCATS_APP_FIND_KEEP_FOCUS", "1"),
+        ],
+        |repo| {
+            std::fs::create_dir(repo.join("deep")).expect("nested folder");
+            std::fs::write(repo.join("deep/target.rs"), "target\n").expect("matching file");
+            std::fs::write(repo.join("deep/other.rs"), "other\n").expect("unmatched file");
+        },
+    );
+    let data: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(shot.with_file_name("state.json")).expect("captured state"),
+    )
+    .expect("state JSON");
+    assert_eq!(data["file_find_query"], "deep/target");
+    assert_eq!(data["file_find_count"], "1 file");
+    assert_eq!(data["find_query"], "");
+    assert_eq!(data["dirty_buffers"], 0);
+}
+
+#[test]
+#[ignore = "spawns a GPU process; run with --ignored on a desktop"]
+#[expect(
+    clippy::format_collect,
+    reason = "Generated fixture lines make the seen range explicit."
+)]
 fn the_pinned_seen_control_marks_its_file() {
     let shot = capture(
         "pinned-seen",
@@ -618,6 +661,36 @@ fn file_tab_titles_follow_typing_and_save_acknowledgements() {
 
 #[test]
 #[ignore = "needs a macOS window server"]
+fn terminal_search_finds_literal_text_in_scrollback() {
+    let shot = capture(
+        "terminal-search",
+        &[
+            ("CONCATS_APP_TERM", "1"),
+            ("CONCATS_APP_CLICK", "300,690"),
+            ("CONCATS_APP_TERM_SCRIPT", ".git/terminal-fixture.sh"),
+            ("CONCATS_APP_FIND", "[needle]"),
+            ("CONCATS_APP_FIND_KEEP_FOCUS", "1"),
+        ],
+        |repo| {
+            std::fs::write(repo.join(".git/terminal-fixture.sh"),
+                "printf '[needle] in history\\n'\ni=0\nwhile [ $i -lt 80 ]; do printf 'filler line %s\\n' \"$i\"; i=$((i+1)); done\nread -r answer\n"
+            ).expect("terminal fixture");
+        },
+    );
+    let data: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(shot.with_file_name("state.json")).expect("captured state"),
+    )
+    .expect("state JSON");
+    assert_eq!(data["terminal_find_query"], "[needle]");
+    assert_eq!(data["terminal_selection"], "[needle]");
+    assert!(data["terminal_offset"].as_u64().unwrap() > 0);
+    assert_eq!(data["find_query"], "");
+    assert_eq!(data["file_find_query"], "");
+    assert_eq!(data["dirty_buffers"], 0);
+}
+
+#[test]
+#[ignore = "needs a macOS window server"]
 fn terminal_draws_combining_marks_and_unicode() {
     let shot = capture(
         "terminal_unicode",
@@ -628,7 +701,7 @@ fn terminal_draws_combining_marks_and_unicode() {
         ],
         |repo| {
             std::fs::write(repo.join(".git/terminal-fixture.sh"),
-                "printf 'ASCII: hello\\nCombining: é å ñ\\nWide: 世界 👩‍💻\\nBraille: ⠁⠃⠇⠏\\nCursor: X\\r\\033[8C'\nread -r answer\n"
+                "printf 'ASCII: hello\\nCombining: e\u{301} a\u{30a} n\u{303}\\nWide: 世界 👩‍💻\\nBraille: ⠁⠃⠇⠏\\nCursor: X\\r\\033[8C'\nread -r answer\n"
             ).expect("terminal fixture");
         },
     );
@@ -688,5 +761,72 @@ fn loading_another_window_keeps_typing_in_the_clicked_window() {
             {"loaded": true, "dirty_buffers": 1},
             {"loaded": true, "dirty_buffers": 0},
         ])
+    );
+}
+
+#[test]
+#[ignore = "needs a macOS window server"]
+fn restoring_the_sidebar_does_not_start_a_hidden_shell() {
+    let baseline = capture("layout_baseline", &[], |_| {});
+    let layout = std::fs::read(baseline.with_file_name("layout.ron")).expect("saved layout");
+    let shot = capture(
+        "restored_sidebar",
+        &[("CONCATS_APP_TERM_SCRIPT", ".git/terminal-fixture.sh")],
+        |repo| {
+            std::fs::write(repo.join(".git/concats-app-layout-2.ron"), layout)
+                .expect("restore layout");
+            std::fs::write(
+                repo.join(".git/terminal-fixture.sh"),
+                "printf 'unexpected shell startup'\nread -r answer\n",
+            )
+            .expect("terminal fixture");
+        },
+    );
+    let state: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(shot.with_file_name("state.json")).expect("captured state"),
+    )
+    .expect("state JSON");
+    assert_eq!(
+        state["terminal_cursor"],
+        serde_json::Value::Null,
+        "a collapsed terminal must not start a shell"
+    );
+    assert_eq!(state["terminal_height"], 0.0);
+}
+
+#[test]
+#[ignore = "spawns a GPU process; run with --ignored on a desktop"]
+fn a_gutter_drag_spans_deleted_and_added_lines() {
+    let shot = capture(
+        "gutter-drag",
+        &[
+            ("CONCATS_APP_CLICK", "26,200"),
+            ("CONCATS_APP_DRAG_TO", "26,222"),
+            ("CONCATS_APP_TYPE", "Review this change"),
+        ],
+        |_| {},
+    );
+    let data: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(shot.with_file_name("state.json")).expect("captured state"),
+    )
+    .expect("state JSON");
+    assert_eq!(
+        data["compose_ranges"],
+        serde_json::json!([[12, 12], [12, 12]])
+    );
+    assert_eq!(data["composer_open"], true);
+    assert_eq!(data["draft"], "Review this change");
+    assert_eq!(data["dirty_buffers"], 0);
+}
+
+#[test]
+#[ignore = "spawns a GPU process; run with --ignored on a desktop"]
+fn a_file_tab_uses_the_light_palette() {
+    snapshot(
+        "light-file-tab",
+        &[
+            ("CONCATS_APP_FILE", "editor.rs"),
+            ("CONCATS_APP_THEME", "Rosé Pine Dawn"),
+        ],
     );
 }

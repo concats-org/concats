@@ -14,6 +14,10 @@ use std::collections::{HashMap, HashSet};
 
 use concats_diff::Row;
 
+#[allow(
+    clippy::wildcard_imports,
+    reason = "Makepad macros and derives expand against the widget prelude in this scope."
+)]
 use crate::{
     FrameData,
     makepad_widgets::{
@@ -25,6 +29,7 @@ use crate::{
 script_mod! {
     use mod.prelude.widgets.*
     use mod.widgets.FONT
+    use mod.widgets.FindBar
     use mod.widgets.C_CHROME
     use mod.widgets.C_BORDER
     use mod.widgets.C_TEXT
@@ -53,6 +58,11 @@ script_mod! {
             }
         }
         SolidView { width: Fill height: 1 draw_bg.color: C_BORDER }
+
+        find_bar := FindBar {
+            visible: false
+            find_input +: { empty_text: "Find files" }
+        }
 
         tree := FileTree {
             width: Fill height: Fill
@@ -133,6 +143,10 @@ pub struct FileBrowser {
     /// `generation`) must not rebuild it.
     #[rust]
     built: u64,
+    #[rust]
+    find: Option<String>,
+    #[rust]
+    focus_find: bool,
 }
 
 /// What this range did to each path it touched, as a dot.
@@ -180,10 +194,7 @@ fn insert(
     let mut parent: Option<LiveId> = None;
     let mut at = 0;
     while at < path.len() {
-        let end = path[at..]
-            .find('/')
-            .map(|i| at + i)
-            .unwrap_or_else(|| path.len());
+        let end = path[at..].find('/').map_or_else(|| path.len(), |i| at + i);
         let prefix = &path[..end];
         let id = LiveId::from_str(prefix);
         let is_folder = end < path.len();
@@ -239,11 +250,16 @@ fn build(
     paths: &[String],
     status: &HashMap<String, GitStatusDotKind>,
     repo: &str,
+    query: &str,
 ) -> (HashMap<LiveId, Node>, LiveId) {
     let mut nodes: HashMap<LiveId, Node> = HashMap::new();
     let mut roots: Vec<LiveId> = Vec::new();
 
-    for path in paths {
+    let query = query.to_ascii_lowercase();
+    for path in paths
+        .iter()
+        .filter(|path| path.to_ascii_lowercase().contains(&query))
+    {
         let kind = status.get(path).copied().unwrap_or(GitStatusDotKind::None);
         insert(&mut nodes, &mut roots, path, kind);
     }
@@ -331,9 +347,22 @@ impl Widget for FileBrowser {
             let status = status_dots(&d.files_rows, &d.added, &at_head);
             let repo = std::path::Path::new(&d.repo)
                 .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_else(|| d.repo.clone());
-            (self.nodes, self.root) = build(&d.tree, &status, &repo);
+                .map_or_else(|| d.repo.clone(), |n| n.to_string_lossy().into_owned());
+            (self.nodes, self.root) = build(
+                &d.tree,
+                &status,
+                &repo,
+                self.find.as_deref().unwrap_or_default(),
+            );
+            let count = self
+                .nodes
+                .values()
+                .filter(|node| node.children.is_none())
+                .count();
+            self.view.label(cx, ids!(find_count)).set_text(
+                cx,
+                &format!("{count} {}", if count == 1 { "file" } else { "files" }),
+            );
         }
         // The head as a rev and as an oid: a branch name moves, and a review
         // that outlives a push should still say which commit it read.
@@ -343,20 +372,61 @@ impl Widget for FileBrowser {
         };
         self.view.label(cx, ids!(rev_chip)).set_text(cx, &rev);
 
+        self.view
+            .view(cx, ids!(find_bar))
+            .set_visible(cx, self.find.is_some());
         while let Some(step) = self.view.draw_walk(cx, scope, walk).step() {
             if let Some(mut tree) = step.as_file_tree().borrow_mut() {
                 // A fresh tree starts every folder shut, which for the repo row
                 // means one collapsed line and no listing at all.
                 if rebuilt {
                     tree.set_folder_is_open(cx, self.root, true, Animate::No);
+                    if self.find.as_ref().is_some_and(|query| !query.is_empty()) {
+                        for (&id, _) in self
+                            .nodes
+                            .iter()
+                            .filter(|(_, node)| node.children.is_some())
+                        {
+                            tree.set_folder_is_open(cx, id, true, Animate::No);
+                        }
+                    }
                 }
                 draw_node(cx, &mut tree, &self.nodes, self.root);
             }
+        }
+        if std::mem::take(&mut self.focus_find) {
+            let input = self.view.text_input(cx, ids!(find_input));
+            input.set_text(cx, self.find.as_deref().unwrap_or_default());
+            input.set_key_focus(cx);
         }
         DrawStep::done()
     }
 
     fn handle_event(&mut self, cx: &mut Cx, event: &Event, scope: &mut Scope) {
+        let tree = self.view.file_tree(cx, ids!(tree)).area();
+        let input = self.view.text_input(cx, ids!(find_input)).area();
+        if let Event::KeyDown(key) = event
+            && [tree, input]
+                .into_iter()
+                .any(|area| area != Area::Empty && cx.has_key_focus(area))
+        {
+            match key.key_code {
+                KeyCode::KeyF if key.modifiers.logo || key.modifiers.control => {
+                    self.find.get_or_insert_default();
+                    self.focus_find = true;
+                    self.redraw(cx);
+                    return;
+                }
+                KeyCode::Escape if self.find.is_some() => {
+                    self.find = None;
+                    self.built = 0;
+                    cx.set_key_focus(tree);
+                    self.redraw(cx);
+                    return;
+                }
+                _ => {}
+            }
+        }
         self.view.handle_event(cx, event, scope);
         self.widget_match_event(cx, event, scope);
     }
@@ -364,6 +434,11 @@ impl Widget for FileBrowser {
 
 impl WidgetMatchEvent for FileBrowser {
     fn handle_actions(&mut self, cx: &mut Cx, actions: &Actions, _scope: &mut Scope) {
+        if let Some(query) = self.view.text_input(cx, ids!(find_input)).changed(actions) {
+            self.find = Some(query);
+            self.built = 0;
+            self.redraw(cx);
+        }
         // A folder needs no handling — the tree owns its own open/closed state.
         let Some(id) = self.view.file_tree(cx, ids!(tree)).file_clicked(actions) else {
             return;
@@ -380,7 +455,28 @@ mod tests {
     use super::*;
 
     fn paths(list: &[&str]) -> Vec<String> {
-        list.iter().map(|s| s.to_string()).collect()
+        list.iter().map(ToString::to_string).collect()
+    }
+
+    #[test]
+    fn search_filters_full_paths_and_keeps_their_ancestors() {
+        let paths = paths(&["src/Éditor.rs", "src/other.rs", "docs/guide.md"]);
+        let (nodes, root) = build(&paths, &HashMap::new(), "repo", "ÉDITOR");
+        assert_eq!(children_of(&nodes, root), ["src"]);
+        assert_eq!(children_of(&nodes, LiveId::from_str("src")), ["Éditor.rs"]);
+        assert_eq!(
+            nodes[&LiveId::from_str("src/Éditor.rs")].path,
+            "src/Éditor.rs"
+        );
+
+        let (nodes, _) = build(&paths, &HashMap::new(), "repo", "SRC/");
+        assert_eq!(
+            children_of(&nodes, LiveId::from_str("src")),
+            ["other.rs", "Éditor.rs"]
+        );
+
+        let (nodes, root) = build(&paths, &HashMap::new(), "repo", "missing");
+        assert!(children_of(&nodes, root).is_empty());
     }
 
     fn name_of(nodes: &HashMap<LiveId, Node>, path: &str) -> String {
@@ -404,6 +500,7 @@ mod tests {
             &paths(&["a/b/c.rs", "a/d.rs", "top.md"]),
             &HashMap::new(),
             "repo",
+            "",
         );
 
         // `a/b` is a node even though the listing only ever named blobs.
@@ -430,6 +527,7 @@ mod tests {
             &paths(&["a/new.rs", "a/edit.rs", "b/one.rs", "b/two.rs"]),
             &status,
             "repo",
+            "",
         );
 
         assert_eq!(
@@ -443,7 +541,7 @@ mod tests {
     #[test]
     fn a_deleted_path_tints_its_folders_without_being_listed() {
         let status = HashMap::from([("a/gone.rs".to_string(), GitStatusDotKind::Mixed)]);
-        let (nodes, _) = build(&paths(&["a/kept.rs"]), &status, "repo");
+        let (nodes, _) = build(&paths(&["a/kept.rs"]), &status, "repo", "");
 
         assert!(!nodes.contains_key(&LiveId::from_str("a/gone.rs")));
         assert_eq!(
@@ -454,7 +552,7 @@ mod tests {
 
     #[test]
     fn a_path_the_range_never_touched_gets_no_dot() {
-        let (nodes, _) = build(&paths(&["a/quiet.rs"]), &HashMap::new(), "repo");
+        let (nodes, _) = build(&paths(&["a/quiet.rs"]), &HashMap::new(), "repo", "");
 
         assert_eq!(
             nodes[&LiveId::from_str("a/quiet.rs")].status,

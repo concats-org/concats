@@ -5,10 +5,13 @@
 //! since the load is skipped whole, never half-staged: a tick records what was
 //! read, and the index must not carry bytes nobody read.
 
-use std::{collections::HashSet, path::Path};
+use std::{
+    collections::HashSet,
+    hash::{DefaultHasher, Hash, Hasher},
+    path::Path,
+};
 
 use concats_sync::hash_object;
-use concats_text::{fnv1a, fnv1a_seed};
 use gix::{ObjectId, Repository, bstr::BStr};
 
 use crate::{
@@ -157,24 +160,7 @@ pub fn stage_seen(
                         size: blended.len() as u32,
                         ..Default::default()
                     };
-                    match index.entry_index_by_path(BStr::new(f.path.as_str())) {
-                        Ok(i) => {
-                            let e = &mut index.entries_mut()[i];
-                            e.stat = stat;
-                            e.id = oid;
-                            e.mode = entry_mode;
-                        }
-                        Err(_) => {
-                            index.dangerously_push_entry(
-                                stat,
-                                oid,
-                                gix::index::entry::Flags::empty(),
-                                entry_mode,
-                                BStr::new(f.path.as_str()),
-                            );
-                            index.sort_entries();
-                        }
-                    }
+                    update_index_entry(&mut index, &f.path, oid, stat, entry_mode);
                 }
             }
         }
@@ -219,42 +205,45 @@ fn blend(old: &[u8], new: &[u8], hunks: &[(u32, usize, u32, usize)], take: &[boo
     out
 }
 
-/// A cheap staleness probe for a WORKTREE review, polled by the GUI: the
-/// status entries with each file's (mtime, len), plus the index file's own
-/// stamp. Any edit, add, delete, or stage moves it. Steady state is a stat
-/// walk — content is only read for stat-suspect files (the ones already
-/// modified, i.e. the review's own file set). 0 = unreadable repo.
-pub fn worktree_fingerprint(workdir: &Path) -> u64 {
-    let Ok(repo) = gix::open(workdir) else {
-        return 0;
-    };
-    let Ok(mut entries) = worktree_status(&repo) else {
-        return 0;
-    };
-    // Seeded from the empty hash so the FNV offset basis has one home.
-    let mut fp: u64 = fnv1a(b"");
-    if let Ok(m) = std::fs::metadata(repo.git_dir().join("index")) {
-        fp = stamp(fp, &m);
-    }
+/// Fingerprint worktree status and metadata for a GUI staleness probe.
+/// The caller retains the repository so gix can reuse its configuration and index snapshot.
+///
+/// # Errors
+/// Returns an error if status or file metadata cannot be read.
+pub fn worktree_fingerprint(repo: &Repository) -> Result<u64, Error> {
+    let workdir = repo.workdir().ok_or_else(|| {
+        Error::git(
+            "worktree status",
+            gix::status::index_worktree::Error::MissingWorkDir,
+        )
+    })?;
+    let mut entries = worktree_status(repo)?;
+    let mut fp = DefaultHasher::new();
+    hash_metadata(&mut fp, &repo.index_path())?;
     entries.sort();
     for (path, status) in entries {
-        fp = fnv1a_seed(fp, path.as_bytes());
-        fp = fnv1a_seed(fp, &[status]);
-        if let Ok(m) = std::fs::metadata(workdir.join(&path)) {
-            fp = stamp(fp, &m);
-        }
+        path.hash(&mut fp);
+        status.hash(&mut fp);
+        hash_metadata(&mut fp, &workdir.join(path))?;
     }
-    fp
+    Ok(fp.finish())
 }
 
-fn stamp(fp: u64, m: &std::fs::Metadata) -> u64 {
-    let mtime = m
-        .modified()
-        .ok()
-        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|d| d.as_nanos() as u64)
-        .unwrap_or(0);
-    fnv1a_seed(fnv1a_seed(fp, &mtime.to_le_bytes()), &m.len().to_le_bytes())
+fn hash_metadata(fp: &mut impl Hasher, path: &Path) -> Result<(), Error> {
+    let io = |source| Error::Io {
+        path: path.to_path_buf(),
+        source,
+    };
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) => {
+            metadata.modified().map_err(io)?.hash(fp);
+            metadata.len().hash(fp);
+            Ok(())
+        }
+        // NOTE: new repositories have no index; changed paths may disappear after status.
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(io(error)),
+    }
 }
 
 /// `git add <path>`: write the worktree bytes as a blob and point the index
@@ -282,6 +271,17 @@ pub(crate) fn stage_file(
     } else {
         gix::index::entry::Mode::FILE
     };
+    update_index_entry(index, path, oid, stat, mode);
+    Ok(())
+}
+
+fn update_index_entry(
+    index: &mut gix::index::File,
+    path: &str,
+    oid: ObjectId,
+    stat: gix::index::entry::Stat,
+    mode: gix::index::entry::Mode,
+) {
     match index.entry_index_by_path(BStr::new(path)) {
         Ok(i) => {
             let e = &mut index.entries_mut()[i];
@@ -300,7 +300,6 @@ pub(crate) fn stage_file(
             index.sort_entries();
         }
     }
-    Ok(())
 }
 
 /// Drop `path`'s entry from the index, if present.
@@ -446,16 +445,17 @@ mod tests {
     fn worktree_fingerprint_moves_on_edits_and_staging() {
         let (_tmp, root) = init_repo();
         add(&root, "a.txt", "one\n");
-        let fp0 = worktree_fingerprint(&root);
-        assert_ne!(fp0, 0);
+        let repo = open_repo(&root).unwrap();
+        let fp0 = worktree_fingerprint(&repo).unwrap();
+        assert_eq!(worktree_fingerprint(&repo).unwrap(), fp0);
 
         std::fs::write(root.join("a.txt"), "two\n").unwrap();
-        let fp1 = worktree_fingerprint(&root);
+        let fp1 = worktree_fingerprint(&repo).unwrap();
         assert_ne!(fp1, fp0);
 
         // Staging moves it too — the poll reloads after "stage seen hunks".
         add(&root, "a.txt", "two\n");
-        let fp2 = worktree_fingerprint(&root);
+        let fp2 = worktree_fingerprint(&repo).unwrap();
         assert_ne!(fp2, fp1);
     }
 }

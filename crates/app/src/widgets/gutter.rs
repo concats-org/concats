@@ -10,6 +10,10 @@ use concats_diff::{LineKind, Row};
 // NOTE: `WidgetActionData` is not in makepad_widgets' root re-exports, only in
 // the (public) `widget` module — hence the long path.
 use crate::makepad_widgets::widget::WidgetActionData;
+#[allow(
+    clippy::wildcard_imports,
+    reason = "Makepad macros and derives expand against the widget prelude in this scope."
+)]
 use crate::{
     ROW_PAD, frame_theme, makepad_widgets::*, row_bg, row_marker, row_selected_bg, theme::paint,
 };
@@ -120,7 +124,7 @@ pub struct Gutter {
     /// field (and `widget_action_with_data` below) every gesture reached
     /// `ReviewPane` with no `ReviewItemAction::Gutter` attached and was
     /// dropped, so commenting did nothing at all. Makepad's own Button and
-    /// CheckBox declare the same field, which is why the tick box and the fold
+    /// `CheckBox` declare the same field, which is why the tick box and the fold
     /// caret worked.
     #[action_data]
     #[rust]
@@ -208,6 +212,10 @@ impl Widget for Gutter {
         true
     }
 
+    #[expect(
+        clippy::float_cmp,
+        reason = "Exact equality detects an unchanged pointer position, not numerical proximity."
+    )]
     fn handle_event(&mut self, cx: &mut Cx, event: &Event, _scope: &mut Scope) {
         match event.hits(cx, self.draw_bg.area()) {
             Hit::FingerHoverIn(_) => {

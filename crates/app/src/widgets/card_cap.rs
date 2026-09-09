@@ -16,6 +16,10 @@
 //! corners, and the card's fill hanging below its own border as a light lip
 //! that read as a drop shadow.
 
+#[allow(
+    clippy::wildcard_imports,
+    reason = "Makepad macros and derives expand against the widget prelude in this scope."
+)]
 use crate::{frame_theme, makepad_widgets::*, theme::paint};
 
 script_mod! {

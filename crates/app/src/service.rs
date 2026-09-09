@@ -1,20 +1,16 @@
-//! The review service: the one owner of the review store.
+//! The app worker owns review stores and retained repositories, and performs
+//! disk operations for comments, buffers, staging, layouts, and recents.
 //!
-//! The store's I/O used to run on the thread that draws — a SQLite commit per
-//! tick box, a `git config` read per comment, a git index write behind the
-//! Share menu — and the window stuttered. Now the UI sends a [`ReviewCmd`] and
-//! moves on; the service applies it on its own thread and publishes a fresh
-//! [`ReviewState`], which the UI reads as an `Arc` with no lock on the draw
-//! path.
-//!
-//! What you must see right away (a tick box flipping) the UI applies to the
-//! published state itself, optimistically — see [`toggle_seen`] — and the
-//! service's version overwrites it a millisecond later.
+//! The UI sends commands and reads published review state through shared `Arc`
+//! snapshots. Seen ticks are applied optimistically by [`toggle_seen`] so the
+//! control can update before the worker persists the change.
 
 use std::{
     collections::{HashMap, HashSet},
+    fmt::Write,
     path::{Path, PathBuf},
     sync::{Arc, Mutex, OnceLock},
+    time::{Duration, Instant},
 };
 
 use concats_highlight::Highlighter;
@@ -24,8 +20,7 @@ use gix::ObjectId;
 use makepad_service::{Service, Shared, Worker, notify};
 use makepad_widgets::{DockItem, LiveId};
 
-/// What the UI can ask of the store. Every variant is an effect the UI thread
-/// must not perform itself.
+/// Disk work requested by the UI, performed in order on the app worker.
 pub(crate) enum ReviewCmd {
     CacheBuffers(Arc<crate::window::WindowState>),
     /// Adopt a repo: open its store and publish what is already recorded.
@@ -280,8 +275,9 @@ pub(crate) fn review_state(git_dir: Option<&Path>) -> Shared<ReviewState> {
 pub(crate) fn review() -> &'static Worker<ReviewCmd> {
     static W: OnceLock<Worker<ReviewCmd>> = OnceLock::new();
     W.get_or_init(|| {
-        Worker::spawn(ReviewService {
+        Worker::spawn(AppService {
             stores: HashMap::new(),
+            worktrees: HashMap::new(),
             comments_rev: 0,
         })
     })
@@ -311,17 +307,58 @@ pub(crate) fn toggle_seen(git_dir: &Path, keys: Vec<LineKey>) {
     });
 }
 
-struct ReviewService {
+struct AppService {
     /// One store per repo, opened once. The UI never sees these.
     stores: HashMap<PathBuf, Store>,
+    worktrees: HashMap<PathBuf, Worktree>,
     comments_rev: u64,
 }
 
-impl ReviewService {
+struct Worktree {
+    repo: gix::Repository,
+    fingerprint: Option<u64>,
+    next_probe: Instant,
+    interval: Duration,
+}
+
+fn probe_worktree(
+    worktree: &mut Worktree,
+    now: Instant,
+) -> Result<Option<u64>, concats_diff::Error> {
+    if now < worktree.next_probe {
+        return Ok(worktree.fingerprint);
+    }
+    let fingerprint = concats_diff::stage::worktree_fingerprint(&worktree.repo);
+    worktree.interval = if fingerprint
+        .as_ref()
+        .is_ok_and(|fp| Some(*fp) != worktree.fingerprint)
+    {
+        Duration::from_secs(1)
+    } else {
+        (worktree.interval * 2).min(Duration::from_secs(16))
+    };
+    worktree.next_probe = now + worktree.interval;
+    worktree.fingerprint = Some(fingerprint?);
+    Ok(worktree.fingerprint)
+}
+
+impl AppService {
+    fn invalidate_worktree(&mut self, workdir: &Path) {
+        if let Some(worktree) = self.worktrees.get_mut(workdir) {
+            worktree.next_probe = Instant::now();
+            worktree.interval = Duration::from_secs(1);
+        }
+    }
+
     fn store(&mut self, git_dir: &Path) -> &mut Store {
         self.stores
             .entry(git_dir.to_path_buf())
             .or_insert_with(|| Store::open(git_dir))
+    }
+
+    fn publish_comments_changed(&mut self, git_dir: &Path) {
+        self.comments_rev += 1;
+        self.publish(git_dir);
     }
 
     /// Publish the repo's state and wake the UI.
@@ -354,9 +391,14 @@ impl ReviewService {
     }
 }
 
-impl Service for ReviewService {
+impl Service for AppService {
     type Cmd = ReviewCmd;
 
+    #[expect(
+        clippy::cognitive_complexity,
+        clippy::too_many_lines,
+        reason = "This is the single ordered I/O dispatch boundary for review commands."
+    )]
     fn handle(&mut self, cmd: ReviewCmd) {
         match cmd {
             ReviewCmd::CacheBuffers(state) => {
@@ -373,8 +415,7 @@ impl Service for ReviewService {
                 }
             }
             ReviewCmd::Open(git_dir) => {
-                self.comments_rev += 1;
-                self.publish(&git_dir);
+                self.publish_comments_changed(&git_dir);
             }
             ReviewCmd::ToggleSeen { git_dir, keys } => {
                 self.store(&git_dir).toggle(&keys);
@@ -401,8 +442,7 @@ impl Service for ReviewService {
                     external: None,
                     cursors,
                 });
-                self.comments_rev += 1;
-                self.publish(&git_dir);
+                self.publish_comments_changed(&git_dir);
             }
 
             ReviewCmd::ReplyComment {
@@ -413,13 +453,11 @@ impl Service for ReviewService {
                 let author = store::git_user_name(&git_dir);
                 self.store(&git_dir)
                     .reply_comment(parent, body, author, store::now(), None);
-                self.comments_rev += 1;
-                self.publish(&git_dir);
+                self.publish_comments_changed(&git_dir);
             }
             ReviewCmd::DeleteComment { git_dir, id } => {
                 self.store(&git_dir).delete_comment(id);
-                self.comments_rev += 1;
-                self.publish(&git_dir);
+                self.publish_comments_changed(&git_dir);
             }
             ReviewCmd::SaveFile {
                 window,
@@ -443,6 +481,7 @@ impl Service for ReviewService {
                     });
                     return;
                 }
+                self.invalidate_worktree(&plan.root);
                 // Only after the bytes landed: an anchor moved to a hash no
                 // file has would be worse than one left behind.
                 if self.store(&git_dir).rehome(plan.old, plan.new, &plan.lines) {
@@ -473,8 +512,7 @@ impl Service for ReviewService {
                 lines,
             } => {
                 if self.store(&git_dir).rehome(old, new, &lines) {
-                    self.comments_rev += 1;
-                    self.publish(&git_dir);
+                    self.publish_comments_changed(&git_dir);
                 }
             }
             ReviewCmd::HoldComments { git_dir, cursors } => {
@@ -493,15 +531,13 @@ impl Service for ReviewService {
                 if st.external_change() && st.refresh() {
                     // Another writer's change could be either half; assume the
                     // comments moved (it is a once-a-second path at worst).
-                    self.comments_rev += 1;
-                    self.publish(&git_dir);
+                    self.publish_comments_changed(&git_dir);
                 }
                 if let Some(g) = guide {
                     match store::latest_guide(&git_dir, &g.merge_base, &g.head) {
                         Some(rec) if g.applied_at != Some(rec.created_at) => {
                             notify(ReviewUpdate::GuideReady { window });
                         }
-                        Some(_) => {}
                         // Something was submitted, but not for this range: say
                         // so, don't switch the diff under the reviewer.
                         None if !store::guides(&git_dir).is_empty() => {
@@ -509,7 +545,7 @@ impl Service for ReviewService {
                                 "a guide was submitted for a different range — open it via the diff picker".into(),
                             });
                         }
-                        None => {}
+                        Some(_) | None => {}
                     }
                 }
             }
@@ -518,9 +554,30 @@ impl Service for ReviewService {
                 workdir,
                 last,
             } => {
-                let fp = concats_diff::stage::worktree_fingerprint(&workdir);
-                if fp != 0 && fp != last {
-                    notify(ReviewUpdate::WorktreeChanged { window, fp });
+                let fingerprint = (|| {
+                    let now = Instant::now();
+                    let worktree = match self.worktrees.entry(workdir.clone()) {
+                        std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
+                        std::collections::hash_map::Entry::Vacant(entry) => {
+                            entry.insert(Worktree {
+                                repo: concats_diff::load::open_repo(&workdir)?,
+                                fingerprint: None,
+                                next_probe: now,
+                                interval: Duration::from_secs(1),
+                            })
+                        }
+                    };
+                    probe_worktree(worktree, now)
+                })();
+                match fingerprint {
+                    Ok(Some(fp)) if fp != last => {
+                        notify(ReviewUpdate::WorktreeChanged { window, fp });
+                    }
+                    Ok(_) => {}
+                    Err(error) => notify(ReviewUpdate::Status {
+                        window,
+                        message: format!("cannot check worktree {}: {error}", workdir.display()),
+                    }),
                 }
             }
             ReviewCmd::StageSeen {
@@ -538,12 +595,14 @@ impl Service for ReviewService {
                             format!("staged {} hunk(s) across {} file(s)", rep.hunks, rep.files)
                         };
                         if !rep.skipped.is_empty() {
-                            msg.push_str(&format!("  ·  skipped: {}", rep.skipped.join("; ")));
+                            write!(msg, "  ·  skipped: {}", rep.skipped.join("; "))
+                                .expect("writing to a String cannot fail");
                         }
                         msg
                     }
                     Err(e) => format!("stage failed: {e}"),
                 };
+                self.invalidate_worktree(&workdir);
                 notify(ReviewUpdate::Status {
                     window,
                     message: status,
@@ -553,7 +612,12 @@ impl Service for ReviewService {
                 git_dir,
                 dock_items,
                 restores,
-            } => crate::dock::save_layout(&git_dir, dock_items, restores),
+            } => {
+                if let Err(error) = crate::dock::save_layout(&git_dir, dock_items, restores) {
+                    // NOTE: keep the last layout usable without interrupting the review.
+                    eprintln!("cannot save dock layout in {}: {error}", git_dir.display());
+                }
+            }
             ReviewCmd::RecordRecent(repo) => crate::recents::record_recent(&repo),
             ReviewCmd::LoadRecents => notify(ReviewUpdate::Recents(crate::recents::recents())),
         }
@@ -574,14 +638,70 @@ mod tests {
     /// A service publishing into its own repo's slot — no `Cx`, no window, no
     /// frame to wait for. Each test gets a fresh tempdir, so each gets a slot
     /// of its own.
-    fn service() -> (tempfile::TempDir, ReviewService, Shared<ReviewState>) {
+    fn service() -> (tempfile::TempDir, AppService, Shared<ReviewState>) {
         let tmp = tempfile::tempdir().unwrap();
         let out = review_state(Some(tmp.path()));
-        let svc = ReviewService {
+        let svc = AppService {
             stores: HashMap::new(),
+            worktrees: HashMap::new(),
             comments_rev: 0,
         };
         (tmp, svc, out)
+    }
+
+    #[test]
+    fn idle_worktrees_back_off_and_changed_worktrees_resume_fast_probes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let now = Instant::now();
+        let mut worktree = Worktree {
+            repo: gix::init(tmp.path()).unwrap(),
+            fingerprint: None,
+            next_probe: now,
+            interval: Duration::from_secs(1),
+        };
+        let original = probe_worktree(&mut worktree, now).unwrap();
+        assert!(original.is_some());
+        for seconds in [2, 4, 8, 16, 16] {
+            let due = worktree.next_probe;
+            assert_eq!(probe_worktree(&mut worktree, due).unwrap(), original);
+            assert_eq!(worktree.next_probe, due + Duration::from_secs(seconds));
+        }
+
+        std::fs::write(tmp.path().join("new.txt"), "new file\n").unwrap();
+        let due = worktree.next_probe;
+        assert_eq!(
+            probe_worktree(
+                &mut worktree,
+                due.checked_sub(Duration::from_secs(1)).unwrap()
+            )
+            .unwrap(),
+            original
+        );
+        let changed = probe_worktree(&mut worktree, due).unwrap();
+        assert_ne!(changed, original);
+        assert_eq!(worktree.next_probe, due + Duration::from_secs(1));
+        assert_eq!(probe_worktree(&mut worktree, due).unwrap(), changed);
+    }
+
+    #[test]
+    fn app_writes_make_the_next_worktree_probe_due() {
+        let (tmp, mut svc, _) = service();
+        let repo = gix::init(tmp.path()).unwrap();
+        let now = Instant::now();
+        svc.worktrees.insert(
+            tmp.path().to_path_buf(),
+            Worktree {
+                repo,
+                fingerprint: None,
+                next_probe: now + Duration::from_secs(16),
+                interval: Duration::from_secs(16),
+            },
+        );
+        svc.invalidate_worktree(tmp.path());
+        let worktree = svc.worktrees.get_mut(tmp.path()).unwrap();
+        assert!(worktree.next_probe <= Instant::now());
+        assert_eq!(worktree.interval, Duration::from_secs(1));
+        assert!(probe_worktree(worktree, Instant::now()).unwrap().is_some());
     }
 
     #[test]

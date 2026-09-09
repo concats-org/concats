@@ -110,10 +110,12 @@ fn theme(zt: &Entry, base: &Theme) -> Theme {
         .unwrap_or(surface);
     let editor_bg = hex("editor.background").unwrap_or(background);
 
-    // Syntax: map each Zed token name onto the Hl vocabulary, starting from the
-    // base map so unspecified tokens keep sensible (in-appearance) colours.
+    // NOTE: Several captures map to one category. Apply specialized names
+    // first so general colors win, with lexical order breaking alias ties.
+    let mut tokens: Vec<_> = zt.style.syntax.iter().collect();
+    tokens.sort_unstable_by_key(|(name, _)| (name.matches('.').count(), name.as_str()));
     let mut syntax = base.syntax.clone();
-    for (tok, hl) in &zt.style.syntax {
+    for (tok, hl) in tokens.into_iter().rev() {
         if let (Some(h), Some(c)) = (
             capture_to_hl(tok),
             hl.color.as_deref().and_then(parse_color),
@@ -206,6 +208,24 @@ mod tests {
         assert_eq!(parse_color("#0000"), Some(Rgba::new(0, 0, 0, 0)));
         assert_eq!(parse_color("4d5ad0"), None); // missing '#'
         assert_eq!(parse_color("#zzz"), None);
+    }
+
+    #[test]
+    fn general_syntax_categories_win_over_specialized_captures() {
+        let json = r##"{"themes":[{"name":"Fixture","style":{"syntax":{
+            "comment":{"color":"#010203"},
+            "comment.doc":{"color":"#aabbcc"},
+            "keyword.return":{"color":"#aabbcc"},
+            "keyword":{"color":"#040506"},
+            "string.regex":{"color":"#070809"}
+        }}}]}"##;
+        for _ in 0..16 {
+            let themes = import(json);
+            let syntax = &themes[0].syntax;
+            assert_eq!(syntax[&concats_syntax::Hl::Comment], Rgba::opaque(1, 2, 3));
+            assert_eq!(syntax[&concats_syntax::Hl::Keyword], Rgba::opaque(4, 5, 6));
+            assert_eq!(syntax[&concats_syntax::Hl::String], Rgba::opaque(7, 8, 9));
+        }
     }
 
     #[test]

@@ -24,7 +24,7 @@ use gix::ObjectId;
 pub struct Caret {
     pub blob: u32,
     pub line: u32,
-    pub byte: u32,
+    pub byte: usize,
 }
 
 /// An in-progress comment selection. Two-sided so it can cross a hunk's
@@ -78,10 +78,14 @@ pub(crate) const STREAMS: [Stream; 5] = [
 ];
 
 #[derive(Clone, Default)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "Stream availability, edit state, and focus are independent properties."
+)]
 pub struct ReviewDoc {
     /// The Guide tab: the agent's guide.
     pub guide_rows: Vec<Row>,
-    /// The Files tab: the same FileChanges in plain path order.
+    /// The Files tab: the same `FileChanges` in plain path order.
     pub files_rows: Vec<Row>,
     /// The Sessions tab: transcripts of the concats sessions linked to this
     /// range, interleaved with the per-commit diffs each turn produced. All
@@ -333,7 +337,7 @@ pub struct FileView {
 /// A caret as an absolute byte offset into its blob.
 fn offset_of(d: &ReviewDoc, at: Caret) -> Option<usize> {
     let blob = d.blobs.get(at.blob as usize)?;
-    Some(*blob.line_starts.get(at.line as usize)? as usize + at.byte as usize)
+    Some(*blob.line_starts.get(at.line as usize)? as usize + at.byte)
 }
 
 /// The selected byte range, with `from < to`.
@@ -387,13 +391,17 @@ pub fn selection_on(d: &ReviewDoc, blob: u32, line: u32) -> Option<(usize, usize
 }
 
 /// Put the caret at an absolute byte offset in `blob`, with nothing selected.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "The diff row model uses u32 line indices; a buffer cannot practically contain 2^32 lines."
+)]
 pub(crate) fn caret_to(d: &mut ReviewDoc, blob: u32, at: usize) {
     let b = &d.blobs[blob as usize];
     let line = b.line_of(at);
     d.caret = Some(Caret {
         blob,
         line: line as u32,
-        byte: at.saturating_sub(b.line_starts[line] as usize) as u32,
+        byte: at.saturating_sub(b.line_starts[line] as usize),
     });
     d.selection_anchor = None;
 }
@@ -436,7 +444,7 @@ pub fn type_at(d: &mut ReviewDoc, insert: &str, back: usize) -> bool {
     if !blob.editable() {
         return false;
     }
-    let start = blob.line_starts[caret.line as usize] as usize + caret.byte as usize;
+    let start = blob.line_starts[caret.line as usize] as usize + caret.byte;
     // Backspace at column 0 joins this line onto the one above, so the range
     // reaches back past a newline rather than stopping at the line's edge.
     let from = blob.text.floor_char_boundary(start.saturating_sub(back));
@@ -509,7 +517,7 @@ pub fn derive_compose(rows: &[Row], lo: usize, hi: usize) -> Option<Compose> {
                         blob: *blob,
                         start: *line,
                         end: *line,
-                    })
+                    });
                 }
                 _ => {}
             }
@@ -631,6 +639,10 @@ pub(crate) fn seen_progress(d: &ReviewDoc, st: &crate::service::ReviewState) -> 
 ///
 /// Returns the pairs it minted for comments that had none — older ones — so
 /// the caller can hand them to the store.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "The diff row model uses u32 blob indices; a document cannot practically contain 2^32 blobs."
+)]
 pub(crate) fn hold_comments(
     d: &mut ReviewDoc,
     comments: &[store::Comment],
@@ -745,6 +757,12 @@ const COMMENT_CONTEXT: u32 = 3;
 /// Only the context rows are built here. The comment rows are spliced in by the
 /// same `inject_comments` pass every stream gets, so this tab cannot disagree
 /// with the diff about where a thread sits.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cognitive_complexity,
+    clippy::too_many_lines,
+    reason = "Thread context is merged with a running right edge in the diff model’s u32 line coordinates."
+)]
 fn comments_stream(
     blobs: &[Blob],
     blob_paths: &std::collections::HashMap<u32, String>,
@@ -807,7 +825,7 @@ fn comments_stream(
         let group = &roots[at..group_end];
         at = group_end;
 
-        let path_blobs = of_path.get(path).map(Vec::as_slice).unwrap_or(&[]);
+        let path_blobs: &[u32] = of_path.get(path).map_or(&[], Vec::as_slice);
         // Locate each thread, then merge threads whose context overlaps into
         // one card — the same line must not render in two cards, or the splice
         // would attach every thread at both occurrences.
@@ -1789,10 +1807,10 @@ mod tests {
 
     /// A buffer with a caret at `head` and, when given, an anchor at `tail` —
     /// both as `(line, byte)` on the one editable blob.
-    fn with_selection(text: &str, head: (u32, u32), tail: Option<(u32, u32)>) -> ReviewDoc {
+    fn with_selection(text: &str, head: (u32, usize), tail: Option<(u32, usize)>) -> ReviewDoc {
         let mut blob = blob(text);
         blob.origin = Some(std::path::PathBuf::from("/repo/a.rs"));
-        let at = |(line, byte): (u32, u32)| Caret {
+        let at = |(line, byte): (u32, usize)| Caret {
             blob: 0,
             line,
             byte,
@@ -2050,6 +2068,11 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::cognitive_complexity,
+        clippy::format_collect,
+        reason = "Generated fixture lines and row assertions keep the expected context visible together."
+    )]
     fn comments_tab_frames_a_thread_in_the_context_a_hunk_gets() {
         let text: String = (0..20).map(|n| format!("line {n}\n")).collect();
         let blobs = vec![Blob::new(oid(1), "rs".into(), text)];
@@ -2087,6 +2110,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::format_collect,
+        reason = "Generated fixture lines make the expected context explicit."
+    )]
     fn comment_context_uses_the_newest_anchor_regardless_of_input_order() {
         let text: String = (0..20).map(|n| format!("line {n}\n")).collect();
         let blobs = vec![Blob::new(oid(1), "rs".into(), text)];
@@ -2110,6 +2137,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::format_collect,
+        reason = "Generated fixture lines make the expected context explicit."
+    )]
     fn threads_with_overlapping_context_share_a_card() {
         let text: String = (0..20).map(|n| format!("line {n}\n")).collect();
         let blobs = vec![Blob::new(oid(1), "rs".into(), text)];
@@ -2170,6 +2201,10 @@ mod tests {
     /// Another process — a fresh document over the same bytes — adopts that
     /// pair instead of minting again.
     #[test]
+    #[expect(
+        clippy::format_collect,
+        reason = "Generated fixture lines make the expected context explicit."
+    )]
     fn the_splice_mints_cursors_for_a_comment_that_has_none() {
         let text: String = (0..20).map(|n| format!("line {n}\n")).collect();
         let editable = || {

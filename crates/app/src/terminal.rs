@@ -67,31 +67,31 @@ pub struct Report {
 /// the pixel size, which full-screen apps ask for to lay themselves out.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Size {
-    pub columns: usize,
-    pub screen_lines: usize,
+    pub columns: u16,
+    pub screen_lines: u16,
     pub cell_width: u16,
     pub cell_height: u16,
 }
 
 impl Dimensions for Size {
     fn total_lines(&self) -> usize {
-        self.screen_lines
+        usize::from(self.screen_lines)
     }
 
     fn screen_lines(&self) -> usize {
-        self.screen_lines
+        usize::from(self.screen_lines)
     }
 
     fn columns(&self) -> usize {
-        self.columns
+        usize::from(self.columns)
     }
 }
 
 impl From<Size> for WindowSize {
     fn from(size: Size) -> Self {
         Self {
-            num_lines: size.screen_lines as u16,
-            num_cols: size.columns as u16,
+            num_lines: size.screen_lines,
+            num_cols: size.columns,
             cell_width: size.cell_width,
             cell_height: size.cell_height,
         }
@@ -418,7 +418,7 @@ mod tests {
     /// command, and find its output in the grid.
     #[test]
     fn shell_output_reaches_the_grid() {
-        let session = session(0xC0FFEE01);
+        let session = session(0xC0FF_EE01);
         open(session, Path::new("."), &[]);
         assert!(is_open(session), "shell failed to spawn");
         input(session, b"printf 'concats_%s\\n' ok\r".to_vec());
@@ -431,7 +431,7 @@ mod tests {
     /// map with `TERM`/`COLORTERM`. A command must still see it.
     #[test]
     fn env_reaches_the_shell() {
-        let session = session(0xC0FFEE02);
+        let session = session(0xC0FF_EE02);
         open(
             session,
             Path::new("."),
@@ -446,11 +446,11 @@ mod tests {
         close(session);
     }
 
-    /// A resize has to reach the shell, not just the model: `tput` asks the
-    /// tty itself, so only a real `TIOCSWINSZ` can produce the answer.
+    /// NOTE: `stty` reads the PTY size directly; `tput` can instead report
+    /// the shell’s cached LINES/COLUMNS values during startup.
     #[test]
     fn a_resize_reaches_the_term_and_the_shell() {
-        let session = session(0xC0FFEE03);
+        let session = session(0xC0FF_EE03);
         open(session, Path::new("."), &[]);
         assert!(is_open(session), "shell failed to spawn");
         resize(
@@ -469,8 +469,12 @@ mod tests {
             assert_eq!(term.columns(), 97);
             assert_eq!(term.screen_lines(), 31);
         }
-        input(session, b"echo cols=$(tput cols)\r".to_vec());
-        assert!(until(|| screen(session).contains("cols=97")));
+        input(session, b"printf 'size='; stty size\r".to_vec());
+        assert!(
+            until(|| screen(session).contains("size=31 97")),
+            "PTY size did not reach the shell: {}",
+            screen(session)
+        );
         close(session);
     }
 
@@ -478,7 +482,7 @@ mod tests {
     /// spawns a new one instead of talking to a corpse.
     #[test]
     fn an_exited_shell_is_reaped() {
-        let session = session(0xC0FFEE04);
+        let session = session(0xC0FF_EE04);
         open(session, Path::new("."), &[]);
         assert!(is_open(session), "shell failed to spawn");
         input(session, b"exit\r".to_vec());
@@ -494,7 +498,7 @@ mod tests {
     /// Nothing in a shell's own startup emits this, so the report is ours.
     #[test]
     fn a_copy_request_reaches_the_report() {
-        let session = session(0xC0FFEE05);
+        let session = session(0xC0FF_EE05);
         open(session, Path::new("."), &[]);
         assert!(is_open(session), "shell failed to spawn");
         // base64 of "concats_copied", which the terminal decodes.
@@ -513,7 +517,7 @@ mod tests {
     /// keeps what [`open`] configured and no more.
     #[test]
     fn a_flood_keeps_its_tail_and_caps_the_scrollback() {
-        let session = session(0xC0FFEE06);
+        let session = session(0xC0FF_EE06);
         open(session, Path::new("."), &[]);
         assert!(is_open(session), "shell failed to spawn");
         // The echoed command line already holds the count, so the needle has

@@ -10,6 +10,10 @@
 use concats_diff::LineKind;
 use concats_syntax::Span;
 
+#[allow(
+    clippy::wildcard_imports,
+    reason = "Makepad macros and derives expand against the widget prelude in this scope."
+)]
 use crate::{ROW_PAD, frame_theme, makepad_widgets::*, row_bg, row_selected_bg, theme::paint};
 
 script_mod! {
@@ -202,6 +206,10 @@ impl Widget for DiffLine {
         false
     }
 
+    #[expect(
+        clippy::cognitive_complexity,
+        reason = "Text, selection, caret, and gutter are painted in one row’s draw pass."
+    )]
     fn draw_walk(&mut self, cx: &mut Cx2d, scope: &mut Scope, walk: Walk) -> DrawStep {
         let kind = self.kind.unwrap_or(LineKind::Context);
         let Some(theme) = frame_theme(scope) else {

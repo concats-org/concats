@@ -70,6 +70,10 @@ fn shade_indexed(idx: u8, flags: Flags) -> usize {
 
 /// One palette slot: whatever OSC set, else what the theme and the standard
 /// ramps say.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "The cube and grey-ramp match arms bound each channel to 0..=255."
+)]
 fn index(idx: usize, colors: &Colors, theme: &Theme) -> Rgba {
     if let Some(rgb) = colors[idx] {
         return from_rgb(rgb);

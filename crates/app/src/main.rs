@@ -22,27 +22,32 @@
 //! Perf: F3 toggles the live frame graph. Loading happens on a worker thread,
 //! so a huge diff slows the load, not the window.
 //!
-//! With `--features dev-hooks`: CONCATS_APP_SHOT=/path.png writes a PNG of the frame after the
+//! With `--features dev-hooks`: `CONCATS_APP_SHOT=/path.png` writes a PNG of the frame after the
 //! first load lands (no macOS screen-recording permission needed).
-//! CONCATS_APP_COMPOSE=path:s:e pre-opens the comment composer,
-//! CONCATS_APP_COMBO=1 the diff picker, CONCATS_APP_PICK_REPO=1 the repo picker,
-//! CONCATS_APP_SHARE=1 the share dropdown, CONCATS_APP_SETTINGS=1 the Settings
-//! tab. CONCATS_APP_FILE=path[,path…] opens a File tab per named file of the
-//! head tree, as picking them in the browser would. CONCATS_APP_TYPE=text types
-//! that text at the caret a tick after CONCATS_APP_CLICK placed one.
-//! CONCATS_APP_SCROLL=N starts the list at row N, which screenshots the sticky
-//! header without a pointer. CONCATS_APP_WINDOWS=N opens N windows on the
-//! range, the way ⌘N does. CONCATS_APP_THEME=name overrides the startup theme
+//! `CONCATS_APP_COMPOSE=path:s:e` pre-opens the comment composer,
+//! `CONCATS_APP_COMBO=1` the diff picker, `CONCATS_APP_PICK_REPO=1` the repo picker,
+//! `CONCATS_APP_SHARE=1` the share dropdown, `CONCATS_APP_SETTINGS=1` the Settings
+//! tab. `CONCATS_APP_FILE=path[,path…]` opens a File tab per named file of the
+//! head tree, as picking them in the browser would. `CONCATS_APP_TYPE=text` types
+//! that text at the caret a tick after `CONCATS_APP_CLICK` placed one.
+//! `CONCATS_APP_SCROLL=N` starts the list at row N, which screenshots the sticky
+//! header without a pointer. `CONCATS_APP_WINDOWS=N` opens N windows on the
+//! range, the way ⌘N does. `CONCATS_APP_THEME=name` overrides the startup theme
 //! (else the persisted config, else the built-in Concats theme).
 
 use std::{path::PathBuf, sync::Arc};
 
+use clap::Parser;
 use concats_diff::LineKind;
 use concats_review::store;
 use concats_state::Target;
 use dock::{load_layout, stream_tab_spec, sync_stream_tab};
 use load::resplice_comments;
 pub use makepad_widgets;
+#[allow(
+    clippy::wildcard_imports,
+    reason = "Makepad macros and derives expand against the widget prelude in this scope."
+)]
 use makepad_widgets::*;
 use review_doc::{ReviewDoc, Stream, status_line};
 use service::{ReviewCmd, ReviewUpdate, review, review_state};
@@ -78,6 +83,10 @@ mod window;
 /// an ordinary (unused) function, so the crate root can own the real entry point
 /// and answer a headless caller before any window exists.
 mod gui {
+    #[allow(
+        clippy::wildcard_imports,
+        reason = "Makepad macros and derives expand against the widget prelude in this scope."
+    )]
     use super::*;
     app_main!(App);
 }
@@ -108,7 +117,6 @@ struct Args {
 }
 
 fn main() {
-    use clap::Parser;
     Args::parse();
     gui::app_main();
 }
@@ -313,6 +321,10 @@ impl AppWindow {
 impl MatchEvent for App {
     /// Replies from the review service. The action only says that something
     /// changed; what it means for pixels is decided here.
+    #[expect(
+        clippy::cognitive_complexity,
+        reason = "Window-owned actions must be filtered and handled in their batch order."
+    )]
     fn handle_actions(&mut self, cx: &mut Cx, actions: &Actions) {
         for action in actions {
             match action.downcast_ref::<ReviewUpdate>() {
@@ -453,7 +465,6 @@ impl MatchEvent for App {
             ],
         });
 
-        use clap::Parser;
         let args = Args::parse();
         let guide = args.guide;
         let repo = args.repo.or(args.repo_path).unwrap_or_else(|| ".".into());
@@ -640,6 +651,10 @@ impl AppWindow {
 
     /// Reflect this window's document into its chrome. Returns whether
     /// anything changed, which is the App's cue to run the capture hooks.
+    #[expect(
+        clippy::cognitive_complexity,
+        reason = "Document, dock, and terminal state are reconciled together after publication."
+    )]
     fn reconcile(&mut self, cx: &mut Cx) -> bool {
         let s = self.state.snapshot();
         // Spin the header's ↻ whenever a load is in flight. This runs on every
@@ -666,8 +681,7 @@ impl AppWindow {
             review().send(ReviewCmd::RecordRecent(s.repo.clone()));
             let dir = std::path::Path::new(&s.repo)
                 .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_else(|| s.repo.clone());
+                .map_or_else(|| s.repo.clone(), |n| n.to_string_lossy().into_owned());
             pane.button(cx, ids!(repo_button))
                 .set_text(cx, if dir.is_empty() { "concats app" } else { &dir });
             pane.button(cx, ids!(range_button))
@@ -684,10 +698,10 @@ impl AppWindow {
             // before reconciliation, which then closes any restored tab
             // whose stream this particular load doesn't have.
             if s.git_dir.is_some() && self.layout_git_dir != s.git_dir {
-                self.layout_git_dir = s.git_dir.clone();
+                self.layout_git_dir.clone_from(&s.git_dir);
                 if let Some(layout) = s.git_dir.as_deref().and_then(load_layout) {
-                    let open = matches!(
-                        layout.dock_items.get(&id!(root)),
+                    let terminal_open = matches!(
+                        layout.dock_items.get(&id!(body_split)),
                         Some(DockItem::Splitter {
                             align: SplitterAlign::FromB(h),
                             ..
@@ -708,7 +722,7 @@ impl AppWindow {
                         }
                     }
                     dock.load_state(cx, layout.dock_items);
-                    if open && let Some(mut p) = pane.borrow_mut::<ReviewPane>() {
+                    if terminal_open && let Some(mut p) = pane.borrow_mut::<ReviewPane>() {
                         // A restored-open panel needs its shell running;
                         // extra session tabs respawn when pressed.
                         p.open_terminal(cx, id!(terminal_tab));
@@ -795,8 +809,7 @@ impl AppWindow {
             {
                 let restores = pane
                     .borrow::<ReviewPane>()
-                    .map(|p| (p.bottom_restore, p.sidebar_restore))
-                    .unwrap_or((0.0, 0.0));
+                    .map_or((0.0, 0.0), |p| (p.bottom_restore, p.sidebar_restore));
                 if let Some(items) = dock.clone_state() {
                     review().send(ReviewCmd::SaveLayout {
                         git_dir,
@@ -930,7 +943,7 @@ impl AppWindow {
 /// Build `mod.app_theme` — the DSL palette the chrome reads — from the active
 /// Rust theme (`theme.rs`). Colors splice in as `pod_vec4f`, valid as plain
 /// props and shader uniforms alike. Runs before the app's own `script_mod!`
-/// block AND terminal_view's (both read `mod.app_theme.*`), and re-runs on every
+/// block AND `terminal_view`'s (both read `mod.app_theme.*`), and re-runs on every
 /// `request_live_edit`, so a theme switch re-bakes the whole chrome.
 fn install_app_theme(vm: &mut ScriptVm) {
     let t = theme::active_theme();
@@ -969,14 +982,14 @@ fn install_app_theme(vm: &mut ScriptVm) {
     });
 }
 
-/// Build `mod.app_font` — the resources the DSL TextStyles hang their font
+/// Build `mod.app_font` — the resources the DSL `TextStyles` hang their font
 /// members off — from the active font setting (theme.rs). Re-runs on
 /// `request_live_edit`, so a font change re-bakes app-wide. Built before the
-/// app + terminal_view blocks.
+/// app + `terminal_view` blocks.
 ///
 /// Only the resources are built here. A `FontFamily` assembled in this scope
 /// and referenced by name applies as an empty family — every glyph disappears —
-/// so the family literal stays in each TextStyle and this fills its slots.
+/// so the family literal stays in each `TextStyle` and this fills its slots.
 ///
 /// The embedded fonts always follow the user's, so no setting can leave the app
 /// without box drawing, CJK or emoji. The user's own faces occupy a fixed four
@@ -984,9 +997,9 @@ fn install_app_theme(vm: &mut ScriptVm) {
 /// list repeats, which costs the shaper a duplicate miss on a glyph nobody has
 /// and keeps the block readable.
 fn install_app_font(vm: &mut ScriptVm) {
-    let f = theme::active_font();
-    let size = f.size;
-    if f.paths.is_empty() {
+    let font = theme::active_font();
+    let size = font.size;
+    if font.paths.is_empty() {
         script_eval!(vm, {
             mod.app_font = {
                 size: #(size)
@@ -1001,8 +1014,8 @@ fn install_app_font(vm: &mut ScriptVm) {
         });
         return;
     }
-    let mut slots = f.paths.iter().cycle();
-    let (a, b, c, d) = (
+    let mut slots = font.paths.iter().cycle();
+    let (first, second, third, fourth) = (
         slots.next().cloned().unwrap_or_default(),
         slots.next().cloned().unwrap_or_default(),
         slots.next().cloned().unwrap_or_default(),
@@ -1011,10 +1024,10 @@ fn install_app_font(vm: &mut ScriptVm) {
     script_eval!(vm, {
         mod.app_font = {
             size: #(size)
-            first: mod.res.file_resource(#(a))
-            second: mod.res.file_resource(#(b))
-            third: mod.res.file_resource(#(c))
-            fourth: mod.res.file_resource(#(d))
+            first: mod.res.file_resource(#(first))
+            second: mod.res.file_resource(#(second))
+            third: mod.res.file_resource(#(third))
+            fourth: mod.res.file_resource(#(fourth))
             mono: mod.res.crate_resource("makepad_widgets:resources/jetbrains_mono_variable.ttf")
             cjk: mod.res.crate_resource("makepad_widgets:resources/LXGWWenKaiRegular.ttf")
             emoji: mod.res.crate_resource("makepad_widgets:resources/NotoColorEmoji.ttf")
@@ -1027,7 +1040,6 @@ impl AppMain for App {
         crate::makepad_widgets::script_mod(vm);
         install_app_theme(vm);
         install_app_font(vm);
-        terminal_view::script_mod(vm);
         widgets::script_mod(vm);
         self::script_mod(vm)
     }

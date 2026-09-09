@@ -8,12 +8,21 @@
 //! widgets and turns the `Gutter`'s drag actions into the inline comment
 //! composer.
 
-use std::{collections::HashSet, sync::Arc};
+use std::{
+    collections::HashSet,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use concats_diff::{CollapsedEnd, LineKind, Row, Side};
 use concats_review::{interchange, store};
+use makepad_service::Shared;
 
 use super::{FileBrowserAction, GutterAction, ReviewList, SeenBar, review_list::ReviewItemAction};
+#[allow(
+    clippy::wildcard_imports,
+    reason = "Makepad macros and derives expand against the widget prelude in this scope."
+)]
 use crate::{
     FrameData, WindowScope,
     dock::{
@@ -664,11 +673,15 @@ pub struct ReviewPane {
     #[rust]
     state: Option<std::sync::Arc<WindowState>>,
     #[rust]
+    review_git_dir: Option<PathBuf>,
+    #[rust]
+    review_output: Shared<service::ReviewState>,
+    #[rust]
     file_titles_generation: u64,
     #[rust]
     file_titles_rows_rev: u64,
-    /// The panel slide in flight, stepped on NextFrame with studio's 0.16s
-    /// ease-out cubic (app_backend.rs). One at a time: the two panels are
+    /// The panel slide in flight, stepped on `NextFrame` with studio's 0.16s
+    /// ease-out cubic (`app_backend.rs`). One at a time: the two panels are
     /// toggled by two different buttons.
     #[rust]
     slide: Option<Slide>,
@@ -711,7 +724,7 @@ macro_rules! combo_rows {
     };
 }
 
-/// The recent-repo row slots of the repo picker (capped to match recents::MAX).
+/// The recent-repo row slots of the repo picker (capped to match `recents::MAX`).
 macro_rules! repo_rows {
     () => {
         [
@@ -725,6 +738,14 @@ macro_rules! repo_rows {
 }
 
 impl ReviewPane {
+    fn review_snapshot(&mut self, git_dir: Option<&Path>) -> Arc<service::ReviewState> {
+        if self.review_git_dir.as_deref() != git_dir {
+            self.review_output = review_state(git_dir);
+            self.review_git_dir = git_dir.map(Path::to_path_buf);
+        }
+        self.review_output.load()
+    }
+
     /// Take the window this pane renders. Called by the App as the window
     /// opens, before any event reaches the pane.
     pub(crate) fn adopt(&mut self, state: std::sync::Arc<WindowState>) {
@@ -769,11 +790,11 @@ impl ReviewPane {
     /// the ODB (or one `read` of a working file) plus a newline scan —
     /// single-digit milliseconds — and it must not bump `generation`, the only
     /// thing a landed background load could signal with.
-    pub fn open_file_tab(&mut self, cx: &mut Cx, path: String) {
+    pub fn open_file_tab(&mut self, cx: &mut Cx, path: &str) {
         let (repo, range) = self
             .state()
             .read(|d| (d.repo.clone(), (d.merge_base_oid, d.head_oid)));
-        let sides = match read_file_sides(&repo, range, &path) {
+        let sides = match read_file_sides(&repo, range, path) {
             Ok(sides) => sides,
             Err(e) => {
                 return self
@@ -783,17 +804,17 @@ impl ReviewPane {
             }
         };
         let git_dir = self.state().read(|d| d.git_dir.clone());
-        let comments = review_state(git_dir.as_deref()).load().comments.clone();
-        let minted = self.state().with(|d| open_file(d, &path, sides, &comments));
+        let comments = self.review_snapshot(git_dir.as_deref()).comments.clone();
+        let minted = self.state().with(|d| open_file(d, path, sides, &comments));
         hold_minted(git_dir.as_deref(), minted);
 
-        let tab_id = file_tab_id(&path);
+        let tab_id = file_tab_id(path);
         let dock = self.view.dock(cx, ids!(dock));
         let title = self.state().read(|d| {
             let dirty = d
                 .file(tab_id.0)
                 .is_some_and(|file| d.blobs[file.head as usize].dirty());
-            crate::file_view::file_tab_title(&path, d.head_oid, dirty)
+            crate::file_view::file_tab_title(path, d.head_oid, dirty)
         });
         open_tab_beside_streams(
             cx,
@@ -872,8 +893,7 @@ impl ReviewPane {
                 Some(path) => {
                     let name = std::path::Path::new(path)
                         .file_name()
-                        .map(|n| n.to_string_lossy().into_owned())
-                        .unwrap_or_else(|| path.clone());
+                        .map_or_else(|| path.clone(), |n| n.to_string_lossy().into_owned());
                     row.set_text(cx, &name);
                     row.set_visible(cx, true);
                 }
@@ -1061,7 +1081,7 @@ impl ReviewPane {
     /// is stale the moment a row is inserted mid-stream.
     fn toggle_card_outdated(&mut self, cx: &mut Cx, path: &str) {
         let git_dir = self.state().read(|d| d.git_dir.clone());
-        let comments = review_state(git_dir.as_deref()).load().comments.clone();
+        let comments = self.review_snapshot(git_dir.as_deref()).comments.clone();
         self.state().with(|d| {
             if !d.show_all_comments.remove(path) {
                 d.show_all_comments.insert(path.to_string());
@@ -1087,7 +1107,7 @@ impl ReviewPane {
     pub fn refresh_progress(&mut self, cx: &mut Cx) {
         let (seen, total) = {
             let docs = self.state().snapshot();
-            seen_progress(&docs, &review_state(docs.git_dir.as_deref()).load())
+            seen_progress(&docs, &self.review_snapshot(docs.git_dir.as_deref()))
         };
         if let Some(mut bar) = self.view.widget(cx, ids!(progress)).borrow_mut::<SeenBar>() {
             bar.set_progress(cx, seen, total);
@@ -1107,7 +1127,7 @@ impl ReviewPane {
         let (md, n) = {
             let docs = self.state().snapshot();
             let d = &*docs;
-            let st = review_state(d.git_dir.as_deref()).load();
+            let st = self.review_snapshot(d.git_dir.as_deref());
             let (old, new) = interchange::blob_sides(d.files_rows.iter(), &d.blobs);
             let mut entries = interchange::entries_from(&st.comments, &old, &new);
             entries.sort_by(|x, y| (&x.path, x.start, x.id).cmp(&(&y.path, y.start, y.id)));
@@ -1396,12 +1416,12 @@ impl ReviewPane {
     /// Spawn this tab's shell in the loaded repo. A running session is never
     /// restarted — opening is idempotent.
     ///
-    /// The shell gets CONCATS_APP_WINDOW — this window's identity — and the CLI
+    /// The shell gets `CONCATS_APP_WINDOW` — this window's identity — and the CLI
     /// resolves the window's current range through it (the app republishes on
     /// every load), so `concats manifest` (or an agent running the review-guide
     /// skill) in this terminal targets the diff on screen with no flags, even
     /// after the reviewer switches ranges. The spawn-time
-    /// CONCATS_APP_REPO/BASE/HEAD values ride along as the fallback for when
+    /// `CONCATS_APP_REPO/BASE/HEAD` values ride along as the fallback for when
     /// the app has exited.
     pub fn open_terminal(&mut self, cx: &mut Cx, tab: LiveId) {
         let (repo, base, head) = self
@@ -1475,7 +1495,7 @@ impl ReviewPane {
     }
 
     /// Open the bottom panel with the permanent terminal selected and its
-    /// shell running. The screenshot path (CONCATS_APP_TERM=1) — rides
+    /// shell running. The screenshot path (`CONCATS_APP_TERM=1`) — rides
     /// the same slide animation as the toggle, so the shot also proves the
     /// slide completed.
     pub fn reveal_terminal(&mut self, cx: &mut Cx) {
@@ -1613,6 +1633,10 @@ impl ReviewPane {
     /// The diff picker: chip toggles, typing filters, Enter accepts a typed
     /// ref (or an explicit base...head), a row click picks that ref as the
     /// base — both against HEAD.
+    #[expect(
+        clippy::cognitive_complexity,
+        reason = "Picker input and row actions are handled in their UI order."
+    )]
     fn handle_diff_picker(&mut self, cx: &mut Cx, actions: &Actions) {
         if self.view.button(cx, ids!(range_button)).clicked(actions) {
             if self.view.view(cx, ids!(combo_panel)).visible() {
@@ -1630,15 +1654,15 @@ impl ReviewPane {
             .returned(actions)
         {
             let text = text.trim().to_string();
-            if !text.is_empty() {
+            if text.is_empty() {
+                self.combo_close(cx);
+            } else {
                 let (base, head) = match text.split_once("...").or_else(|| text.split_once("..")) {
                     Some((b, h)) => (b.trim().to_string(), h.trim().to_string()),
                     None => (text, "HEAD".to_string()),
                 };
                 let repo = self.state().read(|d| d.repo.clone());
                 self.combo_load(cx, repo, base, head);
-            } else {
-                self.combo_close(cx);
             }
         }
         if self.view.text_input(cx, ids!(combo_input)).escaped(actions) {
@@ -1665,6 +1689,10 @@ impl ReviewPane {
     /// drag plumbing hands the event straight back to the dock, which does
     /// all the split/merge/reorder work internally. The terminal view's and
     /// the file browser's actions ride the same widget-action pass.
+    #[expect(
+        clippy::cognitive_complexity,
+        reason = "Dock, terminal, and file-browser actions share the owning window’s action pass."
+    )]
     fn handle_dock_actions(&mut self, cx: &mut Cx, actions: &[&WidgetAction]) {
         let dock = self.view.dock(cx, ids!(dock));
         // A File tab is its file's identity, so telling one from a terminal's
@@ -1732,14 +1760,14 @@ impl ReviewPane {
                 _ => {}
             }
             match wa.cast() {
-                TerminalViewAction::OpenFile(path) => self.open_file_tab(cx, path),
+                TerminalViewAction::OpenFile(path) => self.open_file_tab(cx, &path),
                 TerminalViewAction::Input { session, data } => terminal::input(session, data),
                 TerminalViewAction::None => {}
             }
             // The file browser names a path; the pane owns the dock, so
             // turning that into a tab is this side's job.
             match wa.cast() {
-                FileBrowserAction::OpenFile(path) => self.open_file_tab(cx, path),
+                FileBrowserAction::OpenFile(path) => self.open_file_tab(cx, &path),
                 FileBrowserAction::None => {}
             }
         }
@@ -1747,6 +1775,10 @@ impl ReviewPane {
 
     /// The chrome around the dock: the panel toggles, the per-stream view
     /// buttons, the Share menu, and the settings gear.
+    #[expect(
+        clippy::cognitive_complexity,
+        reason = "Each chrome control has an independent action in this dispatch boundary."
+    )]
     fn handle_chrome_buttons(&mut self, cx: &mut Cx, actions: &Actions) {
         // The terminal button opens the panel on the shell; the panel button
         // next to the settings gear is the plain show/hide.
@@ -1825,6 +1857,10 @@ impl ReviewPane {
     /// Per-item actions from the virtualized lists — one list per dock tab:
     /// the viewed tick box on a file card, a comment's delete button, the
     /// gutter's comment gestures, and the inline composer's controls.
+    #[expect(
+        clippy::cognitive_complexity,
+        reason = "Row actions are dispatched against the current document in action order."
+    )]
     fn handle_item_actions(&mut self, cx: &mut Cx, actions: &[&WidgetAction]) {
         for action in actions {
             let Some(target) = action
@@ -1997,7 +2033,7 @@ impl Widget for ReviewPane {
         }
         let compose_draft = state.compose_draft.read().unwrap().clone();
         let mut frame = FrameData {
-            review: review_state(document.git_dir.as_deref()).load(),
+            review: self.review_snapshot(document.git_dir.as_deref()),
             theme: crate::theme::active_theme(),
             focus_composer,
             compose_draft,

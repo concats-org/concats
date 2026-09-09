@@ -203,6 +203,10 @@ fn resolve_font_paths(spec: &str) -> Vec<String> {
 /// Resolve a `font` spec — absolute path (used as-is if it exists) or family
 /// name (matched against the macOS system font dirs, alphanumerics only, so
 /// "SF Mono" ~ "SFMono-Regular", "Menlo" ~ "Menlo.ttc"). `None` = bundled font.
+#[expect(
+    clippy::cognitive_complexity,
+    reason = "Font candidates are ranked across system directories in one search."
+)]
 fn resolve_font_path(spec: &str) -> Option<String> {
     let spec = spec.trim();
     if spec.is_empty() {

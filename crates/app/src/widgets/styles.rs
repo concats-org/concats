@@ -8,6 +8,10 @@
 //! Registered first in `widgets::script_mod`, so these exist before the widgets
 //! and the app layout that embed them.
 
+#[allow(
+    clippy::wildcard_imports,
+    reason = "Makepad macros and derives expand against the widget prelude in this scope."
+)]
 use crate::makepad_widgets::*;
 
 script_mod! {
@@ -89,6 +93,25 @@ script_mod! {
         }
         draw_text +: {
             color: mod.app_theme.color_text
+        }
+    }
+
+    mod.widgets.FindBar = SolidView {
+        width: Fill height: Fit
+        draw_bg.color: mod.app_theme.color_bg
+        flow: Down
+        padding: 8
+        spacing: 4
+        find_input := mod.widgets.DarkInput {
+            width: Fill height: 26
+            is_multiline: false
+            submit_on_enter: true
+            empty_text: "Find"
+        }
+        find_count := Label {
+            width: Fill height: Fit
+            draw_text.color: mod.app_theme.color_faint
+            draw_text.text_style: mod.widgets.FONT{font_size: 8.25}
         }
     }
 

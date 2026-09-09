@@ -1,5 +1,14 @@
 //! UI automation used by visual tests, enabled with `--features dev-hooks`.
+#[allow(
+    clippy::wildcard_imports,
+    reason = "Makepad macros and derives expand against the widget prelude in this scope."
+)]
 use super::*;
+
+fn pointer_position(spec: &str) -> Option<(f64, f64)> {
+    let (x, y) = spec.split_once(',')?;
+    Some((x.trim().parse().ok()?, y.trim().parse().ok()?))
+}
 
 pub(crate) fn var(name: &str) -> Result<String, std::env::VarError> {
     #[cfg(feature = "dev-hooks")]
@@ -15,10 +24,15 @@ pub(crate) fn var(name: &str) -> Result<String, std::env::VarError> {
 
 impl App {
     /// The dev/screenshot hooks
-    /// (CONCATS_APP_COMBO/SHARE/TAB/SCROLL/TERM/SETTINGS/SHOT) fire once per
-    /// run, after a load lands; SHOT_EVERY re-arms them on every load. Each
+    /// (`CONCATS_APP_COMBO/SHARE/TAB/SCROLL/TERM/SETTINGS/SHOT`) fire once per
+    /// run, after a load lands; `SHOT_EVERY` re-arms them on every load. Each
     /// opens the UI a pointer would, so a headless test can capture it. Nothing
     /// in production reads them.
+    #[expect(
+        clippy::cognitive_complexity,
+        clippy::too_many_lines,
+        reason = "Screenshot setup follows the same ordered phases as native startup."
+    )]
     pub(super) fn apply_screenshot_hooks(&mut self, cx: &mut Cx) {
         let rearm = crate::dev_hooks::var("CONCATS_APP_SHOT_EVERY").is_ok_and(|v| !v.is_empty());
         if self.shot_done && !rearm {
@@ -30,7 +44,7 @@ impl App {
             let pane = self.ui.widget(cx, ids!(pane_a));
             if let Some(mut p) = pane.borrow_mut::<ReviewPane>() {
                 p.combo_open(cx);
-            };
+            }
         }
         // CONCATS_APP_PICK_REPO=1: pre-open the repo picker (recent repos +
         // "Open dir…") so its dropdown can be screenshotted without a pointer.
@@ -38,7 +52,7 @@ impl App {
             let pane = self.ui.widget(cx, ids!(pane_a));
             if let Some(mut p) = pane.borrow_mut::<ReviewPane>() {
                 p.repo_open(cx);
-            };
+            }
         }
         // CONCATS_APP_SHARE=1: likewise for the share dropdown —
         // with the same worktree-only stage row the click path shows.
@@ -70,26 +84,6 @@ impl App {
                 self.focus_window(&primary);
             }
         }
-        // CONCATS_APP_TAB=guide|sessions|commits|comments|files: land on a
-        // specific tab, so each one can be screenshotted.
-        if let Ok(tab) = crate::dev_hooks::var("CONCATS_APP_TAB") {
-            let t = match tab.as_str() {
-                "guide" => Some(Stream::Guide),
-                "sessions" => Some(Stream::Sessions),
-                "commits" => Some(Stream::Commits),
-                "comments" => Some(Stream::Comments),
-                "files" => Some(Stream::Files),
-                _ => None,
-            };
-            if let Some(t) = t {
-                let pane = self.ui.widget(cx, ids!(pane_a));
-                pane.dock(cx, ids!(dock))
-                    .select_tab(cx, stream_tab_spec(t).id);
-                if let Some(mut p) = pane.borrow_mut::<ReviewPane>() {
-                    p.set_gesture_tab(cx, t);
-                };
-            }
-        }
         // CONCATS_APP_FOLD=path[,path…]: shut those file cards, so the
         // folded state can be screenshotted without a pointer.
         if let (Ok(paths), Some(state)) = (
@@ -117,7 +111,7 @@ impl App {
             let list = content.portal_list(cx, ids!(list));
             if let Some(mut pl) = list.borrow_mut() {
                 pl.set_first_id_and_scroll(n, 0.0);
-            };
+            }
         }
         // CONCATS_APP_TERM=1: pre-open the terminal panel (and its
         // shell) so it can be screenshotted without a pointer.
@@ -125,7 +119,7 @@ impl App {
             let pane = self.ui.widget(cx, ids!(pane_a));
             if let Some(mut p) = pane.borrow_mut::<ReviewPane>() {
                 p.reveal_terminal(cx);
-            };
+            }
         }
         // CONCATS_APP_SETTINGS=1: pre-open the settings editor so it
         // can be screenshotted without a pointer.
@@ -133,7 +127,7 @@ impl App {
             let pane = self.ui.widget(cx, ids!(pane_a));
             if let Some(mut p) = pane.borrow_mut::<ReviewPane>() {
                 p.open_settings_tab(cx);
-            };
+            }
         }
         // CONCATS_APP_FILE=path[,path…]: open those files of the head tree,
         // as picking them in the browser would — one tab each.
@@ -141,8 +135,34 @@ impl App {
             for path in paths.split(',').filter(|p| !p.is_empty()) {
                 let pane = self.ui.widget(cx, ids!(pane_a));
                 if let Some(mut p) = pane.borrow_mut::<ReviewPane>() {
-                    p.open_file_tab(cx, path.to_string());
-                };
+                    p.open_file_tab(cx, path);
+                }
+            }
+        }
+        // NOTE: Select after opening File tabs so file:<path> can name one.
+        if let Ok(tab) = crate::dev_hooks::var("CONCATS_APP_TAB") {
+            let t = match tab.as_str() {
+                "guide" => Some(Stream::Guide),
+                "sessions" => Some(Stream::Sessions),
+                "commits" => Some(Stream::Commits),
+                "comments" => Some(Stream::Comments),
+                "files" => Some(Stream::Files),
+                _ => tab.strip_prefix("file:").and_then(|path| {
+                    self.primary()?.state.read(|d| {
+                        d.files_open
+                            .iter()
+                            .find(|file| file.path == path)
+                            .map(|file| Stream::File(file.tab))
+                    })
+                }),
+            };
+            if let Some(t) = t {
+                let pane = self.ui.widget(cx, ids!(pane_a));
+                pane.dock(cx, ids!(dock))
+                    .select_tab(cx, stream_tab_spec(t).id);
+                if let Some(mut p) = pane.borrow_mut::<ReviewPane>() {
+                    p.set_gesture_tab(cx, t);
+                }
             }
         }
         if let Ok(path) = crate::dev_hooks::var("CONCATS_APP_SHOT")
@@ -165,6 +185,10 @@ impl App {
     /// platform event loop does around a real mouse event. Without it the hits
     /// still fire but the digit is captured and never released, the hover never
     /// leaves, and the frame after the gesture is wrong.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "Pointer setup, move, press, and release must stay in event order."
+    )]
     pub(super) fn click_hook(&mut self, cx: &mut Cx) {
         // The pointer position, when there is one. This sequence drives the type,
         // save, find, capture and exit hooks as well, so it runs with no click to
@@ -174,10 +198,7 @@ impl App {
         let at = crate::dev_hooks::var("CONCATS_APP_CLICK")
             .or_else(|_| var("CONCATS_APP_HOVER"))
             .ok()
-            .and_then(|spec| {
-                let (x, y) = spec.split_once(',')?;
-                Some((x.trim().parse::<f64>().ok()?, y.trim().parse::<f64>().ok()?))
-            });
+            .and_then(|spec| pointer_position(&spec));
         // Nothing to hit until a load has landed and drawn.
         let Some(state) = self.primary().map(|w| w.state.clone()) else {
             return;
@@ -277,6 +298,28 @@ impl App {
                 cx.begin_mouse_down(&down);
                 self.ui
                     .handle_event(cx, &Event::MouseDown(down), &mut Scope::empty());
+                let abs = if let Some((x, y)) = var("CONCATS_APP_DRAG_TO")
+                    .ok()
+                    .and_then(|spec| pointer_position(&spec))
+                {
+                    let end = dvec2(x, y);
+                    self.ui.handle_event(
+                        cx,
+                        &Event::MouseMove(MouseMoveEvent {
+                            abs: end,
+                            window_id,
+                            modifiers: KeyModifiers::default(),
+                            handled: std::cell::Cell::new(Area::Empty),
+                            lock_delta: DVec2::default(),
+                            time: now + 0.05,
+                        }),
+                        &mut Scope::empty(),
+                    );
+                    cx.end_mouse_move();
+                    end
+                } else {
+                    abs
+                };
                 self.ui.handle_event(
                     cx,
                     &Event::MouseUp(MouseUpEvent {
@@ -421,15 +464,26 @@ impl App {
             })
             .unwrap_or_default();
         let dock = window.pane(cx).dock(cx, ids!(dock));
-        let terminal_rect = dock.item(id!(terminal_tab)).area().rect(cx);
-        let terminal_cursor = terminal::term(terminal::Session {
-            window: state.id,
-            tab: id!(terminal_tab),
-        })
-        .map(|shared| {
-            let term = shared.lock();
-            term.grid()[term.grid().cursor.point].c
-        });
+        let browser = dock.item(id!(sidebar_tab));
+        let file_query = browser.text_input(cx, ids!(find_input)).text();
+        let file_count = browser.label(cx, ids!(find_count)).text();
+        let terminal_tab = dock.item(id!(terminal_tab));
+        let terminal_rect = terminal_tab.area().rect(cx);
+        let terminal_query = terminal_tab.text_input(cx, ids!(find_input)).text();
+        let (terminal_cursor, terminal_selection, terminal_offset) =
+            terminal::term(terminal::Session {
+                window: state.id,
+                tab: id!(terminal_tab),
+            })
+            .map(|shared| {
+                let term = shared.lock();
+                (
+                    Some(term.grid()[term.grid().cursor.point].c),
+                    term.selection_to_string(),
+                    Some(term.grid().display_offset()),
+                )
+            })
+            .unwrap_or_default();
         let windows: Vec<_> = self.windows.iter().map(|window| window.state.read(|d| {
             serde_json::json!({"loaded": d.generation > 0, "dirty_buffers": d.blobs.iter().filter(|blob| blob.dirty()).count()})
         })).collect();
@@ -437,15 +491,24 @@ impl App {
             serde_json::json!({
                 "windows": windows,
                 "terminal_cursor": terminal_cursor,
+                "terminal_find_query": terminal_query,
+                "terminal_selection": terminal_selection,
+                "terminal_offset": terminal_offset,
                 "terminal_height": terminal_rect.size.y,
                 "tab_titles": titles,
                 "caret": d.caret.map(|caret| (caret.blob, caret.line, caret.byte)),
                 "seen_lines": service::review_state(d.git_dir.as_deref()).load().seen.len(),
                 "find_query": query,
                 "find_count": count,
+                "file_find_query": file_query,
+                "file_find_count": file_count,
                 "has_caret": d.caret.is_some(),
                 "draft": *state.compose_draft.read().unwrap(),
                 "composer_open": d.composer_tab.is_some(),
+                "compose_ranges": match d.compose {
+                    Some(review_doc::Composing::Lines(compose)) => Some([compose.old, compose.new].map(|side| side.map(|side| (side.start, side.end)))),
+                    _ => None,
+                },
                 "composer_input": input,
                 "focus_pending": d.compose_focus,
                 "dirty_buffers": d.blobs.iter().filter(|blob| blob.dirty()).count(),

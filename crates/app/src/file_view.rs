@@ -77,6 +77,10 @@ pub(crate) fn read_file_sides(
 /// More importantly, a changed file's head blob resolves to the index the diff
 /// already gave it, so one comment thread renders in the file view and in the
 /// diff view alike.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "The diff row model uses u32 blob indices; a document cannot practically contain 2^32 blobs."
+)]
 pub(crate) fn intern(d: &mut ReviewDoc, path: &str, blob: Blob) -> u32 {
     // Two rules for reuse. A blob that names a file in the working tree is that
     // file's buffer, whatever revision its oid names right now, so it is
@@ -92,21 +96,15 @@ pub(crate) fn intern(d: &mut ReviewDoc, path: &str, blob: Blob) -> u32 {
         (Some(open), Some(incoming)) => open == incoming,
         _ => b.oid == blob.oid && !b.dirty(),
     };
-    let index = match d.blobs.iter().position(reusable) {
-        Some(i) => {
-            // An unchanged worktree file resolves both sides to one oid, and
-            // the base side is interned first. Without this the entry we keep
-            // is the read-only one, and the file can't be typed into even
-            // though it sits right there in the working tree.
-            if d.blobs[i].origin.is_none() {
-                d.blobs[i].origin = blob.origin;
-            }
-            i as u32
+    let index = if let Some(i) = d.blobs.iter().position(reusable) {
+        // NOTE: the base side may be interned first even when the same blob is editable.
+        if d.blobs[i].origin.is_none() {
+            d.blobs[i].origin = blob.origin;
         }
-        None => {
-            d.blobs.push(blob);
-            (d.blobs.len() - 1) as u32
-        }
+        i as u32
+    } else {
+        d.blobs.push(blob);
+        (d.blobs.len() - 1) as u32
     };
     d.blob_paths
         .entry(index)
@@ -333,7 +331,7 @@ mod tests {
         &d.files_open.first().expect("a file is open").rows
     }
 
-    /// Every code row of a stream as (kind, old_no, new_no).
+    /// Every code row of a stream as (kind, `old_no`, `new_no`).
     fn code_of(rows: &[Row]) -> Vec<(LineKind, Option<u32>, Option<u32>)> {
         rows.iter()
             .filter_map(|r| match r {

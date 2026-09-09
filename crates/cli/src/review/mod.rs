@@ -247,12 +247,7 @@ impl RangeArgs {
     /// an error and not a guess.
     pub(crate) fn resolve(&self) -> Result<Target, ExitCode> {
         let window = window_range();
-        let repo = self
-            .repo
-            .clone()
-            .or_else(|| window.as_ref().map(|w| w.repo.clone()))
-            .or_else(|| env("CONCATS_APP_REPO"))
-            .unwrap_or_else(|| ".".to_string());
+        let repo = repo_from(self.repo.as_deref(), window.as_ref());
         let (Some(base), Some(head)) = (
             self.base
                 .clone()
@@ -280,8 +275,12 @@ impl RangeArgs {
 /// The repo alone — for the commands that never touch a range (listing or
 /// deleting stored comments works on the repo, whatever diff is open).
 pub(crate) fn repo_arg(repo: Option<&str>) -> String {
+    repo_from(repo, window_range().as_ref())
+}
+
+fn repo_from(repo: Option<&str>, window: Option<&Target>) -> String {
     repo.map(str::to_string)
-        .or_else(|| window_range().map(|w| w.repo))
+        .or_else(|| window.map(|w| w.repo.clone()))
         .or_else(|| env("CONCATS_APP_REPO"))
         .unwrap_or_else(|| ".".to_string())
 }

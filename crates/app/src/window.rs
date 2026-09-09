@@ -150,6 +150,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::cognitive_complexity,
+        reason = "The assertions cover one reload preserving the complete live editing state."
+    )]
     fn a_successful_reload_merges_latest_typing_selection_and_composition() {
         let state = WindowState::new(LiveId(1), None);
         state.with(|d| {

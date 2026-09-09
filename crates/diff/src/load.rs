@@ -1242,7 +1242,9 @@ pub fn diff_trees(repo: &Repository, old: ObjectId, new: ObjectId) -> Result<Vec
 
 /// Worktree-vs-index status (untracked included, ignore rules applied), as
 /// (path, change-kind) pairs. gix handles the racy-git guard internally.
-pub(crate) fn worktree_status(repo: &Repository) -> Result<Vec<(String, u8)>, Error> {
+pub(crate) fn worktree_status(
+    repo: &Repository,
+) -> Result<Vec<(String, gix::status::index_worktree::iter::Summary)>, Error> {
     let mut entries = Vec::new();
     let status = repo
         .status(gix::progress::Discard)
@@ -1256,7 +1258,7 @@ pub(crate) fn worktree_status(repo: &Repository) -> Result<Vec<(String, u8)>, Er
         if let gix::status::Item::IndexWorktree(change) = item
             && let Some(summary) = change.summary()
         {
-            entries.push((change.rela_path().to_string(), summary as u8));
+            entries.push((change.rela_path().to_string(), summary));
         }
     }
     Ok(entries)

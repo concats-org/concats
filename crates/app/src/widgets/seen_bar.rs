@@ -3,6 +3,10 @@
 //! changed lines (the same `(blob oid, line)` keys the tick boxes write), so it
 //! moves with every card you tick and survives reloads.
 
+#[allow(
+    clippy::wildcard_imports,
+    reason = "Makepad macros and derives expand against the widget prelude in this scope."
+)]
 use crate::{frame_theme, makepad_widgets::*, theme::paint};
 
 script_mod! {
@@ -86,6 +90,10 @@ impl SeenBar {
 }
 
 impl Widget for SeenBar {
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "The bar displays an approximate fraction, not an exact line count."
+    )]
     fn draw_walk(&mut self, cx: &mut Cx2d, scope: &mut Scope, walk: Walk) -> DrawStep {
         let Some(t) = frame_theme(scope) else {
             return DrawStep::done();
