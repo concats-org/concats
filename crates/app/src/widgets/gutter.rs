@@ -5,7 +5,7 @@
 //! Keeping the interaction here lets the selectable list keep text
 //! drag-selection over the code (the `DiffLine`).
 
-use concats_diff::LineKind;
+use concats_diff::{LineKind, Row};
 
 // NOTE: `WidgetActionData` is not in makepad_widgets' root re-exports, only in
 // the (public) `widget` module — hence the long path.
@@ -148,15 +148,7 @@ pub struct Gutter {
     #[rust]
     line: u32,
     #[rust]
-    seen: bool,
-    /// Whether this line lies inside a stored comment's range — draws the
-    /// blue marker the design puts at the card edge, left of the change bar.
-    #[rust]
-    commented: bool,
-    /// Whether this line lies inside the range being composed right now —
-    /// blue marker plus a blue-tinted row while selecting.
-    #[rust]
-    selected: bool,
+    marks: RowMarks,
     #[rust]
     hovered: bool,
     /// The last y emitted during a drag, so a move that does not actually
@@ -165,21 +157,26 @@ pub struct Gutter {
     last_y: f64,
 }
 
+/// The review state painted beside a code row.
+#[derive(Clone, Copy, Default)]
+pub struct RowMarks {
+    pub seen: bool,
+    pub commented: bool,
+    pub selected: bool,
+}
+
 impl Gutter {
-    /// Point this rail at one diff line — its numbers, and its seen/commented/
-    /// selected state. (Called by `ReviewList` as it recycles list items.)
-    #[allow(clippy::too_many_arguments)]
-    pub fn set_row(
-        &mut self,
-        kind: LineKind,
-        old_no: Option<u32>,
-        new_no: Option<u32>,
-        blob: u32,
-        line: u32,
-        seen: bool,
-        commented: bool,
-        selected: bool,
-    ) {
+    pub fn set_row(&mut self, row: &Row, marks: RowMarks) {
+        let Row::Code {
+            kind,
+            old_no,
+            new_no,
+            blob,
+            line,
+        } = *row
+        else {
+            return;
+        };
         let number_changed =
             self.kind != Some(kind) || self.old_no != old_no || self.new_no != new_no;
         self.kind = Some(kind);
@@ -200,9 +197,7 @@ impl Gutter {
         }
         self.blob = blob;
         self.line = line;
-        self.seen = seen;
-        self.commented = commented;
-        self.selected = selected;
+        self.marks = marks;
     }
 }
 
@@ -261,7 +256,7 @@ impl Widget for Gutter {
         let Some(theme) = frame_theme(scope) else {
             return DrawStep::done();
         };
-        self.draw_bg.color = if self.selected {
+        self.draw_bg.color = if self.marks.selected {
             row_selected_bg(theme, kind)
         } else {
             row_bg(theme, kind)
@@ -295,9 +290,9 @@ impl Widget for Gutter {
         // tells the two apart. A comment takes the slot outright rather than
         // drawing both.
         let r = self.draw_bg.area().rect(cx);
-        let marker = if self.commented || self.selected {
+        let marker = if self.marks.commented || self.marks.selected {
             Some(MARKER_WIDE)
-        } else if self.seen {
+        } else if self.marks.seen {
             Some(MARKER_THIN)
         } else {
             None

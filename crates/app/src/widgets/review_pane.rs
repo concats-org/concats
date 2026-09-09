@@ -663,6 +663,10 @@ pub struct ReviewPane {
     /// every window the same scope, so the per-window one starts here.
     #[rust]
     state: Option<std::sync::Arc<WindowState>>,
+    #[rust]
+    file_titles_generation: u64,
+    #[rust]
+    file_titles_rows_rev: u64,
     /// The panel slide in flight, stepped on NextFrame with studio's 0.16s
     /// ease-out cubic (app_backend.rs). One at a time: the two panels are
     /// toggled by two different buttons.
@@ -727,12 +731,6 @@ impl ReviewPane {
         self.state = Some(state);
     }
 
-    // NOTE: Action batches span all windows; payload-based handlers must
-    // check which window owns the emitting widget.
-    fn owns(&self, cx: &Cx, uid: WidgetUid) -> bool {
-        cx.widget_tree().path_to(uid).contains(&self.state().id)
-    }
-
     /// The window this pane renders. Before the App has adopted it — the first
     /// frames of a run — this answers with a detached empty document, which is
     /// what the pane would draw at that point anyway.
@@ -791,9 +789,12 @@ impl ReviewPane {
 
         let tab_id = file_tab_id(&path);
         let dock = self.view.dock(cx, ids!(dock));
-        let title = self
-            .state()
-            .read(|d| crate::file_view::file_tab_title(d, &path));
+        let title = self.state().read(|d| {
+            let dirty = d
+                .file(tab_id.0)
+                .is_some_and(|file| d.blobs[file.head as usize].dirty());
+            crate::file_view::file_tab_title(&path, d.head_oid, dirty)
+        });
         open_tab_beside_streams(
             cx,
             &dock,
@@ -923,17 +924,28 @@ impl ReviewPane {
         self.view.redraw(cx);
     }
 
+    pub fn start_load(
+        &mut self,
+        cx: &mut Cx,
+        target: concats_state::Target,
+        guide: Option<String>,
+        status: Option<&str>,
+    ) {
+        if let Some(status) = status {
+            self.view.label(cx, ids!(status_label)).set_text(cx, status);
+        }
+        self.set_loading(cx, true);
+        spawn_load(self.state(), target, guide);
+    }
+
     /// Load `base…head` of `repo`, and close the diff picker.
     fn combo_load(&mut self, cx: &mut Cx, repo: String, base: String, head: String) {
-        self.view
-            .label(cx, ids!(status_label))
-            .set_text(cx, "loading…");
         self.combo_close(cx);
-        self.set_loading(cx, true);
-        spawn_load(
-            self.state(),
+        self.start_load(
+            cx,
             concats_state::Target { repo, base, head },
             None,
+            Some("loading…"),
         );
     }
 
@@ -997,10 +1009,10 @@ impl ReviewPane {
     /// The header tick box: every changed (blob, line) key of every hunk in
     /// this file card flips together. Content-addressed, so the mark shows up
     /// in every view that renders those lines.
-    fn toggle_card_seen(&mut self, cx: &mut Cx, tab: Stream, item_id: usize) {
+    fn toggle_card_seen(&mut self, cx: &mut Cx, tab: Stream, path: &str, near: usize) {
         let docs = self.state().snapshot();
         let d = &*docs;
-        let keys = card_keys(d.stream(tab), item_id, &d.blobs);
+        let keys = card_keys(d.stream(tab), path, near, &d.blobs);
         if keys.is_empty() {
             return;
         }
@@ -1034,13 +1046,10 @@ impl ReviewPane {
     /// Fold a file card shut (or open it again). Keyed by path, so the card
     /// is shut in every stream that renders that file — and the list rebuilds
     /// its entry→row mapping on the next draw.
-    fn toggle_card_fold(&mut self, cx: &mut Cx, tab: Stream, item_id: usize) {
+    fn toggle_card_fold(&mut self, cx: &mut Cx, path: &str) {
         self.state().with(|d| {
-            let Some(Row::FileHeader { path, .. }) = d.stream(tab).get(item_id).cloned() else {
-                return;
-            };
-            if !d.folded.remove(&path) {
-                d.folded.insert(path);
+            if !d.folded.remove(path) {
+                d.folded.insert(path.to_string());
             }
         });
         self.redraw_streams(cx);
@@ -1050,15 +1059,12 @@ impl ReviewPane {
     /// Unlike folding, this changes which comment rows exist, so it resplices
     /// — and announces the new shape, because every row-indexed cache below
     /// is stale the moment a row is inserted mid-stream.
-    fn toggle_card_outdated(&mut self, cx: &mut Cx, tab: Stream, item_id: usize) {
+    fn toggle_card_outdated(&mut self, cx: &mut Cx, path: &str) {
         let git_dir = self.state().read(|d| d.git_dir.clone());
         let comments = review_state(git_dir.as_deref()).load().comments.clone();
         self.state().with(|d| {
-            let Some(Row::FileHeader { path, .. }) = d.stream(tab).get(item_id).cloned() else {
-                return;
-            };
-            if !d.show_all_comments.remove(&path) {
-                d.show_all_comments.insert(path);
+            if !d.show_all_comments.remove(path) {
+                d.show_all_comments.insert(path.to_string());
             }
             resplice_comments(d, &comments);
             d.rows_rev += 1;
@@ -1453,7 +1459,7 @@ impl ReviewPane {
             None,
         );
         self.open_terminal(cx, tab_id);
-        self.reveal_bottom_panel(cx);
+        self.reveal_panel(cx, Panel::Bottom);
     }
 
     /// A status-bar view button: reopen the stream's tab if it was closed,
@@ -1477,7 +1483,7 @@ impl ReviewPane {
         self.view
             .dock(cx, ids!(dock))
             .select_tab(cx, id!(terminal_tab));
-        self.reveal_bottom_panel(cx);
+        self.reveal_panel(cx, Panel::Bottom);
     }
 
     /// A panel's current size: the dock's extent along its axis minus its
@@ -1549,54 +1555,26 @@ impl ReviewPane {
         }
     }
 
-    /// The status-bar `▐` toggle: slide the file browser out, or remember its
-    /// width and slide it away. Same mechanism as the bottom panel, so it has
-    /// the same feel and the same draggable handle.
-    fn toggle_sidebar(&mut self, cx: &mut Cx) {
-        let Some(current) = self.panel_size(cx, Panel::Sidebar) else {
+    fn toggle_panel(&mut self, cx: &mut Cx, panel: Panel) {
+        let Some(current) = self.panel_size(cx, panel) else {
             return;
         };
-        if current <= 1.0 {
-            let restore = self.restore_size(Panel::Sidebar);
-            self.start_slide(cx, Panel::Sidebar, restore);
+        let target = if current <= 1.0 {
+            self.restore_size(panel)
         } else {
-            self.sidebar_restore = current;
-            self.start_slide(cx, Panel::Sidebar, 0.0);
-        }
-    }
-
-    /// The status-bar `>_` toggle: slide the panel open, or remember its
-    /// height and slide it shut. Running sessions are left exactly as they
-    /// are — only the very first open (no sessions at all) spawns a shell.
-    fn toggle_bottom_panel(&mut self, cx: &mut Cx) {
-        let Some(current) = self.panel_size(cx, Panel::Bottom) else {
-            return;
-        };
-        if current <= 1.0 {
-            if terminal::count(self.state().id) == 0 {
-                self.open_terminal(cx, id!(terminal_tab));
-                self.view
-                    .dock(cx, ids!(dock))
-                    .select_tab(cx, id!(terminal_tab));
+            match panel {
+                Panel::Bottom => self.bottom_restore = current,
+                Panel::Sidebar => self.sidebar_restore = current,
             }
-            let restore = self.restore_size(Panel::Bottom);
-            self.start_slide(cx, Panel::Bottom, restore);
-        } else {
-            self.bottom_restore = current;
-            self.start_slide(cx, Panel::Bottom, 0.0);
-        }
+            0.0
+        };
+        self.start_slide(cx, panel, target);
     }
 
-    /// Slide the panel open only if it is collapsed (terminal tab pressed).
-    fn reveal_bottom_panel(&mut self, cx: &mut Cx) {
-        let Some(current) = self.panel_size(cx, Panel::Bottom) else {
-            return;
-        };
-        if current > 1.0 {
-            return;
+    fn reveal_panel(&mut self, cx: &mut Cx, panel: Panel) {
+        if self.panel_size(cx, panel).is_none_or(|size| size <= 1.0) {
+            self.start_slide(cx, panel, self.restore_size(panel));
         }
-        let restore = self.restore_size(Panel::Bottom);
-        self.start_slide(cx, Panel::Bottom, restore);
     }
 
     /// The header Load button and the repo picker: the name toggles it, a
@@ -1687,20 +1665,14 @@ impl ReviewPane {
     /// drag plumbing hands the event straight back to the dock, which does
     /// all the split/merge/reorder work internally. The terminal view's and
     /// the file browser's actions ride the same widget-action pass.
-    fn handle_dock_actions(&mut self, cx: &mut Cx, actions: &Actions) {
+    fn handle_dock_actions(&mut self, cx: &mut Cx, actions: &[&WidgetAction]) {
         let dock = self.view.dock(cx, ids!(dock));
         // A File tab is its file's identity, so telling one from a terminal's
         // tab takes the document's open list.
         let open_files = self
             .state()
             .read(|d| d.files_open.iter().map(|f| f.tab).collect::<Vec<_>>());
-        for action in actions {
-            let Some(wa) = action.as_widget_action() else {
-                continue;
-            };
-            if !self.owns(cx, wa.widget_uid) {
-                continue;
-            }
+        for wa in actions {
             match wa.cast() {
                 DockAction::TabWasPressed(tab_id) => {
                     if let Some(tab) = model_tab_of(tab_id, &open_files) {
@@ -1759,9 +1731,8 @@ impl ReviewPane {
                 }
                 _ => {}
             }
-            // The terminal view's whole contract upward: encoded input bytes.
-            // Geometry goes the other way, straight from its draw path.
             match wa.cast() {
+                TerminalViewAction::OpenFile(path) => self.open_file_tab(cx, path),
                 TerminalViewAction::Input { session, data } => terminal::input(session, data),
                 TerminalViewAction::None => {}
             }
@@ -1783,10 +1754,20 @@ impl ReviewPane {
             self.reveal_terminal(cx);
         }
         if self.view.button(cx, ids!(panel_button)).clicked(actions) {
-            self.toggle_bottom_panel(cx);
+            if self
+                .panel_size(cx, Panel::Bottom)
+                .is_some_and(|size| size <= 1.0)
+                && terminal::count(self.state().id) == 0
+            {
+                self.open_terminal(cx, id!(terminal_tab));
+                self.view
+                    .dock(cx, ids!(dock))
+                    .select_tab(cx, id!(terminal_tab));
+            }
+            self.toggle_panel(cx, Panel::Bottom);
         }
         if self.view.button(cx, ids!(sidebar_button)).clicked(actions) {
-            self.toggle_sidebar(cx);
+            self.toggle_panel(cx, Panel::Sidebar);
         }
         if self
             .view
@@ -1844,14 +1825,8 @@ impl ReviewPane {
     /// Per-item actions from the virtualized lists — one list per dock tab:
     /// the viewed tick box on a file card, a comment's delete button, the
     /// gutter's comment gestures, and the inline composer's controls.
-    fn handle_item_actions(&mut self, cx: &mut Cx, actions: &Actions) {
+    fn handle_item_actions(&mut self, cx: &mut Cx, actions: &[&WidgetAction]) {
         for action in actions {
-            let Some(action) = action.as_widget_action() else {
-                continue;
-            };
-            if !self.owns(cx, action.widget_uid) {
-                continue;
-            }
             let Some(target) = action
                 .data
                 .as_ref()
@@ -1859,46 +1834,30 @@ impl ReviewPane {
             else {
                 continue;
             };
+            let clicked = action
+                .action
+                .downcast_ref::<ButtonAction>()
+                .is_some_and(|action| matches!(action, ButtonAction::Clicked(_)));
             match target {
-                ReviewItemAction::Seen { tab, row }
+                ReviewItemAction::Seen { tab, path, near }
                     if action
                         .action
                         .downcast_ref::<CheckBoxAction>()
                         .is_some_and(|action| matches!(action, CheckBoxAction::Change(_))) =>
                 {
-                    self.toggle_card_seen(cx, *tab, *row);
+                    self.toggle_card_seen(cx, *tab, path, *near);
                 }
-                ReviewItemAction::Fold { tab, row }
-                    if action
-                        .action
-                        .downcast_ref::<ButtonAction>()
-                        .is_some_and(|action| matches!(action, ButtonAction::Clicked(_))) =>
-                {
-                    self.toggle_card_fold(cx, *tab, *row);
+                ReviewItemAction::Fold { path } if clicked => {
+                    self.toggle_card_fold(cx, path);
                 }
-                ReviewItemAction::Delete { id }
-                    if action
-                        .action
-                        .downcast_ref::<ButtonAction>()
-                        .is_some_and(|action| matches!(action, ButtonAction::Clicked(_))) =>
-                {
+                ReviewItemAction::Delete { id } if clicked => {
                     self.delete_comment(cx, *id);
                 }
-                ReviewItemAction::Reply { tab, id, near }
-                    if action
-                        .action
-                        .downcast_ref::<ButtonAction>()
-                        .is_some_and(|action| matches!(action, ButtonAction::Clicked(_))) =>
-                {
+                ReviewItemAction::Reply { tab, id, near } if clicked => {
                     self.reply_to_comment(cx, *tab, *id, *near);
                 }
-                ReviewItemAction::Outdated { tab, row }
-                    if action
-                        .action
-                        .downcast_ref::<ButtonAction>()
-                        .is_some_and(|action| matches!(action, ButtonAction::Clicked(_))) =>
-                {
-                    self.toggle_card_outdated(cx, *tab, *row);
+                ReviewItemAction::Outdated { path } if clicked => {
+                    self.toggle_card_outdated(cx, path);
                 }
                 ReviewItemAction::Gutter { tab, row } => match action.action.downcast_ref() {
                     Some(GutterAction::DragStart { blob, line }) => {
@@ -1915,24 +1874,14 @@ impl ReviewPane {
                     }
                 }
                 // "N lines removed": put them back where they were taken from.
-                ReviewItemAction::Reveal { tab, row } => {
+                ReviewItemAction::Reveal { tab, row } if clicked => {
                     self.state().with(|d| reveal_removed(d, *tab, *row));
                     self.redraw_streams(cx);
                 }
-                ReviewItemAction::Post
-                    if action
-                        .action
-                        .downcast_ref::<ButtonAction>()
-                        .is_some_and(|action| matches!(action, ButtonAction::Clicked(_))) =>
-                {
+                ReviewItemAction::Post if clicked => {
                     self.post_comment(cx);
                 }
-                ReviewItemAction::Cancel
-                    if action
-                        .action
-                        .downcast_ref::<ButtonAction>()
-                        .is_some_and(|action| matches!(action, ButtonAction::Clicked(_))) =>
-                {
+                ReviewItemAction::Cancel if clicked => {
                     self.close_composer(cx);
                 }
                 _ => {}
@@ -1940,86 +1889,19 @@ impl ReviewPane {
         }
     }
 
-    /// Every stream tab, the four fixed ones and one per open file: the
-    /// pinned header's controls, and where the composer's keystrokes are
-    /// mirrored into the draft — a tab missing here posts an empty comment.
-    fn handle_sticky_and_composer(&mut self, cx: &mut Cx, actions: &Actions) {
+    fn handle_composer_actions(&mut self, cx: &mut Cx, actions: &Actions) {
         let dock = self.view.dock(cx, ids!(dock));
-        // A File tab's title carries its revision and its unsaved state, so it
-        // is refreshed wherever the document might have moved — the tab is the
-        // only chrome the editor has.
-        for (tab, title) in self.state().read(|d| {
-            d.files_open
-                .iter()
-                .filter(|f| f.tab != crate::dock::settings_tab_id().0)
-                .map(|f| (LiveId(f.tab), crate::file_view::file_tab_title(d, &f.path)))
-                .collect::<Vec<_>>()
-        }) {
-            dock.set_tab_title(cx, tab, title);
-        }
         let open_files = self
             .state()
             .read(|d| d.files_open.iter().map(|f| f.tab).collect::<Vec<_>>());
-        for (tab_id, tab) in crate::review_doc::STREAMS
+        for tab_id in crate::review_doc::STREAMS
             .into_iter()
-            .map(|stream| (stream_tab_spec(stream).id, stream))
-            .chain(open_files.iter().map(|f| (LiveId(*f), Stream::File(*f))))
+            .map(|stream| stream_tab_spec(stream).id)
+            .chain(open_files.iter().map(|f| LiveId(*f)))
         {
             let content = dock.item(tab_id);
             if content.is_empty() {
                 continue;
-            }
-            // The sticky (pinned) header's tick box: same toggle as the card
-            // header it mirrors — the list records which card that is.
-            if content
-                .check_box(cx, ids!(st_seen))
-                .changed(actions)
-                .is_some()
-            {
-                let idx = content.borrow::<ReviewList>().and_then(|r| r.sticky_idx);
-                if let Some(idx) = idx {
-                    self.toggle_card_seen(cx, tab, idx);
-                }
-            }
-            // … and its caret: folds the card it mirrors, which scrolls the
-            // list back to that header (the rows under it are gone).
-            // `ButtonRef::clicked` casts the first action for the uid, so a
-            // press and its click landing in one batch read as a press and the
-            // caret does nothing. Match the click wherever it sits in the
-            // batch.
-            let fold_uid = content.widget(cx, ids!(st_fold)).widget_uid();
-            let fold_clicked = actions.iter().any(|action| {
-                action.as_widget_action().is_some_and(|action| {
-                    action.widget_uid == fold_uid
-                        && matches!(
-                            action.action.downcast_ref::<ButtonAction>(),
-                            Some(ButtonAction::Clicked(_))
-                        )
-                })
-            });
-            if fold_clicked {
-                let idx = content.borrow::<ReviewList>().and_then(|r| r.sticky_idx);
-                if let Some(idx) = idx {
-                    self.toggle_card_fold(cx, tab, idx);
-                }
-            }
-            // … and its outdated-conversations toggle, matched the same way and
-            // for the same reason.
-            let outdated_uid = content.widget(cx, ids!(st_outdated)).widget_uid();
-            let outdated_clicked = actions.iter().any(|action| {
-                action.as_widget_action().is_some_and(|action| {
-                    action.widget_uid == outdated_uid
-                        && matches!(
-                            action.action.downcast_ref::<ButtonAction>(),
-                            Some(ButtonAction::Clicked(_))
-                        )
-                })
-            });
-            if outdated_clicked {
-                let idx = content.borrow::<ReviewList>().and_then(|r| r.sticky_idx);
-                if let Some(idx) = idx {
-                    self.toggle_card_outdated(cx, tab, idx);
-                }
             }
             // The composer's field, matched by uid rather than by the action
             // data every other control in a row carries — see
@@ -2095,6 +1977,24 @@ impl Widget for ReviewPane {
         // NOTE: Only the list that draws the input can acknowledge focus.
         let focus_composer = state.read(|d| d.composer_tab.filter(|_| d.compose_focus));
         let document = state.snapshot();
+        if self.file_titles_generation != document.generation
+            || self.file_titles_rows_rev != document.rows_rev
+        {
+            let dock = self.view.dock(cx, ids!(dock));
+            for file in &document.files_open {
+                if file.tab == crate::dock::settings_tab_id().0 {
+                    continue;
+                }
+                let title = crate::file_view::file_tab_title(
+                    &file.path,
+                    document.head_oid,
+                    document.blobs[file.head as usize].dirty(),
+                );
+                dock.set_tab_title(cx, LiveId(file.tab), title);
+            }
+            self.file_titles_generation = document.generation;
+            self.file_titles_rows_rev = document.rows_rev;
+        }
         let compose_draft = state.compose_draft.read().unwrap().clone();
         let mut frame = FrameData {
             review: review_state(document.git_dir.as_deref()).load(),
@@ -2150,11 +2050,25 @@ impl WidgetMatchEvent for ReviewPane {
     /// protocol, except that a load must be handled before the widgets it
     /// rebuilds.
     fn handle_actions(&mut self, cx: &mut Cx, actions: &Actions, _scope: &mut Scope) {
+        // NOTE: Action batches span windows; filter ownership once before dispatch.
+        let window = self.state().id;
+        let owned: Vec<_> = actions
+            .iter()
+            .filter_map(|action| action.as_widget_action())
+            .filter(|action| {
+                cx.widget_tree()
+                    .path_to(action.widget_uid)
+                    .contains(&window)
+            })
+            .collect();
+        if owned.is_empty() {
+            return;
+        }
         self.handle_repo_picker(cx, actions);
         self.handle_diff_picker(cx, actions);
-        self.handle_dock_actions(cx, actions);
+        self.handle_dock_actions(cx, &owned);
         self.handle_chrome_buttons(cx, actions);
-        self.handle_item_actions(cx, actions);
-        self.handle_sticky_and_composer(cx, actions);
+        self.handle_item_actions(cx, &owned);
+        self.handle_composer_actions(cx, actions);
     }
 }

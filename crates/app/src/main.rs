@@ -41,7 +41,7 @@ use concats_diff::LineKind;
 use concats_review::store;
 use concats_state::Target;
 use dock::{load_layout, stream_tab_spec, sync_stream_tab};
-use load::{resplice_comments, spawn_load};
+use load::resplice_comments;
 pub use makepad_widgets;
 use makepad_widgets::*;
 use review_doc::{ReviewDoc, Stream, status_line};
@@ -53,8 +53,10 @@ use crate::theme::paint;
 
 mod dev_hooks;
 mod dock;
+mod editor;
 /// One open file per tab, and the Settings tab that rides the same mechanism.
 mod file_view;
+mod links;
 /// Driving a load on a worker thread and landing it as a whole new document.
 mod load;
 /// The recent-repos list behind the header's picker.
@@ -82,55 +84,33 @@ mod gui {
 
 /// What this binary takes. The review subcommands belong to `concats`, not to
 /// this binary: one CLI, and it needs no window.
-const USAGE: &str = "\
-concats-app [<repo> [<base> [<head>]]]   open the review app on a diff
-            [--guide FILE]              ... with a guide file (beats a submitted one)
-            [--repo P] [--base R] [--head R]
-
-Ranges take any rev, plus the sentinels INDEX and WORKTREE:
-  --base HEAD  --head WORKTREE   everything uncommitted
-  --base INDEX --head WORKTREE   unstaged changes only
-
-Reviewing from a terminal — manifest, lint, submit, comments, turns — is
-`concats`, which needs no window:  concats --help
-";
-
-/// The app's own arguments are positional, so anything starting with `-` that
-/// is not one of its flags can't be one of them, and a first positional that is
-/// not a directory is not a repository.
-///
-/// Both get an answer in text rather than a window. `--help` is the first thing
-/// a person, an agent discovering the tool, or a CI probe reaches for, and
-/// opening a window at it leaves a headless caller with no output and no exit.
-fn headless_answer(argv: &[String]) -> Option<i32> {
-    const FLAGS: [&str; 4] = ["--guide", "--repo", "--base", "--head"];
-    let first = argv.first()?.as_str();
-    Some(match first {
-        "help" | "--help" | "-h" => {
-            print!("{USAGE}");
-            0
-        }
-        _ if first.starts_with('-') && !FLAGS.contains(&first) => {
-            eprintln!("error: unrecognized option `{first}`\n");
-            eprint!("{USAGE}");
-            2
-        }
-        _ if !first.starts_with('-') && !std::path::Path::new(first).is_dir() => {
-            eprintln!("error: `{first}` is neither a repository path nor an option");
-            eprintln!("       review subcommands live on `concats` — try `concats --help`\n");
-            eprint!("{USAGE}");
-            2
-        }
-        _ => return None,
-    })
+#[derive(clap::Parser)]
+#[command(
+    version,
+    about = "Review a Git diff",
+    after_help = "Ranges accept Git revisions, INDEX, and WORKTREE. Review commands live on `concats`."
+)]
+struct Args {
+    #[arg(long)]
+    repo: Option<String>,
+    #[arg(long)]
+    base: Option<String>,
+    #[arg(long)]
+    head: Option<String>,
+    #[arg(long)]
+    guide: Option<String>,
+    #[arg(value_name = "REPO", conflicts_with = "repo")]
+    repo_path: Option<String>,
+    #[arg(value_name = "BASE", conflicts_with = "base")]
+    base_rev: Option<String>,
+    #[arg(value_name = "HEAD", conflicts_with = "head")]
+    head_rev: Option<String>,
 }
 
 fn main() {
-    let argv: Vec<String> = std::env::args().skip(1).collect();
-    match headless_answer(&argv) {
-        Some(code) => std::process::exit(code),
-        None => gui::app_main(),
-    }
+    use clap::Parser;
+    Args::parse();
+    gui::app_main();
 }
 
 /// What one window's rows are drawn from, and what its event handlers reach
@@ -473,54 +453,22 @@ impl MatchEvent for App {
             ],
         });
 
-        let argv: Vec<String> = std::env::args().skip(1).collect();
-        let guide = argv
-            .iter()
-            .position(|a| a == "--guide")
-            .and_then(|i| argv.get(i + 1))
-            .cloned();
-
-        let flag = |name: &str| -> Option<String> {
-            argv.iter()
-                .position(|a| a == name)
-                .and_then(|i| argv.get(i + 1))
-                .cloned()
-        };
-        let mut pos: Vec<String> = Vec::new();
-        let mut skip_next = false;
-        for a in &argv {
-            if skip_next {
-                skip_next = false;
-                continue;
-            }
-            if a.starts_with("--") {
-                skip_next = true;
-                continue;
-            }
-            pos.push(a.clone());
-        }
-        let mut it = pos.into_iter();
-        let repo = flag("--repo")
-            .or_else(|| it.next())
-            .unwrap_or_else(|| ".".into());
-        let base = flag("--base")
-            .or_else(|| it.next())
+        use clap::Parser;
+        let args = Args::parse();
+        let guide = args.guide;
+        let repo = args.repo.or(args.repo_path).unwrap_or_else(|| ".".into());
+        let base = args
+            .base
+            .or(args.base_rev)
             .unwrap_or_else(|| "HEAD~5".into());
-        let head = flag("--head")
-            .or_else(|| it.next())
-            .unwrap_or_else(|| "HEAD".into());
+        let head = args.head.or(args.head_rev).unwrap_or_else(|| "HEAD".into());
 
         self.adopt_window(cx, id!(window_a), self.ui.widget(cx, ids!(window_a)));
         self.launched_on = Target { repo, base, head };
         let target = self.launched_on.clone();
         let window = &self.windows[0];
-        window
-            .pane(cx)
-            .label(cx, ids!(status_label))
-            .set_text(cx, "loading…");
-        spawn_load(&window.state, target, guide);
-        if let Some(mut p) = window.pane(cx).borrow_mut::<ReviewPane>() {
-            p.set_loading(cx, true);
+        if let Some(mut pane) = window.pane(cx).borrow_mut::<ReviewPane>() {
+            pane.start_load(cx, target, guide, Some("loading…"));
         }
         self.poll = cx.start_interval(1.0);
     }
@@ -651,13 +599,7 @@ impl App {
     fn open_new_window(&mut self, cx: &mut Cx) {
         let target = self
             .focused_window()
-            .map(|w| {
-                w.state.read(|d| Target {
-                    repo: d.repo.clone(),
-                    base: d.base.clone(),
-                    head: d.head.clone(),
-                })
-            })
+            .map(|window| window.state.read(ReviewDoc::target))
             .filter(|t| !t.repo.is_empty())
             // Nothing loaded yet: the range the app was asked for is the same
             // answer, and an empty one would open on the process cwd.
@@ -672,13 +614,8 @@ impl App {
         let Some(window) = self.windows.last() else {
             return;
         };
-        window
-            .pane(cx)
-            .label(cx, ids!(status_label))
-            .set_text(cx, "loading…");
-        spawn_load(&window.state, target, None);
-        if let Some(mut p) = window.pane(cx).borrow_mut::<ReviewPane>() {
-            p.set_loading(cx, true);
+        if let Some(mut pane) = window.pane(cx).borrow_mut::<ReviewPane>() {
+            pane.start_load(cx, target, None, Some("loading…"));
         }
     }
 
@@ -704,37 +641,7 @@ impl AppWindow {
     /// Reflect this window's document into its chrome. Returns whether
     /// anything changed, which is the App's cue to run the capture hooks.
     fn reconcile(&mut self, cx: &mut Cx) -> bool {
-        struct Snap {
-            generation: u64,
-            loading: bool,
-            status: String,
-            repo: String,
-            base: String,
-            head: String,
-            has_guide: bool,
-            has_sessions: bool,
-            has_commits: bool,
-            has_comments: bool,
-            tab: Stream,
-            git_dir: Option<PathBuf>,
-        }
-        let s = {
-            let d = self.state.snapshot();
-            Snap {
-                generation: d.generation,
-                loading: d.loading,
-                status: status_line(&d),
-                repo: d.repo.clone(),
-                base: d.base.clone(),
-                head: d.head.clone(),
-                has_guide: d.has_guide,
-                has_sessions: d.has_sessions,
-                has_commits: d.has_commits,
-                has_comments: d.has_comments,
-                tab: d.tab,
-                git_dir: d.git_dir.clone(),
-            }
-        };
+        let s = self.state.snapshot();
         // Spin the header's ↻ whenever a load is in flight. This runs on every
         // signal (load start and land both signal), not only on a generation
         // change, so the spinner starts the moment a load begins.
@@ -751,7 +658,8 @@ impl AppWindow {
         if s.generation > 0 && self.seen != Some(s.generation) {
             self.seen = Some(s.generation);
             let pane = self.pane(cx);
-            pane.label(cx, ids!(status_label)).set_text(cx, &s.status);
+            pane.label(cx, ids!(status_label))
+                .set_text(cx, &status_line(&s));
             // The header chips: the repo's dir name and the loaded range. The
             // canonical path also seeds the picker's recents (so "." resolves
             // to a stable absolute path the list can dedup on).
@@ -898,30 +806,12 @@ impl AppWindow {
                 }
             }
         }
-        struct PollSnap {
-            git_dir: PathBuf,
-            merge_base: Option<gix::ObjectId>,
-            head_oid: Option<gix::ObjectId>,
-            workdir: Option<PathBuf>,
-            guide_path: Option<String>,
-            applied_guide_at: Option<u64>,
+        let snap = self.state.snapshot();
+        if snap.loading {
+            return;
         }
-        let snap = {
-            let d = self.state.snapshot();
-            if d.loading {
-                return;
-            }
-            let Some(git_dir) = d.git_dir.clone() else {
-                return;
-            };
-            PollSnap {
-                git_dir,
-                merge_base: d.merge_base_oid,
-                head_oid: d.head_oid,
-                workdir: d.workdir.clone(),
-                guide_path: d.guide_path.clone(),
-                applied_guide_at: d.applied_guide_at,
-            }
+        let Some(git_dir) = snap.git_dir.clone() else {
+            return;
         };
 
         // A WORKTREE review's diff moves under it as the user edits or
@@ -944,9 +834,9 @@ impl AppWindow {
         // wins over stored guides, so the guide half is skipped while one is
         // set; a worktree review keys its guides by the zero-oid convention.
         let key = if snap.workdir.is_some() {
-            Some(store::guide_key(snap.merge_base, snap.head_oid))
+            Some(store::guide_key(snap.merge_base_oid, snap.head_oid))
         } else {
-            snap.merge_base.zip(snap.head_oid)
+            snap.merge_base_oid.zip(snap.head_oid)
         };
         let guide = match (&snap.guide_path, key) {
             (None, Some((merge_base, head))) => Some(service::GuideProbe {
@@ -957,7 +847,7 @@ impl AppWindow {
             _ => None,
         };
         review().send(ReviewCmd::Poll {
-            git_dir: snap.git_dir.clone(),
+            git_dir,
             guide,
             window: self.state.id,
         });
@@ -969,22 +859,12 @@ impl AppWindow {
         let Some((target, guide)) = ({
             let d = self.state.snapshot();
             // The first probe only baselines; a load in flight owns the doc.
-            (had != 0 && !d.loading).then(|| {
-                (
-                    concats_state::Target {
-                        repo: d.repo.clone(),
-                        base: d.base.clone(),
-                        head: d.head.clone(),
-                    },
-                    d.guide_path.clone(),
-                )
-            })
+            (had != 0 && !d.loading).then(|| (d.target(), d.guide_path.clone()))
         }) else {
             return;
         };
-        spawn_load(&self.state, target, guide);
-        if let Some(mut p) = self.pane(cx).borrow_mut::<ReviewPane>() {
-            p.set_loading(cx, true);
+        if let Some(mut pane) = self.pane(cx).borrow_mut::<ReviewPane>() {
+            pane.start_load(cx, target, guide, None);
         }
     }
 
@@ -995,20 +875,12 @@ impl AppWindow {
         let Some(target) = ({
             let d = self.state.snapshot();
             // A load already in flight re-resolves the newest guide itself.
-            (!d.loading).then(|| concats_state::Target {
-                repo: d.repo.clone(),
-                base: d.base.clone(),
-                head: d.head.clone(),
-            })
+            (!d.loading).then(|| d.target())
         }) else {
             return;
         };
-        self.pane(cx)
-            .label(cx, ids!(status_label))
-            .set_text(cx, "guide submitted — loading…");
-        spawn_load(&self.state, target, None);
-        if let Some(mut p) = self.pane(cx).borrow_mut::<ReviewPane>() {
-            p.set_loading(cx, true);
+        if let Some(mut pane) = self.pane(cx).borrow_mut::<ReviewPane>() {
+            pane.start_load(cx, target, None, Some("guide submitted — loading…"));
         }
     }
 
@@ -1195,51 +1067,5 @@ impl AppMain for App {
         // `Root` hands every window the same scope, so the per-window one is
         // built further down, by each window's own pane.
         self.ui.handle_event(cx, event, &mut Scope::empty());
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn argv(args: &[&str]) -> Vec<String> {
-        args.iter().map(|s| (*s).to_string()).collect()
-    }
-
-    /// The one arm that neither opens a window nor touches a repo: what routes
-    /// to the GUI, and what the binary answers in text instead.
-    #[test]
-    fn a_flag_the_app_does_not_take_is_answered_in_text() {
-        // Its own arguments — none at all, a positional repo, and its flags —
-        // still reach the window.
-        for gui in [
-            vec![],
-            argv(&["."]),
-            argv(&[".", "main", "HEAD"]),
-            argv(&["--guide", "/tmp/guide.md", "."]),
-            argv(&["--repo", "."]),
-            argv(&["--base", "HEAD", "--head", "WORKTREE"]),
-        ] {
-            assert!(
-                headless_answer(&gui).is_none(),
-                "{gui:?} should open the GUI"
-            );
-        }
-
-        // Anything else leading with `-` gets usage, not a window: a headless
-        // caller must never be left with no output and no exit.
-        for help in [argv(&["--help"]), argv(&["-h"]), argv(&["help"])] {
-            assert_eq!(headless_answer(&help), Some(0), "{help:?}");
-        }
-        for bad in [argv(&["--repos", "."]), argv(&["-x"]), argv(&["--version"])] {
-            assert_eq!(headless_answer(&bad), Some(2), "{bad:?}");
-        }
-        // A review subcommand looks exactly like a repo path, and a window
-        // opened at one is the same trap as a window opened at `--help`. Only
-        // an existing directory reaches the GUI — the rest are pointed at
-        // `concats`, which is where those commands live now.
-        for elsewhere in [argv(&["manifest"]), argv(&["comments"]), argv(&["HEAD~5"])] {
-            assert_eq!(headless_answer(&elsewhere), Some(2), "{elsewhere:?}");
-        }
     }
 }

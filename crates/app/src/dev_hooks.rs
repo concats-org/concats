@@ -170,7 +170,9 @@ impl App {
         // save, find, capture and exit hooks as well, so it runs with no click to
         // dispatch — a scenario that only opens a file still has to reach the
         // tick that captures and the one that leaves.
+        let hover_only = var("CONCATS_APP_HOVER").is_ok();
         let at = crate::dev_hooks::var("CONCATS_APP_CLICK")
+            .or_else(|_| var("CONCATS_APP_HOVER"))
             .ok()
             .and_then(|spec| {
                 let (x, y) = spec.split_once(',')?;
@@ -219,6 +221,24 @@ impl App {
                 }
             }
             2 => {
+                let at = at.or_else(|| {
+                    if !var("CONCATS_APP_CLICK_SEEN").is_ok_and(|value| !value.is_empty()) {
+                        return None;
+                    }
+                    let tab = state.read(|d| d.tab);
+                    let area = self
+                        .primary()?
+                        .pane(cx)
+                        .dock(cx, ids!(dock))
+                        .item(stream_tab_spec(tab).id)
+                        .check_box(cx, ids!(st_seen))
+                        .area();
+                    let rect = area.rect(cx);
+                    (rect.size.x > 0.0 && rect.size.y > 0.0).then_some((
+                        rect.pos.x + rect.size.x * 0.5,
+                        rect.pos.y + rect.size.y * 0.5,
+                    ))
+                });
                 let Some((x, y)) = at else {
                     return;
                 };
@@ -243,6 +263,9 @@ impl App {
                     &mut Scope::empty(),
                 );
                 cx.end_mouse_move();
+                if hover_only {
+                    return;
+                }
                 let down = MouseDownEvent {
                     abs,
                     button: MouseButton::PRIMARY,
@@ -271,6 +294,19 @@ impl App {
             4 => {
                 self.state_hook(cx, "state-before-refresh.json");
                 self.save_hook(cx);
+                if var("CONCATS_APP_FIND").is_ok_and(|query| !query.is_empty())
+                    && var("CONCATS_APP_FIND_KEEP_FOCUS").is_err()
+                {
+                    let Some(window) = self.primary() else {
+                        return;
+                    };
+                    let tab = window.state.read(|d| d.tab);
+                    let content = window
+                        .pane(cx)
+                        .dock(cx, ids!(dock))
+                        .item(stream_tab_spec(tab).id);
+                    cx.set_key_focus(content.portal_list(cx, ids!(list)).area());
+                }
                 if var("CONCATS_APP_COMPOSER_REFRESH").is_ok_and(|value| !value.is_empty()) {
                     state.with(|d| {
                         let Some(review_doc::Composing::Lines(compose)) = d.compose else {
@@ -316,6 +352,9 @@ impl App {
             // in six. Landing the first proves the pipeline is flushed, so the
             // frame behind the second is drawn after everything settled.
             6 | 7 => {
+                if self.click_tick == 6 {
+                    self.type_hook(cx, "CONCATS_APP_FIND");
+                }
                 if let Ok(path) = crate::dev_hooks::var("CONCATS_APP_SHOT")
                     && !path.is_empty()
                 {
@@ -361,8 +400,50 @@ impl App {
                 .and_then(|list| list.composer_input)
                 .map(|uid| uid.0)
         });
+        let active = window
+            .pane(cx)
+            .dock(cx, ids!(dock))
+            .item(stream_tab_spec(state.read(|d| d.tab)).id);
+        let query = active.text_input(cx, ids!(find_input)).text();
+        let count = active.label(cx, ids!(find_count)).text();
+        let titles = window
+            .pane(cx)
+            .dock(cx, ids!(dock))
+            .clone_state()
+            .map(|items| {
+                items
+                    .into_values()
+                    .filter_map(|item| match item {
+                        DockItem::Tab { name, .. } => Some(name),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let dock = window.pane(cx).dock(cx, ids!(dock));
+        let terminal_rect = dock.item(id!(terminal_tab)).area().rect(cx);
+        let terminal_cursor = terminal::term(terminal::Session {
+            window: state.id,
+            tab: id!(terminal_tab),
+        })
+        .map(|shared| {
+            let term = shared.lock();
+            term.grid()[term.grid().cursor.point].c
+        });
+        let windows: Vec<_> = self.windows.iter().map(|window| window.state.read(|d| {
+            serde_json::json!({"loaded": d.generation > 0, "dirty_buffers": d.blobs.iter().filter(|blob| blob.dirty()).count()})
+        })).collect();
         let data = state.read(|d| {
             serde_json::json!({
+                "windows": windows,
+                "terminal_cursor": terminal_cursor,
+                "terminal_height": terminal_rect.size.y,
+                "tab_titles": titles,
+                "caret": d.caret.map(|caret| (caret.blob, caret.line, caret.byte)),
+                "seen_lines": service::review_state(d.git_dir.as_deref()).load().seen.len(),
+                "find_query": query,
+                "find_count": count,
+                "has_caret": d.caret.is_some(),
                 "draft": *state.compose_draft.read().unwrap(),
                 "composer_open": d.composer_tab.is_some(),
                 "composer_input": input,
@@ -397,14 +478,6 @@ impl App {
                     logo: true,
                     ..Default::default()
                 },
-                ..Default::default()
-            }),
-            &mut Scope::empty(),
-        );
-        self.ui.handle_event(
-            cx,
-            &Event::TextInput(TextInputEvent {
-                input: query,
                 ..Default::default()
             }),
             &mut Scope::empty(),

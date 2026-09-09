@@ -64,18 +64,8 @@ pub enum Stream {
     /// it is about — the tracking view: what was said, where it lives now, and
     /// whether anyone has answered.
     Comments,
-    /// One open file, whole, at the range's head — picked in the file browser.
-    /// You can comment on it like on a diff, because a comment anchors to a
-    /// blob oid rather than to a hunk; the file need not have changed at all.
-    ///
-    /// There is one of these per open file, unlike the fixed streams, so
-    /// the variant says which: the raw id of the dock tab showing it. The tab
-    /// is the identity. That is how the list inside it finds its own stream, by
-    /// walking up the widget tree — the same way a terminal pane finds its
-    /// session.
-    ///
-    /// A raw `u64` rather than makepad's `LiveId`, so the document stays a
-    /// plain value. The widgets wrap it back where they need one.
+    /// A whole-file editor, identified by its dock tab's raw `LiveId`.
+    /// NOTE: Keep Makepad types at the widget boundary.
     File(u64),
 }
 
@@ -204,18 +194,22 @@ pub struct ReviewDoc {
     pub blobs: Vec<Blob>,
     pub stats: LoadStats,
     pub generation: u64,
-    /// Bumped whenever a row stream changes shape outside a load — today that
-    /// is only the composer being spliced in or stripped out. A renderer that
-    /// caches anything by row index (the review list's card boundaries, its
-    /// fold mapping, the virtualized list's per-entry heights) is stale the
-    /// moment a row lands mid-stream, and `generation` cannot say so: it marks
-    /// a landed load, and the composer moves between loads.
+    /// Invalidates row-index caches after edits, comment splices, or expansion.
+    /// NOTE: `generation` changes only when a load lands.
     pub rows_rev: u64,
     pub error: Option<String>,
     pub loading: bool,
 }
 
 impl ReviewDoc {
+    pub fn target(&self) -> concats_state::Target {
+        concats_state::Target {
+            repo: self.repo.clone(),
+            base: self.base.clone(),
+            head: self.head.clone(),
+        }
+    }
+
     /// The row stream of one specific tab. The dock renders every stream in
     /// its own list, so rendering accesses by tab; `active()` remains for the
     /// composer/gesture path, which follows `self.tab`.
@@ -393,7 +387,7 @@ pub fn selection_on(d: &ReviewDoc, blob: u32, line: u32) -> Option<(usize, usize
 }
 
 /// Put the caret at an absolute byte offset in `blob`, with nothing selected.
-fn caret_to(d: &mut ReviewDoc, blob: u32, at: usize) {
+pub(crate) fn caret_to(d: &mut ReviewDoc, blob: u32, at: usize) {
     let b = &d.blobs[blob as usize];
     let line = b.line_of(at);
     d.caret = Some(Caret {
@@ -427,7 +421,7 @@ pub fn replace_selection(d: &mut ReviewDoc, insert: &str) -> bool {
 /// The one gate on editing: the blob has to name a file to write back to. A git
 /// object does not (its bytes exist only in the object database), so a caret on
 /// a deleted-side row, or anywhere in a commit range, silently takes no text.
-/// `back` deletes that many bytes before the caret instead — that is backspace.
+/// `back` deletes preceding bytes, rounded back to a whole character.
 pub fn type_at(d: &mut ReviewDoc, insert: &str, back: usize) -> bool {
     // A selection is what the edit lands on: typing replaces it, and backspace
     // takes the whole of it rather than one byte off its end. `back` is the
@@ -445,7 +439,7 @@ pub fn type_at(d: &mut ReviewDoc, insert: &str, back: usize) -> bool {
     let start = blob.line_starts[caret.line as usize] as usize + caret.byte as usize;
     // Backspace at column 0 joins this line onto the one above, so the range
     // reaches back past a newline rather than stopping at the line's edge.
-    let from = start.saturating_sub(back);
+    let from = blob.text.floor_char_boundary(start.saturating_sub(back));
     if from == start && insert.is_empty() {
         return false;
     }
@@ -942,16 +936,7 @@ pub(crate) fn finalize_cards(rows: &mut Vec<Row>) {
     // a leading collapsed run goes above it, anything else below.
     let mut opening = false;
     for row in rows.drain(..) {
-        let is_card_row = matches!(
-            row,
-            Row::Code { .. }
-                | Row::HunkBar { .. }
-                | Row::Collapsed { .. }
-                | Row::Removed { .. }
-                | Row::Comment { .. }
-                | Row::Composer
-        );
-        if in_card && !is_card_row {
+        if in_card && !in_card_row(&row) {
             close_card(&mut out, opening);
             in_card = false;
             opening = false;
@@ -989,24 +974,49 @@ fn close_card(out: &mut Vec<Row>, opening: bool) {
 /// The review-state keys of one file card: every changed line of every hunk
 /// between this `FileHeader` and the card's end. This is what the header's
 /// viewed tick box reads and toggles.
-pub(crate) fn card_keys(rows: &[Row], header_idx: usize, blobs: &[Blob]) -> Vec<store::LineKey> {
+pub(crate) fn card_keys(
+    rows: &[Row],
+    path: &str,
+    near: usize,
+    blobs: &[Blob],
+) -> Vec<store::LineKey> {
+    let header_idx = rows
+        .iter()
+        .enumerate()
+        .filter(
+            |(_, row)| matches!(row, Row::FileHeader { path: candidate, .. } if candidate == path),
+        )
+        .min_by_key(|(index, _)| index.abs_diff(near))
+        .map(|(index, _)| index);
+    let Some(header_idx) = header_idx else {
+        return Vec::new();
+    };
     let mut keys = Vec::new();
-    if !matches!(rows.get(header_idx), Some(Row::FileHeader { .. })) {
-        return keys;
-    }
     for row in &rows[header_idx + 1..] {
         match row {
             Row::HunkBar { old, new } => keys.extend(store::hunk_keys(*old, *new, blobs)),
-            Row::Code { .. }
-            | Row::Collapsed { .. }
-            | Row::Removed { .. }
-            | Row::Spacer
-            | Row::Comment { .. }
-            | Row::Composer => {}
+            row if in_card_row(row) => {}
             _ => break,
         }
     }
     keys
+}
+
+fn in_card_row(row: &Row) -> bool {
+    match row {
+        Row::Code { .. }
+        | Row::HunkBar { .. }
+        | Row::Collapsed { .. }
+        | Row::Removed { .. }
+        | Row::Comment { .. }
+        | Row::Composer
+        | Row::Spacer => true,
+        Row::Title { .. }
+        | Row::Prose { .. }
+        | Row::Warning { .. }
+        | Row::FileHeader { .. }
+        | Row::CardEnd => false,
+    }
 }
 
 pub(crate) fn code_row_near(rows: &[Row], blob: u32, line: u32, near: usize) -> Option<usize> {
@@ -1107,7 +1117,7 @@ pub(crate) fn splice_composer(d: &mut ReviewDoc) {
 const EXPAND_STEP: u32 = 20;
 
 /// Reveal lines from one end of a collapsed run, in place: they become context
-/// rows against the code they join, and the `Skipped` row keeps whatever stays
+/// rows against the code they join, and the `Collapsed` row keeps whatever stays
 /// hidden — or goes, when the run is exhausted. Row indices below the run shift,
 /// so this announces the new shape like the composer's splice does.
 pub(crate) fn expand_collapsed(d: &mut ReviewDoc, tab: Stream, row: usize, end: CollapsedEnd) {
@@ -1349,7 +1359,7 @@ mod tests {
         }
     }
 
-    fn skipped_at(rows: &[Row], at: usize) -> (u32, u32, u32) {
+    fn collapsed_at(rows: &[Row], at: usize) -> (u32, u32, u32) {
         match rows[at] {
             Row::Collapsed {
                 old_start,
@@ -1465,7 +1475,7 @@ mod tests {
         assert_eq!(numbers_at(&d.files_rows, 1), (11, 21, 20));
         assert_eq!(numbers_at(&d.files_rows, 20), (30, 40, 39));
         // …and the run keeps the rest, starting where the revealed lines stopped.
-        assert_eq!(skipped_at(&d.files_rows, 21), (30, 40, 30));
+        assert_eq!(collapsed_at(&d.files_rows, 21), (30, 40, 30));
 
         // A remainder under two steps goes in one click, and the run with it.
         expand_collapsed(&mut d, Stream::Files, 21, CollapsedEnd::Head);
@@ -1486,7 +1496,7 @@ mod tests {
         expand_collapsed(&mut d, Stream::Files, 1, CollapsedEnd::Tail);
 
         // The run stays put, shortened…
-        assert_eq!(skipped_at(&d.files_rows, 1), (10, 20, 30));
+        assert_eq!(collapsed_at(&d.files_rows, 1), (10, 20, 30));
         // …and the revealed lines are the 20 that abut the code below.
         assert_eq!(numbers_at(&d.files_rows, 2), (41, 51, 50));
         assert_eq!(numbers_at(&d.files_rows, 21), (60, 70, 69));
@@ -2189,5 +2199,42 @@ mod tests {
             "adopted"
         );
         assert!(elsewhere.blobs[0].holds(1));
+    }
+    #[test]
+    fn card_actions_resolve_the_file_after_rows_move() {
+        let header = |path: &str| Row::FileHeader {
+            path: path.into(),
+            lang: "rust",
+            adds: 1,
+            dels: 0,
+            from: None,
+            similarity: None,
+        };
+        let hunk = |blob| Row::HunkBar {
+            old: None,
+            new: Some(Side {
+                blob,
+                start: 0,
+                end: 0,
+            }),
+        };
+        let blobs = vec![
+            Blob::new(oid(1), "rs".into(), "a\n".into()),
+            Blob::new(oid(2), "rs".into(), "b\n".into()),
+        ];
+        let rows = vec![
+            header("b.rs"),
+            hunk(0),
+            Row::CardEnd,
+            header("unrelated.rs"),
+            hunk(0),
+            Row::CardEnd,
+            header("b.rs"),
+            hunk(1),
+            Row::CardEnd,
+        ];
+        assert_eq!(card_keys(&rows, "b.rs", 4, &blobs), [(oid(2), 0)]);
+        assert_eq!(card_keys(&rows, "b.rs", 1, &blobs), [(oid(1), 0)]);
+        assert!(card_keys(&rows, "deleted.rs", 3, &blobs).is_empty());
     }
 }

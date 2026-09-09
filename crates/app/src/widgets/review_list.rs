@@ -3,7 +3,7 @@
 //! Every dock tab owns one instance, pinned to a stream by its `kind`. The code
 //! rows compose the `Gutter` + `DiffLine` pair; a sticky overlay mirrors the
 //! card header that has scrolled past the top so its path and tick box stay in
-//! reach. `ReviewPane` drives it and reads `sticky_idx` to route the tick box.
+//! reach. Both headers emit the same actions, addressed by file path.
 
 use std::{collections::HashSet, sync::Arc};
 
@@ -14,16 +14,14 @@ use super::{
     DiffLine, Gutter,
     collapsed_run::CollapsedRun,
     drop_shadow::{DropShadow, ShadowUp},
+    gutter::RowMarks,
 };
 use crate::{
-    FrameData, FrameTheme,
+    FrameData, FrameTheme, editor,
     file_view::{relower_edited, save_plan},
     makepad_widgets::*,
-    review_doc::{
-        Caret, Composing, FileView, ReviewDoc, Step, Stream, caret_row, compose_title, step_row,
-        type_at,
-    },
-    service::{HighlightCmd, ReviewCmd, highlight, review},
+    review_doc::{Composing, FileView, ReviewDoc, Stream, compose_title},
+    service::{HighlightCmd, ReviewCmd, ReviewState, highlight, review},
 };
 
 thread_local! {
@@ -110,18 +108,33 @@ const CARD_END_EDGE: f64 = 9.0;
 /// same pixel of scroll, so jitter around that point flashed.
 const STICKY_FADE: f64 = 6.0;
 
+/// Where one list entry was laid out this pass, from the list's height tree.
+struct Band {
+    entry: usize,
+    top: f64,
+    height: f64,
+}
+
+/// The window band one drawn code row occupies. Rows are not all the same
+/// height — a long line wraps — so a pointer position names a row by its band.
+struct DrawnRow {
+    row: usize,
+    top: f64,
+    bottom: f64,
+}
+
 /// The drawn row under the viewport's top edge: the lowest entry whose band
-/// still crosses y = 0, over the `(entry, top, height)` bands measured this
-/// pass. Anchoring on the list's own first entry jitters by a row instead —
-/// zero-height rows (hunk bars, skipped runs) and `PortalList`'s first_id
-/// bookkeeping both move it — and a row of jitter at a card boundary makes the
-/// pinned header blink on and off mid-scroll. A zero-height band never crosses
-/// the edge, so it cannot win the pick.
-fn anchor_entry(bands: &[(usize, f64, f64)]) -> Option<usize> {
+/// still crosses y = 0, over the bands measured this pass. Anchoring on the
+/// list's own first entry jitters by a row instead — zero-height rows (hunk
+/// bars, skipped runs) and `PortalList`'s `first_id` bookkeeping both move it
+/// — and a row of jitter at a card boundary makes the pinned header blink on
+/// and off mid-scroll. A zero-height band never crosses the edge, so it cannot
+/// win the pick.
+fn anchor_entry(bands: &[Band]) -> Option<usize> {
     bands
         .iter()
-        .filter(|&&(_, top, height)| top + height > 0.0)
-        .map(|&(entry, ..)| entry)
+        .filter(|band| band.top + band.height > 0.0)
+        .map(|band| band.entry)
         .min()
 }
 
@@ -158,14 +171,37 @@ fn sticky_offsets(header_top: Option<f64>, end_top: Option<f64>) -> (f64, f64) {
 
 #[derive(Clone, Debug, PartialEq)]
 pub(super) enum ReviewItemAction {
-    Seen { tab: Stream, row: usize },
-    Fold { tab: Stream, row: usize },
-    Delete { id: u64 },
-    Reply { tab: Stream, id: u64, near: usize },
-    Outdated { tab: Stream, row: usize },
-    Gutter { tab: Stream, row: usize },
-    Expand { tab: Stream, row: usize },
-    Reveal { tab: Stream, row: usize },
+    Seen {
+        tab: Stream,
+        path: String,
+        near: usize,
+    },
+    Fold {
+        path: String,
+    },
+    Delete {
+        id: u64,
+    },
+    Reply {
+        tab: Stream,
+        id: u64,
+        near: usize,
+    },
+    Outdated {
+        path: String,
+    },
+    Gutter {
+        tab: Stream,
+        row: usize,
+    },
+    Expand {
+        tab: Stream,
+        row: usize,
+    },
+    Reveal {
+        tab: Stream,
+        row: usize,
+    },
     Post,
     Cancel,
 }
@@ -833,11 +869,9 @@ pub struct ReviewList {
     /// `@sessions`/`@commits`): every dock tab owns one stream-pinned list.
     #[live]
     kind: LiveId,
-    /// Stream index of the `FileHeader` the sticky overlay currently mirrors
-    /// (None = no card is scrolled past the top). ReviewPane reads it to
-    /// route the sticky tick box to the right card.
+    /// The header mirrored in this draw; action identity is the file path.
     #[rust]
-    pub sticky_idx: Option<usize>,
+    sticky_idx: Option<usize>,
     /// The composer field's widget, while one is on screen. Every other control
     /// in a row carries the `ReviewItemAction` that says what it is, but
     /// makepad's `TextInput` has no `#[action_data]` field — `set_action_data`
@@ -886,7 +920,7 @@ pub struct ReviewList {
     /// position names a row without assuming all rows are the same height —
     /// they are not, as soon as a long line wraps.
     #[rust]
-    drawn_rows: Vec<(usize, f64, f64)>,
+    drawn_rows: Vec<DrawnRow>,
     /// One-shot: put the keyboard in the find field on its next draw.
     #[rust]
     focus_find: bool,
@@ -895,6 +929,10 @@ pub struct ReviewList {
     /// something the review says.
     #[rust]
     find: Option<String>,
+    #[rust]
+    find_at: Option<(usize, usize)>,
+    #[rust]
+    seek_row: Option<usize>,
     /// The stream this instance last drew. `tab_of` walks the widget tree,
     /// which only resolves while drawing; asked during event handling, every
     /// instance fell back to the same answer, and gating a keystroke on that
@@ -1013,34 +1051,6 @@ impl ReviewList {
     }
 }
 
-/// The dock's content templates pin each list to one stream via `kind`.
-///
-/// All four fixed streams have their own kind, but there is one File pane per
-/// open file and they share `@file` — so a File pane finds out which file by
-/// looking for its own dock tab in the widget tree path, the way a terminal
-/// pane finds its session (`TerminalView::session_for_widget`). A
-/// pane whose tab the document has no file for renders an empty stream.
-fn tab_of(cx: &Cx, uid: WidgetUid, kind: LiveId, open: &[FileView]) -> Stream {
-    if kind == id!(guide) {
-        Stream::Guide
-    } else if kind == id!(sessions) {
-        Stream::Sessions
-    } else if kind == id!(commits) {
-        Stream::Commits
-    } else if kind == id!(comments) {
-        Stream::Comments
-    } else if kind == id!(file) {
-        let path = cx.widget_tree().path_to(uid);
-        let tab = path
-            .iter()
-            .rev()
-            .find(|node| open.iter().any(|f| f.tab == node.0));
-        Stream::File(tab.map_or(0, |t| t.0))
-    } else {
-        Stream::Files
-    }
-}
-
 /// Whether the rows leading away from a collapsed run reach code before they
 /// reach the card's chrome — that decides whether the end gets an expander. It
 /// takes the stream in either direction, so one walk answers both sides. The
@@ -1053,7 +1063,7 @@ fn reaches_code<'a>(mut rows: impl Iterator<Item = &'a Row>) -> bool {
 }
 
 /// The card header's title: a rename shows as "old → new", not as two files.
-fn header_title(path: &str, from: &Option<String>) -> String {
+fn header_title(path: &str, from: Option<&str>) -> String {
     match from {
         Some(f) => format!("{f}  →  {path}"),
         None => path.to_string(),
@@ -1087,157 +1097,125 @@ fn outdated_label(hidden: usize, showing: bool) -> String {
     }
 }
 
+/// What every row of one draw pass reads: the frame, resolved once.
+struct DrawPass<'a> {
+    doc: &'a Arc<ReviewDoc>,
+    /// `doc.stream(tab)`, resolved once: for a File tab that is a scan of the
+    /// open files, and every row used to pay it four times.
+    rows: &'a [Row],
+    review: &'a ReviewState,
+    tab: Stream,
+    theme: FrameTheme,
+    /// Whether the rows take their selection from the document this pass.
+    ///
+    /// The list paints what its own pointer gesture produced and nothing
+    /// else, so a selection made any other way (extended with shift, set by
+    /// a test hook) would be invisible. While the list has a gesture of its
+    /// own it stays the authority: during a drag it is the live one, and the
+    /// document has not adopted it yet.
+    paint_selection: bool,
+    focus_composer: bool,
+    requested_composer: bool,
+    draft: &'a str,
+    /// The font's wrap setting, read once rather than per row.
+    wrap: bool,
+    /// The window a highlight request answers to: the highlighter runs off
+    /// the UI thread, so the request carries both the document and the window.
+    window: LiveId,
+}
+
+/// The list's entry range for one pass, from the caches [`ReviewList::refresh_caches`]
+/// just brought up to date.
+struct EntryRange {
+    /// Rows or folds changed since the last pass: every index-keyed cache
+    /// was rebuilt, and the list's has to be too.
+    remapped: bool,
+    /// How many entries the last pass had.
+    previous: usize,
+    entries: usize,
+    /// The entry the viewport starts on, under the new mapping.
+    first: usize,
+    /// The entry it started on before this pass.
+    old_first: usize,
+}
+
+/// Give the list its range. `PortalList` caches heights by entry index, while
+/// folding changes which document row an entry index names, so a remap resets
+/// the old measurements with a one-entry shrink before growing the new range.
+fn set_range(cx: &mut Cx2d, list: &mut PortalList, range: &EntryRange) {
+    if range.remapped && range.previous != 0 && range.entries >= range.previous {
+        list.set_item_range(cx, 0, range.previous - 1);
+    }
+    list.set_item_range(cx, 0, range.entries);
+    // Re-anchor only when the entry the viewport starts on actually moved. A
+    // fold remaps entries and moves it; a stream re-lowered in place does not,
+    // and re-anchoring then would also reset `first_scroll` to zero — a
+    // visible jump of up to one row on every keystroke once these rows are
+    // editable.
+    if range.remapped && range.entries != 0 && range.first != range.old_first {
+        list.set_first_id_and_scroll(range.first.min(range.entries - 1), 0.0);
+    }
+}
+
 impl Widget for ReviewList {
     fn draw_walk(&mut self, cx: &mut Cx2d, scope: &mut Scope, walk: Walk) -> DrawStep {
         let Some(frame) = scope.data.get::<FrameData>() else {
             return DrawStep::done();
         };
-        let d = &*frame.document;
-        // The highlighter runs off the UI thread, so the request carries both
-        // the document to read and the window to answer.
-        let window = frame.state.id;
-        let doc = frame.document.clone();
         // Also taken here, not only from the event path: the first draw of a
         // window happens before any event reaches its rows, and the IME gate
         // at the end of this function needs to know whose window this is.
         self.state = Some(frame.state.clone());
-        let tab = tab_of(cx, self.widget_uid(), self.kind, &d.files_open);
+        let tab = self.tab_of(cx, &frame.document.files_open);
         self.drawn_tab = Some(tab);
-        let review = &frame.review;
-        // What the last comment splice managed to place. A thread missing from
-        // it has no line to sit on, so the card header offers to reveal it
-        // instead. Read, not recomputed: the splice decided, and deciding again
-        // here is how a header ends up disagreeing with the rows right under
-        // it.
-        let placed = &d.placed_threads;
-        let focus_composer = frame.focus_composer == Some(tab)
-            || (d.composer_tab == Some(tab)
-                && !matches!(self.composer.area(), Area::Empty)
-                && cx.has_key_focus(self.composer.area()));
-        let row_frame = FrameTheme(frame.theme.clone());
-        if self.highlight_generation != d.generation {
-            self.highlight_generation = d.generation;
-            self.requested_highlights.clear();
+        if self.find.is_some()
+            && (self.mapped_generation != frame.document.generation
+                || self.mapped_rows_rev != frame.document.rows_rev)
+        {
+            self.find_at = None;
+            self.count_hits(cx);
         }
-
-        let document_changed = self.mapped_generation != d.generation;
-        let comments_changed = self.mapped_comments_rev != review.comments_rev;
-        // The composer moving is a change of the same kind as a comment landing:
-        // a row appears or leaves mid-stream, so everything keyed by row index
-        // has to be rebuilt.
-        let rows_changed = self.mapped_rows_rev != d.rows_rev;
-        let mapping_changed =
-            document_changed || comments_changed || rows_changed || self.mapped_folded != d.folded;
-        let previous_entries = self.mapped_entries;
+        let list_ref = self.view.portal_list(cx, ids!(list));
+        let pass = DrawPass {
+            doc: &frame.document,
+            rows: frame.document.stream(tab),
+            review: &frame.review,
+            tab,
+            theme: FrameTheme(frame.theme.clone()),
+            paint_selection: !list_ref.borrow().is_some_and(|l| l.has_selection()),
+            focus_composer: frame.focus_composer == Some(tab)
+                || (frame.document.composer_tab == Some(tab)
+                    && !matches!(self.composer.area(), Area::Empty)
+                    && cx.has_key_focus(self.composer.area())),
+            requested_composer: frame.focus_composer == Some(tab),
+            draft: &frame.compose_draft,
+            wrap: crate::theme::active_font().wrap,
+            window: frame.state.id,
+        };
+        let range = self.refresh_caches(&pass, list_ref.first_id());
         // Re-established by whichever row draws the caret this pass; stale
         // geometry would aim the IME at a line that has scrolled away.
         self.caret_rect = None;
+        self.drawn_rows.clear();
         let find_bar = self.view.view(cx, ids!(find_bar));
         if find_bar.visible() != self.find.is_some() {
             find_bar.set_visible(cx, self.find.is_some());
         }
-        if std::mem::take(&mut self.focus_find) {
-            self.view.text_input(cx, ids!(find_input)).set_key_focus(cx);
-        }
-        self.drawn_rows.clear();
-        let list_ref = self.view.portal_list(cx, ids!(list));
-        // Whether the rows take their selection from the document this pass.
-        //
-        // The list paints what its own pointer gesture produced and nothing
-        // else, so a selection made any other way (extended with shift, set by
-        // a test hook) would be invisible. While the list has a gesture of its
-        // own it stays the authority: during a drag it is the live one, and the
-        // document has not adopted it yet.
-        let paint_selection = !list_ref.borrow().is_some_and(|l| l.has_selection());
-        let old_first_id = list_ref.first_id();
-        let old_first_row = self.row_at(old_first_id).unwrap_or(0);
-
-        // Folded cards drop their rows from the list. A new row mapping also
-        // invalidates PortalList's index-keyed height cache below.
-        if mapping_changed {
-            self.map_folded(d.stream(tab), &d.folded);
-            self.mapped_generation = d.generation;
-            self.mapped_comments_rev = review.comments_rev;
-            self.mapped_rows_rev = d.rows_rev;
-            self.mapped_folded.clone_from(&d.folded);
-        }
-        if document_changed || comments_changed || rows_changed {
-            self.cards.rebuild(d.stream(tab), &d.blobs);
-        }
-        if document_changed
-            || comments_changed
-            || rows_changed
-            || self
-                .mapped_seen
-                .as_ref()
-                .is_none_or(|seen| !Arc::ptr_eq(seen, &review.seen))
-        {
-            self.cards.update_seen(&review.seen);
-            self.mapped_seen = Some(review.seen.clone());
-        }
-        let remapped_first = if self.visible.is_empty() {
-            old_first_row
-        } else {
-            match self.visible.binary_search(&old_first_row) {
-                Ok(entry) => entry,
-                Err(0) => 0,
-                Err(entry) => entry - 1,
-            }
-        };
-        let entries = if self.visible.is_empty() {
-            d.stream(tab).len()
-        } else {
-            self.visible.len()
-        };
-        self.mapped_entries = entries;
-        let first_entry = if mapping_changed {
-            remapped_first
-        } else {
-            old_first_id
-        };
-
-        // Resolve the pinned header's widgets up front. A path lookup walks
-        // makepad's widget-tree cache, and refreshing a dirty node needs to
-        // borrow this widget's children — impossible once the draw loop below
-        // holds the list. Inside the loop the lookup silently returns an empty
-        // ref, so every set on it is a no-op and the header never appears.
-        let sticky = self.view.view(cx, ids!(sticky));
-        let st_path = self.view.label(cx, ids!(st_path));
-        let st_stat = self.view.label(cx, ids!(st_stat));
-        let st_seen = self.view.check_box(cx, ids!(st_seen));
-        let st_shadow = self.view.widget(cx, ids!(st_shadow));
-        let st_shadow_up = self.view.widget(cx, ids!(st_shadow_up));
 
         // The list's own chrome — the pinned header's rounded caps, the top
         // fade — reads the theme off the scope like every row does. Drawing the
         // root with an empty one made each of them bail out silently.
-        let mut list_scope = Scope::with_props(&row_frame);
+        let mut list_scope = Scope::with_props(&pass.theme);
         while let Some(step) = self.view.draw_walk(cx, &mut list_scope, walk).step() {
-            let mut drew_list = false;
-            let mut push = 0.0;
-            let mut lift = 0.0;
-            let mut drawn = Vec::new();
-            if let Some(mut list) = step.as_portal_list().borrow_mut() {
-                if mapping_changed && previous_entries != 0 && entries >= previous_entries {
-                    // `PortalList` caches heights by entry index, while folding
-                    // changes which document row an entry index names. Reset
-                    // the old measurements with a one-entry shrink before
-                    // growing the new range.
-                    list.set_item_range(cx, 0, previous_entries - 1);
-                }
-                list.set_item_range(cx, 0, entries);
-                // Re-anchor only when the entry the viewport starts on actually
-                // moved. A fold remaps entries and moves it; a stream
-                // re-lowered in place does not, and re-anchoring then would
-                // also reset `first_scroll` to zero — a visible jump of up to
-                // one row on every keystroke once these rows are editable.
-                if mapping_changed && entries != 0 && remapped_first != old_first_id {
-                    list.set_first_id_and_scroll(remapped_first.min(entries - 1), 0.0);
-                }
-
-                if frame.focus_composer == Some(tab)
-                    && let Some(row) = d
-                        .stream(tab)
+            let (push, lift) = {
+                let list = step.as_portal_list();
+                let Some(mut list) = list.borrow_mut() else {
+                    continue;
+                };
+                set_range(cx, &mut list, &range);
+                if pass.requested_composer
+                    && let Some(row) = pass
+                        .rows
                         .iter()
                         .position(|row| matches!(row, Row::Composer))
                     && let Some(entry) = if self.visible.is_empty() {
@@ -1248,467 +1226,30 @@ impl Widget for ReviewList {
                 {
                     list.set_first_id_and_scroll(entry, 0.0);
                 }
-
-                while let Some(i) = list.next_visible_item(cx) {
-                    drawn.push(i);
-                    let Some(r) = self.row_at(i) else {
-                        continue;
-                    };
-                    // Lazy highlight: only blobs with a line actually on screen
-                    // ever get parsed. This is what keeps a 850-file diff cheap.
-                    // Every stream indexes the same blob table, so it works for
-                    // each tab unchanged.
-                    if let Some(Row::Code { blob, .. }) = d.stream(tab).get(r) {
-                        let blob = *blob;
-                        let rev = d.blobs[blob as usize].edit_rev;
-                        // Keyed by rev as well as blob: an edit invalidates the
-                        // spans of the lines it touched, and asking again for
-                        // the same blob has to get past this memo.
-                        // …and only for a blob the draw cannot colour itself.
-                        // Otherwise the worker computes a whole-file highlight
-                        // that nothing ever reads: `row_spans` answers from its
-                        // own tree regardless of what lands in `Blob.spans`.
-                        if !draws_own_spans(&d.blobs[blob as usize])
-                            && d.blobs[blob as usize].spans_stale()
-                            && self.requested_highlights.insert((blob, rev))
-                        {
-                            highlight().send(HighlightCmd::Request {
-                                window,
-                                doc: doc.clone(),
-                                generation: d.generation,
-                                blob,
-                                rev,
-                            });
-                        }
-                    }
-
-                    if matches!(d.stream(tab).get(r), Some(Row::Composer)) {
-                        let item = list.item(cx, i, id!(Composer));
-                        // The prompt is the placeholder, like the design: it
-                        // names the range being commented on and goes away as
-                        // soon as there is a draft to read.
-                        let input = item.text_input(cx, ids!(comp_input));
-                        let recreated = self.composer.widget_uid() != input.widget_uid();
-                        self.composer_input = Some(input.widget_uid());
-                        item.widget(cx, ids!(comp_post))
-                            .set_action_data(ReviewItemAction::Post);
-                        item.widget(cx, ids!(comp_cancel))
-                            .set_action_data(ReviewItemAction::Cancel);
-                        input.set_empty_text(cx, compose_title(d, &review.comments));
-                        // The virtualized list may have recreated this item —
-                        // restore the draft the keystroke mirror kept.
-                        if input.text() != frame.compose_draft {
-                            input.set_text(cx, &frame.compose_draft);
-                        }
-                        if recreated {
-                            input.set_selection(cx, self.composer.selection());
-                        }
-                        item.draw_all(cx, &mut Scope::with_props(&row_frame));
-                        // NOTE: A new input has no focusable Area until it is drawn.
-                        if focus_composer {
-                            input.set_key_focus(cx);
-                            if frame.focus_composer == Some(tab) {
-                                frame.state.with(|d| d.compose_focus = false);
-                            }
-                        }
-                        self.composer = input;
-                        continue;
-                    }
-
-                    let Some(row) = d.stream(tab).get(r) else {
-                        continue;
-                    };
-
-                    match row {
-                        Row::Title { text } => {
-                            let item = list.item(cx, i, id!(Title));
-                            item.label(cx, ids!(title_text)).set_text(cx, text);
-                            item.draw_all(cx, &mut Scope::with_props(&row_frame));
-                        }
-                        Row::Prose { md } => {
-                            let item = list.item(cx, i, id!(ProseRow));
-                            item.label(cx, ids!(prose_text)).set_text(cx, md);
-                            item.draw_all(cx, &mut Scope::with_props(&row_frame));
-                        }
-                        Row::Warning { text } => {
-                            let item = list.item(cx, i, id!(Warning));
-                            item.label(cx, ids!(warn_label)).set_text(cx, text);
-                            item.draw_all(cx, &mut Scope::with_props(&row_frame));
-                        }
-                        Row::FileHeader {
-                            path,
-                            adds,
-                            dels,
-                            from,
-                            similarity,
-                            ..
-                        } => {
-                            let item = list.item(cx, i, id!(FileHeader));
-                            // Invisible while the pinned copy stands in for
-                            // this card — and inert with it, since an invisible
-                            // View drops the events its caret and tick box
-                            // need. The row keeps its height, so nothing moves.
-                            item.view(cx, ids!(fh_body))
-                                .set_visible(cx, self.sticky_idx != Some(r));
-                            item.widget(cx, ids!(seen_box))
-                                .set_action_data(ReviewItemAction::Seen { tab, row: r });
-                            for ids in [ids!(fold_button), ids!(unfold_button)] {
-                                item.widget(cx, ids)
-                                    .set_action_data(ReviewItemAction::Fold { tab, row: r });
-                            }
-                            item.label(cx, ids!(fh_path))
-                                .set_text(cx, &header_title(path, from));
-                            // The viewed tick box covers every hunk of this
-                            // card — all their changed lines flip together.
-                            let (all, any) = self
-                                .cards
-                                .at(r)
-                                .map(|card| (card.all_seen, card.any_seen))
-                                .unwrap_or_default();
-                            item.check_box(cx, ids!(seen_box))
-                                .set_active(cx, all, Animate::No);
-                            item.label(cx, ids!(fh_stat))
-                                .set_text(cx, &header_stat(*adds, *dels, *similarity, any && !all));
-                            // Conversations recorded against this file that
-                            // this range cannot place. Offered only when there
-                            // are some; the label says which way the click goes.
-                            let hidden = store::outdated_threads(&review.comments, path, placed);
-                            let outdated = item.button(cx, ids!(fh_outdated));
-                            outdated.set_visible(cx, hidden > 0);
-                            if hidden > 0 {
-                                outdated.set_text(
-                                    cx,
-                                    &outdated_label(hidden, d.show_all_comments.contains(path)),
-                                );
-                                item.widget(cx, ids!(fh_outdated))
-                                    .set_action_data(ReviewItemAction::Outdated { tab, row: r });
-                            }
-                            // Shut cards show the other caret and drop the
-                            // hairline: the bottom cap closes them instead.
-                            let folded = d.folded.contains(path);
-                            item.button(cx, ids!(fold_button)).set_visible(cx, !folded);
-                            item.button(cx, ids!(unfold_button)).set_visible(cx, folded);
-                            item.view(cx, ids!(fh_rule)).set_visible(cx, !folded);
-                            item.draw_all(cx, &mut Scope::with_props(&row_frame));
-                        }
-                        // What the range took out, standing where it was. The
-                        // file view shows the file as it is, so this is the
-                        // only trace of a deletion until it is asked for.
-                        Row::Removed { start, end, .. } => {
-                            let item = list.item(cx, i, id!(Removed));
-                            let n = end - start + 1;
-                            let plural = if n == 1 { "" } else { "s" };
-                            let button = item.button(cx, ids!(rm_button));
-                            button.set_text(cx, &format!("{n} line{plural} removed"));
-                            button.set_action_data(ReviewItemAction::Reveal { tab, row: r });
-                            item.draw_all(cx, &mut Scope::with_props(&row_frame));
-                        }
-                        // A cut in the code, with its two expanders. The row
-                        // says how many lines are hidden and where they live;
-                        // the band says which end a click asked for.
-                        Row::Collapsed { .. } => {
-                            let item = list.item(cx, i, id!(Skipped));
-                            item.widget(cx, ids!(collapsed))
-                                .set_action_data(ReviewItemAction::Expand { tab, row: r });
-                            // An end is only reachable if there is code on that
-                            // side to grow: a run at the top of a card has none
-                            // above it, one at the bottom none below, and each
-                            // gets one band instead of two.
-                            let stream = d.stream(tab);
-                            if let Some(mut s) = item
-                                .widget(cx, ids!(collapsed))
-                                .borrow_mut::<CollapsedRun>()
-                            {
-                                s.set_ends(
-                                    reaches_code(stream[..r].iter().rev()),
-                                    reaches_code(stream[r + 1..].iter()),
-                                );
-                            }
-                            item.draw_all(cx, &mut Scope::with_props(&row_frame));
-                        }
-                        // Air, but part of the code region: it carries the seen
-                        // marker, which stops at a collapsed run.
-                        Row::Spacer => {
-                            let item = list.item(cx, i, id!(Spacer));
-                            let seen = self.cards.containing(r).is_some_and(|card| card.all_seen);
-                            item.view(cx, ids!(sp_mark)).set_visible(cx, seen);
-                            item.draw_all(cx, &mut Scope::with_props(&row_frame));
-                        }
-                        Row::Code {
-                            kind,
-                            old_no,
-                            new_no,
-                            blob,
-                            line,
-                        } => {
-                            // Text and spans are borrowed from the blob — never
-                            // copied into the row. See `concats_diff::blob`.
-                            let b = &d.blobs[*blob as usize];
-                            // A card ticked seen draws its marker down its
-                            // whole left edge, context lines included: the
-                            // design puts the border on every line of a seen
-                            // card, and a marker only beside the changed lines
-                            // read as a dashed line rather than one border.
-                            // Review state is still keyed per changed line;
-                            // this is just how a fully seen card renders.
-                            let seen = review.seen.contains(&(b.oid, *line))
-                                || self.cards.containing(r).is_some_and(|c| c.all_seen);
-                            // Inside a stored comment's range: the blue marker.
-                            let commented = review.commented.contains(&(b.oid, *line));
-                            // Inside the range being composed: marker + tint.
-                            // Deleted rows check the old side, everything
-                            // else the new side. A reply selects no lines —
-                            // it holds its root's, which are already marked.
-                            let selected = matches!(d.compose, Some(Composing::Lines(c)) if {
-                                let side = match kind {
-                                    LineKind::Del => c.old,
-                                    _ => c.new,
-                                };
-                                side.is_some_and(|s| {
-                                    s.blob == *blob && *line >= s.start && *line <= s.end
-                                })
-                            });
-                            let text = b.line_text(*line as usize);
-                            // Coloured now if nothing has coloured it yet, so
-                            // the first frame of a file is never plain text.
-                            let drawn_spans = row_spans(b, *line as usize);
-                            let spans = match &drawn_spans {
-                                Some(spans) => spans.as_slice(),
-                                None => b.line_spans(*line as usize),
-                            };
-                            // The caret is in blob coordinates, so it lands on
-                            // this row wherever the row is drawn — and on every
-                            // stream showing the same line.
-                            let caret = d
-                                .caret
-                                .filter(|c| c.blob == *blob && c.line == *line)
-                                .map(|c| c.byte as usize);
-
-                            // A File tab is an editor: its rows carry no card.
-                            let template = if self.kind == id!(file) {
-                                id!(CodeFlat)
-                            } else {
-                                id!(Code)
-                            };
-                            let item = list.item(cx, i, template);
-                            item.widget(cx, ids!(gut))
-                                .set_action_data(ReviewItemAction::Gutter { tab, row: r });
-                            if let Some(mut g) = item.widget(cx, ids!(gut)).borrow_mut::<Gutter>() {
-                                g.set_row(
-                                    *kind, *old_no, *new_no, *blob, *line, seen, commented,
-                                    selected,
-                                );
-                            }
-                            if let Some(mut dl) = item.widget(cx, ids!(dl)).borrow_mut::<DiffLine>()
-                            {
-                                dl.set_row(*kind, text, spans, selected, caret);
-                                dl.set_hits(hits_in(text, self.find.as_deref()));
-                                if paint_selection {
-                                    match crate::review_doc::selection_on(d, *blob, *line) {
-                                        Some((from, to)) => dl.selection_set(from, to),
-                                        None => dl.selection_clear(),
-                                    }
-                                }
-                            }
-                            item.draw_all(cx, &mut Scope::with_props(&row_frame));
-                            let band = item.area().rect(cx);
-                            self.drawn_rows
-                                .push((r, band.pos.y, band.pos.y + band.size.y));
-                            // Read back where the caret landed: the IME has to
-                            // be told where composed text will appear, and only
-                            // the row that drew it knows.
-                            if caret.is_some() {
-                                self.caret_rect = item
-                                    .widget(cx, ids!(dl))
-                                    .borrow::<DiffLine>()
-                                    .and_then(|dl| dl.caret_rect());
-                            }
-                        }
-                        // Hunk boundaries render as nothing — the design shows
-                        // hunks as line-number jumps. The row still anchors the
-                        // hunk's review-state keys for the header tick box.
-                        Row::HunkBar { .. } => {
-                            let item = list.item(cx, i, id!(HunkBar));
-                            item.draw_all(cx, &mut Scope::with_props(&row_frame));
-                        }
-                        // A reply gets the indented twin of the same strip.
-                        // `meta` is the byline, not the range — the blue bar
-                        // spanning the range already tells that.
-                        Row::Comment {
-                            id,
-                            parent,
-                            body,
-                            meta,
-                        } => {
-                            let template = if parent.is_some() {
-                                id!(Reply)
-                            } else {
-                                id!(Comment)
-                            };
-                            let item = list.item(cx, i, template);
-                            item.widget(cx, ids!(cm_reply)).set_action_data(
-                                ReviewItemAction::Reply {
-                                    tab,
-                                    id: *id,
-                                    near: r,
-                                },
-                            );
-                            item.widget(cx, ids!(cm_delete))
-                                .set_action_data(ReviewItemAction::Delete { id: *id });
-                            item.label(cx, ids!(cm_meta)).set_text(cx, meta);
-                            item.label(cx, ids!(cm_body)).set_text(cx, body);
-                            item.draw_all(cx, &mut Scope::with_props(&row_frame));
-                        }
-                        Row::CardEnd => {
-                            let item = list.item(cx, i, id!(CardEnd));
-                            item.draw_all(cx, &mut Scope::with_props(&row_frame));
-                        }
-                        // Handled before the match — see above.
-                        Row::Composer => {}
-                    }
-                }
-
-                // Item geometry from the list's scroll position and its
-                // measured-height tree, never from the drawn widgets' rects. A
-                // rect only exists for an item drawn this pass, and which items
-                // those are depends on scroll velocity, so the header being
-                // tracked would blink out of reach just when you scroll fast
-                // and the copy would pop instead of riding. This is defined for
-                // every entry, at any speed.
-                let item_rect = |list: &PortalList, entry: usize| {
-                    Some((list.item_top(entry)?, list.item_height(entry)?))
-                };
-                let entry_of = |row: usize| {
-                    if self.visible.is_empty() {
+                if let Some(row) = self.seek_row.take()
+                    && let Some(entry) = if self.visible.is_empty() {
                         Some(row)
                     } else {
                         self.visible.binary_search(&row).ok()
                     }
-                };
-
-                let bands: Vec<(usize, f64, f64)> = drawn
-                    .iter()
-                    .filter_map(|&entry| {
-                        let (top, height) = item_rect(&list, entry)?;
-                        Some((entry, top, height))
-                    })
-                    .collect();
-                let first = self
-                    .row_at(anchor_entry(&bands).unwrap_or(first_entry))
-                    .unwrap_or(0);
-                let card = self.cards.containing(first);
-                let header_top = card
-                    .and_then(|card| entry_of(card.header))
-                    .and_then(|entry| item_rect(&list, entry))
-                    .map(|(top, _)| top);
-
-                // Present as long as the viewport top is inside the card, not
-                // only once the header has climbed. While the real header is
-                // still on screen the copy rides exactly on it (see `arrive`),
-                // so there is no handover to see, and since the copy draws
-                // above the fade the card's title is never masked by it. A
-                // folded card is the exception: it has no rows to scroll past
-                // its header, so pinning one would leave a copy hovering over
-                // the next card.
-                self.sticky_idx = card
-                    .filter(|card| {
-                        !matches!(
-                            d.stream(tab).get(card.header),
-                            Some(Row::FileHeader { path, .. }) if d.folded.contains(path)
-                        )
-                    })
-                    .map(|card| card.header);
-
-                let end_top = self
-                    .sticky_idx
-                    .and_then(|header| self.cards.at(header))
-                    .and_then(|card| entry_of(card.end))
-                    .and_then(|entry| item_rect(&list, entry))
-                    .map(|(top, _)| top);
-                (push, lift) = sticky_offsets(header_top, end_top);
-                drew_list = true;
-            }
-
-            // The pinned header, with the list no longer borrowed.
-            if drew_list {
-                match self
-                    .sticky_idx
-                    .and_then(|header| d.stream(tab).get(header).cloned())
                 {
-                    Some(Row::FileHeader {
-                        path,
-                        adds,
-                        dels,
-                        from,
-                        similarity,
-                        ..
-                    }) => {
-                        let header = self.sticky_idx.unwrap();
-                        st_path.set_text(cx, &header_title(&path, &from));
-                        let (all, any) = self
-                            .cards
-                            .at(header)
-                            .map(|card| (card.all_seen, card.any_seen))
-                            .unwrap_or_default();
-                        st_seen.set_active(cx, all, Animate::No);
-                        st_stat.set_text(cx, &header_stat(adds, dels, similarity, any && !all));
-                        let hidden = store::outdated_threads(&review.comments, &path, placed);
-                        let st_outdated = self.view.button(cx, ids!(st_outdated));
-                        st_outdated.set_visible(cx, hidden > 0);
-                        if hidden > 0 {
-                            st_outdated.set_text(
-                                cx,
-                                &outdated_label(hidden, d.show_all_comments.contains(&path)),
-                            );
-                        }
-                        if let Some(mut view) = sticky.borrow_mut() {
-                            // The up-shadow always takes the 12pt above the
-                            // header inside the sticky, so the box always
-                            // starts that much higher for the header to land
-                            // where it belongs. Unconditional on purpose: as
-                            // soon as this offset depended on state, the header
-                            // jumped 12pt the moment the state flipped.
-                            view.walk.margin.top = push - STICKY_SHADOW;
-                        }
-                        // Ramp both shadows rather than toggling them.
-                        if let Some(mut shadow) = st_shadow.borrow_mut::<DropShadow>() {
-                            shadow.fade = lift as f32;
-                        }
-                        if let Some(mut shadow) = st_shadow_up.borrow_mut::<ShadowUp>() {
-                            shadow.fade = lift as f32;
-                        }
-                        if !sticky.visible() {
-                            sticky.set_visible(cx, true);
-                        }
-                    }
-                    _ => {
-                        if sticky.visible() {
-                            sticky.set_visible(cx, false);
-                        }
-                    }
+                    list.set_first_id_and_scroll(entry, 0.0);
                 }
-            }
-        }
-        // Arm the platform text input at the caret. Without it, typed
-        // characters never arrive as `Event::TextInput` and the surface is
-        // read-only, however much key handling sits behind it.
-        //
-        // The IME is one thing for the whole app, not one per window, so only
-        // the focused window may touch it. Without that check every list in
-        // every other window calls `hide_text_ime` on each of its draws and
-        // tears down the IME the window with the caret just armed — which
-        // reads as the app going dead to the keyboard the moment a second
-        // window is open.
-        if self.state().is_focused() {
-            match self.caret_rect {
-                Some(rect) => {
-                    let area = self.view.portal_list(cx, ids!(list)).area();
-                    let origin = area.rect(cx).pos;
-                    cx.show_text_ime(area, rect.pos - origin);
+                let mut drawn = Vec::new();
+                while let Some(entry) = list.next_visible_item(cx) {
+                    drawn.push(entry);
+                    self.draw_row(cx, &mut list, entry, &pass);
                 }
-                None => cx.hide_text_ime(),
-            }
+                self.place_sticky(&list, &drawn, &range, &pass)
+            };
+            self.draw_sticky(cx, &pass, push, lift);
         }
+        if std::mem::take(&mut self.focus_find) {
+            let input = self.view.text_input(cx, ids!(find_input));
+            input.set_text(cx, self.find.as_deref().unwrap_or_default());
+            input.set_key_focus(cx);
+        }
+        self.arm_ime(cx);
         DrawStep::done()
     }
 
@@ -1726,9 +1267,7 @@ impl Widget for ReviewList {
         // `FrameData`, so an edit applied mid-draw would deep-clone the whole
         // document, blob texts included, on every keystroke.
         match event {
-            // Find is claimed on stream ownership alone, before the key-focus
-            // gate below: opening a search is not typing, and focus may have
-            // moved since the caret was placed.
+            // NOTE: Each tab claims search only while its list or find fields own focus.
             Event::KeyDown(ke) if self.find_keys(cx, ke) => return,
             Event::KeyDown(ke) if self.caret_keys(cx, ke) => return,
             Event::TextInput(ti) if self.caret_text(cx, &ti.input) => return,
@@ -1749,6 +1288,623 @@ impl Widget for ReviewList {
 }
 
 impl ReviewList {
+    /// The stream this instance renders. The dock's content templates pin each
+    /// list to one via `kind`.
+    ///
+    /// All fixed streams have their own kind, but there is one File pane per
+    /// open file and they share `@file` — so a File pane finds out which file by
+    /// looking for its own dock tab in the widget tree path, the way a terminal
+    /// pane finds its session (`TerminalView::session_for_widget`). The tab is
+    /// the pane's identity, so the walk happens once and the answer is reused
+    /// until that file closes. A pane whose tab the document has no file for
+    /// renders an empty stream.
+    fn tab_of(&self, cx: &Cx, open: &[FileView]) -> Stream {
+        if self.kind == id!(guide) {
+            Stream::Guide
+        } else if self.kind == id!(sessions) {
+            Stream::Sessions
+        } else if self.kind == id!(commits) {
+            Stream::Commits
+        } else if self.kind == id!(comments) {
+            Stream::Comments
+        } else if self.kind == id!(file) {
+            if let Some(Stream::File(tab)) = self.drawn_tab
+                && open.iter().any(|f| f.tab == tab)
+            {
+                return Stream::File(tab);
+            }
+            let path = cx.widget_tree().path_to(self.widget_uid());
+            let tab = path
+                .iter()
+                .rev()
+                .find(|node| open.iter().any(|f| f.tab == node.0));
+            Stream::File(tab.map_or(0, |t| t.0))
+        } else {
+            Stream::Files
+        }
+    }
+
+    /// Bring every index-keyed cache up to date with the document, and work
+    /// out the list's entry range and where the viewport starts in it. Folded
+    /// cards drop their rows from the list; a new row mapping also invalidates
+    /// `PortalList`'s index-keyed height cache, which [`set_range`] resets.
+    fn refresh_caches(&mut self, pass: &DrawPass, old_first_id: usize) -> EntryRange {
+        let d = pass.doc;
+        if self.highlight_generation != d.generation {
+            self.highlight_generation = d.generation;
+            self.requested_highlights.clear();
+        }
+        let document_changed = self.mapped_generation != d.generation;
+        let comments_changed = self.mapped_comments_rev != pass.review.comments_rev;
+        // The composer moving is a change of the same kind as a comment landing:
+        // a row appears or leaves mid-stream, so everything keyed by row index
+        // has to be rebuilt.
+        let rows_changed = self.mapped_rows_rev != d.rows_rev;
+        let mapping_changed =
+            document_changed || comments_changed || rows_changed || self.mapped_folded != d.folded;
+        let previous = self.mapped_entries;
+        let old_first_row = self.row_at(old_first_id).unwrap_or(0);
+        if mapping_changed {
+            self.map_folded(pass.rows, &d.folded);
+            self.mapped_generation = d.generation;
+            self.mapped_comments_rev = pass.review.comments_rev;
+            self.mapped_rows_rev = d.rows_rev;
+            self.mapped_folded.clone_from(&d.folded);
+        }
+        if document_changed || comments_changed || rows_changed {
+            self.cards.rebuild(pass.rows, &d.blobs);
+        }
+        if document_changed
+            || comments_changed
+            || rows_changed
+            || self
+                .mapped_seen
+                .as_ref()
+                .is_none_or(|seen| !Arc::ptr_eq(seen, &pass.review.seen))
+        {
+            self.cards.update_seen(&pass.review.seen);
+            self.mapped_seen = Some(pass.review.seen.clone());
+        }
+        let first = if self.visible.is_empty() {
+            old_first_row
+        } else {
+            match self.visible.binary_search(&old_first_row) {
+                Ok(entry) => entry,
+                Err(0) => 0,
+                Err(entry) => entry - 1,
+            }
+        };
+        let entries = if self.visible.is_empty() {
+            pass.rows.len()
+        } else {
+            self.visible.len()
+        };
+        self.mapped_entries = entries;
+        EntryRange {
+            remapped: mapping_changed,
+            previous,
+            entries,
+            first,
+            old_first: old_first_id,
+        }
+    }
+
+    /// One list entry: the row it maps to, drawn with that row's template.
+    fn draw_row(&mut self, cx: &mut Cx2d, list: &mut PortalList, entry: usize, pass: &DrawPass) {
+        let Some(r) = self.row_at(entry) else {
+            return;
+        };
+        let Some(row) = pass.rows.get(r) else {
+            return;
+        };
+        let (tab, theme) = (pass.tab, &pass.theme);
+        match row {
+            // One label each, in the row's own template.
+            Row::Title { text } | Row::Prose { md: text } | Row::Warning { text } => {
+                let (template, label) = match row {
+                    Row::Title { .. } => (id!(Title), ids!(title_text)),
+                    Row::Prose { .. } => (id!(ProseRow), ids!(prose_text)),
+                    _ => (id!(Warning), ids!(warn_label)),
+                };
+                let item = list.item(cx, entry, template);
+                item.label(cx, label).set_text(cx, text);
+                item.draw_all(cx, &mut Scope::with_props(theme));
+            }
+            Row::FileHeader { .. } => {
+                let item = list.item(cx, entry, id!(FileHeader));
+                self.draw_file_header(cx, &item, r, pass);
+            }
+            // What the range took out, standing where it was. The file view
+            // shows the file as it is, so this is the only trace of a deletion
+            // until it is asked for.
+            Row::Removed { start, end, .. } => {
+                let item = list.item(cx, entry, id!(Removed));
+                let n = end - start + 1;
+                let plural = if n == 1 { "" } else { "s" };
+                let button = item.button(cx, ids!(rm_button));
+                button.set_text(cx, &format!("{n} line{plural} removed"));
+                button.set_action_data(ReviewItemAction::Reveal { tab, row: r });
+                item.draw_all(cx, &mut Scope::with_props(theme));
+            }
+            // A cut in the code, with its two expanders. The row says how many
+            // lines are hidden and where they live; the band says which end a
+            // click asked for.
+            Row::Collapsed { .. } => {
+                let item = list.item(cx, entry, id!(Skipped));
+                item.widget(cx, ids!(collapsed))
+                    .set_action_data(ReviewItemAction::Expand { tab, row: r });
+                // An end is only reachable if there is code on that side to
+                // grow: a run at the top of a card has none above it, one at
+                // the bottom none below, and each gets one band instead of two.
+                if let Some(mut s) = item
+                    .widget(cx, ids!(collapsed))
+                    .borrow_mut::<CollapsedRun>()
+                {
+                    s.set_ends(
+                        reaches_code(pass.rows[..r].iter().rev()),
+                        reaches_code(pass.rows[r + 1..].iter()),
+                    );
+                }
+                item.draw_all(cx, &mut Scope::with_props(theme));
+            }
+            // Air, but part of the code region: it carries the seen marker,
+            // which stops at a collapsed run.
+            Row::Spacer => {
+                let item = list.item(cx, entry, id!(Spacer));
+                let seen = self.cards.containing(r).is_some_and(|card| card.all_seen);
+                item.view(cx, ids!(sp_mark)).set_visible(cx, seen);
+                item.draw_all(cx, &mut Scope::with_props(theme));
+            }
+            Row::Code { blob, .. } => {
+                self.request_highlight(*blob, pass);
+                // A File tab is an editor: its rows carry no card.
+                let template = if self.kind == id!(file) {
+                    id!(CodeFlat)
+                } else {
+                    id!(Code)
+                };
+                let item = list.item(cx, entry, template);
+                self.draw_code(cx, &item, r, pass);
+            }
+            // Hunk boundaries render as nothing — the design shows hunks as
+            // line-number jumps. The row still anchors the hunk's review-state
+            // keys for the header tick box.
+            Row::HunkBar { .. } => {
+                let item = list.item(cx, entry, id!(HunkBar));
+                item.draw_all(cx, &mut Scope::with_props(theme));
+            }
+            // A reply gets the indented twin of the same strip. `meta` is the
+            // byline, not the range — the blue bar spanning the range already
+            // tells that. The buttons carry the comment's id, not its row: a
+            // resplice between the draw and the click renumbers rows.
+            Row::Comment {
+                id,
+                parent,
+                body,
+                meta,
+            } => {
+                let template = if parent.is_some() {
+                    id!(Reply)
+                } else {
+                    id!(Comment)
+                };
+                let item = list.item(cx, entry, template);
+                item.widget(cx, ids!(cm_reply))
+                    .set_action_data(ReviewItemAction::Reply {
+                        tab,
+                        id: *id,
+                        near: r,
+                    });
+                item.widget(cx, ids!(cm_delete))
+                    .set_action_data(ReviewItemAction::Delete { id: *id });
+                item.label(cx, ids!(cm_meta)).set_text(cx, meta);
+                item.label(cx, ids!(cm_body)).set_text(cx, body);
+                item.draw_all(cx, &mut Scope::with_props(theme));
+            }
+            Row::CardEnd => {
+                let item = list.item(cx, entry, id!(CardEnd));
+                item.draw_all(cx, &mut Scope::with_props(theme));
+            }
+            Row::Composer => {
+                let item = list.item(cx, entry, id!(Composer));
+                self.draw_composer(cx, &item, pass);
+            }
+        }
+    }
+
+    /// Lazy highlight: only blobs with a line actually on screen ever get
+    /// parsed. This is what keeps a 850-file diff cheap. Every stream indexes
+    /// the same blob table, so it works for each tab unchanged.
+    fn request_highlight(&mut self, blob: u32, pass: &DrawPass) {
+        let b = &pass.doc.blobs[blob as usize];
+        // Keyed by rev as well as blob: an edit invalidates the spans of the
+        // lines it touched, and asking again for the same blob has to get past
+        // this memo. …and only for a blob the draw cannot colour itself.
+        // Otherwise the worker computes a whole-file highlight that nothing
+        // ever reads: `row_spans` answers from its own tree regardless of what
+        // lands in `Blob.spans`.
+        if !draws_own_spans(b)
+            && b.spans_stale()
+            && self.requested_highlights.insert((blob, b.edit_rev))
+        {
+            highlight().send(HighlightCmd::Request {
+                window: pass.window,
+                doc: pass.doc.clone(),
+                generation: pass.doc.generation,
+                blob,
+                rev: b.edit_rev,
+            });
+        }
+    }
+
+    fn draw_file_header(&self, cx: &mut Cx2d, item: &WidgetRef, r: usize, pass: &DrawPass) {
+        let Some(Row::FileHeader {
+            path,
+            adds,
+            dels,
+            from,
+            similarity,
+            ..
+        }) = pass.rows.get(r)
+        else {
+            return;
+        };
+        let (d, tab) = (pass.doc, pass.tab);
+        // Invisible while the pinned copy stands in for this card — and inert
+        // with it, since an invisible View drops the events its caret and tick
+        // box need. The row keeps its height, so nothing moves.
+        item.view(cx, ids!(fh_body))
+            .set_visible(cx, self.sticky_idx != Some(r));
+        item.widget(cx, ids!(seen_box))
+            .set_action_data(ReviewItemAction::Seen {
+                tab,
+                path: path.clone(),
+                near: r,
+            });
+        for ids in [ids!(fold_button), ids!(unfold_button)] {
+            item.widget(cx, ids)
+                .set_action_data(ReviewItemAction::Fold { path: path.clone() });
+        }
+        item.label(cx, ids!(fh_path))
+            .set_text(cx, &header_title(path, from.as_deref()));
+        // The viewed tick box covers every hunk of this card — all their
+        // changed lines flip together.
+        let (all, any) = self
+            .cards
+            .at(r)
+            .map(|card| (card.all_seen, card.any_seen))
+            .unwrap_or_default();
+        item.check_box(cx, ids!(seen_box))
+            .set_active(cx, all, Animate::No);
+        item.label(cx, ids!(fh_stat))
+            .set_text(cx, &header_stat(*adds, *dels, *similarity, any && !all));
+        // Conversations recorded against this file that this range cannot
+        // place. Offered only when there are some; the label says which way
+        // the click goes. What the last comment splice managed to place is
+        // read, not recomputed: the splice decided, and deciding again here is
+        // how a header ends up disagreeing with the rows right under it.
+        let hidden = store::outdated_threads(&pass.review.comments, path, &d.placed_threads);
+        let outdated = item.button(cx, ids!(fh_outdated));
+        outdated.set_visible(cx, hidden > 0);
+        if hidden > 0 {
+            outdated.set_text(
+                cx,
+                &outdated_label(hidden, d.show_all_comments.contains(path)),
+            );
+            item.widget(cx, ids!(fh_outdated))
+                .set_action_data(ReviewItemAction::Outdated { path: path.clone() });
+        }
+        // Shut cards show the other caret and drop the hairline: the bottom
+        // cap closes them instead.
+        let folded = d.folded.contains(path);
+        item.button(cx, ids!(fold_button)).set_visible(cx, !folded);
+        item.button(cx, ids!(unfold_button)).set_visible(cx, folded);
+        item.view(cx, ids!(fh_rule)).set_visible(cx, !folded);
+        item.draw_all(cx, &mut Scope::with_props(&pass.theme));
+    }
+
+    /// A code row: the gutter's numbers and marks, the line's text and colours,
+    /// and the caret when it is on this line.
+    fn draw_code(&mut self, cx: &mut Cx2d, item: &WidgetRef, r: usize, pass: &DrawPass) {
+        let Some(
+            row @ Row::Code {
+                kind, blob, line, ..
+            },
+        ) = pass.rows.get(r)
+        else {
+            return;
+        };
+        let d = pass.doc;
+        // Text and spans are borrowed from the blob — never copied into the
+        // row. See `concats_diff::blob`.
+        let b = &d.blobs[*blob as usize];
+        // A card ticked seen draws its marker down its whole left edge,
+        // context lines included: the design puts the border on every line of
+        // a seen card, and a marker only beside the changed lines read as a
+        // dashed line rather than one border. Review state is still keyed per
+        // changed line; this is just how a fully seen card renders.
+        let seen = pass.review.seen.contains(&(b.oid, *line))
+            || self.cards.containing(r).is_some_and(|c| c.all_seen);
+        // Inside the range being composed: marker + tint. Deleted rows check
+        // the old side, everything else the new side. A reply selects no
+        // lines — it holds its root's, which are already marked.
+        let selected = matches!(d.compose, Some(Composing::Lines(c)) if {
+            let side = match kind {
+                LineKind::Del => c.old,
+                _ => c.new,
+            };
+            side.is_some_and(|s| s.blob == *blob && *line >= s.start && *line <= s.end)
+        });
+        let marks = RowMarks {
+            seen,
+            // Inside a stored comment's range: the blue marker.
+            commented: pass.review.commented.contains(&(b.oid, *line)),
+            selected,
+        };
+        let text = b.line_text(*line as usize);
+        // Coloured now if nothing has coloured it yet, so the first frame of a
+        // file is never plain text.
+        let drawn_spans = row_spans(b, *line as usize);
+        let spans = match &drawn_spans {
+            Some(spans) => spans.as_slice(),
+            None => b.line_spans(*line as usize),
+        };
+        // The caret is in blob coordinates, so it lands on this row wherever
+        // the row is drawn — and on every stream showing the same line.
+        let caret = d
+            .caret
+            .filter(|c| c.blob == *blob && c.line == *line)
+            .map(|c| c.byte as usize);
+
+        item.widget(cx, ids!(gut))
+            .set_action_data(ReviewItemAction::Gutter {
+                tab: pass.tab,
+                row: r,
+            });
+        if let Some(mut g) = item.widget(cx, ids!(gut)).borrow_mut::<Gutter>() {
+            g.set_row(row, marks);
+        }
+        if let Some(mut dl) = item.widget(cx, ids!(dl)).borrow_mut::<DiffLine>() {
+            dl.set_row(*kind, text, spans, selected, caret);
+            dl.wrap = pass.wrap;
+            dl.set_hits(hits_in(text, self.find.as_deref()));
+            if pass.paint_selection {
+                match crate::review_doc::selection_on(d, *blob, *line) {
+                    Some((from, to)) => dl.selection_set(from, to),
+                    None => dl.selection_clear(),
+                }
+            }
+        }
+        item.draw_all(cx, &mut Scope::with_props(&pass.theme));
+        let band = item.area().rect(cx);
+        self.drawn_rows.push(DrawnRow {
+            row: r,
+            top: band.pos.y,
+            bottom: band.pos.y + band.size.y,
+        });
+        // Read back where the caret landed: the IME has to be told where
+        // composed text will appear, and only the row that drew it knows.
+        if caret.is_some() {
+            self.caret_rect = item
+                .widget(cx, ids!(dl))
+                .borrow::<DiffLine>()
+                .and_then(|dl| dl.caret_rect());
+        }
+    }
+
+    fn draw_composer(&mut self, cx: &mut Cx2d, item: &WidgetRef, pass: &DrawPass) {
+        let input = item.text_input(cx, ids!(comp_input));
+        let recreated = self.composer.widget_uid() != input.widget_uid();
+        self.composer_input = Some(input.widget_uid());
+        item.widget(cx, ids!(comp_post))
+            .set_action_data(ReviewItemAction::Post);
+        item.widget(cx, ids!(comp_cancel))
+            .set_action_data(ReviewItemAction::Cancel);
+        input.set_empty_text(cx, compose_title(pass.doc, &pass.review.comments));
+        // NOTE: Virtualization can recreate the input; the window owns its draft.
+        if input.text() != pass.draft {
+            input.set_text(cx, pass.draft);
+        }
+        if recreated {
+            input.set_selection(cx, self.composer.selection());
+        }
+        item.draw_all(cx, &mut Scope::with_props(&pass.theme));
+        // NOTE: A new input has no focusable Area until it is drawn.
+        if pass.focus_composer {
+            input.set_key_focus(cx);
+            if pass.requested_composer {
+                self.state().with(|d| d.compose_focus = false);
+            }
+        }
+        self.composer = input;
+    }
+
+    /// Which card's header the pinned copy mirrors this pass, and where it
+    /// sits: `(push, lift)` from [`sticky_offsets`].
+    ///
+    /// Item geometry comes from the list's scroll position and its
+    /// measured-height tree, never from the drawn widgets' rects. A rect only
+    /// exists for an item drawn this pass, and which items those are depends
+    /// on scroll velocity, so the header being tracked would blink out of
+    /// reach just when you scroll fast and the copy would pop instead of
+    /// riding. This is defined for every entry, at any speed.
+    fn place_sticky(
+        &mut self,
+        list: &PortalList,
+        drawn: &[usize],
+        range: &EntryRange,
+        pass: &DrawPass,
+    ) -> (f64, f64) {
+        let item_rect = |entry: usize| Some((list.item_top(entry)?, list.item_height(entry)?));
+        let entry_of = |row: usize| {
+            if self.visible.is_empty() {
+                Some(row)
+            } else {
+                self.visible.binary_search(&row).ok()
+            }
+        };
+        let bands: Vec<Band> = drawn
+            .iter()
+            .filter_map(|&entry| {
+                let (top, height) = item_rect(entry)?;
+                Some(Band { entry, top, height })
+            })
+            .collect();
+        let first_entry = if range.remapped {
+            range.first
+        } else {
+            range.old_first
+        };
+        let first = self
+            .row_at(anchor_entry(&bands).unwrap_or(first_entry))
+            .unwrap_or(0);
+        let card = self.cards.containing(first);
+        let header_top = card
+            .and_then(|card| entry_of(card.header))
+            .and_then(item_rect)
+            .map(|(top, _)| top);
+
+        // Present as long as the viewport top is inside the card, not only
+        // once the header has climbed. While the real header is still on
+        // screen the copy rides exactly on it (see `arrive`), so there is no
+        // handover to see, and since the copy draws above the fade the card's
+        // title is never masked by it. A folded card is the exception: it has
+        // no rows to scroll past its header, so pinning one would leave a copy
+        // hovering over the next card.
+        self.sticky_idx = card
+            .filter(|card| {
+                !matches!(
+                    pass.rows.get(card.header),
+                    Some(Row::FileHeader { path, .. }) if pass.doc.folded.contains(path)
+                )
+            })
+            .map(|card| card.header);
+
+        let end_top = self
+            .sticky_idx
+            .and_then(|header| self.cards.at(header))
+            .and_then(|card| entry_of(card.end))
+            .and_then(item_rect)
+            .map(|(top, _)| top);
+        sticky_offsets(header_top, end_top)
+    }
+
+    /// The pinned header's widgets, written with the list no longer borrowed:
+    /// a path lookup walks makepad's widget-tree cache, and refreshing a dirty
+    /// node needs to borrow this widget's children — impossible while the draw
+    /// loop holds the list, where the lookup silently returns an empty ref and
+    /// every set on it is a no-op.
+    fn draw_sticky(&mut self, cx: &mut Cx2d, pass: &DrawPass, push: f64, lift: f64) {
+        let sticky = self.view.view(cx, ids!(sticky));
+        let pinned = self
+            .sticky_idx
+            .and_then(|header| Some((header, pass.rows.get(header)?)));
+        let Some((
+            header,
+            Row::FileHeader {
+                path,
+                adds,
+                dels,
+                from,
+                similarity,
+                ..
+            },
+        )) = pinned
+        else {
+            if sticky.visible() {
+                sticky.set_visible(cx, false);
+            }
+            return;
+        };
+        self.view
+            .widget(cx, ids!(st_seen))
+            .set_action_data(ReviewItemAction::Seen {
+                tab: pass.tab,
+                path: path.clone(),
+                near: header,
+            });
+        self.view
+            .widget(cx, ids!(st_fold))
+            .set_action_data(ReviewItemAction::Fold { path: path.clone() });
+        self.view
+            .widget(cx, ids!(st_outdated))
+            .set_action_data(ReviewItemAction::Outdated { path: path.clone() });
+        self.view
+            .label(cx, ids!(st_path))
+            .set_text(cx, &header_title(path, from.as_deref()));
+        let (all, any) = self
+            .cards
+            .at(header)
+            .map(|card| (card.all_seen, card.any_seen))
+            .unwrap_or_default();
+        self.view
+            .check_box(cx, ids!(st_seen))
+            .set_active(cx, all, Animate::No);
+        self.view
+            .label(cx, ids!(st_stat))
+            .set_text(cx, &header_stat(*adds, *dels, *similarity, any && !all));
+        let hidden = store::outdated_threads(&pass.review.comments, path, &pass.doc.placed_threads);
+        let st_outdated = self.view.button(cx, ids!(st_outdated));
+        st_outdated.set_visible(cx, hidden > 0);
+        if hidden > 0 {
+            st_outdated.set_text(
+                cx,
+                &outdated_label(hidden, pass.doc.show_all_comments.contains(path)),
+            );
+        }
+        if let Some(mut view) = sticky.borrow_mut() {
+            // The up-shadow always takes the 12pt above the header inside the
+            // sticky, so the box always starts that much higher for the header
+            // to land where it belongs. Unconditional on purpose: as soon as
+            // this offset depended on state, the header jumped 12pt the moment
+            // the state flipped.
+            view.walk.margin.top = push - STICKY_SHADOW;
+        }
+        // Ramp both shadows rather than toggling them.
+        if let Some(mut shadow) = self
+            .view
+            .widget(cx, ids!(st_shadow))
+            .borrow_mut::<DropShadow>()
+        {
+            shadow.fade = lift as f32;
+        }
+        if let Some(mut shadow) = self
+            .view
+            .widget(cx, ids!(st_shadow_up))
+            .borrow_mut::<ShadowUp>()
+        {
+            shadow.fade = lift as f32;
+        }
+        if !sticky.visible() {
+            sticky.set_visible(cx, true);
+        }
+    }
+
+    /// Arm the platform text input at the caret. Without it, typed characters
+    /// never arrive as `Event::TextInput` and the surface is read-only,
+    /// however much key handling sits behind it.
+    ///
+    /// The IME is one thing for the whole app, not one per window, so only the
+    /// focused window may touch it. Without that check every list in every
+    /// other window calls `hide_text_ime` on each of its draws and tears down
+    /// the IME the window with the caret just armed — which reads as the app
+    /// going dead to the keyboard the moment a second window is open.
+    fn arm_ime(&mut self, cx: &mut Cx2d) {
+        if !self.state().is_focused() || !self.caret_focused(cx) {
+            return;
+        }
+        match self.caret_rect {
+            Some(rect) => {
+                let area = self.view.portal_list(cx, ids!(list)).area();
+                let origin = area.rect(cx).pos;
+                cx.show_text_ime(area, rect.pos - origin);
+            }
+            None => cx.hide_text_ime(),
+        }
+    }
+}
+
+impl ReviewList {
     /// The find bar's two fields: the query as it is typed, Enter to walk the
     /// matches, and Enter in the second field to replace.
     fn handle_find(&mut self, cx: &mut Cx, actions: &Actions) {
@@ -1760,6 +1916,7 @@ impl ReviewList {
         // redrawing is what makes them follow what you have typed so far.
         if let Some(query) = find.changed(actions) {
             self.find = Some(query);
+            self.find_at = None;
             self.count_hits(cx);
             self.redraw(cx);
         }
@@ -1777,16 +1934,12 @@ impl ReviewList {
 }
 
 impl ReviewList {
-    /// The bar's tally, over the buffer the caret is in.
+    /// The bar's tally over the stream this tab renders.
     fn count_hits(&mut self, cx: &mut Cx) {
         let query = self.find.clone().unwrap_or_default();
-        let count = self.state().read(|d| match (d.caret, query.is_empty()) {
-            (Some(caret), false) => d.blobs[caret.blob as usize]
-                .text
-                .to_ascii_lowercase()
-                .matches(&query.to_ascii_lowercase())
-                .count(),
-            _ => 0,
+        let count = self.drawn_tab.map_or(0, |tab| {
+            self.state()
+                .read(|d| editor::search_hits(d, tab, &query).len())
         });
         let label = match (count, query.is_empty()) {
             (_, true) => String::new(),
@@ -1801,9 +1954,7 @@ impl ReviewList {
 impl ReviewList {
     /// Move the caret to wherever the list's pointer gesture just landed.
     ///
-    /// A click (an empty range) places the caret. A drag is a reading gesture
-    /// and clears it: a selection and a caret on screen together would be two
-    /// claims about where typing goes.
+    /// NOTE: A drag supplies both endpoints so typing can replace the selection.
     fn adopt_list_selection(&mut self, cx: &mut Cx) {
         let list = self.view.portal_list(cx, ids!(list));
         let Some((start, end)) = list.borrow().and_then(|l| l.get_selection_range()) else {
@@ -1817,32 +1968,10 @@ impl ReviewList {
         let tail_row = self.row_at(start.0);
         let mut focus = false;
         self.state().with(|d| {
-            // Where one end of the gesture landed, in blob coordinates: a row
-            // index names a position in this stream's current shape, and every
-            // resplice renumbers it. Scoped so the closure's borrow of `d` ends
-            // before the writes.
-            let (head, tail) = {
-                let at = |row: Option<usize>, byte: usize| match row
-                    .and_then(|r| d.stream(tab).get(r))
-                {
-                    Some(Row::Code { blob, line, .. }) => {
-                        // `DiffLine` reports one space for an empty line so
-                        // blank lines survive a copied range; a position must
-                        // not follow it past the end of text that is not there.
-                        let len = d.blobs[*blob as usize].line_text(*line as usize).len();
-                        Some(Caret {
-                            blob: *blob,
-                            line: *line,
-                            byte: byte.min(len) as u32,
-                        })
-                    }
-                    _ => None,
-                };
-                (
-                    at(head_row, end.1),
-                    (start != end).then(|| at(tail_row, start.1)).flatten(),
-                )
-            };
+            let head = head_row.and_then(|row| editor::caret_at(d, tab, row, end.1));
+            let tail = (start != end)
+                .then(|| tail_row.and_then(|row| editor::caret_at(d, tab, row, start.1)))
+                .flatten();
             if head.is_some() {
                 // This stream owns the caret now, which is what routes
                 // keystrokes to one list rather than to every instance.
@@ -1869,31 +1998,7 @@ impl ReviewList {
         if !self.caret_focused(cx) {
             return false;
         }
-        // A paste carries newlines; a typed Return arrives as `Event::KeyDown`
-        // and is handled there, so anything landing here is text either way.
-        let took = self.state().with(|d| match closer_for(input) {
-            Some(close) => {
-                // Type the pair and sit between it. Only for a bare delimiter:
-                // a paste that happens to start with one is text, not a
-                // gesture.
-                if !type_at(d, &format!("{input}{close}"), 0) {
-                    return false;
-                }
-                if let Some(caret) = d.caret.as_mut() {
-                    caret.byte -= close.len() as u32;
-                }
-                true
-            }
-            // Typing the closing half of a pair the editor just wrote steps
-            // over it instead of doubling it.
-            None if steps_over(d, input) => {
-                if let Some(caret) = d.caret.as_mut() {
-                    caret.byte += input.len() as u32;
-                }
-                true
-            }
-            None => type_at(d, input, 0),
-        });
+        let took = self.state().with(|d| editor::type_text(d, input));
         if took {
             self.after_edit(cx);
         }
@@ -1952,73 +2057,41 @@ impl ReviewList {
         if !self.caret_focused(cx) {
             return false;
         }
-        if let Some(edit) = self.caret_edit(cx, ke) {
-            return edit;
+        if ke.key_code == KeyCode::KeyS && (ke.modifiers.logo || ke.modifiers.control) {
+            return self.save(cx);
         }
-        let list = self.view.portal_list(cx, ids!(list));
-        let took = self.state().with(|d| {
-            let Some(caret) = d.caret else {
-                return false;
-            };
-            let Some(tab) = self.drawn_tab else {
-                return false;
-            };
-            // Shift extends: the position the caret is leaving becomes the
-            // fixed end, unless there is one already. Decided before the
-            // motion, and once here rather than in each branch, so every arrow,
-            // Home and End extend by the same rule.
-            if ke.modifiers.shift {
-                d.selection_anchor = d.selection_anchor.or(Some(caret));
-            } else {
-                d.selection_anchor = None;
+        if let Some(took) = self.state().with(|d| editor::edit_key(d, ke)) {
+            if took {
+                self.after_edit(cx);
             }
-            let text = d.blobs[caret.blob as usize].line_text(caret.line as usize);
-            let byte = caret.byte as usize;
-            let moved = match ke.key_code {
-                KeyCode::ArrowUp => return step_caret(d, tab, caret, Step::Up),
-                KeyCode::ArrowDown => return step_caret(d, tab, caret, Step::Down),
-                KeyCode::Home => Some(0),
-                KeyCode::End => Some(text.len()),
-                KeyCode::ArrowLeft => match (0..byte).rev().find(|i| text.is_char_boundary(*i)) {
-                    // Off the front of the line: carry on to the end of the
-                    // one above, the way every editor does.
-                    None => return step_caret(d, tab, caret, Step::Up),
-                    at => at,
-                },
-                KeyCode::ArrowRight => {
-                    match (byte + 1..=text.len()).find(|i| text.is_char_boundary(*i)) {
-                        None => return step_caret(d, tab, caret, Step::Down),
-                        at => at,
-                    }
-                }
-                _ => return false,
-            };
-            d.caret = moved.map(|byte| Caret {
-                byte: byte as u32,
-                ..caret
-            });
-            true
-        });
+            return took;
+        }
+        let Some(tab) = self.drawn_tab else {
+            return false;
+        };
+        let took = self.state().with(|d| editor::move_caret(d, tab, ke));
         if took {
-            if let Some(mut l) = list.borrow_mut() {
+            if let Some(mut l) = self.view.portal_list(cx, ids!(list)).borrow_mut() {
                 l.clear_selection(cx);
             }
-            // A motion ends the typing run, so undo stops at where you were
-            // rather than swallowing everything back to the last newline.
-            self.state().with(|d| {
-                if let Some(c) = d.caret {
-                    d.blobs[c.blob as usize].break_group();
-                }
-            });
             self.redraw(cx);
         }
         took
     }
 
     fn find_keys(&mut self, cx: &mut Cx, ke: &KeyEvent) -> bool {
-        let find_area = self.view.text_input(cx, ids!(find_input)).area();
-        let find_focused = !matches!(find_area, Area::Empty) && cx.has_key_focus(find_area);
-        if !self.caret_focused(cx) && !find_focused {
+        let Some(tab) = self.drawn_tab else {
+            return false;
+        };
+        let areas = [
+            self.view.portal_list(cx, ids!(list)).area(),
+            self.view.text_input(cx, ids!(find_input)).area(),
+            self.view.text_input(cx, ids!(replace_input)).area(),
+        ];
+        let focused = areas
+            .into_iter()
+            .any(|area| !matches!(area, Area::Empty) && cx.has_key_focus(area));
+        if !focused || !self.state().read(|d| d.tab == tab) {
             return false;
         }
         match ke.key_code {
@@ -2027,6 +2100,8 @@ impl ReviewList {
             // it, so you carry on from what you found.
             KeyCode::Escape if self.find.is_some() => {
                 self.find = None;
+                self.find_at = None;
+                cx.set_key_focus(self.view.portal_list(cx, ids!(list)).area());
                 self.redraw(cx);
                 true
             }
@@ -2046,41 +2121,44 @@ impl ReviewList {
         true
     }
 
-    /// Move the caret to the next occurrence at or after it, wrapping at the
-    /// end of the file. Searches the buffer, not the rows: a hit on a line the
-    /// stream does not currently show is still a hit, and moving the caret
-    /// there brings it into view.
+    /// Walk matches in this tab, unfolding and scrolling to the matching row.
     fn seek(&mut self, cx: &mut Cx, back: bool) {
         let Some(query) = self.find.clone().filter(|q| !q.is_empty()) else {
             return;
         };
+        let Some(tab) = self.drawn_tab else {
+            return;
+        };
+        let hits = self.state().read(|d| editor::search_hits(d, tab, &query));
+        let found = if back {
+            hits.iter()
+                .rev()
+                .find(|hit| self.find_at.is_none_or(|at| **hit < at))
+                .or_else(|| hits.last())
+        } else {
+            hits.iter()
+                .find(|hit| self.find_at.is_none_or(|at| **hit > at))
+                .or_else(|| hits.first())
+        };
+        let Some(&(row, byte)) = found else {
+            return;
+        };
+        self.find_at = Some((row, byte));
+        self.seek_row = Some(row);
         self.state().with(|d| {
-            let Some(caret) = d.caret else {
-                return;
-            };
-            let blob = &d.blobs[caret.blob as usize];
-            let at = blob.line_starts[caret.line as usize] as usize + caret.byte as usize;
-            let (hay, needle) = (blob.text.to_ascii_lowercase(), query.to_ascii_lowercase());
-            let found = if back {
-                hay[..at.min(hay.len())]
-                    .rfind(&needle)
-                    .or_else(|| hay.rfind(&needle))
-            } else {
-                let from = (at + 1).min(hay.len());
-                hay[from..]
-                    .find(&needle)
-                    .map(|i| from + i)
-                    .or_else(|| hay.find(&needle))
-            };
-            let Some(found) = found else {
-                return;
-            };
-            let line = blob.line_of(found);
-            d.caret = Some(Caret {
-                blob: caret.blob,
-                line: line as u32,
-                byte: (found - blob.line_starts[line] as usize) as u32,
-            });
+            d.tab = tab;
+            d.caret = editor::caret_at(d, tab, row, byte);
+            d.selection_anchor = None;
+            if let Some(path) = d.stream(tab)[..=row]
+                .iter()
+                .rev()
+                .find_map(|row| match row {
+                    Row::FileHeader { path, .. } => Some(path.clone()),
+                    _ => None,
+                })
+            {
+                d.folded.remove(&path);
+            }
         });
         self.redraw(cx);
     }
@@ -2090,40 +2168,15 @@ impl ReviewList {
         let Some(query) = self.find.clone().filter(|q| !q.is_empty()) else {
             return;
         };
+        let Some(tab) = self.drawn_tab else {
+            return;
+        };
         let changed = self.state().with(|d| {
-            let Some(caret) = d.caret else {
-                return false;
-            };
-            let blob = &mut d.blobs[caret.blob as usize];
-            if !blob.editable() {
-                return false;
+            if all {
+                editor::replace_all(d, tab, &query, with)
+            } else {
+                editor::replace_one(d, tab, &query, with)
             }
-            blob.break_group();
-            let hay = blob.text.to_ascii_lowercase();
-            let needle = query.to_ascii_lowercase();
-            // Back to front, so an earlier replacement cannot move the offset
-            // of a later one.
-            let mut found: Vec<usize> = hay.match_indices(&needle).map(|(i, _)| i).collect();
-            if !all {
-                let at = blob.line_starts[caret.line as usize] as usize + caret.byte as usize;
-                found.retain(|i| *i <= at && at < *i + needle.len());
-            }
-            if found.is_empty() {
-                return false;
-            }
-            for start in found.into_iter().rev() {
-                blob.edit(start..start + needle.len(), with);
-            }
-            let at = blob.text.len().min(
-                blob.line_starts[caret.line.min(blob.line_count() as u32 - 1) as usize] as usize,
-            );
-            let line = blob.line_of(at);
-            d.caret = Some(Caret {
-                blob: caret.blob,
-                line: line as u32,
-                byte: 0,
-            });
-            true
         });
         if changed {
             self.after_edit(cx);
@@ -2170,116 +2223,15 @@ impl ReviewList {
     /// for "this does not refer to anything real".
     fn apply_settings(&mut self, cx: &mut Cx, text: &str) -> bool {
         let applied = crate::theme::apply_settings_text(text);
-        self.state().with(|d| {
-            if let Some(rows) = d.stream_mut(Stream::File(crate::dock::settings_tab_id().0)) {
-                rows.retain(|r| !matches!(r, Row::Warning { .. }));
-                if let Err(message) = &applied {
-                    rows.insert(
-                        0,
-                        Row::Warning {
-                            text: message.to_string(),
-                        },
-                    );
-                }
-            }
-            if applied.is_ok()
-                && let Some(caret) = d.caret
-            {
-                d.blobs[caret.blob as usize].saved(concats_sync::hash_object(text.as_bytes()));
-            }
-            d.rows_rev += 1;
-        });
+        let error = applied.as_ref().err().map(ToString::to_string);
+        self.state()
+            .with(|d| editor::record_settings(d, text, error.as_deref()));
         if applied.is_ok() {
             cx.request_live_edit();
         }
         self.redraw(cx);
         true
     }
-
-    /// The keys that change text. `None` when this is not one of them, so the
-    /// caller can go on to try it as a motion.
-    fn caret_edit(&mut self, cx: &mut Cx, ke: &KeyEvent) -> Option<bool> {
-        let took = match ke.key_code {
-            KeyCode::ReturnKey => self.state().with(|d| {
-                // Auto-indent: a new line starts where the one it came off
-                // starts. Typing a block would be a pain otherwise.
-                let indent = d.caret.map_or(String::new(), |c| {
-                    let line = d.blobs[c.blob as usize].line_text(c.line as usize);
-                    line[..c.byte as usize]
-                        .chars()
-                        .take_while(|ch| *ch == ' ' || *ch == '\t')
-                        .collect()
-                });
-                type_at(d, &format!("\n{indent}"), 0)
-            }),
-            KeyCode::Tab => self.state().with(|d| type_at(d, INDENT, 0)),
-            KeyCode::Backspace => self.state().with(|d| type_at(d, "", 1)),
-            KeyCode::Delete => self.state().with(delete_forward),
-            KeyCode::KeyZ if ke.modifiers.logo || ke.modifiers.control => {
-                self.state().with(|d| undo_at(d, ke.modifiers.shift))
-            }
-            KeyCode::KeyS if ke.modifiers.logo || ke.modifiers.control => {
-                return Some(self.save(cx));
-            }
-            _ => return None,
-        };
-        if took {
-            self.after_edit(cx);
-        }
-        Some(took)
-    }
-}
-
-/// One press of Tab. Spaces, not a tab character: the row renderer lays text
-/// out by the font and has no tab stops to align one to.
-const INDENT: &str = "    ";
-
-/// Forward delete: the same edit as backspace, one character to the right.
-fn delete_forward(d: &mut ReviewDoc) -> bool {
-    // Forward delete over a selection takes the selection, like backspace does.
-    if crate::review_doc::replace_selection(d, "") {
-        return true;
-    }
-    let Some(caret) = d.caret else {
-        return false;
-    };
-    let blob = &d.blobs[caret.blob as usize];
-    let line = blob.line_text(caret.line as usize);
-    let at = caret.byte as usize;
-    // Off the end of the line, the character to delete is the newline itself,
-    // which joins the line below onto this one.
-    let width = match (at + 1..=line.len()).find(|i| line.is_char_boundary(*i)) {
-        Some(next) => next - at,
-        None if blob.line_of(blob.line_starts[caret.line as usize] as usize + at + 1) > 0 => 1,
-        None => return false,
-    };
-    let start = blob.line_starts[caret.line as usize] as usize + at;
-    if start + width > blob.text.len() {
-        return false;
-    }
-    let blob = &mut d.blobs[caret.blob as usize];
-    if !blob.editable() {
-        return false;
-    }
-    blob.edit(start..start + width, "");
-    true
-}
-
-fn undo_at(d: &mut ReviewDoc, redo: bool) -> bool {
-    let Some(caret) = d.caret else {
-        return false;
-    };
-    let blob = &mut d.blobs[caret.blob as usize];
-    let Some(at) = (if redo { blob.redo() } else { blob.undo() }) else {
-        return false;
-    };
-    let line = blob.line_of(at);
-    d.caret = Some(Caret {
-        blob: caret.blob,
-        line: line as u32,
-        byte: (at - blob.line_starts[line] as usize) as u32,
-    });
-    true
 }
 
 impl ReviewList {
@@ -2290,30 +2242,6 @@ impl ReviewList {
     pub(super) fn row_at_y(&self, y: f64) -> Option<usize> {
         row_at_y(&self.drawn_rows, y)
     }
-}
-
-/// The delimiter that closes `input`, when it is a lone opening one.
-fn closer_for(input: &str) -> Option<&'static str> {
-    match input {
-        "(" => Some(")"),
-        "[" => Some("]"),
-        "{" => Some("}"),
-        _ => None,
-    }
-}
-
-/// Whether the caret already sits in front of exactly this text, in which case
-/// typing it should move past rather than write a second copy.
-fn steps_over(d: &ReviewDoc, input: &str) -> bool {
-    if !matches!(input, ")" | "]" | "}") {
-        return false;
-    }
-    d.caret.is_some_and(|caret| {
-        d.blobs[caret.blob as usize]
-            .line_text(caret.line as usize)
-            .get(caret.byte as usize..)
-            .is_some_and(|rest| rest.starts_with(input))
-    })
 }
 
 /// Every occurrence of `query` in one line, as byte ranges. Case-insensitive on
@@ -2339,54 +2267,37 @@ fn hits_in(text: &str, query: Option<&str>) -> Vec<(usize, usize)> {
 /// clamping is testable: this replaced arithmetic that turned a drag distance
 /// into a row count, and that arithmetic was only ever right while every row
 /// was the same height.
-fn row_at_y(drawn: &[(usize, f64, f64)], y: f64) -> Option<usize> {
-    if let Some((row, ..)) = drawn
-        .iter()
-        .find(|(_, top, bottom)| y >= *top && y < *bottom)
-    {
-        return Some(*row);
+fn row_at_y(drawn: &[DrawnRow], y: f64) -> Option<usize> {
+    if let Some(band) = drawn.iter().find(|band| y >= band.top && y < band.bottom) {
+        return Some(band.row);
     }
     let first = drawn.first()?;
     let last = drawn.last()?;
-    Some(if y < first.1 { first.0 } else { last.0 })
-}
-
-/// Step the caret onto the code row above or below, keeping its column where
-/// the new line is long enough. Walks the row stream rather than line numbers:
-/// a diff interleaves two blobs' lines and puts prose between them, so "the
-/// line above" is a property of the stream, not of the file.
-fn step_caret(d: &mut ReviewDoc, tab: Stream, caret: Caret, step: Step) -> bool {
-    let rows = d.stream(tab);
-    let landed = caret_row(rows, caret)
-        .and_then(|row| step_row(rows, row, step))
-        .and_then(|next| rows.get(next));
-    let Some(Row::Code { blob, line, .. }) = landed else {
-        return false;
-    };
-    let (blob, line) = (*blob, *line);
-    let len = d.blobs[blob as usize].line_text(line as usize).len();
-    d.caret = Some(Caret {
-        blob,
-        line,
-        byte: caret.byte.min(len as u32),
-    });
-    true
+    Some(if y < first.top { first.row } else { last.row })
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        CARD_END_EDGE, FILE_HEADER_TOP_PADDING, STICKY_FADE, STICKY_HEIGHT, STICKY_TOP_GAP,
-        anchor_entry, hits_in, row_at_y, sticky_offsets,
+        Band, CARD_END_EDGE, DrawnRow, FILE_HEADER_TOP_PADDING, STICKY_FADE, STICKY_HEIGHT,
+        STICKY_TOP_GAP, anchor_entry, hits_in, row_at_y, sticky_offsets,
     };
+
+    fn band(entry: usize, top: f64, height: f64) -> Band {
+        Band { entry, top, height }
+    }
+
+    fn drawn(row: usize, top: f64, bottom: f64) -> DrawnRow {
+        DrawnRow { row, top, bottom }
+    }
 
     #[test]
     fn the_anchor_is_the_lowest_drawn_row_still_crossing_the_top_edge() {
         let bands = [
-            (3, -40.0, 20.0), // fully scrolled past — its band ends above the edge
-            (4, -10.0, 0.0),  // zero-height at the boundary: never crosses
-            (5, -10.0, 25.0), // crosses the edge — the anchor
-            (6, 15.0, 30.0),
+            band(3, -40.0, 20.0), // fully scrolled past — its band ends above the edge
+            band(4, -10.0, 0.0),  // zero-height at the boundary: never crosses
+            band(5, -10.0, 25.0), // crosses the edge — the anchor
+            band(6, 15.0, 30.0),
         ];
         assert_eq!(anchor_entry(&bands), Some(5));
         assert_eq!(anchor_entry(&[]), None);
@@ -2440,20 +2351,24 @@ mod tests {
     /// neighbours, the case a row delta could not express.
     #[test]
     fn a_position_names_the_row_whose_band_it_lands_in() {
-        let drawn = [(4, 100.0, 120.0), (5, 120.0, 160.0), (6, 160.0, 180.0)];
-        assert_eq!(row_at_y(&drawn, 100.0), Some(4));
-        assert_eq!(row_at_y(&drawn, 119.9), Some(4));
-        assert_eq!(row_at_y(&drawn, 120.0), Some(5), "bands are half-open");
-        assert_eq!(row_at_y(&drawn, 159.0), Some(5), "the tall row is one row");
-        assert_eq!(row_at_y(&drawn, 170.0), Some(6));
+        let rows = [
+            drawn(4, 100.0, 120.0),
+            drawn(5, 120.0, 160.0),
+            drawn(6, 160.0, 180.0),
+        ];
+        assert_eq!(row_at_y(&rows, 100.0), Some(4));
+        assert_eq!(row_at_y(&rows, 119.9), Some(4));
+        assert_eq!(row_at_y(&rows, 120.0), Some(5), "bands are half-open");
+        assert_eq!(row_at_y(&rows, 159.0), Some(5), "the tall row is one row");
+        assert_eq!(row_at_y(&rows, 170.0), Some(6));
     }
 
     /// Dragging past the viewport extends to the edge rather than stopping.
     #[test]
     fn a_position_beyond_what_was_drawn_clamps_to_the_nearest_row() {
-        let drawn = [(4, 100.0, 120.0), (5, 120.0, 140.0)];
-        assert_eq!(row_at_y(&drawn, 0.0), Some(4));
-        assert_eq!(row_at_y(&drawn, 9999.0), Some(5));
+        let rows = [drawn(4, 100.0, 120.0), drawn(5, 120.0, 140.0)];
+        assert_eq!(row_at_y(&rows, 0.0), Some(4));
+        assert_eq!(row_at_y(&rows, 9999.0), Some(5));
         assert_eq!(row_at_y(&[], 50.0), None);
     }
 }

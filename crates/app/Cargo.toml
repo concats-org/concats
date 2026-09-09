@@ -59,6 +59,7 @@ app_position = { x = 180, y = 170 }
 application_folder_position = { x = 480, y = 170 }
 
 [dependencies]
+clap = { workspace = true }
 concats_diff = { workspace = true }
 concats_highlight = { workspace = true }
 concats_config = { workspace = true }
@@ -82,6 +83,7 @@ rusqlite = { workspace = true }
 serde_json = { workspace = true }
 toml = { workspace = true }
 thiserror = { workspace = true }
+url = "2"
 
 # Native folder picker behind the header's repo name.
 rfd = { workspace = true }
