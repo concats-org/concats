@@ -185,6 +185,13 @@ struct CachedTerminalGlyph {
     baseline_offset_in_lpxs: f32,
 }
 
+#[derive(Default, PartialEq, Eq)]
+enum TextInput {
+    #[default]
+    Absent,
+    Forwarded,
+}
+
 /// How thick an underline or strikeout is drawn, in logical pixels.
 const RULE_HEIGHT: f64 = 1.0;
 /// How wide a beam cursor is drawn.
@@ -295,6 +302,10 @@ pub struct TerminalView {
     #[rust]
     session: Option<Session>,
     #[rust]
+    alternate_screen: bool,
+    #[rust]
+    text_input: TextInput,
+    #[rust]
     glyph_cache: HashMap<String, Vec<CachedTerminalGlyph>>,
     #[rust]
     glyph_cache_font_size: f32,
@@ -400,6 +411,7 @@ impl TerminalView {
     /// same in every window, so without it this resolves to whichever window
     /// opened that tab first.
     fn session_for_widget(&mut self, cx: &Cx, window: LiveId) -> Option<Session> {
+        let previous = self.session;
         self.session = self
             .session
             .filter(|session| session.window == window)
@@ -411,6 +423,9 @@ impl TerminalView {
                     .map(|node| Session { window, tab: *node })
                     .find(|session| crate::terminal::is_open(*session))
             });
+        if self.session != previous {
+            self.alternate_screen = false;
+        }
         self.session
     }
 
@@ -850,12 +865,16 @@ impl Widget for TerminalView {
         self.draw_bg.draw_abs(cx, self.unscrolled_rect);
 
         let (mut total_lines, mut display_offset) = (0, 0);
+        let mut entered_alternate_screen = false;
         if let Some(session) = session {
             crate::terminal::resize(session, self.size());
             if let Some(shared) = crate::terminal::term(session) {
                 let term = shared.lock();
                 total_lines = term.grid().total_lines();
                 display_offset = term.grid().display_offset();
+                let alternate_screen = term.mode().contains(TermMode::ALT_SCREEN);
+                entered_alternate_screen = alternate_screen && !self.alternate_screen;
+                self.alternate_screen = alternate_screen;
                 let focused = cx.has_key_focus(self.scroll_bars.area());
                 self.draw_grid(cx, &term, focused);
             }
@@ -875,6 +894,9 @@ impl Widget for TerminalView {
             max_scroll + self.viewport_rect.size.y,
         );
         self.scroll_bars.end(cx);
+        if entered_alternate_screen {
+            cx.set_key_focus(self.scroll_bars.area());
+        }
         if session.is_some() && cx.has_key_focus(self.scroll_bars.area()) {
             if let Some(ime_pos) = self.ime_pos {
                 cx.show_text_ime(self.scroll_bars.area(), ime_pos);
@@ -1000,6 +1022,57 @@ impl Widget for TerminalView {
         };
 
         let mode = *shared.lock().mode();
+
+        if mode.contains(TermMode::ALT_SCREEN) {
+            match event {
+                Event::KeyDown(e) => {
+                    if std::mem::take(&mut self.text_input) != TextInput::Forwarded {
+                        let bytes = keys::encode(e, true, mode).or_else(|| {
+                            e.key_code
+                                .to_char(e.modifiers.shift)
+                                .map(|c| c.to_string().into_bytes())
+                        });
+                        if let Some(bytes) = bytes {
+                            self.emit_input_bytes(cx, session, bytes);
+                            scroll_to_bottom(session);
+                            self.draw_bg.redraw(cx);
+                        }
+                    }
+                    return;
+                }
+                Event::KeyUp(e) => {
+                    if let Some(bytes) = keys::encode(e, false, mode) {
+                        self.emit_input_bytes(cx, session, bytes);
+                    }
+                    return;
+                }
+                Event::TextInput(e) => {
+                    if e.replace_last {
+                        return;
+                    }
+                    if e.was_paste {
+                        self.text_input = TextInput::Forwarded;
+                        self.emit_paste_text(
+                            cx,
+                            session,
+                            &e.input,
+                            mode.contains(TermMode::BRACKETED_PASTE),
+                        );
+                    } else if let Some(bytes) =
+                        keys::encode_text(&e.input, KeyModifiers::default(), mode)
+                    {
+                        self.text_input = TextInput::Forwarded;
+                        self.emit_input_bytes(cx, session, bytes);
+                    }
+                    scroll_to_bottom(session);
+                    self.draw_bg.redraw(cx);
+                    return;
+                }
+                _ => {}
+            }
+        } else {
+            self.text_input = TextInput::Absent;
+        }
 
         if self.handle_drop(cx, session, drag, mode) {
             return;

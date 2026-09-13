@@ -377,6 +377,9 @@ pub fn take_dirty() -> Vec<Session> {
 mod tests {
     use std::time::Duration;
 
+    use alacritty_terminal::term::TermMode;
+    use makepad_widgets::{KeyCode, KeyEvent, KeyModifiers};
+
     use super::*;
 
     /// Poll the way the UI looks between wakeups. Ten seconds is far longer
@@ -475,6 +478,57 @@ mod tests {
             "PTY size did not reach the shell: {}",
             screen(session)
         );
+        close(session);
+    }
+
+    #[test]
+    fn full_screen_program_returns_when_sent_the_view_keyboard_bytes() {
+        let session = session(0xC0FF_EE09);
+        open(session, Path::new("."), &[]);
+        assert!(is_open(session), "shell failed to spawn");
+        input(
+            session,
+            b"printf '\\033[?1049h'; IFS= read -r line; printf '\\033[?1049lreturned=%s\\n' \"$line\"\r"
+                .to_vec(),
+        );
+        assert!(until(|| {
+            term(session).is_some_and(|term| term.lock().mode().contains(TermMode::ALT_SCREEN))
+        }));
+
+        let mode = *term(session).expect("session has a term").lock().mode();
+        let colon = KeyEvent {
+            key_code: KeyCode::Semicolon,
+            modifiers: KeyModifiers {
+                shift: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        input(
+            session,
+            crate::terminal::keys::encode(&colon, true, mode).unwrap_or_else(|| b":".to_vec()),
+        );
+        let q = KeyEvent {
+            key_code: KeyCode::KeyQ,
+            ..Default::default()
+        };
+        input(
+            session,
+            crate::terminal::keys::encode(&q, true, mode).unwrap_or_else(|| b"q".to_vec()),
+        );
+        let enter = KeyEvent {
+            key_code: KeyCode::ReturnKey,
+            ..Default::default()
+        };
+        input(
+            session,
+            crate::terminal::keys::encode(&enter, true, mode).expect("enter is encoded"),
+        );
+
+        assert!(until(|| {
+            term(session).is_some_and(|term| !term.lock().mode().contains(TermMode::ALT_SCREEN))
+        }));
+        assert!(screen(session).contains("returned=:q"));
         close(session);
     }
 
