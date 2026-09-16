@@ -1023,7 +1023,7 @@ impl Widget for TerminalView {
 
         let mode = *shared.lock().mode();
 
-        if mode.contains(TermMode::ALT_SCREEN) {
+        if self.find.is_none() {
             match event {
                 Event::KeyDown(e) => {
                     if std::mem::take(&mut self.text_input) != TextInput::Forwarded {
