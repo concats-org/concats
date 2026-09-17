@@ -132,8 +132,7 @@ fn run_init(path: Option<&Path>) -> miette::Result<()> {
         ));
     }
 
-    install_hooks(&detected, &InstallScope::Project { root }, &binary);
-    Ok(())
+    install_hooks(&detected, &InstallScope::Project { root }, &binary)
 }
 
 fn run_hooks_install(agents: &[String], scope: &InstallScope) -> miette::Result<()> {
@@ -142,16 +141,16 @@ fn run_hooks_install(agents: &[String], scope: &InstallScope) -> miette::Result<
         .iter()
         .map(|name| resolve_agent(name))
         .collect::<miette::Result<Vec<_>>>()?;
-    install_hooks(&targets, scope, &binary);
-    Ok(())
+    install_hooks(&targets, scope, &binary)
 }
 
-fn install_hooks(targets: &[HookAgent], scope: &InstallScope, binary: &Path) {
+fn install_hooks(targets: &[HookAgent], scope: &InstallScope, binary: &Path) -> miette::Result<()> {
     let mut installed = Vec::new();
+    let mut failed = Vec::new();
     for &agent in targets {
         match agent.install(binary, scope) {
             Ok(()) => installed.push(agent.name()),
-            Err(error) => eprintln!("warning: failed to install hooks for {agent}: {error}"),
+            Err(error) => failed.push(format!("{agent}: {error}")),
         }
     }
 
@@ -159,6 +158,14 @@ fn install_hooks(targets: &[HookAgent], scope: &InstallScope, binary: &Path) {
         eprintln!("no agents were installed");
     } else {
         eprintln!("hooks installed for: {}", installed.join(", "));
+    }
+    if failed.is_empty() {
+        Ok(())
+    } else {
+        Err(miette::miette!(
+            "failed to install hooks: {}",
+            failed.join("; ")
+        ))
     }
 }
 

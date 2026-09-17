@@ -23,6 +23,30 @@ This registers Concats with Claude Code's hook system. From here on, every sessi
 
 > **Note:** This currently overrides existing hook settings in `.claude/settings.json`.
 
+### Codex Hooks
+
+```sh
+concats hooks install codex --global
+```
+
+This installs three lifecycle hooks in `$CODEX_HOME/config.toml`
+(default: `~/.codex/config.toml`): `UserPromptSubmit` records the prompt,
+`PostToolUse` captures a working-tree snapshot after each supported tool call,
+and `Stop` records the final assistant response. Sessions use Codex's session ID,
+so separate agents keep separate conversations even when they share a worktree.
+Existing hooks and notification commands, including Computer Use's `notify`, are
+preserved. Older Concats notification entries are removed when installing.
+
+Restart Codex after installing and review and trust the new definitions in
+`/hooks`, as described in the [Codex hook documentation](https://learn.chatgpt.com/docs/hooks#review-and-trust-hooks).
+
+In the app, open `HEAD...WORKTREE` for all uncommitted changes or
+`INDEX...WORKTREE` for unstaged changes. The Sessions tab shows recorded turns
+whose snapshots match the changed file contents, including multiple sessions and
+sessions recorded in linked Git worktrees. New recordings refresh the working-tree
+review automatically. The CLI exposes the same matches with
+`concats turns --base HEAD --head WORKTREE` when built with `--features review`.
+
 ### Terminal Interface (ACP)
 
 Concats also ships a terminal UI that connects to agents via the [Agent Client Protocol](https://agentclientprotocol.com):

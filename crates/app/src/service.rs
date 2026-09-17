@@ -328,7 +328,7 @@ fn probe_worktree(
     if now < worktree.next_probe {
         return Ok(worktree.fingerprint);
     }
-    let fingerprint = concats_diff::stage::worktree_fingerprint(&worktree.repo);
+    let fingerprint = concats_review::sessions::worktree_fingerprint(&worktree.repo);
     worktree.interval = if fingerprint
         .as_ref()
         .is_ok_and(|fp| Some(*fp) != worktree.fingerprint)

@@ -759,6 +759,7 @@ dependencies = [
  "gix",
  "serde",
  "serde_json",
+ "shlex",
  "tempfile",
  "toml",
 ]

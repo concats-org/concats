@@ -68,10 +68,10 @@ pub enum Commands {
         /// The agent (claude, codex, cursor, windsurf, gemini, copilot, droid, amp, opencode).
         agent: String,
 
-        /// Hook event name (agent-specific). Optional for single-event agents like Codex.
+        /// Hook event name (agent-specific). Optional when the payload identifies the event.
         event: Option<String>,
 
-        /// JSON payload as CLI argument (used by Codex instead of stdin).
+        /// JSON payload as CLI argument instead of stdin.
         #[arg(long)]
         payload: Option<String>,
     },

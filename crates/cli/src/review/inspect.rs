@@ -1,7 +1,7 @@
 //! Looking at a range without changing anything: which recorded turns produced
 //! it, and what loading it costs.
 
-use std::{collections::HashMap, path::Path};
+use std::path::Path;
 
 use concats_highlight::Highlighter;
 use concats_review::sessions;
@@ -19,25 +19,14 @@ pub(crate) fn turns(range: &RangeArgs) -> Outcome {
         return Err(std::process::ExitCode::from(super::BAD_INPUT));
     };
 
-    let (Some(merge_base), Some(head)) = (loaded.merge_base, loaded.head) else {
-        println!("a WORKTREE range has no commits — sessions link to commits only");
-        return Ok(());
-    };
-    let diff = sessions::range_diff(&repo, &merge_base, &head);
+    let diff = sessions::review_diff(&repo, &loaded);
     let turns = sessions::load_turns(&repo, &diff);
     if turns.is_empty() {
         println!("no agent sessions (refs/agent/sessions/*) in {root}");
         return Ok(());
     }
 
-    // A turn can be linked by content and by the commit it was recorded at; the
-    // mark shows the stronger of the two.
-    let mut via: HashMap<usize, (bool, bool)> = HashMap::new();
-    for link in &sessions::link_turns(&diff, &turns) {
-        let entry = via.entry(link.turn).or_insert((false, false));
-        entry.0 |= link.via_tree;
-        entry.1 |= link.via_branch;
-    }
+    let via = sessions::matching_turns(&diff, &turns);
 
     let mut session = "";
     for (i, turn) in turns.iter().enumerate() {
