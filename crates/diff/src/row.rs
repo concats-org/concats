@@ -26,6 +26,12 @@ pub enum Row {
     Prose {
         md: String,
     },
+    /// Markdown with a stable document target. Unlike code, transcript and
+    /// commit-message content has no file line to anchor a review comment to.
+    Document {
+        target: String,
+        md: String,
+    },
     /// The agent referenced something that does not exist in this diff. Loud on
     /// purpose: a bad reference must never look like an absent one.
     Warning {

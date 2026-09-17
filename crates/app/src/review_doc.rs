@@ -39,12 +39,15 @@ pub struct Compose {
 /// What the open composer will post. One field, not two: a gutter drag started
 /// while a reply is open replaces the target, and with two fields five places
 /// would have to remember to clear the other one.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub enum Composing {
     /// A new comment on the selected lines.
     Lines(Compose),
     /// A reply into an existing thread, named by the thread's root id.
     Reply(u64),
+    /// A transcript, commit message, or session heading identified by its
+    /// stable document target.
+    Document(String),
 }
 
 /// One of the pane's document streams. Each dock tab renders one stream;
@@ -536,7 +539,7 @@ pub(crate) fn widen_compose(
     blob: u32,
     line: u32,
 ) -> Option<Compose> {
-    let Some(Composing::Lines(mut compose)) = d.compose else {
+    let Some(Composing::Lines(mut compose)) = d.compose.clone() else {
         return None;
     };
     let (side, other) = match kind {
@@ -825,6 +828,18 @@ fn comments_stream(
         let group = &roots[at..group_end];
         at = group_end;
 
+        if path.starts_with("document/") {
+            unanswered += group
+                .iter()
+                .filter(|c| !comments.iter().any(|r| r.parent == Some(c.id)))
+                .count();
+            cards.push(Row::Document {
+                target: path.into(),
+                md: "## Commented content".into(),
+            });
+            continue;
+        }
+
         let path_blobs: &[u32] = of_path.get(path).map_or(&[], Vec::as_slice);
         // Locate each thread, then merge threads whose context overlaps into
         // one card — the same line must not render in two cards, or the splice
@@ -1031,6 +1046,7 @@ fn in_card_row(row: &Row) -> bool {
         | Row::Spacer => true,
         Row::Title { .. }
         | Row::Prose { .. }
+        | Row::Document { .. }
         | Row::Warning { .. }
         | Row::FileHeader { .. }
         | Row::CardEnd => false,
@@ -1080,7 +1096,7 @@ pub(crate) fn strip_composer(d: &mut ReviewDoc) {
 /// a guide renders the same thread more than once.
 pub(crate) fn splice_composer(d: &mut ReviewDoc) {
     strip_composer(d);
-    let Some(c) = d.compose else {
+    let Some(c) = d.compose.clone() else {
         return;
     };
     let anchor = d.compose_anchor;
@@ -1116,6 +1132,18 @@ pub(crate) fn splice_composer(d: &mut ReviewDoc) {
                 d.active().get(at + 1),
                 Some(Row::Comment { id, parent, .. }) if parent.unwrap_or(*id) == root
             ) {
+                at += 1;
+            }
+            at
+        }
+        Composing::Document(ref target) => {
+            let Some(mut at) = d.active().iter().position(
+                |row| matches!(row, Row::Document { target: current, .. } if current == target),
+            ) else {
+                d.compose = None;
+                return;
+            };
+            while matches!(d.active().get(at + 1), Some(Row::Comment { .. })) {
                 at += 1;
             }
             at
@@ -1236,7 +1264,7 @@ fn replace_row(d: &mut ReviewDoc, tab: Stream, row: usize, with: Vec<Row>) {
 /// ends ("lines L63 to 68"). A reply names who it answers, which is the only
 /// thing about a reply the reviewer cannot already see.
 pub(crate) fn compose_title(d: &ReviewDoc, comments: &[Comment]) -> String {
-    let Some(c) = d.compose else {
+    let Some(c) = d.compose.clone() else {
         return "Add a comment".into();
     };
     let c = match c {
@@ -1251,6 +1279,7 @@ pub(crate) fn compose_title(d: &ReviewDoc, comments: &[Comment]) -> String {
                 None => "Reply".into(),
             };
         }
+        Composing::Document(_) => return "Add a comment on this content".into(),
     };
     let Some(side) = comment_anchor(c) else {
         return "Add a comment".into();

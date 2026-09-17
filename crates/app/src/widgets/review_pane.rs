@@ -1345,6 +1345,19 @@ impl ReviewPane {
         self.redraw_streams(cx);
     }
 
+    fn compose_document(&mut self, cx: &mut Cx, tab: Stream, target: String, near: usize) {
+        self.set_gesture_tab(cx, tab);
+        self.state().with(|d| {
+            strip_composer(d);
+            d.compose = Some(Composing::Document(target));
+            d.compose_anchor = near;
+            self.state().compose_draft.write().unwrap().clear();
+            splice_composer(d);
+            d.compose_focus = true;
+        });
+        self.redraw_streams(cx);
+    }
+
     fn post_comment(&mut self, cx: &mut Cx) {
         {
             let mut docs = self.state().write();
@@ -1403,6 +1416,26 @@ impl ReviewPane {
                         anchor: side_anchor(primary),
                         body,
                         cursors,
+                    }
+                }
+                Composing::Document(target) => {
+                    let Some(oid) = target
+                        .split('/')
+                        .nth(1)
+                        .and_then(|oid| gix::ObjectId::from_hex(oid.as_bytes()).ok())
+                    else {
+                        return;
+                    };
+                    ReviewCmd::AddComment {
+                        git_dir,
+                        path: target,
+                        anchor: store::Anchor {
+                            blob: oid,
+                            start: 0,
+                            end: 0,
+                        },
+                        body,
+                        cursors: None,
                     }
                 }
             };
@@ -1930,6 +1963,9 @@ impl ReviewPane {
                 }
                 ReviewItemAction::Reply { tab, id, near } if clicked => {
                     self.reply_to_comment(cx, *tab, *id, *near);
+                }
+                ReviewItemAction::DocumentComment { tab, target, near } if clicked => {
+                    self.compose_document(cx, *tab, target.clone(), *near);
                 }
                 ReviewItemAction::Outdated { path } if clicked => {
                     self.toggle_card_outdated(cx, path);

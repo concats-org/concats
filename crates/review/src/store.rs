@@ -644,8 +644,18 @@ pub fn inject_comments(
     if comments.is_empty() {
         return HashSet::new();
     }
-    let mut threaded: Vec<&Comment> = comments.iter().collect();
+    let mut threaded: Vec<&Comment> = comments
+        .iter()
+        .filter(|comment| !comment.path.starts_with("document/"))
+        .collect();
     threaded.sort_by_key(|c| (thread_key(c), c.id));
+    let mut document: HashMap<&str, Vec<&Comment>> = HashMap::new();
+    for comment in comments
+        .iter()
+        .filter(|comment| comment.path.starts_with("document/"))
+    {
+        document.entry(&comment.path).or_default().push(comment);
+    }
 
     // Bucketed by where the anchored content is, not by the number it had when
     // the comment was written. Type three lines above a thread and it has to
@@ -687,7 +697,23 @@ pub fn inject_comments(
             Row::Code { blob, line, .. } => Some((blobs[*blob as usize].oid, *line)),
             _ => None,
         };
+        let target = match &row {
+            Row::Document { target, .. } => Some(target.clone()),
+            _ => None,
+        };
         out.push(row);
+        for c in target
+            .into_iter()
+            .flat_map(|target| document.get(target.as_str()).into_iter().flatten())
+        {
+            placed.insert(thread_key(c));
+            out.push(Row::Comment {
+                id: c.id,
+                parent: c.parent,
+                body: c.body.clone(),
+                meta: byline(c),
+            });
+        }
         let Some((oid, line)) = anchor else { continue };
         for c in by_anchor
             .get(&(oid, line))
@@ -1017,6 +1043,19 @@ mod tests {
             external: None,
             cursors: None,
         }
+    }
+
+    #[test]
+    fn a_document_comment_renders_below_its_stable_target() {
+        let target = "document/0000000000000000000000000000000000000001/session/s";
+        let mut rows = vec![Row::Document {
+            target: target.into(),
+            md: "## Session `s`".into(),
+        }];
+        let comments = [comment(target, anchor(oid(1), 0, 0), "whole session")];
+        let placed = inject_comments(&mut rows, &[], &comments, &HashSet::new(), None);
+        assert_eq!(placed, HashSet::from([0]));
+        assert!(matches!(rows[1], Row::Comment { ref body, .. } if body == "whole session"));
     }
 
     #[test]

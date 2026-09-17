@@ -419,8 +419,9 @@ fn split_message(msg: &str) -> (String, String) {
 /// `#` or list marker must not restructure the document. Inside a blockquote it
 /// can't — the same guard turn prompts get.
 fn commit_header_rows(rows: &mut Vec<Row>, cd: &CommitDiff, level: &str) {
-    rows.push(Row::Title {
-        text: format!("{level} {}  `{}`", cd.subject, &cd.oid.to_string()[..10]),
+    rows.push(Row::Document {
+        target: format!("document/{}/commit-message/subject", cd.oid),
+        md: format!("{level} {}  `{}`", cd.subject, &cd.oid.to_string()[..10]),
     });
     if cd.parent_count > 1 {
         rows.push(Row::Prose {
@@ -437,7 +438,10 @@ fn commit_header_rows(rows: &mut Vec<Row>, cd: &CommitDiff, level: &str) {
             md.push_str(&escape_angle_outside_code(line));
             md.push('\n');
         }
-        rows.push(Row::Prose { md });
+        rows.push(Row::Document {
+            target: format!("document/{}/commit-message/body", cd.oid),
+            md,
+        });
     }
 }
 
@@ -785,8 +789,9 @@ fn sessions_rows(
         if t.session_id != session {
             flush_skipped(&mut rows, &mut skipped);
             session = &t.session_id;
-            rows.push(Row::Title {
-                text: format!("## Session `{session}`"),
+            rows.push(Row::Document {
+                target: format!("document/{}/session/{session}", t.oid),
+                md: format!("## Session `{session}`"),
             });
             if let Some(agent) = t.message.agent_name() {
                 rows.push(Row::Prose {
@@ -858,7 +863,7 @@ fn turn_rows(
     });
 
     let mut tools: HashMap<&str, usize> = HashMap::new();
-    for e in t.message.entries() {
+    for (i, e) in t.message.entries().iter().enumerate() {
         match &e.kind {
             TurnEntryKind::Prompt { text } => {
                 let mut md = String::from("**Prompt**\n\n");
@@ -867,10 +872,14 @@ fn turn_rows(
                     md.push_str(line);
                     md.push('\n');
                 }
-                rows.push(Row::Prose { md });
+                rows.push(Row::Document {
+                    target: format!("document/{}/entry/{i}/prompt", t.oid),
+                    md,
+                });
             }
             TurnEntryKind::Response { text } => {
-                rows.push(Row::Prose {
+                rows.push(Row::Document {
+                    target: format!("document/{}/entry/{i}/response", t.oid),
                     md: format!("**Response**\n\n{}", text.trim()),
                 });
             }
@@ -1038,16 +1047,16 @@ mod tests {
         let sess = &mined.sessions;
         assert!(
             sess.iter()
-                .any(|r| matches!(r, Row::Title { text } if text.contains("test-session")))
+                .any(|r| matches!(r, Row::Document { md, .. } if md.contains("test-session")))
         );
         assert!(
             sess.iter()
-                .any(|r| matches!(r, Row::Prose { md } if md.contains("please add two")))
+                .any(|r| matches!(r, Row::Document { md, .. } if md.contains("please add two")))
         );
         // The turn's diff is the commit it produced: message header (subject +
         // short sha), then that commit's own diff.
         assert!(sess.iter().any(
-            |r| matches!(r, Row::Title { text } if text.contains("feature") && text.contains(&head[..10]))
+            |r| matches!(r, Row::Document { md, .. } if md.contains("feature") && md.contains(&head[..10]))
         ));
         assert!(
             sess.iter()
@@ -1090,7 +1099,7 @@ mod tests {
             .commits
             .iter()
             .filter_map(|r| match r {
-                Row::Title { text } => Some(text),
+                Row::Title { text } | Row::Document { md: text, .. } => Some(text),
                 _ => None,
             })
             .collect();
@@ -1103,7 +1112,7 @@ mod tests {
         // angle brackets escaped — except inside inline code.
         assert!(mined.commits.iter().any(|r| matches!(
             r,
-            Row::Prose { md } if md.contains("> why b exists\n> see `Option<T>`")
+            Row::Document { md, .. } if md.contains("> why b exists\n> see `Option<T>`")
                 && md.contains("> Co-Authored-By: X \\<x@y.z>")
         )));
         // Each commit carries its own file diff.

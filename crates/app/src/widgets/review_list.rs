@@ -191,6 +191,11 @@ pub(super) enum ReviewItemAction {
         id: u64,
         near: usize,
     },
+    DocumentComment {
+        tab: Stream,
+        target: String,
+        near: usize,
+    },
     Outdated {
         path: String,
     },
@@ -427,6 +432,23 @@ script_mod! {
                     padding: 0
                     draw_text.color: C_TEXT
                     draw_text.text_style: FONT{font_size: 9 line_spacing: 1.5}
+                }
+            }
+
+            DocumentRow := View {
+                width: Fill height: Fit
+                flow: Right
+                align: Align{x: 0.0 y: 0.0}
+                padding: Inset{top: 6 bottom: 6 left: 16 right: 16}
+                document_text := Prose {
+                    width: Fill height: Fit
+                    padding: 0
+                    draw_text.color: C_TEXT
+                    draw_text.text_style: FONT{font_size: 9 line_spacing: 1.5}
+                }
+                document_comment := IconAction {
+                    margin: Inset{left: 6}
+                    draw_icon.svg: crate_resource("self:resources/icons/comment.svg")
                 }
             }
 
@@ -1431,6 +1453,18 @@ impl ReviewList {
                 };
                 let item = list.item(cx, entry, template);
                 item.label(cx, label).set_text(cx, text);
+                item.draw_all(cx, &mut Scope::with_props(theme));
+            }
+            Row::Document { target, md } => {
+                let item = list.item(cx, entry, id!(DocumentRow));
+                item.label(cx, ids!(document_text)).set_text(cx, md);
+                item.widget(cx, ids!(document_comment)).set_action_data(
+                    ReviewItemAction::DocumentComment {
+                        tab,
+                        target: target.clone(),
+                        near: r,
+                    },
+                );
                 item.draw_all(cx, &mut Scope::with_props(theme));
             }
             Row::FileHeader { .. } => {
