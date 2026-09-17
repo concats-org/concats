@@ -1479,6 +1479,7 @@ impl ReviewPane {
             None,
         );
         self.open_terminal(cx, tab_id);
+        self.state().set_terminal_tab(Some(tab_id));
         self.reveal_panel(cx, Panel::Bottom);
     }
 
@@ -1500,6 +1501,7 @@ impl ReviewPane {
     /// slide completed.
     pub fn reveal_terminal(&mut self, cx: &mut Cx) {
         self.open_terminal(cx, id!(terminal_tab));
+        self.state().set_terminal_tab(Some(id!(terminal_tab)));
         self.view
             .dock(cx, ids!(dock))
             .select_tab(cx, id!(terminal_tab));
@@ -1703,12 +1705,14 @@ impl ReviewPane {
         for wa in actions {
             match wa.cast() {
                 DockAction::TabWasPressed(tab_id) => {
+                    self.state().set_terminal_tab(None);
                     if let Some(tab) = model_tab_of(tab_id, &open_files) {
                         self.set_gesture_tab(cx, tab);
                     } else if is_terminal_dock_tab(&dock, tab_id) {
                         // (Re)spawn that tab's shell — the recovery path
                         // after its previous one exited.
                         self.open_terminal(cx, tab_id);
+                        self.state().set_terminal_tab(Some(tab_id));
                     }
                 }
                 DockAction::TabCloseWasPressed(tab_id) => {
@@ -1728,6 +1732,9 @@ impl ReviewPane {
                         }
                     } else if tab_id != id!(terminal_tab) && is_terminal_dock_tab(&dock, tab_id) {
                         // Closing a `+`-created terminal tab ends its shell.
+                        if self.state().terminal_tab() == Some(tab_id) {
+                            self.state().set_terminal_tab(None);
+                        }
                         terminal::close(terminal::Session {
                             window: self.state().id,
                             tab: tab_id,
@@ -1792,6 +1799,7 @@ impl ReviewPane {
                 && terminal::count(self.state().id) == 0
             {
                 self.open_terminal(cx, id!(terminal_tab));
+                self.state().set_terminal_tab(Some(id!(terminal_tab)));
                 self.view
                     .dock(cx, ids!(dock))
                     .select_tab(cx, id!(terminal_tab));

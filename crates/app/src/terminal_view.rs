@@ -998,34 +998,26 @@ impl Widget for TerminalView {
             }
         }
 
-        self.link_tooltip.handle_event(cx, event, scope);
-        let mut scroll_actions = Vec::new();
-        self.scroll_bars
-            .handle_main_event(cx, event, scope, &mut scroll_actions);
-        let hit = event.hits(cx, self.scroll_bars.area());
-        let drag = event.drag_hits(cx, self.scroll_bars.area());
-        if matches!(hit, Hit::Nothing)
-            && matches!(drag, DragHit::NoHit)
-            && scroll_actions.is_empty()
-        {
-            return;
-        }
         let state = crate::frame_state(scope);
         let window = state.as_ref().map(|state| state.id).unwrap_or_default();
         let session = self.session_for_widget(cx, window);
-        let Some((session, shared)) =
-            session.and_then(|s| crate::terminal::term(s).map(|term| (s, term)))
-        else {
-            self.scroll_bars
-                .handle_scroll_event(cx, event, scope, &mut scroll_actions);
-            return;
-        };
-
-        let mode = *shared.lock().mode();
-
-        if self.find.is_none() {
+        if self.find.is_none()
+            && cx.key_focus() == Area::Empty
+            && state
+                .as_ref()
+                .is_some_and(|state| state.terminal_tab() == session.map(|session| session.tab))
+            && let Some((session, shared)) = session
+                .and_then(|session| crate::terminal::term(session).map(|term| (session, term)))
+        {
+            let mode = *shared.lock().mode();
             match event {
                 Event::KeyDown(e) => {
+                    // NOTE: makepad emits a paste for both shortcuts on macOS.
+                    if matches!(e.key_code, KeyCode::KeyV)
+                        && (e.modifiers.logo || (cfg!(target_os = "macos") && e.modifiers.control))
+                    {
+                        return;
+                    }
                     if std::mem::take(&mut self.text_input) != TextInput::Forwarded {
                         let bytes = keys::encode(e, true, mode).or_else(|| {
                             e.key_code
@@ -1033,6 +1025,7 @@ impl Widget for TerminalView {
                                 .map(|c| c.to_string().into_bytes())
                         });
                         if let Some(bytes) = bytes {
+                            cx.set_key_focus(self.scroll_bars.area());
                             self.emit_input_bytes(cx, session, bytes);
                             scroll_to_bottom(session);
                             self.draw_bg.redraw(cx);
@@ -1050,6 +1043,7 @@ impl Widget for TerminalView {
                     if e.replace_last {
                         return;
                     }
+                    cx.set_key_focus(self.scroll_bars.area());
                     if e.was_paste {
                         self.text_input = TextInput::Forwarded;
                         self.emit_paste_text(
@@ -1070,7 +1064,30 @@ impl Widget for TerminalView {
                 }
                 _ => {}
             }
-        } else {
+        }
+
+        self.link_tooltip.handle_event(cx, event, scope);
+        let mut scroll_actions = Vec::new();
+        self.scroll_bars
+            .handle_main_event(cx, event, scope, &mut scroll_actions);
+        let hit = event.hits(cx, self.scroll_bars.area());
+        let drag = event.drag_hits(cx, self.scroll_bars.area());
+        if matches!(hit, Hit::Nothing)
+            && matches!(drag, DragHit::NoHit)
+            && scroll_actions.is_empty()
+        {
+            return;
+        }
+        let Some((session, shared)) =
+            session.and_then(|s| crate::terminal::term(s).map(|term| (s, term)))
+        else {
+            self.scroll_bars
+                .handle_scroll_event(cx, event, scope, &mut scroll_actions);
+            return;
+        };
+
+        let mode = *shared.lock().mode();
+        if self.find.is_some() {
             self.text_input = TextInput::Absent;
         }
 
@@ -1131,6 +1148,9 @@ impl Widget for TerminalView {
         match hit {
             Hit::FingerDown(e) => {
                 cx.set_key_focus(self.scroll_bars.area());
+                if let Some(state) = &state {
+                    state.set_terminal_tab(Some(session.tab));
+                }
                 self.held = e.device.mouse_button();
                 if e.modifiers.logo {
                     let uri = {
@@ -1285,6 +1305,9 @@ impl Widget for TerminalView {
             }
             Hit::FingerHoverOut(_) => self.link_tooltip.hide(cx),
             Hit::KeyFocus(_) => {
+                if let Some(state) = &state {
+                    state.set_terminal_tab(Some(session.tab));
+                }
                 self.draw_bg.redraw(cx);
             }
             Hit::KeyFocusLost(_) => {

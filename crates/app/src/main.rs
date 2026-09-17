@@ -484,7 +484,7 @@ impl MatchEvent for App {
         self.poll = cx.start_interval(1.0);
     }
 
-    fn handle_window_got_focus(&mut self, _cx: &mut Cx, window_id: &WindowId) {
+    fn handle_window_got_focus(&mut self, cx: &mut Cx, window_id: &WindowId) {
         let Some(state) = self
             .windows
             .iter()
@@ -493,6 +493,12 @@ impl MatchEvent for App {
         else {
             return;
         };
+        if self.focused != Some(state.id) {
+            // A key-focus area belongs to the old native window. Leave no
+            // stale target behind; its selected terminal restores focus on
+            // the next keystroke if there is no focused input in this window.
+            cx.set_key_focus(Area::Empty);
+        }
         self.focused = Some(state.id);
         self.focus_window(&state);
     }
@@ -582,6 +588,7 @@ impl App {
         }
         self.focus_window(&state);
         self.windows.push(AppWindow::new(state, window));
+        self.focused = Some(id);
     }
 
     /// One window has the keyboard at a time. Opening a window takes it, and

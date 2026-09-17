@@ -41,6 +41,10 @@ pub(crate) struct WindowState {
     /// anything that reads them without asking whose window it is acts on all
     /// of them at once. This is that question.
     focused: AtomicBool,
+    /// The terminal tab that last took this window's keyboard. It is the
+    /// fallback target after a native window switch clears Makepad's global
+    /// key-focus area.
+    terminal_tab: AtomicU64,
 }
 
 impl WindowState {
@@ -53,6 +57,7 @@ impl WindowState {
             compose_draft: RwLock::new(String::new()),
             load_request: AtomicU64::new(0),
             focused: AtomicBool::new(false),
+            terminal_tab: AtomicU64::new(0),
         })
     }
 
@@ -67,6 +72,16 @@ impl WindowState {
 
     pub(crate) fn set_focused(&self, focused: bool) {
         self.focused.store(focused, Ordering::Relaxed);
+    }
+
+    pub(crate) fn terminal_tab(&self) -> Option<LiveId> {
+        let tab = LiveId(self.terminal_tab.load(Ordering::Relaxed));
+        (tab != LiveId(0)).then_some(tab)
+    }
+
+    pub(crate) fn set_terminal_tab(&self, tab: Option<LiveId>) {
+        self.terminal_tab
+            .store(tab.map_or(0, |tab| tab.0), Ordering::Relaxed);
     }
 
     pub(crate) fn read<R>(&self, f: impl FnOnce(&ReviewDoc) -> R) -> R {
@@ -147,6 +162,17 @@ mod tests {
         );
         blob.origin = Some(path.into());
         blob
+    }
+
+    #[test]
+    fn terminal_tab_belongs_to_its_window() {
+        let first = WindowState::new(LiveId(1), None);
+        let second = WindowState::new(LiveId(2), None);
+
+        first.set_terminal_tab(Some(LiveId(3)));
+
+        assert_eq!(first.terminal_tab(), Some(LiveId(3)));
+        assert_eq!(second.terminal_tab(), None);
     }
 
     #[test]
