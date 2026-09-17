@@ -160,11 +160,10 @@ script_mod! {
     // The settings tab; the `{ }` status-bar button opens it in the bottom
     // panel (no dedicated icon yet).
     let SettingsTab = ReviewTab {}
-    // The permanent terminal tab is the panel's structural anchor (the `>_`
-    // toggle needs the bottom splitter to survive) — not closable. Extra
-    // sessions from the `+` button are.
+    // The bottom tab bar is the panel's structural anchor; its default
+    // terminal is a normal closable tab, recreated by the `>_` button.
     let TerminalTab = ReviewTab {
-        closeable: false
+        closeable: true
         draw_icon +: { color: C_DIM svg: crate_resource("self:resources/icons/terminal_fill.svg") }
     }
     let TerminalCloseTab = TerminalTab { closeable: true }
@@ -951,6 +950,27 @@ impl ReviewPane {
         guide: Option<String>,
         status: Option<&str>,
     ) {
+        if self.state().read(|document| document.repo != target.repo) {
+            let window = self.state().id;
+            let tabs = self
+                .view
+                .dock(cx, ids!(dock))
+                .clone_state()
+                .into_iter()
+                .flatten()
+                .filter_map(|(tab, item)| {
+                    matches!(item, DockItem::Tab { kind, .. } if kind == id!(TerminalPane))
+                        .then_some(tab)
+                })
+                .collect::<Vec<_>>();
+            for tab in tabs {
+                let session = terminal::Session { window, tab };
+                if terminal::is_open(session) {
+                    terminal::close(session);
+                    self.open_terminal_for(cx, tab, &target);
+                }
+            }
+        }
         if let Some(status) = status {
             self.view.label(cx, ids!(status_label)).set_text(cx, status);
         }
@@ -1424,13 +1444,15 @@ impl ReviewPane {
     /// `CONCATS_APP_REPO/BASE/HEAD` values ride along as the fallback for when
     /// the app has exited.
     pub fn open_terminal(&mut self, cx: &mut Cx, tab: LiveId) {
-        let (repo, base, head) = self
-            .state()
-            .read(|d| (d.repo.clone(), d.base.clone(), d.head.clone()));
-        let cwd = if repo.is_empty() {
+        let target = self.state().read(crate::review_doc::ReviewDoc::target);
+        self.open_terminal_for(cx, tab, &target);
+    }
+
+    fn open_terminal_for(&mut self, cx: &mut Cx, tab: LiveId, target: &concats_state::Target) {
+        let cwd = if target.repo.is_empty() {
             ".".to_string()
         } else {
-            repo
+            target.repo.clone()
         };
         // Absolute, so the env stays right even after the user cd's away.
         let cwd = std::fs::canonicalize(&cwd)
@@ -1440,11 +1462,11 @@ impl ReviewPane {
             ("CONCATS_APP_WINDOW", self.state().key.as_str()),
             ("CONCATS_APP_REPO", cwd.as_str()),
         ];
-        if !base.is_empty() {
-            env.push(("CONCATS_APP_BASE", base.as_str()));
+        if !target.base.is_empty() {
+            env.push(("CONCATS_APP_BASE", target.base.as_str()));
         }
-        if !head.is_empty() {
-            env.push(("CONCATS_APP_HEAD", head.as_str()));
+        if !target.head.is_empty() {
+            env.push(("CONCATS_APP_HEAD", target.head.as_str()));
         }
         terminal::open(
             terminal::Session {
@@ -1495,11 +1517,23 @@ impl ReviewPane {
         self.view.redraw(cx);
     }
 
-    /// Open the bottom panel with the permanent terminal selected and its
+    /// Open the bottom panel with the default terminal selected and its
     /// shell running. The screenshot path (`CONCATS_APP_TERM=1`) — rides
     /// the same slide animation as the toggle, so the shot also proves the
     /// slide completed.
     pub fn reveal_terminal(&mut self, cx: &mut Cx) {
+        let dock = self.view.dock(cx, ids!(dock));
+        if dock.find_tab_bar_of_tab(id!(terminal_tab)).is_none() {
+            dock.create_and_select_tab(
+                cx,
+                id!(bottom_tabs),
+                id!(terminal_tab),
+                id!(TerminalPane),
+                "Terminal".into(),
+                id!(TerminalTab),
+                None,
+            );
+        }
         self.open_terminal(cx, id!(terminal_tab));
         self.state().set_terminal_tab(Some(id!(terminal_tab)));
         self.view
@@ -1730,8 +1764,8 @@ impl ReviewPane {
                             self.user_closed.insert(tab_id);
                             dock.close_tab(cx, tab_id);
                         }
-                    } else if tab_id != id!(terminal_tab) && is_terminal_dock_tab(&dock, tab_id) {
-                        // Closing a `+`-created terminal tab ends its shell.
+                    } else if is_terminal_dock_tab(&dock, tab_id) {
+                        // Closing a terminal tab ends its shell.
                         if self.state().terminal_tab() == Some(tab_id) {
                             self.state().set_terminal_tab(None);
                         }
@@ -1798,13 +1832,10 @@ impl ReviewPane {
                 .is_some_and(|size| size <= 1.0)
                 && terminal::count(self.state().id) == 0
             {
-                self.open_terminal(cx, id!(terminal_tab));
-                self.state().set_terminal_tab(Some(id!(terminal_tab)));
-                self.view
-                    .dock(cx, ids!(dock))
-                    .select_tab(cx, id!(terminal_tab));
+                self.reveal_terminal(cx);
+            } else {
+                self.toggle_panel(cx, Panel::Bottom);
             }
-            self.toggle_panel(cx, Panel::Bottom);
         }
         if self.view.button(cx, ids!(sidebar_button)).clicked(actions) {
             self.toggle_panel(cx, Panel::Sidebar);
