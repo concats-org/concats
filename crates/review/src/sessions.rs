@@ -589,8 +589,8 @@ fn range_commits(repo: &Repository, merge_base: &ObjectId, head: &ObjectId) -> V
 /// What the review document gets out of all this.
 #[derive(Default)]
 pub struct Mined {
-    /// The Sessions tab: per linked session, the transcript of its linked
-    /// turns interleaved with the per-commit diffs those turns produced.
+    /// The Sessions tab: per linked session, the transcript of every one of
+    /// its turns interleaved with the per-commit diffs those turns produced.
     pub sessions: Vec<Row>,
     /// The Commits tab: the range organized by commit, oldest first. Empty
     /// (no tab) when the range has fewer than two commits — one commit would
@@ -711,14 +711,19 @@ fn commits_stream(
 }
 
 /// The Sessions document: the same row vocabulary the review uses, so the
-/// renderer does not change. For each session with linked turns: the transcript
-/// of each linked turn (prompt as blockquote, response as markdown, tool calls
-/// summarized), followed by the commits that turn produced — each commit's
-/// message and its own diff against its first parent, lowered through the same
-/// `FileLowerer` the review uses, into the same blob table. Commit diffs are
-/// exact, so the old snapshot-noise scoping is gone. A commit several turns
-/// produced together renders under the first and is cross-referenced after.
-/// Unlinked turns collapse to a count, like skipped context lines.
+/// renderer does not change. A session is linked when any one of its turns is,
+/// and it then renders whole: every turn's transcript (prompt as blockquote,
+/// response as markdown, tool calls summarized), each followed by the commits
+/// that turn produced — the commit's message and its own diff against its
+/// first parent, lowered through the same `FileLowerer` the review uses, into
+/// the same blob table. Commit diffs are exact, so the old snapshot-noise
+/// scoping is gone. A commit several turns produced together renders under the
+/// first and is cross-referenced after.
+///
+/// Whole, because the session is the unit of "why". A turn that produced
+/// nothing of this diff is still what led to the turn that did — collapsing
+/// those to a count threw the reasoning away and left the transcript starting
+/// mid-thought.
 fn sessions_rows(
     repo: &Repository,
     range: &RangeDiff,
@@ -761,16 +766,22 @@ fn sessions_rows(
     rows.push(Row::Title {
         text: "# Sessions".into(),
     });
+    let rendered = turns
+        .iter()
+        .filter(|t| linked_sessions.contains(t.session_id.as_str()))
+        .count();
     rows.push(Row::Prose {
         md: format!(
-            "The transcripts behind this diff: **{} turn(s)** across **{} \
-             session(s)** linked to this diff.{}{}",
-            via.len(),
+            "The transcripts behind this diff: **{} session(s)** linked to it, each \
+             whole — **{} turn(s)**, **{}** of them linked.{}{}",
             linked_sessions.len(),
+            rendered,
+            via.len(),
             if loaded.workdir.is_some() {
-                " Matching snapshots contain the same changed file contents as this working tree."
+                " A linked turn's snapshot holds the same changed file contents as this \
+                 working tree."
             } else {
-                " Each turn is followed by the commit(s) it produced."
+                " Each linked turn is followed by the commit(s) it produced."
             },
             match all_sessions.len() - linked_sessions.len() {
                 0 => String::new(),
@@ -780,14 +791,12 @@ fn sessions_rows(
     });
 
     let mut session = "";
-    let mut skipped = 0usize;
     let mut rendered_commits: HashSet<ObjectId> = HashSet::new();
     for (i, t) in turns.iter().enumerate() {
         if !linked_sessions.contains(t.session_id.as_str()) {
             continue;
         }
         if t.session_id != session {
-            flush_skipped(&mut rows, &mut skipped);
             session = &t.session_id;
             rows.push(Row::Document {
                 target: format!("document/{}/session/{session}", t.oid),
@@ -799,16 +808,15 @@ fn sessions_rows(
                 });
             }
         }
-        if !via.contains_key(&i) {
-            skipped += 1;
-            continue;
-        }
-        flush_skipped(&mut rows, &mut skipped);
         let commits = turn_commits.get(&i).map(Vec::as_slice).unwrap_or(&[]);
         turn_rows(
             &mut rows,
             t,
-            via[&i].0,
+            match via.get(&i) {
+                Some((true, _)) => "matched by content",
+                Some((false, _)) => "recorded at commit",
+                None => "not linked to this diff",
+            },
             commits,
             range,
             &mut rendered_commits,
@@ -816,17 +824,7 @@ fn sessions_rows(
             blob_paths,
         );
     }
-    flush_skipped(&mut rows, &mut skipped);
     rows
-}
-
-fn flush_skipped(rows: &mut Vec<Row>, skipped: &mut usize) {
-    if *skipped > 0 {
-        rows.push(Row::Prose {
-            md: format!("_⋯ {skipped} turn(s) not linked to this range_"),
-        });
-        *skipped = 0;
-    }
 }
 
 /// One turn: header, transcript entries in order, then the commit(s) the turn
@@ -840,7 +838,7 @@ fn flush_skipped(rows: &mut Vec<Row>, skipped: &mut usize) {
 fn turn_rows(
     rows: &mut Vec<Row>,
     t: &Turn,
-    via_tree: bool,
+    link: &str,
     commits: &[usize],
     range: &RangeDiff,
     rendered_commits: &mut HashSet<ObjectId>,
@@ -851,15 +849,7 @@ fn turn_rows(
         text: format!("### {}", t.message.subject()),
     });
     rows.push(Row::Prose {
-        md: format!(
-            "_turn `{}` · {}_",
-            &t.oid.to_string()[..10],
-            if via_tree {
-                "matched by content"
-            } else {
-                "recorded at commit"
-            }
-        ),
+        md: format!("_turn `{}` · {link}_", &t.oid.to_string()[..10]),
     });
 
     let mut tools: HashMap<&str, usize> = HashMap::new();
@@ -1225,6 +1215,126 @@ mod tests {
         let links = link_turns(&range, &turns);
         assert_eq!(links.len(), 1);
         assert!(links[0].via_tree);
+    }
+
+    /// A session is linked as a whole: once any turn of it matches the range,
+    /// every turn renders, because the turns that produced nothing are what led
+    /// to the turn that did.
+    #[test]
+    fn renders_every_turn_of_a_linked_session() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+
+        git(dir, &["init", "-q", "-b", "main"]);
+        std::fs::write(dir.join("a.txt"), "one\n").unwrap();
+        git(dir, &["add", "."]);
+        git(dir, &["commit", "-qm", "base"]);
+        let base = git(dir, &["rev-parse", "HEAD"]);
+
+        // Turn 1 only wrote a scratch file that never reaches the range.
+        let msg1 = turn_message("Take notes", "think it through", "noted");
+        let t1 = git(dir, &["commit-tree", EMPTY_TREE, "-p", &base, "-m", &msg1]);
+        std::fs::write(dir.join("b.txt"), "scratch\n").unwrap();
+        git(dir, &["add", "."]);
+        let tree1 = git(dir, &["write-tree"]);
+        let s1 = git(
+            dir,
+            &[
+                "commit-tree",
+                &tree1,
+                "-p",
+                &t1,
+                "-m",
+                "snapshot\n\nSession: test-session\nReason: tool_write",
+            ],
+        );
+
+        // Turn 2 wrote the content the range's commit carries.
+        let msg2 = turn_message("Add two", "now add two", "added two");
+        let t2 = git(dir, &["commit-tree", EMPTY_TREE, "-p", &t1, "-m", &msg2]);
+        std::fs::write(dir.join("a.txt"), "one\ntwo\n").unwrap();
+        git(dir, &["add", "."]);
+        let tree2 = git(dir, &["write-tree"]);
+        let s2 = git(
+            dir,
+            &[
+                "commit-tree",
+                &tree2,
+                "-p",
+                &s1,
+                "-p",
+                &t2,
+                "-m",
+                "snapshot\n\nSession: test-session\nReason: turn_amend",
+            ],
+        );
+        git(
+            dir,
+            &["update-ref", "refs/agent/sessions/test-session", &t2],
+        );
+        git(
+            dir,
+            &["update-ref", "refs/agent/snapshots/test-session", &s2],
+        );
+
+        // The output commit carries a.txt only — b.txt stays the agent's
+        // scratch, so turn 1 has nothing in this range.
+        git(dir, &["rm", "-q", "-f", "b.txt"]);
+        git(dir, &["commit", "-qm", "feature"]);
+        let head = git(dir, &["rev-parse", "HEAD"]);
+
+        let repo = gix::open(dir).unwrap();
+        let range = range_diff(
+            &repo,
+            &ObjectId::from_hex(base.as_bytes()).unwrap(),
+            &ObjectId::from_hex(head.as_bytes()).unwrap(),
+        );
+        let turns = load_turns(&repo, &range);
+        assert_eq!(turns.len(), 2);
+        assert_eq!(matching_turns(&range, &turns).len(), 1);
+
+        let mut loaded = load::load(dir, &base, &head).unwrap();
+        let sess = mine(dir, &mut loaded).sessions;
+        let titles: Vec<&String> = sess
+            .iter()
+            .filter_map(|r| match r {
+                Row::Title { text } => Some(text),
+                _ => None,
+            })
+            .collect();
+        assert!(titles.iter().any(|t| t.contains("Take notes")));
+        assert!(titles.iter().any(|t| t.contains("Add two")));
+
+        let prose: Vec<&String> = sess
+            .iter()
+            .filter_map(|r| match r {
+                Row::Prose { md } => Some(md),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            prose
+                .iter()
+                .any(|md| md.contains("not linked to this diff"))
+        );
+        assert!(prose.iter().any(|md| md.contains("matched by content")));
+        assert!(
+            prose
+                .iter()
+                .any(|md| md.contains("**1 session(s)** linked to it")
+                    && md.contains("**2 turn(s)**, **1** of them linked")),
+            "header must count the whole session: {prose:?}"
+        );
+        // Only turn 2 produced the commit, so only it carries diff rows.
+        assert!(
+            sess.iter()
+                .any(|r| matches!(r, Row::FileHeader { path, .. } if path == "a.txt"))
+        );
+        assert!(
+            !sess
+                .iter()
+                .any(|r| matches!(r, Row::FileHeader { path, .. } if path == "b.txt"))
+        );
     }
 
     #[test]
