@@ -15,7 +15,8 @@ use crate::makepad_widgets::widget::WidgetActionData;
     reason = "Makepad macros and derives expand against the widget prelude in this scope."
 )]
 use crate::{
-    ROW_PAD, frame_theme, makepad_widgets::*, row_bg, row_marker, row_selected_bg, theme::paint,
+    ROW_PAD, frame_theme, makepad_widgets::*, prose_bg, row_bg, row_marker, selected_bg,
+    theme::paint,
 };
 
 script_mod! {
@@ -139,6 +140,12 @@ pub struct Gutter {
     #[live]
     draw_text: DrawText,
 
+    /// Set by the row's template: this rail belongs to a line of authored text.
+    /// It keeps the marker slots and the hover `+`, and drops the line number —
+    /// a transcript entry is not a file and has none.
+    #[live]
+    prose: bool,
+
     #[rust]
     kind: Option<LineKind>,
     #[rust]
@@ -192,11 +199,15 @@ impl Gutter {
                 _ => new_no.or(old_no),
             };
             self.number.clear();
-            if let Some(no) = no {
-                use std::fmt::Write;
-                let _ = write!(self.number, "{no:>5}");
-            } else {
-                self.number.push_str("     ");
+            match no {
+                // The rail is drawn from this text, so a prose line still gets
+                // a space: no column of numbers, and the same row height.
+                _ if self.prose => self.number.push(' '),
+                Some(no) => {
+                    use std::fmt::Write;
+                    let _ = write!(self.number, "{no:>5}");
+                }
+                None => self.number.push_str("     "),
             }
         }
         self.blob = blob;
@@ -264,19 +275,25 @@ impl Widget for Gutter {
         let Some(theme) = frame_theme(scope) else {
             return DrawStep::done();
         };
-        self.draw_bg.color = if self.marks.selected {
-            row_selected_bg(theme, kind)
+        let under = if self.prose {
+            prose_bg(theme)
         } else {
             row_bg(theme, kind)
+        };
+        self.draw_bg.color = if self.marks.selected {
+            selected_bg(theme, under)
+        } else {
+            under
         };
         self.draw_bg.begin(
             cx,
             walk,
             // 6 (comment slot) + 6 (change slot) + 12 of air before the
-            // numbers, like the design.
+            // numbers, like the design. A prose line keeps the slots and skips
+            // the air its numbers would need.
             Layout::flow_right().with_padding(Inset {
-                left: 24.0,
-                right: 10.0,
+                left: if self.prose { 14.0 } else { 24.0 },
+                right: if self.prose { 4.0 } else { 10.0 },
                 top: ROW_PAD,
                 bottom: ROW_PAD,
             }),

@@ -26,12 +26,6 @@ pub enum Row {
     Prose {
         md: String,
     },
-    /// Markdown with a stable document target. Unlike code, transcript and
-    /// commit-message content has no file line to anchor a review comment to.
-    Document {
-        target: String,
-        md: String,
-    },
     /// The agent referenced something that does not exist in this diff. Loud on
     /// purpose: a bad reference must never look like an absent one.
     Warning {
@@ -76,7 +70,11 @@ pub enum Row {
         start: u32,
         end: u32,
     },
-    /// One diff line — a *reference*, not a copy. 16 bytes.
+    /// One line of a blob — a *reference*, not a copy. 16 bytes.
+    ///
+    /// Usually a diff line. A blob of authored text ([`crate::Blob::prose`] —
+    /// a turn's prompt, a commit message) is referenced the same way, so the
+    /// transcript selects, anchors and comments exactly like code.
     Code {
         kind: LineKind,
         old_no: Option<u32>,

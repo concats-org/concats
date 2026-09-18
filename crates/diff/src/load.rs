@@ -461,6 +461,44 @@ pub struct FileLowerer<'a> {
 }
 
 impl FileLowerer<'_> {
+    /// Lower authored text — a turn's prompt or response, a commit message — to
+    /// one row per line over a prose blob ([`Blob::prose`]), named by what it
+    /// is.
+    ///
+    /// One row per line rather than one markdown block, because that is what
+    /// makes the transcript behave like the rest of the review: the gutter
+    /// selects a run of lines, a comment anchors to `(blob oid, line)`, and the
+    /// same content rendered in two tabs carries the same conversation.
+    pub fn prose(&mut self, name: String, text: String) -> Vec<Row> {
+        let oid = hash_object(text.as_bytes());
+        // Interned by name as well as content, and kept out of `blob_ix`. The
+        // same commit message under the Commits tab and under the turn that
+        // wrote it is one blob, so it carries one conversation; two turns that
+        // were prompted "continue" are two, because they are two moments. And a
+        // file that happens to hold these bytes stays a file.
+        let blob = match self
+            .blobs
+            .iter()
+            .position(|b| b.oid == oid && b.prose.as_deref() == Some(name.as_str()))
+        {
+            Some(i) => i as u32,
+            None => {
+                let i = self.blobs.len() as u32;
+                self.blobs.push(Blob::prose(name, text));
+                i
+            }
+        };
+        (0..self.blobs[blob as usize].line_count() as u32)
+            .map(|line| Row::Code {
+                kind: LineKind::Context,
+                old_no: None,
+                new_no: None,
+                blob,
+                line,
+            })
+            .collect()
+    }
+
     /// Diff `old_oid` → `new_oid` at `path` and lower the hunks into a
     /// self-contained, addressable `FileChange`. Each hunk carries its own
     /// context and a stable id, so an agent can select and reorder hunks by id
@@ -1268,6 +1306,50 @@ pub(crate) fn worktree_status(
 mod tests {
     use super::*;
     use crate::fixture::{add, commit, init_repo};
+
+    /// One conversation per piece of content, not per place it renders: the
+    /// same commit message under the Commits tab and under the turn that wrote
+    /// it is one blob. Two turns prompted the same thing are two.
+    #[test]
+    fn prose_interns_by_name_and_content() {
+        let (_tmp, root) = init_repo();
+        let repo = open_repo(&root).unwrap();
+        let (mut blobs, mut blob_ix, mut next_hunk_id, mut st) =
+            (Vec::new(), HashMap::new(), 0, LoadStats::default());
+        let mut low = FileLowerer {
+            repo: &repo,
+            blobs: &mut blobs,
+            blob_ix: &mut blob_ix,
+            next_hunk_id: &mut next_hunk_id,
+            hunk_prefix: "t",
+            overlay: None,
+            st: &mut st,
+        };
+        let text = || "one\ntwo\n".to_string();
+        // A line per line, over the blob the name interned to.
+        let lines = |rows: Vec<Row>| -> Vec<(u32, u32)> {
+            rows.iter()
+                .map(|r| match r {
+                    Row::Code { blob, line, .. } => (*blob, *line),
+                    _ => panic!("prose lowers to line rows"),
+                })
+                .collect()
+        };
+        let message = lines(low.prose("commit/abc1234567/body".into(), text()));
+        assert_eq!(message, [(0, 0), (0, 1)]);
+        assert_eq!(
+            lines(low.prose("commit/abc1234567/body".into(), text())),
+            message
+        );
+        assert_eq!(
+            lines(low.prose("turn/def1234567/prompt/0".into(), text())),
+            [(1, 0), (1, 1)]
+        );
+        assert_eq!(blobs.len(), 2);
+        // Prose stays out of the oid index, so a file with these bytes is
+        // still lowered as a file.
+        assert!(blob_ix.is_empty());
+    }
 
     #[test]
     fn worktree_reads_reject_paths_outside_the_repository() {

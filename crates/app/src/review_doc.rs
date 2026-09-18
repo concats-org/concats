@@ -39,15 +39,13 @@ pub struct Compose {
 /// What the open composer will post. One field, not two: a gutter drag started
 /// while a reply is open replaces the target, and with two fields five places
 /// would have to remember to clear the other one.
-#[derive(Clone)]
+#[derive(Clone, Copy)]
 pub enum Composing {
-    /// A new comment on the selected lines.
+    /// A new comment on the selected lines. Code or prose: a transcript entry
+    /// is selected by the same gutter drag, over the blob it renders from.
     Lines(Compose),
     /// A reply into an existing thread, named by the thread's root id.
     Reply(u64),
-    /// A transcript, commit message, or session heading identified by its
-    /// stable document target.
-    Document(String),
 }
 
 /// One of the pane's document streams. Each dock tab renders one stream;
@@ -539,7 +537,7 @@ pub(crate) fn widen_compose(
     blob: u32,
     line: u32,
 ) -> Option<Compose> {
-    let Some(Composing::Lines(mut compose)) = d.compose.clone() else {
+    let Some(Composing::Lines(mut compose)) = d.compose else {
         return None;
     };
     let (side, other) = match kind {
@@ -552,9 +550,7 @@ pub(crate) fn widen_compose(
             side.end = side.end.max(line);
         }
         None if other.is_some_and(|other| {
-            d.blob_paths
-                .get(&other.blob)
-                .is_some_and(|path| Some(path) == d.blob_paths.get(&blob))
+            blob_name(d, other.blob).is_some_and(|name| Some(name) == blob_name(d, blob))
         }) =>
         {
             *side = Some(Side {
@@ -577,11 +573,22 @@ pub fn comment_anchor(c: Compose) -> Option<Side> {
     c.new.or(c.old)
 }
 
+/// What a blob is called: the repo path it was read from, or, for authored
+/// text, the name it carries instead. One answer, so the composer's heading,
+/// the comment record and the Comments tab cannot disagree about what a
+/// comment is on.
+pub(crate) fn blob_name(d: &ReviewDoc, blob: u32) -> Option<&str> {
+    d.blobs
+        .get(blob as usize)
+        .and_then(|b| b.prose.as_deref())
+        .or_else(|| d.blob_paths.get(&blob).map(String::as_str))
+}
+
 pub(crate) fn blob_label(d: &ReviewDoc, blob: u32) -> String {
-    d.blob_paths
-        .get(&blob)
-        .cloned()
-        .unwrap_or_else(|| format!("blob {}", &d.blobs[blob as usize].oid.to_string()[..10]))
+    blob_name(d, blob).map_or_else(
+        || format!("blob {}", &d.blobs[blob as usize].oid.to_string()[..10]),
+        str::to_string,
+    )
 }
 
 /// The status bar's text — transient states only. The steady state is empty:
@@ -732,7 +739,7 @@ pub(crate) fn splice_stream(
     about: Option<&str>,
 ) -> HashSet<u64> {
     let placed = store::inject_comments(rows, blobs, comments, show_all, about);
-    finalize_cards(rows);
+    finalize_cards(rows, blobs);
     placed
 }
 
@@ -783,10 +790,19 @@ fn comments_stream(
         return (rows, outdated_paths);
     }
 
-    // path -> blob indices, ascending — the order the loader interned them.
+    // name -> blob indices, ascending — the order the loader interned them.
+    // Authored text is in here under the name it carries: it has no path, and a
+    // thread on a transcript entry is tracked like any other.
     let mut of_path: std::collections::HashMap<&str, Vec<u32>> = std::collections::HashMap::new();
     for (blob, path) in blob_paths {
         of_path.entry(path.as_str()).or_default().push(*blob);
+    }
+    for (blob, name) in blobs
+        .iter()
+        .enumerate()
+        .filter_map(|(blob, b)| Some((blob as u32, b.prose.as_deref()?)))
+    {
+        of_path.entry(name).or_default().push(blob);
     }
     for list in of_path.values_mut() {
         list.sort_unstable();
@@ -827,18 +843,6 @@ fn comments_stream(
             .map_or(roots.len(), |n| at + n);
         let group = &roots[at..group_end];
         at = group_end;
-
-        if path.starts_with("document/") {
-            unanswered += group
-                .iter()
-                .filter(|c| !comments.iter().any(|r| r.parent == Some(c.id)))
-                .count();
-            cards.push(Row::Document {
-                target: path.into(),
-                md: "## Commented content".into(),
-            });
-            continue;
-        }
 
         let path_blobs: &[u32] = of_path.get(path).map_or(&[], Vec::as_slice);
         // Locate each thread, then merge threads whose context overlaps into
@@ -908,12 +912,17 @@ fn comments_stream(
             cards.push(Row::Prose {
                 md: lines.join("  \n"),
             });
-            cards.push(context_header(path));
+            // Authored text gets no card and no line numbers: it is not a
+            // file, and framing a prompt as one would claim it is.
+            let prose = blobs[blob as usize].prose.is_some();
+            if !prose {
+                cards.push(context_header(path));
+            }
             for line in ctx_from..=ctx_to {
                 cards.push(Row::Code {
                     kind: LineKind::Context,
                     old_no: None,
-                    new_no: Some(line + 1),
+                    new_no: (!prose).then_some(line + 1),
                     blob,
                     line,
                 });
@@ -961,7 +970,7 @@ fn comments_stream(
 /// The air goes inside a collapsed run that opens or closes the card, per the
 /// design: the run's band sits against the header (or the cap), and the padding
 /// between it and the code.
-pub(crate) fn finalize_cards(rows: &mut Vec<Row>) {
+pub(crate) fn finalize_cards(rows: &mut Vec<Row>, blobs: &[Blob]) {
     rows.retain(|r| !matches!(r, Row::CardEnd | Row::Spacer));
     let mut out: Vec<Row> = Vec::with_capacity(rows.len() + 16);
     let mut in_card = false;
@@ -969,7 +978,7 @@ pub(crate) fn finalize_cards(rows: &mut Vec<Row>) {
     // a leading collapsed run goes above it, anything else below.
     let mut opening = false;
     for row in rows.drain(..) {
-        if in_card && !in_card_row(&row) {
+        if in_card && !in_card_row(&row, blobs) {
             close_card(&mut out, opening);
             in_card = false;
             opening = false;
@@ -1028,17 +1037,20 @@ pub(crate) fn card_keys(
     for row in &rows[header_idx + 1..] {
         match row {
             Row::HunkBar { old, new } => keys.extend(store::hunk_keys(*old, *new, blobs)),
-            row if in_card_row(row) => {}
+            row if in_card_row(row, blobs) => {}
             _ => break,
         }
     }
     keys
 }
 
-fn in_card_row(row: &Row) -> bool {
+/// Whether a row belongs to the file card above it. A prose line does not: a
+/// transcript entry renders on the page between cards, and a card that swallowed
+/// it would draw its border around someone else's content.
+fn in_card_row(row: &Row, blobs: &[Blob]) -> bool {
     match row {
-        Row::Code { .. }
-        | Row::HunkBar { .. }
+        Row::Code { blob, .. } => blobs[*blob as usize].prose.is_none(),
+        Row::HunkBar { .. }
         | Row::Collapsed { .. }
         | Row::Removed { .. }
         | Row::Comment { .. }
@@ -1046,7 +1058,6 @@ fn in_card_row(row: &Row) -> bool {
         | Row::Spacer => true,
         Row::Title { .. }
         | Row::Prose { .. }
-        | Row::Document { .. }
         | Row::Warning { .. }
         | Row::FileHeader { .. }
         | Row::CardEnd => false,
@@ -1096,7 +1107,7 @@ pub(crate) fn strip_composer(d: &mut ReviewDoc) {
 /// a guide renders the same thread more than once.
 pub(crate) fn splice_composer(d: &mut ReviewDoc) {
     strip_composer(d);
-    let Some(c) = d.compose.clone() else {
+    let Some(c) = d.compose else {
         return;
     };
     let anchor = d.compose_anchor;
@@ -1132,18 +1143,6 @@ pub(crate) fn splice_composer(d: &mut ReviewDoc) {
                 d.active().get(at + 1),
                 Some(Row::Comment { id, parent, .. }) if parent.unwrap_or(*id) == root
             ) {
-                at += 1;
-            }
-            at
-        }
-        Composing::Document(ref target) => {
-            let Some(mut at) = d.active().iter().position(
-                |row| matches!(row, Row::Document { target: current, .. } if current == target),
-            ) else {
-                d.compose = None;
-                return;
-            };
-            while matches!(d.active().get(at + 1), Some(Row::Comment { .. })) {
                 at += 1;
             }
             at
@@ -1264,7 +1263,7 @@ fn replace_row(d: &mut ReviewDoc, tab: Stream, row: usize, with: Vec<Row>) {
 /// ends ("lines L63 to 68"). A reply names who it answers, which is the only
 /// thing about a reply the reviewer cannot already see.
 pub(crate) fn compose_title(d: &ReviewDoc, comments: &[Comment]) -> String {
-    let Some(c) = d.compose.clone() else {
+    let Some(c) = d.compose else {
         return "Add a comment".into();
     };
     let c = match c {
@@ -1279,7 +1278,6 @@ pub(crate) fn compose_title(d: &ReviewDoc, comments: &[Comment]) -> String {
                 None => "Reply".into(),
             };
         }
-        Composing::Document(_) => return "Add a comment on this content".into(),
     };
     let Some(side) = comment_anchor(c) else {
         return "Add a comment".into();
@@ -1465,7 +1463,8 @@ mod tests {
             },
             run(),
         ];
-        finalize_cards(&mut rows);
+        let blobs = [Blob::new(oid(1), "rs".into(), "a\n".into())];
+        finalize_cards(&mut rows, &blobs);
         let shape: Vec<&str> = rows
             .iter()
             .map(|r| match r {
@@ -1485,8 +1484,55 @@ mod tests {
 
         // Idempotent: comment injection reruns this after every add and delete.
         let once = rows.clone();
-        finalize_cards(&mut rows);
+        finalize_cards(&mut rows, &blobs);
         assert_eq!(rows.len(), once.len());
+    }
+
+    /// A transcript entry renders between file cards and belongs to neither: the
+    /// card closes above it, or its border would frame someone else's content.
+    #[test]
+    fn a_prose_line_after_a_card_closes_it() {
+        let mut rows = vec![
+            Row::FileHeader {
+                path: "a.rs".into(),
+                lang: "rust",
+                adds: 1,
+                dels: 0,
+                from: None,
+                similarity: None,
+            },
+            Row::Code {
+                kind: LineKind::Add,
+                old_no: None,
+                new_no: Some(1),
+                blob: 0,
+                line: 0,
+            },
+            Row::Code {
+                kind: LineKind::Context,
+                old_no: None,
+                new_no: None,
+                blob: 1,
+                line: 0,
+            },
+        ];
+        let blobs = [
+            Blob::new(oid(1), "rs".into(), "a\n".into()),
+            Blob::prose("session/s".into(), "## Session `s`\n".into()),
+        ];
+        finalize_cards(&mut rows, &blobs);
+        let shape: Vec<&str> = rows
+            .iter()
+            .map(|r| match r {
+                Row::FileHeader { .. } => "header",
+                Row::Spacer => "air",
+                Row::Code { blob: 1, .. } => "prose",
+                Row::Code { .. } => "code",
+                Row::CardEnd => "end",
+                _ => "?",
+            })
+            .collect();
+        assert_eq!(shape, ["header", "air", "code", "air", "end", "prose"]);
     }
 
     /// A 100%-similar rename has no code in its card, so there is nothing to
@@ -1501,7 +1547,7 @@ mod tests {
             from: Some("b.rs".into()),
             similarity: Some(100),
         }];
-        finalize_cards(&mut rows);
+        finalize_cards(&mut rows, &[]);
         assert!(!rows.iter().any(|r| matches!(r, Row::Spacer)));
         assert!(matches!(rows[1], Row::CardEnd));
     }
@@ -2136,6 +2182,38 @@ mod tests {
             .collect();
         let expect: Vec<(u32, Option<u32>)> = (6..=13).map(|n| (n, Some(n + 1))).collect();
         assert_eq!(code, expect);
+    }
+
+    /// A thread on a transcript entry is tracked like any other — in the content
+    /// it was written on, under the name that content carries. No file card
+    /// around it: a prompt is not a file, and a header would claim it is.
+    #[test]
+    #[expect(
+        clippy::format_collect,
+        reason = "Generated fixture lines make the expected context explicit."
+    )]
+    fn the_comments_tab_frames_a_prose_thread_without_a_card() {
+        let text: String = (0..6).map(|n| format!("line {n}\n")).collect();
+        let name = "turn/8ce374d0a3/prompt/0";
+        let blobs = vec![Blob::prose(name.into(), text)];
+        let comments = vec![stored(1, name, blobs[0].oid, 1, 2)];
+        let (rows, outdated) = comments_stream(&blobs, &HashMap::new(), &comments);
+        assert!(outdated.is_empty());
+        assert!(!rows.iter().any(|r| matches!(r, Row::FileHeader { .. })));
+        let Row::Prose { md } = &rows[2] else {
+            panic!("row 2 is not the thread meta");
+        };
+        assert!(md.contains("`turn/8ce374d0a3/prompt/0:2–3`"), "meta: {md}");
+        // Its own lines, numberless: the whole entry here, since three lines of
+        // context either side of 1..=2 covers it.
+        let lines: Vec<(u32, Option<u32>)> = rows[3..]
+            .iter()
+            .map(|r| match r {
+                Row::Code { line, new_no, .. } => (*line, *new_no),
+                _ => panic!("expected only the entry's lines after the meta"),
+            })
+            .collect();
+        assert_eq!(lines, (0..=5).map(|n| (n, None)).collect::<Vec<_>>());
     }
 
     #[test]

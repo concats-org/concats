@@ -303,13 +303,12 @@ pub(crate) fn carry_forward(d: &mut ReviewDoc, prev: &ReviewDoc) {
         d.selection_anchor = prev
             .selection_anchor
             .and_then(|at| carry_caret(d, prev, at));
-        d.compose = prev.compose.clone().map(|c| match c {
+        d.compose = prev.compose.map(|c| match c {
             Composing::Reply(id) => Composing::Reply(id),
             Composing::Lines(c) => Composing::Lines(Compose {
                 old: c.old.and_then(|side| carry_side(d, prev, side)),
                 new: c.new.and_then(|side| carry_side(d, prev, side)),
             }),
-            Composing::Document(target) => Composing::Document(target),
         });
         d.compose_anchor = prev.compose_anchor;
         d.compose_focus = prev.compose_focus;

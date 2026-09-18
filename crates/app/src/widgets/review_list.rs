@@ -191,11 +191,6 @@ pub(super) enum ReviewItemAction {
         id: u64,
         near: usize,
     },
-    DocumentComment {
-        tab: Stream,
-        target: String,
-        near: usize,
-    },
     Outdated {
         path: String,
     },
@@ -435,23 +430,6 @@ script_mod! {
                 }
             }
 
-            DocumentRow := View {
-                width: Fill height: Fit
-                flow: Right
-                align: Align{x: 0.0 y: 0.0}
-                padding: Inset{top: 6 bottom: 6 left: 16 right: 16}
-                document_text := Prose {
-                    width: Fill height: Fit
-                    padding: 0
-                    draw_text.color: C_TEXT
-                    draw_text.text_style: FONT{font_size: 9 line_spacing: 1.5}
-                }
-                document_comment := IconAction {
-                    margin: Inset{left: 6}
-                    draw_icon.svg: crate_resource("self:resources/icons/comment.svg")
-                }
-            }
-
             // An unresolved agent reference. Loud on purpose.
             Warning := RoundedView {
                 width: Fill height: Fit
@@ -665,6 +643,20 @@ script_mod! {
             // The same row in a File tab, which is an editor and not a code
             // block: no card sides, no inset, the text against the pane.
             CodeFlat := CodeRow {}
+
+            // One line of authored text — a prompt, a response, a commit
+            // message. The same rail and line a code row gets, on the page
+            // instead of in a card, so the transcript reads as prose and still
+            // selects, marks and comments exactly like code.
+            ProseLine := View {
+                width: Fill height: Fit
+                padding: Inset{left: 16 right: 16}
+                CodeRow {
+                    draw_bg.color: C_BG
+                    gut +: { prose: true }
+                    dl +: { prose: true }
+                }
+            }
 
             // The inline comment composer, spliced below the last selected line
             // — the same strip a posted comment gets, so the blue bar ties it
@@ -1455,18 +1447,6 @@ impl ReviewList {
                 item.label(cx, label).set_text(cx, text);
                 item.draw_all(cx, &mut Scope::with_props(theme));
             }
-            Row::Document { target, md } => {
-                let item = list.item(cx, entry, id!(DocumentRow));
-                item.label(cx, ids!(document_text)).set_text(cx, md);
-                item.widget(cx, ids!(document_comment)).set_action_data(
-                    ReviewItemAction::DocumentComment {
-                        tab,
-                        target: target.clone(),
-                        near: r,
-                    },
-                );
-                item.draw_all(cx, &mut Scope::with_props(theme));
-            }
             Row::FileHeader { .. } => {
                 let item = list.item(cx, entry, id!(FileHeader));
                 self.draw_file_header(cx, &item, r, pass);
@@ -1517,8 +1497,11 @@ impl ReviewList {
             }
             Row::Code { blob, .. } => {
                 self.request_highlight(*blob, pass);
-                // A File tab is an editor: its rows carry no card.
-                let template = if self.kind == id!(file) {
+                // Authored text renders on the page — a transcript entry is not
+                // a file — and a File tab is an editor, so neither is in a card.
+                let template = if pass.doc.blobs[*blob as usize].prose.is_some() {
+                    id!(ProseLine)
+                } else if self.kind == id!(file) {
                     id!(CodeFlat)
                 } else {
                     id!(Code)
@@ -1729,7 +1712,9 @@ impl ReviewList {
         }
         if let Some(mut dl) = item.widget(cx, ids!(dl)).borrow_mut::<DiffLine>() {
             dl.set_row(*kind, text, spans, selected, caret);
-            dl.wrap = pass.wrap;
+            // Prose wraps whatever the setting says: a prompt is one line per
+            // paragraph, and truncating it would hide what is being reviewed.
+            dl.wrap = pass.wrap || b.prose.is_some();
             dl.set_hits(hits_in(text, self.find.as_deref()));
             if pass.paint_selection {
                 match crate::review_doc::selection_on(d, *blob, *line) {

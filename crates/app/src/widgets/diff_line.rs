@@ -14,7 +14,9 @@ use concats_syntax::Span;
     clippy::wildcard_imports,
     reason = "Makepad macros and derives expand against the widget prelude in this scope."
 )]
-use crate::{ROW_PAD, frame_theme, makepad_widgets::*, row_bg, row_selected_bg, theme::paint};
+use crate::{
+    ROW_PAD, frame_theme, makepad_widgets::*, prose_bg, row_bg, selected_bg, theme::paint,
+};
 
 script_mod! {
     use mod.prelude.widgets.*
@@ -76,6 +78,10 @@ pub struct DiffLine {
     selected: bool,
     #[rust]
     pub wrap: bool,
+    /// Set by the row's template: this line is authored text, not code — it
+    /// sits on the page instead of in a card.
+    #[live]
+    prose: bool,
 
     /// This row's laid-out runs, rebuilt every draw. Maps a click to a byte
     /// offset and a byte range back to highlight rects.
@@ -216,10 +222,15 @@ impl Widget for DiffLine {
             return DrawStep::done();
         };
 
-        self.draw_bg.color = if self.selected {
-            row_selected_bg(theme, kind)
+        let under = if self.prose {
+            prose_bg(theme)
         } else {
             row_bg(theme, kind)
+        };
+        self.draw_bg.color = if self.selected {
+            selected_bg(theme, under)
+        } else {
+            under
         };
 
         let walk = Walk {

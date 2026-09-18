@@ -217,11 +217,17 @@ fn row_bg(theme: &theme::Theme, kind: LineKind) -> Vec4f {
     }
 }
 
-/// A row inside the range being commented on, over its own change tint. Wanted
+/// What a line of authored text sits on: the page. A transcript entry is not in
+/// a card and never carries a change tint.
+fn prose_bg(theme: &theme::Theme) -> Vec4f {
+    paint(theme.background)
+}
+
+/// A row inside the range being commented on, over whatever it sits on. Wanted
 /// strong enough to read the moment a drag crosses a line: at 0.10 the shift was
 /// technically there and easy to miss, which made selecting feel unresponsive.
-fn row_selected_bg(theme: &theme::Theme, kind: LineKind) -> Vec4f {
-    mix4(row_bg(theme, kind), paint(theme.accent), 0.22)
+fn selected_bg(theme: &theme::Theme, under: Vec4f) -> Vec4f {
+    mix4(under, paint(theme.accent), 0.22)
 }
 
 /// The 6px change marker at the card's left edge.

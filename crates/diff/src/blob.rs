@@ -52,6 +52,11 @@ pub struct Blob {
     /// Where an edit would be written. `None` is a git object — read-only,
     /// because the only place its bytes exist is the object database.
     pub origin: Option<PathBuf>,
+    /// What this text is when it is not a file: a transcript entry, a commit
+    /// message. Authored content no path points at, so it names itself — the
+    /// name a comment on it records, and what tells the review to draw its
+    /// lines as prose rather than as code.
+    pub prose: Option<String>,
     /// Bumped by every edit. Highlighting is requested per blob and memoized,
     /// keyed by generation; an edit must not bump that, or a landed-load path
     /// would fire mid-typing. So edits get their own counter.
@@ -112,6 +117,7 @@ impl Clone for Blob {
             spans: self.spans.clone(),
             spans_rev: self.spans_rev,
             origin: self.origin.clone(),
+            prose: self.prose.clone(),
             edit_rev: self.edit_rev,
             undo: self.undo.clone(),
             redo: self.redo.clone(),
@@ -136,6 +142,7 @@ impl Blob {
             spans: None,
             spans_rev: 0,
             origin: None,
+            prose: None,
             edit_rev: 0,
             undo: Vec::new(),
             redo: Vec::new(),
@@ -143,6 +150,20 @@ impl Blob {
             disk: Frontiers::default(),
             held: HashMap::new(),
             group_open: false,
+        }
+    }
+
+    /// Authored text that is not a file — a turn's prompt or response, a commit
+    /// message — named by what it is.
+    ///
+    /// Its oid is the hash of its bytes, like any git blob: the same content
+    /// interns to the same blob on every load, and that is what a comment left
+    /// on it is recognized by. Markdown, because that is what the content is.
+    pub fn prose(name: String, text: String) -> Self {
+        let oid = concats_sync::hash_object(text.as_bytes());
+        Self {
+            prose: Some(name),
+            ..Self::new(oid, "md".into(), text)
         }
     }
 

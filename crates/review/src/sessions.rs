@@ -414,15 +414,22 @@ fn split_message(msg: &str) -> (String, String) {
     }
 }
 
-/// Header rows for one commit: the subject as a heading, the body (when there
-/// is one) quoted line by line. Commit messages are not markdown, and a stray
-/// `#` or list marker must not restructure the document. Inside a blockquote it
-/// can't — the same guard turn prompts get.
-fn commit_header_rows(rows: &mut Vec<Row>, cd: &CommitDiff, level: &str) {
-    rows.push(Row::Document {
-        target: format!("document/{}/commit-message/subject", cd.oid),
-        md: format!("{level} {}  `{}`", cd.subject, &cd.oid.to_string()[..10]),
-    });
+/// Header rows for one commit: the subject, then the body (when there is one)
+/// quoted line by line. Commit messages are not markdown, and a stray `#` or
+/// list marker must not restructure the document. Inside a blockquote it can't
+/// — the same guard turn prompts get.
+///
+/// Both are prose lines, so the message reads, selects and comments like the
+/// code under it. Neither carries a heading level: the same commit renders
+/// under the Commits tab and under the turn that wrote it, and content that
+/// differed between the two would carry two conversations instead of one.
+fn commit_header_rows(rows: &mut Vec<Row>, cd: &CommitDiff, low: &mut FileLowerer) {
+    let oid = cd.oid.to_string();
+    let sha = &oid[..10];
+    rows.extend(low.prose(
+        format!("commit/{sha}/subject"),
+        format!("**{}**  `{sha}`\n", cd.subject),
+    ));
     if cd.parent_count > 1 {
         rows.push(Row::Prose {
             md: format!(
@@ -438,10 +445,7 @@ fn commit_header_rows(rows: &mut Vec<Row>, cd: &CommitDiff, level: &str) {
             md.push_str(&escape_angle_outside_code(line));
             md.push('\n');
         }
-        rows.push(Row::Document {
-            target: format!("document/{}/commit-message/body", cd.oid),
-            md,
-        });
+        rows.extend(low.prose(format!("commit/{sha}/body"), md));
     }
 }
 
@@ -703,7 +707,7 @@ fn commits_stream(
     };
 
     for cd in range.by_commit.iter().rev() {
-        commit_header_rows(&mut rows, cd, "##");
+        commit_header_rows(&mut rows, cd, &mut low);
         let sha = cd.oid.to_string();
         commit_change_rows(&mut rows, cd, &sha[..10], &mut low, blob_paths);
     }
@@ -798,10 +802,10 @@ fn sessions_rows(
         }
         if t.session_id != session {
             session = &t.session_id;
-            rows.push(Row::Document {
-                target: format!("document/{}/session/{session}", t.oid),
-                md: format!("## Session `{session}`"),
-            });
+            rows.extend(low.prose(
+                format!("session/{session}"),
+                format!("## Session `{session}`\n"),
+            ));
             if let Some(agent) = t.message.agent_name() {
                 rows.push(Row::Prose {
                     md: format!("_recorded by **{agent}**_"),
@@ -845,6 +849,10 @@ fn turn_rows(
     low: &mut FileLowerer,
     blob_paths: &mut HashMap<u32, String>,
 ) {
+    // What a comment on this turn's content records. The turn's own oid names
+    // it: a turn belongs to one session, and its commit is what the content is
+    // recognized by.
+    let turn = format!("turn/{}", &t.oid.to_string()[..10]);
     rows.push(Row::Title {
         text: format!("### {}", t.message.subject()),
     });
@@ -862,16 +870,13 @@ fn turn_rows(
                     md.push_str(line);
                     md.push('\n');
                 }
-                rows.push(Row::Document {
-                    target: format!("document/{}/entry/{i}/prompt", t.oid),
-                    md,
-                });
+                rows.extend(low.prose(format!("{turn}/prompt/{i}"), md));
             }
             TurnEntryKind::Response { text } => {
-                rows.push(Row::Document {
-                    target: format!("document/{}/entry/{i}/response", t.oid),
-                    md: format!("**Response**\n\n{}", text.trim()),
-                });
+                rows.extend(low.prose(
+                    format!("{turn}/response/{i}"),
+                    format!("**Response**\n\n{}\n", text.trim()),
+                ));
             }
             TurnEntryKind::ToolCall { kind } => {
                 *tools.entry(kind.as_str()).or_insert(0) += 1;
@@ -898,7 +903,7 @@ fn turn_rows(
             });
             continue;
         }
-        commit_header_rows(rows, cd, "####");
+        commit_header_rows(rows, cd, low);
         let sha = cd.oid.to_string();
         commit_change_rows(
             rows,
@@ -917,6 +922,22 @@ mod tests {
     use concats_message::{SessionId, TurnEntry};
 
     use super::*;
+
+    /// What a row stream reads as: the lines of its prose blobs, in order.
+    /// The content assertions below are about what a reviewer sees, and a
+    /// transcript entry is one blob behind many line rows.
+    fn prose(rows: &[Row], blobs: &[concats_diff::Blob]) -> String {
+        rows.iter()
+            .filter_map(|r| match r {
+                Row::Code { blob, line, .. } => {
+                    let b = &blobs[*blob as usize];
+                    b.prose.is_some().then(|| b.line_text(*line as usize))
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
 
     /// git's well-known empty tree oid — turn commits carry no content.
     const EMPTY_TREE: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
@@ -1035,19 +1056,12 @@ mod tests {
         }
         let mined = mine(dir, &mut loaded);
         let sess = &mined.sessions;
-        assert!(
-            sess.iter()
-                .any(|r| matches!(r, Row::Document { md, .. } if md.contains("test-session")))
-        );
-        assert!(
-            sess.iter()
-                .any(|r| matches!(r, Row::Document { md, .. } if md.contains("please add two")))
-        );
+        let read = prose(sess, &loaded.blobs);
+        assert!(read.contains("test-session"));
+        assert!(read.contains("please add two"));
         // The turn's diff is the commit it produced: message header (subject +
         // short sha), then that commit's own diff.
-        assert!(sess.iter().any(
-            |r| matches!(r, Row::Document { md, .. } if md.contains("feature") && md.contains(&head[..10]))
-        ));
+        assert!(read.contains("feature") && read.contains(&head[..10]));
         assert!(
             sess.iter()
                 .any(|r| matches!(r, Row::FileHeader { path, .. } if path == "a.txt"))
@@ -1085,26 +1099,19 @@ mod tests {
         let mut loaded = load::load(dir, &base, &head).unwrap();
         let mined = mine(dir, &mut loaded);
 
-        let titles: Vec<&String> = mined
-            .commits
-            .iter()
-            .filter_map(|r| match r {
-                Row::Title { text } | Row::Document { md: text, .. } => Some(text),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(titles[0], "# Commits");
+        assert!(matches!(
+            mined.commits.first(),
+            Some(Row::Title { text }) if text == "# Commits"
+        ));
+        let read = prose(&mined.commits, &loaded.blobs);
         // Oldest first: "add two" before "add b".
-        let two = titles.iter().position(|t| t.contains("add two")).unwrap();
-        let b = titles.iter().position(|t| t.contains("add b")).unwrap();
+        let two = read.find("add two").unwrap();
+        let b = read.find("add b").unwrap();
         assert!(two < b, "commits must render oldest first");
         // The body renders blockquoted line by line, with autolink-able
         // angle brackets escaped — except inside inline code.
-        assert!(mined.commits.iter().any(|r| matches!(
-            r,
-            Row::Document { md, .. } if md.contains("> why b exists\n> see `Option<T>`")
-                && md.contains("> Co-Authored-By: X \\<x@y.z>")
-        )));
+        assert!(read.contains("> why b exists\n> see `Option<T>`"));
+        assert!(read.contains("> Co-Authored-By: X \\<x@y.z>"));
         // Each commit carries its own file diff.
         let headers: Vec<&String> = mined
             .commits

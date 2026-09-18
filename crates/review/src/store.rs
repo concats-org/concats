@@ -644,18 +644,8 @@ pub fn inject_comments(
     if comments.is_empty() {
         return HashSet::new();
     }
-    let mut threaded: Vec<&Comment> = comments
-        .iter()
-        .filter(|comment| !comment.path.starts_with("document/"))
-        .collect();
+    let mut threaded: Vec<&Comment> = comments.iter().collect();
     threaded.sort_by_key(|c| (thread_key(c), c.id));
-    let mut document: HashMap<&str, Vec<&Comment>> = HashMap::new();
-    for comment in comments
-        .iter()
-        .filter(|comment| comment.path.starts_with("document/"))
-    {
-        document.entry(&comment.path).or_default().push(comment);
-    }
 
     // Bucketed by where the anchored content is, not by the number it had when
     // the comment was written. Type three lines above a thread and it has to
@@ -663,7 +653,7 @@ pub fn inject_comments(
     // whatever sits at that number now. Ascending id, so a thread's newest
     // placeable comment has the last word on where it goes; a thread with no
     // place flushes as outdated rather than landing somewhere wrong.
-    let where_blobs = blobs_by_path(rows, about);
+    let where_blobs = blobs_by_path(rows, blobs, about);
     let mut thread_at: HashMap<u64, LineKey> = HashMap::new();
     for comment in &threaded {
         let path_blobs = where_blobs
@@ -694,32 +684,21 @@ pub fn inject_comments(
             card = Some(path.clone());
         }
         let anchor = match &row {
-            Row::Code { blob, line, .. } => Some((blobs[*blob as usize].oid, *line)),
-            _ => None,
-        };
-        let target = match &row {
-            Row::Document { target, .. } => Some(target.clone()),
+            Row::Code { blob, line, .. } => Some((*blob, *line)),
             _ => None,
         };
         out.push(row);
-        for c in target
-            .into_iter()
-            .flat_map(|target| document.get(target.as_str()).into_iter().flatten())
-        {
-            placed.insert(thread_key(c));
-            out.push(Row::Comment {
-                id: c.id,
-                parent: c.parent,
-                body: c.body.clone(),
-                meta: byline(c),
-            });
-        }
-        let Some((oid, line)) = anchor else { continue };
+        let Some((blob, line)) = anchor else { continue };
+        let blob = &blobs[blob as usize];
+        // What this line belongs to: authored text names itself, code the card
+        // it is in. Without that a transcript line under a file card would
+        // answer to the file's path.
+        let owner = blob.prose.as_deref().or(card.as_deref());
         for c in by_anchor
-            .get(&(oid, line))
+            .get(&(blob.oid, line))
             .into_iter()
             .flatten()
-            .filter(|c| card.as_deref() == Some(c.path.as_str()))
+            .filter(|c| owner == Some(c.path.as_str()))
         {
             placed.insert(thread_key(c));
             out.push(Row::Comment {
@@ -907,14 +886,23 @@ pub fn load_buffer(git_dir: &Path, origin: &Path) -> Option<concats_sync::Saved>
 /// A comment's own blob is often not on screen (the file was saved, or this is
 /// another revision), but another revision of the same file usually is. That is
 /// where its content has to be looked for.
-fn blobs_by_path<'a>(rows: &'a [Row], about: Option<&'a str>) -> HashMap<&'a str, Vec<u32>> {
+///
+/// A prose blob is looked for under the name it carries rather than under the
+/// card it happens to sit in: a transcript entry is not part of the file whose
+/// diff follows it.
+fn blobs_by_path<'a>(
+    rows: &'a [Row],
+    blobs: &'a [Blob],
+    about: Option<&'a str>,
+) -> HashMap<&'a str, Vec<u32>> {
     let mut out: HashMap<&str, Vec<u32>> = HashMap::new();
     let mut card: Option<&str> = about;
     for row in rows {
         match row {
             Row::FileHeader { path, .. } => card = Some(path),
             Row::Code { blob, .. } => {
-                if let Some(path) = card {
+                let owner = blobs[*blob as usize].prose.as_deref().or(card);
+                if let Some(path) = owner {
                     let seen = out.entry(path).or_default();
                     if !seen.contains(blob) {
                         seen.push(*blob);
@@ -1045,17 +1033,45 @@ mod tests {
         }
     }
 
+    /// A transcript entry sits between file cards, and it is not part of
+    /// either: it answers to the name its blob carries, not to the card above
+    /// it.
     #[test]
-    fn a_document_comment_renders_below_its_stable_target() {
-        let target = "document/0000000000000000000000000000000000000001/session/s";
-        let mut rows = vec![Row::Document {
-            target: target.into(),
-            md: "## Session `s`".into(),
-        }];
-        let comments = [comment(target, anchor(oid(1), 0, 0), "whole session")];
-        let placed = inject_comments(&mut rows, &[], &comments, &HashSet::new(), None);
+    fn a_comment_on_prose_lands_by_the_name_its_blob_carries() {
+        let prose = Blob::prose("session/s".into(), "## Session `s`\nsecond\n".into());
+        let (prose_oid, file_oid) = (prose.oid, oid(1));
+        let blobs = [prose, Blob::new(file_oid, "txt".into(), "a\n".into())];
+        let code = |blob: u32, line: u32| Row::Code {
+            kind: concats_diff::LineKind::Context,
+            old_no: None,
+            new_no: None,
+            blob,
+            line,
+        };
+        let mut rows = vec![
+            Row::FileHeader {
+                path: "a.txt".into(),
+                lang: "txt",
+                adds: 0,
+                dels: 0,
+                from: None,
+                similarity: None,
+            },
+            code(1, 0),
+            code(0, 0),
+            code(0, 1),
+        ];
+        let comments = [
+            comment("session/s", anchor(prose_oid, 0, 1), "whole session"),
+            // Recorded against the card this prose happens to follow: its
+            // lines are not that file's, so it has nowhere to land.
+            comment("a.txt", anchor(prose_oid, 0, 0), "misfiled"),
+        ];
+        let placed = inject_comments(&mut rows, &blobs, &comments, &HashSet::new(), None);
         assert_eq!(placed, HashSet::from([0]));
-        assert!(matches!(rows[1], Row::Comment { ref body, .. } if body == "whole session"));
+        // Below the LAST line of its range, like every other thread.
+        assert!(matches!(rows[4], Row::Comment { ref body, .. } if body == "whole session"));
+        assert_eq!(rows.len(), 5);
     }
 
     #[test]
