@@ -323,8 +323,13 @@ pub struct TerminalView {
     /// terminal can scroll, so the remainder is kept for the next event.
     #[rust]
     scroll_accum: f64,
+    /// Where composed text would appear: under the cursor while there is one,
+    /// at the first cell otherwise. It is an anchor for the IME panel, not a
+    /// statement about whether this terminal takes text — an application that
+    /// hides the cursor (`hx`, `vim`, anything on the alternate screen) still
+    /// has to be typed into.
     #[rust]
-    ime_pos: Option<Vec2d>,
+    ime_pos: Vec2d,
 }
 
 fn next_terminal_match<T>(
@@ -699,7 +704,6 @@ impl TerminalView {
         display_offset: usize,
         focused: bool,
     ) {
-        self.ime_pos = None;
         if shape == CursorShape::Hidden {
             return;
         }
@@ -726,10 +730,10 @@ impl TerminalView {
         };
 
         // The IME panel opens under the cursor, wherever it is.
-        self.ime_pos = Some(dvec2(
+        self.ime_pos = dvec2(
             x - self.unscrolled_rect.pos.x,
             y - self.unscrolled_rect.pos.y + cell_height,
-        ));
+        );
         self.draw_cursor.focus = if focused && shape != CursorShape::HollowBlock {
             1.0
         } else {
@@ -765,6 +769,71 @@ impl TerminalView {
             ),
             side,
         )
+    }
+
+    /// One key press for the session, whichever way it reached this view.
+    ///
+    /// Two paths deliver it: `Hit::KeyDown` while this terminal holds the
+    /// keyboard, and `Event::KeyDown` while nothing does and the window's
+    /// selected terminal takes what is unclaimed. They have to encode it the
+    /// same way, or a key works in one and vanishes in the other — which is
+    /// what `hx` and `vim` ran into, since [`keys::encode`] answers `None` for
+    /// a key that produces text and only one of the two paths had the
+    /// character to fall back on.
+    ///
+    /// The fallback is for when the platform sends no text of its own. When it
+    /// does, that text has already gone out as [`Self::text_typed`] and the
+    /// character would type the key twice.
+    fn key_press(&mut self, cx: &mut Cx, session: Session, e: &KeyEvent, mode: TermMode) {
+        // NOTE: makepad emits a paste for both shortcuts on macOS.
+        if matches!(e.key_code, KeyCode::KeyV)
+            && (e.modifiers.logo || (cfg!(target_os = "macos") && e.modifiers.control))
+        {
+            return;
+        }
+        let typed = std::mem::take(&mut self.text_input) == TextInput::Forwarded;
+        let Some(bytes) = keys::encode(e, true, mode).or_else(|| {
+            (!typed)
+                .then(|| e.key_code.to_char(e.modifiers.shift))
+                .flatten()
+                .map(|c| c.to_string().into_bytes())
+        }) else {
+            return;
+        };
+        cx.set_key_focus(self.scroll_bars.area());
+        self.emit_input_bytes(cx, session, bytes);
+        scroll_to_bottom(session);
+        self.draw_bg.redraw(cx);
+    }
+
+    /// One key release. Only the kitty protocol asks to hear about these.
+    fn key_release(&mut self, cx: &mut Cx, session: Session, e: &KeyEvent, mode: TermMode) {
+        if let Some(bytes) = keys::encode(e, false, mode) {
+            self.emit_input_bytes(cx, session, bytes);
+        }
+    }
+
+    /// Text the platform produced — typing, a dead key, an IME commit, a paste
+    /// — for the session. Marks the key press it belongs to as already sent.
+    fn text_typed(&mut self, cx: &mut Cx, session: Session, e: &TextInputEvent, mode: TermMode) {
+        if e.replace_last {
+            return;
+        }
+        cx.set_key_focus(self.scroll_bars.area());
+        if e.was_paste {
+            self.text_input = TextInput::Forwarded;
+            self.emit_paste_text(
+                cx,
+                session,
+                &e.input,
+                mode.contains(TermMode::BRACKETED_PASTE),
+            );
+        } else if let Some(bytes) = keys::encode_text(&e.input, KeyModifiers::default(), mode) {
+            self.text_input = TextInput::Forwarded;
+            self.emit_input_bytes(cx, session, bytes);
+        }
+        scroll_to_bottom(session);
+        self.draw_bg.redraw(cx);
     }
 
     fn emit_input_bytes(&self, cx: &mut Cx, session: Session, data: Vec<u8>) {
@@ -855,7 +924,7 @@ impl Widget for TerminalView {
         self.viewport_rect = cx.turtle().rect();
         self.unscrolled_rect = cx.turtle().rect_unscrolled();
         self.refresh_cell_metrics(cx);
-        self.ime_pos = Some(dvec2(self.pad_x, self.pad_y + self.cell_height));
+        self.ime_pos = dvec2(self.pad_x, self.pad_y + self.cell_height);
 
         let window = crate::frame_state(scope)
             .map(|state| state.id)
@@ -897,12 +966,10 @@ impl Widget for TerminalView {
         if entered_alternate_screen {
             cx.set_key_focus(self.scroll_bars.area());
         }
+        // Focus and the IME go together: the platform sends typed text to
+        // whoever asked for it, so a focused terminal always asks.
         if session.is_some() && cx.has_key_focus(self.scroll_bars.area()) {
-            if let Some(ime_pos) = self.ime_pos {
-                cx.show_text_ime(self.scroll_bars.area(), ime_pos);
-            } else {
-                cx.hide_text_ime();
-            }
+            cx.show_text_ime(self.scroll_bars.area(), self.ime_pos);
         }
         if self.find.is_some() {
             let width = self.viewport_rect.size.x.min(320.0);
@@ -1012,54 +1079,15 @@ impl Widget for TerminalView {
             let mode = *shared.lock().mode();
             match event {
                 Event::KeyDown(e) => {
-                    // NOTE: makepad emits a paste for both shortcuts on macOS.
-                    if matches!(e.key_code, KeyCode::KeyV)
-                        && (e.modifiers.logo || (cfg!(target_os = "macos") && e.modifiers.control))
-                    {
-                        return;
-                    }
-                    if std::mem::take(&mut self.text_input) != TextInput::Forwarded {
-                        let bytes = keys::encode(e, true, mode).or_else(|| {
-                            e.key_code
-                                .to_char(e.modifiers.shift)
-                                .map(|c| c.to_string().into_bytes())
-                        });
-                        if let Some(bytes) = bytes {
-                            cx.set_key_focus(self.scroll_bars.area());
-                            self.emit_input_bytes(cx, session, bytes);
-                            scroll_to_bottom(session);
-                            self.draw_bg.redraw(cx);
-                        }
-                    }
+                    self.key_press(cx, session, e, mode);
                     return;
                 }
                 Event::KeyUp(e) => {
-                    if let Some(bytes) = keys::encode(e, false, mode) {
-                        self.emit_input_bytes(cx, session, bytes);
-                    }
+                    self.key_release(cx, session, e, mode);
                     return;
                 }
                 Event::TextInput(e) => {
-                    if e.replace_last {
-                        return;
-                    }
-                    cx.set_key_focus(self.scroll_bars.area());
-                    if e.was_paste {
-                        self.text_input = TextInput::Forwarded;
-                        self.emit_paste_text(
-                            cx,
-                            session,
-                            &e.input,
-                            mode.contains(TermMode::BRACKETED_PASTE),
-                        );
-                    } else if let Some(bytes) =
-                        keys::encode_text(&e.input, KeyModifiers::default(), mode)
-                    {
-                        self.text_input = TextInput::Forwarded;
-                        self.emit_input_bytes(cx, session, bytes);
-                    }
-                    scroll_to_bottom(session);
-                    self.draw_bg.redraw(cx);
+                    self.text_typed(cx, session, e, mode);
                     return;
                 }
                 _ => {}
@@ -1314,39 +1342,9 @@ impl Widget for TerminalView {
                 // NOTE: the newly focused input owns the IME now.
                 self.draw_bg.redraw(cx);
             }
-            Hit::KeyDown(e) => {
-                // NOTE: makepad emits a paste for both shortcuts on macOS.
-                if matches!(e.key_code, KeyCode::KeyV)
-                    && (e.modifiers.logo || (cfg!(target_os = "macos") && e.modifiers.control))
-                {
-                    return;
-                }
-                if let Some(bytes) = keys::encode(&e, true, mode) {
-                    self.emit_input_bytes(cx, session, bytes);
-                    scroll_to_bottom(session);
-                    self.draw_bg.redraw(cx);
-                }
-            }
-            Hit::KeyUp(e) => {
-                if let Some(bytes) = keys::encode(&e, false, mode) {
-                    self.emit_input_bytes(cx, session, bytes);
-                }
-            }
-            Hit::TextInput(e) => {
-                if e.replace_last {
-                    return;
-                }
-                if e.was_paste {
-                    let bracketed = mode.contains(TermMode::BRACKETED_PASTE);
-                    self.emit_paste_text(cx, session, &e.input, bracketed);
-                } else if let Some(bytes) =
-                    keys::encode_text(&e.input, KeyModifiers::default(), mode)
-                {
-                    self.emit_input_bytes(cx, session, bytes);
-                }
-                scroll_to_bottom(session);
-                self.draw_bg.redraw(cx);
-            }
+            Hit::KeyDown(e) => self.key_press(cx, session, &e, mode),
+            Hit::KeyUp(e) => self.key_release(cx, session, &e, mode),
+            Hit::TextInput(e) => self.text_typed(cx, session, &e, mode),
             Hit::TextCopy(e) => {
                 *e.response.borrow_mut() = shared.lock().selection_to_string();
             }
