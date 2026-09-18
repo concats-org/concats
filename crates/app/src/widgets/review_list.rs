@@ -23,7 +23,7 @@ use super::{
 use crate::{
     FrameData, FrameTheme, editor,
     file_view::{relower_edited, save_plan},
-    makepad_widgets::*,
+    makepad_widgets::{event::TouchState, *},
     review_doc::{Composing, FileView, ReviewDoc, Stream, compose_title},
     service::{HighlightCmd, ReviewCmd, ReviewState, highlight, review},
 };
@@ -957,6 +957,10 @@ pub struct ReviewList {
     /// applied it once per instance. So it is captured here.
     #[rust]
     drawn_tab: Option<Stream>,
+    /// Whether the pointer gesture in flight went down inside this list — see
+    /// [`ReviewList::owns_gesture`].
+    #[rust]
+    pressed_inside: bool,
 }
 
 #[derive(Default)]
@@ -1077,6 +1081,45 @@ impl ReviewList {
                 _ => self.visible.push(i),
             }
         }
+    }
+}
+
+/// Whether the pointer gesture that is ending belongs to the view laid out at
+/// `rect`: its press went down inside it. `pressed` carries that answer from
+/// the press to the release.
+///
+/// The release cannot answer on its own. `MouseUp` is delivered to every dock
+/// item, hidden tabs included, so a view that only ever held the pointer once
+/// would otherwise keep answering for gestures made somewhere else. The press
+/// is visibility-gated by the dock, so it is the half of the gesture that
+/// knows where it happened.
+fn owns_gesture(pressed: &mut bool, event: &Event, rect: impl FnOnce() -> Rect) -> bool {
+    match event {
+        Event::MouseDown(e) => {
+            *pressed = rect().contains(e.abs);
+            false
+        }
+        Event::MouseUp(_) => std::mem::take(pressed),
+        // A touch drag carries the selection with it, so the gesture stays the
+        // pressed view's until the last finger lifts.
+        Event::TouchUpdate(e) => {
+            if let Some(touch) = e
+                .touches
+                .iter()
+                .find(|touch| matches!(touch.state, TouchState::Start))
+            {
+                *pressed = rect().contains(touch.abs);
+            }
+            if e.touches
+                .iter()
+                .all(|touch| matches!(touch.state, TouchState::Stop))
+            {
+                std::mem::take(pressed)
+            } else {
+                *pressed
+            }
+        }
+        _ => false,
     }
 }
 
@@ -1311,7 +1354,12 @@ impl Widget for ReviewList {
         // moves it is the list's own drag. The list holds it in item indices,
         // which only name rows currently on screen; the document holds it in
         // blob coordinates, which outlive scrolling and resplicing.
-        if matches!(event, Event::MouseUp(_) | Event::TouchUpdate(_)) {
+        // Only the list the gesture went down in adopts what it produced: the
+        // caret, the stream the composer splices into, and the key focus all
+        // follow the pointer, not every list that still holds a selection.
+        if owns_gesture(&mut self.pressed_inside, event, || {
+            self.view.portal_list(cx, ids!(list)).area().rect(cx)
+        }) {
             self.adopt_list_selection(cx);
         }
         if let Event::Actions(actions) = event {
@@ -2332,9 +2380,117 @@ fn row_at_y(drawn: &[DrawnRow], y: f64) -> Option<usize> {
 mod tests {
     use super::{
         Band, CARD_END_EDGE, CardIndex, CardMeta, Cell, DrawnRow, FILE_HEADER_TOP_PADDING, HashSet,
-        STICKY_FADE, STICKY_HEIGHT, STICKY_TOP_GAP, anchor_entry, hits_in, row_at_y,
+        STICKY_FADE, STICKY_HEIGHT, STICKY_TOP_GAP, anchor_entry, hits_in, owns_gesture, row_at_y,
         sticky_offsets,
     };
+    #[allow(
+        clippy::wildcard_imports,
+        reason = "Event fixtures are built from the widget prelude's types."
+    )]
+    use crate::makepad_widgets::{
+        event::{TouchPoint, TouchState, TouchUpdateEvent},
+        *,
+    };
+
+    fn press(x: f64) -> Event {
+        Event::MouseDown(MouseDownEvent {
+            abs: dvec2(x, 10.0),
+            button: MouseButton::PRIMARY,
+            window_id: WindowId(0, 0),
+            modifiers: KeyModifiers::default(),
+            handled: Cell::new(Area::Empty),
+            time: 0.0,
+        })
+    }
+
+    fn release() -> Event {
+        Event::MouseUp(MouseUpEvent {
+            abs: dvec2(0.0, 0.0),
+            button: MouseButton::PRIMARY,
+            window_id: WindowId(0, 0),
+            modifiers: KeyModifiers::default(),
+            time: 0.0,
+        })
+    }
+
+    /// A release reaches every dock item, hidden tabs included, so a view
+    /// answers for one only when its own press started it. Without this, a tab
+    /// the reviewer visited once takes the caret — and the keyboard — off
+    /// whatever they are using now.
+    #[test]
+    fn only_the_view_the_press_went_down_in_owns_the_gesture() {
+        let rect = || Rect {
+            pos: dvec2(0.0, 0.0),
+            size: dvec2(100.0, 100.0),
+        };
+        let mut pressed = false;
+        // A release nobody pressed for is nobody's.
+        assert!(!owns_gesture(&mut pressed, &release(), rect));
+
+        // Pressed here: the release that follows is this view's, once.
+        assert!(!owns_gesture(&mut pressed, &press(50.0), rect));
+        assert!(owns_gesture(&mut pressed, &release(), rect));
+        assert!(!owns_gesture(&mut pressed, &release(), rect));
+
+        // Pressed somewhere else: every release after it belongs there.
+        assert!(!owns_gesture(&mut pressed, &press(500.0), rect));
+        assert!(!owns_gesture(&mut pressed, &release(), rect));
+    }
+
+    /// A touch drag updates the selection as it moves, so the gesture stays the
+    /// pressed view's until the last finger lifts.
+    #[test]
+    fn a_touch_gesture_is_owned_from_its_start_until_it_lifts() {
+        let rect = || Rect {
+            pos: dvec2(0.0, 0.0),
+            size: dvec2(100.0, 100.0),
+        };
+        let touch = |state: TouchState, x: f64| {
+            Event::TouchUpdate(TouchUpdateEvent {
+                time: 0.0,
+                window_id: WindowId(0, 0),
+                modifiers: KeyModifiers::default(),
+                touches: vec![TouchPoint {
+                    state,
+                    abs: dvec2(x, 10.0),
+                    time: 0.0,
+                    uid: 0,
+                    rotation_angle: 0.0,
+                    force: 0.0,
+                    radius: dvec2(0.0, 0.0),
+                    handled: Cell::new(Area::Empty),
+                    sweep_lock: Cell::new(Area::Empty),
+                }],
+            })
+        };
+        let mut pressed = false;
+        assert!(owns_gesture(
+            &mut pressed,
+            &touch(TouchState::Start, 50.0),
+            rect
+        ));
+        assert!(owns_gesture(
+            &mut pressed,
+            &touch(TouchState::Move, 50.0),
+            rect
+        ));
+        assert!(owns_gesture(
+            &mut pressed,
+            &touch(TouchState::Stop, 50.0),
+            rect
+        ));
+        assert!(!owns_gesture(
+            &mut pressed,
+            &touch(TouchState::Move, 50.0),
+            rect
+        ));
+
+        assert!(!owns_gesture(
+            &mut pressed,
+            &touch(TouchState::Start, 500.0),
+            rect
+        ));
+    }
 
     #[test]
     fn seen_summaries_only_visit_requested_cards_and_follow_invalidations() {

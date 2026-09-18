@@ -1331,11 +1331,18 @@ impl ReviewPane {
         self.redraw_streams(cx);
     }
 
-    /// Release: open the inline composer below the selection.
-    fn compose_open(&mut self, cx: &mut Cx) {
+    /// Release: open the inline composer below the selection, in the stream the
+    /// drag started in.
+    ///
+    /// The release names that stream rather than reading whichever one is
+    /// current, so the composer opens where the reviewer dragged even if
+    /// something moved the gesture in between — `compose_anchor` is a row of
+    /// that stream and means nothing in another one.
+    fn compose_open(&mut self, cx: &mut Cx, tab: Stream) {
         {
             let mut docs = self.state().write();
             let d = Arc::make_mut(&mut docs);
+            d.tab = tab;
             if d.compose.is_none() || stream_has_composer(d.active()) {
                 return;
             }
@@ -1939,7 +1946,7 @@ impl ReviewPane {
                         self.compose_start(cx, *tab, *row, *blob, *line);
                     }
                     Some(GutterAction::DragTo { y }) => self.compose_drag(cx, *tab, *y),
-                    Some(GutterAction::DragEnd) => self.compose_open(cx),
+                    Some(GutterAction::DragEnd) => self.compose_open(cx, *tab),
                     _ => {}
                 },
                 // A chevron on a collapsed run: the band's action says which end.
