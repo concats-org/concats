@@ -225,6 +225,7 @@ mod tests {
                     start: 2,
                     end: 2,
                 }),
+                span: None,
             }));
             splice_composer(d);
             d.compose_focus = true;

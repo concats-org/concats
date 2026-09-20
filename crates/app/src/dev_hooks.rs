@@ -165,6 +165,9 @@ impl App {
                 }
             }
         }
+        // NOTE: Select after the tab, so the stream the selection is on is the
+        // one showing.
+        self.select_hook();
         if let Ok(path) = crate::dev_hooks::var("CONCATS_APP_SHOT")
             && !path.is_empty()
         {
@@ -172,6 +175,44 @@ impl App {
             cx.capture_next_frame_to_file(path.into());
         }
     }
+
+    /// `CONCATS_APP_SELECT=row:byte:row:byte` (rows of the stream on screen,
+    /// byte offsets into their lines): select that run, so what a selection
+    /// offers — the chip, and the composer it opens — can be captured without a
+    /// pointer. A synthetic drag cannot stand in: the list tracks one over the
+    /// frames between the press and the release, and the hooks have none.
+    ///
+    /// Rows, not lines, so the two ends can be on the two sides of a hunk —
+    /// which is the case worth capturing, since those are two blobs.
+    fn select_hook(&mut self) {
+        let Ok(spec) = crate::dev_hooks::var("CONCATS_APP_SELECT") else {
+            return;
+        };
+        let at: Vec<usize> = spec.split(':').filter_map(|v| v.parse().ok()).collect();
+        let [from_row, from, to_row, to] = at[..] else {
+            return;
+        };
+        let Some(state) = self.primary().map(|window| window.state.clone()) else {
+            return;
+        };
+        state.with(|d| {
+            let caret = |rows: &[concats_diff::Row], row: usize, byte: usize| match rows.get(row) {
+                Some(concats_diff::Row::Code { blob, line, .. }) => Some(review_doc::Caret {
+                    blob: *blob,
+                    line: *line,
+                    byte,
+                }),
+                _ => None,
+            };
+            let (anchor, head) = {
+                let rows = d.active();
+                (caret(rows, from_row, from), caret(rows, to_row, to))
+            };
+            d.selection_anchor = anchor;
+            d.caret = head;
+        });
+    }
+
     /// `CONCATS_APP_CLICK=x,y`: hover, press and release at those logical
     /// window coordinates, one tick after startup (the widgets need a laid-out
     /// frame to be hit), then re-arm the shot a tick later so the capture shows
@@ -371,6 +412,7 @@ impl App {
                             created_at: 0,
                             parent: None,
                             external: None,
+                            quote: None,
                             cursors: None,
                         };
                         // NOTE: This fixture stays in memory; its cursors must

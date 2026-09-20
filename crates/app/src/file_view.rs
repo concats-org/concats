@@ -365,6 +365,7 @@ mod tests {
             parent: None,
             external: None,
             cursors: None,
+            quote: None,
         }];
         let minted = open_file(&mut d, "a.rs", (None, blob), &comments);
         assert_eq!(d.rows_rev, 1);
@@ -767,6 +768,7 @@ mod tests {
             parent: None,
             external: None,
             cursors: None,
+            quote: None,
         };
 
         open_file(

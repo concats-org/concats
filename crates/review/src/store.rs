@@ -74,6 +74,11 @@ pub struct Comment {
     /// `--author` was given (agents pass their name). Absent on old records.
     pub author: Option<String>,
     pub created_at: u64,
+    /// The text this comment was written about, when it was left on a
+    /// selection rather than on whole lines. Taken from the content at the
+    /// time, so the thread can say which words of its lines it is about
+    /// without anyone copying them into the body.
+    pub quote: Option<String>,
     /// The thread root this replies to, never an intermediate reply.
     /// [`Store::root_of`] normalizes on the way in, so threads are exactly one
     /// level deep (GitHub's `in_reply_to_id` semantics); [`thread_key`] and the
@@ -157,7 +162,8 @@ CREATE TABLE IF NOT EXISTS comments(
   author TEXT,
   created_at INTEGER NOT NULL,
   parent INTEGER,
-  external TEXT
+  external TEXT,
+  quote TEXT
 );
 CREATE TABLE IF NOT EXISTS guides(
   id INTEGER PRIMARY KEY,
@@ -222,6 +228,14 @@ pub(crate) fn open_db(git_dir: &Path) -> rusqlite::Result<Connection> {
     conn.pragma_update(None, "synchronous", "NORMAL")?;
     conn.busy_timeout(std::time::Duration::from_secs(5))?;
     conn.execute_batch(SCHEMA)?;
+    // `CREATE TABLE IF NOT EXISTS` leaves a table that already exists alone, so
+    // a column added later has to be asked for by name.
+    let has_quote = conn
+        .prepare("SELECT 1 FROM pragma_table_info('comments') WHERE name = 'quote'")?
+        .exists([])?;
+    if !has_quote {
+        conn.execute("ALTER TABLE comments ADD COLUMN quote TEXT", ())?;
+    }
     Ok(conn)
 }
 
@@ -284,7 +298,7 @@ impl Store {
 
         let mut comments = Vec::new();
         if let Ok(mut stmt) = self.conn.prepare(
-            "SELECT id, path, blob, start, end, body, author, created_at, parent, external
+            "SELECT id, path, blob, start, end, body, author, created_at, parent, external, quote
              FROM comments ORDER BY id",
         ) {
             let rows = stmt.query_map([], |row| {
@@ -304,6 +318,7 @@ impl Store {
                     created_at: row.get(7)?,
                     parent: row.get(8)?,
                     external: row.get(9)?,
+                    quote: row.get(10)?,
                     cursors: None,
                 }))
             });
@@ -387,8 +402,8 @@ impl Store {
         };
         let write = self.conn.execute(
             "INSERT INTO comments
-             (path, blob, start, end, body, author, created_at, parent, external)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+             (path, blob, start, end, body, author, created_at, parent, external, quote)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
             (
                 &comment.path,
                 comment.anchor.blob.to_string(),
@@ -399,6 +414,7 @@ impl Store {
                 comment.created_at,
                 comment.parent,
                 &comment.external,
+                &comment.quote,
             ),
         );
         if let Err(error) = &write {
@@ -461,6 +477,9 @@ impl Store {
             author,
             created_at,
             external,
+            // A reply answers the thread, not a span of the code: the quote is
+            // the root's claim about what it is on.
+            quote: None,
         };
         Some(self.add_comment(reply))
     }
@@ -706,6 +725,7 @@ pub fn inject_comments(
                 parent: c.parent,
                 body: c.body.clone(),
                 meta: byline(c),
+                quote: c.quote.clone(),
             });
         }
     }
@@ -976,6 +996,7 @@ fn flush_outdated(
             } else {
                 format!("{byline} · outdated")
             },
+            quote: c.quote.clone(),
         });
     }
 }
@@ -1030,7 +1051,47 @@ mod tests {
             parent: None,
             external: None,
             cursors: None,
+            quote: None,
         }
+    }
+
+    /// A comment made on a selection keeps the words it was made on, through
+    /// the store and out to the row that renders the thread. The lines stay
+    /// the anchor: they are what places it.
+    #[test]
+    fn a_quote_survives_the_store_and_reaches_the_thread() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut store = Store::open(tmp.path());
+        let id = store.add_comment(Comment {
+            quote: Some("resolve(&names, \"greeting\")".into()),
+            ..comment(
+                "a.txt",
+                anchor(oid(7), 1, 1),
+                "does this handle the empty case?",
+            )
+        });
+        // A reply answers the thread, not the span the root named.
+        store.reply_comment(id, "it does not".into(), None, 0, None);
+
+        let reopened = Store::open(tmp.path());
+        let quotes: Vec<Option<&str>> = reopened
+            .comments
+            .iter()
+            .map(|comment| comment.quote.as_deref())
+            .collect();
+        assert_eq!(quotes, [Some("resolve(&names, \"greeting\")"), None]);
+
+        let blobs = vec![Blob::new(oid(7), "txt".into(), "a\nb\nc\n".into())];
+        let mut rows = card("a.txt", 0, 3);
+        inject_comments(&mut rows, &blobs, &reopened.comments, &HashSet::new(), None);
+        let quoted: Vec<Option<&str>> = rows
+            .iter()
+            .filter_map(|row| match row {
+                Row::Comment { quote, .. } => Some(quote.as_deref()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(quoted, [Some("resolve(&names, \"greeting\")"), None]);
     }
 
     /// A transcript entry sits between file cards, and it is not part of

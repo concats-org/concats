@@ -34,6 +34,16 @@ pub struct Caret {
 pub struct Compose {
     pub old: Option<Side>,
     pub new: Option<Side>,
+    /// The run of text the comment is about, when it was started from a
+    /// selection rather than from the gutter: its two ends. The lines stay the
+    /// anchor — that is what places the thread — and this says which words of
+    /// them the comment is on.
+    ///
+    /// Two carets rather than a byte range, for the same reason the selection
+    /// itself is two: a run across a hunk's deleted→added boundary is on two
+    /// blobs. They are blob coordinates, so splicing the composer in under them
+    /// does not move them.
+    pub span: Option<(Caret, Caret)>,
 }
 
 /// What the open composer will post. One field, not two: a gutter drag started
@@ -368,27 +378,67 @@ pub struct Selection {
     pub to: usize,
 }
 
-/// The part of the selection on one line, as offsets into that line.
+/// The selected run as a stretch of the row stream: the rows it covers, and
+/// where it starts in the first and ends in the last.
 ///
-/// This is what a row needs to paint: rows are drawn one line at a time and
-/// know nothing about the range spanning them. A line wholly inside the range
-/// reports its whole width, the first and last report a part, a line outside
-/// reports nothing.
-pub fn selection_on(d: &ReviewDoc, blob: u32, line: u32) -> Option<(usize, usize)> {
-    let Selection {
-        blob: selected,
-        from,
-        to,
-    } = selection(d)?;
-    if selected != blob {
+/// The two ends sit on two blobs whenever the selection crosses a hunk's
+/// deleted→added boundary, which no byte range in one blob can express — so
+/// this is resolved against the rows on screen rather than against a text. It
+/// is what painting and commenting read; [`selection`] stays the editor's view
+/// of the same two carets, and is the one that has to be inside one buffer.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Selected {
+    /// First and last row of the stream the selection touches.
+    pub from_row: usize,
+    pub to_row: usize,
+    /// Byte offsets into those rows' lines.
+    pub from: usize,
+    pub to: usize,
+}
+
+/// Where the selection sits in `rows`. `None` when there is none, when it is
+/// empty, or when neither end is on screen in this stream.
+pub fn selected(rows: &[Row], caret: Option<Caret>, anchor: Option<Caret>) -> Option<Selected> {
+    let (head, tail) = (caret?, anchor?);
+    if head == tail {
         return None;
     }
-    let b = &d.blobs[blob as usize];
-    let start = *b.line_starts.get(line as usize)? as usize;
+    let (head_row, tail_row) = (caret_row(rows, head)?, caret_row(rows, tail)?);
+    let ((from_row, from), (to_row, to)) = if (head_row, head.byte) <= (tail_row, tail.byte) {
+        ((head_row, head.byte), (tail_row, tail.byte))
+    } else {
+        ((tail_row, tail.byte), (head_row, head.byte))
+    };
+    (from_row != to_row || from != to).then_some(Selected {
+        from_row,
+        to_row,
+        from,
+        to,
+    })
+}
+
+/// The part of the selection on one row, as offsets into that row's line.
+///
+/// This is what a row needs to paint: rows are drawn one line at a time and
+/// know nothing about the range spanning them. A row wholly inside the range
+/// reports its whole width, the first and last report a part, a row outside
+/// reports nothing.
+pub fn selection_on(
+    d: &ReviewDoc,
+    at: Selected,
+    row: usize,
+    blob: u32,
+    line: u32,
+) -> Option<(usize, usize)> {
+    if row < at.from_row || row > at.to_row {
+        return None;
+    }
     // The line's text without its newline: a row draws no more than that, and a
     // range running past it paints to the end and stops.
-    let end = start + b.line_text(line as usize).len();
-    (from <= end && to >= start).then(|| (from.max(start) - start, to.min(end) - start))
+    let end = d.blobs.get(blob as usize)?.line_text(line as usize).len();
+    let from = if row == at.from_row { at.from } else { 0 };
+    let to = if row == at.to_row { at.to } else { end };
+    (from <= end).then(|| (from, to.min(end)))
 }
 
 /// Put the caret at an absolute byte offset in `blob`, with nothing selected.
@@ -498,6 +548,7 @@ pub fn derive_compose(rows: &[Row], lo: usize, hi: usize) -> Option<Compose> {
     let mut c = Compose {
         old: None,
         new: None,
+        span: None,
     };
     for r in &rows[lo..=hi.min(rows.len().saturating_sub(1))] {
         if let Row::Code {
@@ -582,6 +633,32 @@ pub(crate) fn blob_name(d: &ReviewDoc, blob: u32) -> Option<&str> {
         .get(blob as usize)
         .and_then(|b| b.prose.as_deref())
         .or_else(|| d.blob_paths.get(&blob).map(String::as_str))
+}
+
+/// The text a selection names, gathered row by row and read as one line — a
+/// quote sits beside a comment, however many lines it was dragged across, and
+/// however many blobs those lines came from.
+pub(crate) fn quoted(d: &ReviewDoc, tab: Stream, span: (Caret, Caret)) -> Option<String> {
+    let rows = d.stream(tab);
+    let at = selected(rows, Some(span.0), Some(span.1))?;
+    let mut out = String::new();
+    for row in at.from_row..=at.to_row {
+        let Some(Row::Code { blob, line, .. }) = rows.get(row) else {
+            continue;
+        };
+        let Some((from, to)) = selection_on(d, at, row, *blob, *line) else {
+            continue;
+        };
+        out.push_str(
+            d.blobs[*blob as usize]
+                .line_text(*line as usize)
+                .get(from..to)
+                .unwrap_or_default(),
+        );
+        out.push(' ');
+    }
+    let quote = out.split_whitespace().collect::<Vec<_>>().join(" ");
+    (!quote.is_empty()).then_some(quote)
 }
 
 pub(crate) fn blob_label(d: &ReviewDoc, blob: u32) -> String {
@@ -1282,6 +1359,11 @@ pub(crate) fn compose_title(d: &ReviewDoc, comments: &[Comment]) -> String {
     let Some(side) = comment_anchor(c) else {
         return "Add a comment".into();
     };
+    // A comment made on a selection says so in the words it is about; where it
+    // sits is the blue bar's business, as it is for a reply.
+    if let Some(quote) = c.span.and_then(|span| quoted(d, d.tab, span)) {
+        return format!("Add a comment on “{quote}”");
+    }
     let path = blob_label(d, side.blob);
     match (c.old, c.new) {
         (Some(o), Some(n)) => {
@@ -1620,6 +1702,7 @@ mod tests {
                     start: 0,
                     end: 0,
                 }),
+                span: None,
             })),
             ..Default::default()
         };
@@ -1687,6 +1770,7 @@ mod tests {
                     start: 0,
                     end: 0,
                 }),
+                span: None,
             })),
             ..Default::default()
         };
@@ -1711,6 +1795,7 @@ mod tests {
             parent,
             body: String::new(),
             meta: String::new(),
+            quote: None,
         };
         let mut d = ReviewDoc {
             tab: Stream::Files,
@@ -1738,6 +1823,7 @@ mod tests {
     #[test]
     fn a_repeated_thread_replies_at_the_nearest_occurrence() {
         let comment = Row::Comment {
+            quote: None,
             id: 1,
             parent: None,
             body: String::new(),
@@ -1850,6 +1936,7 @@ mod tests {
             },
             code(LineKind::Context, 0, 0),
             Row::Comment {
+                quote: None,
                 id: 1,
                 parent: None,
                 body: String::new(),
@@ -2007,6 +2094,120 @@ mod tests {
         }
     }
 
+    /// A selection that runs from a deleted line into an added one is on two
+    /// blobs at once, which no range in one text can hold. It still reads as a
+    /// selection, still comments — on both sides, the way a gutter drag across
+    /// the same rows does — and quotes what it covers.
+    #[test]
+    fn a_selection_across_a_hunks_boundary_paints_quotes_and_comments_on_both_sides() {
+        let rows = vec![
+            code(LineKind::Del, 0, 0),
+            code(LineKind::Del, 0, 1),
+            code(LineKind::Add, 1, 0),
+            code(LineKind::Add, 1, 1),
+        ];
+        let d = ReviewDoc {
+            blobs: vec![
+                Blob::new(
+                    oid(1),
+                    "rs".into(),
+                    "let a = one();\nlet b = two();\n".into(),
+                ),
+                Blob::new(
+                    oid(2),
+                    "rs".into(),
+                    "let a = ONE();\nlet b = TWO();\n".into(),
+                ),
+            ],
+            files_rows: rows.clone(),
+            tab: Stream::Files,
+            ..Default::default()
+        };
+        let head = Caret {
+            blob: 0,
+            line: 0,
+            byte: 4,
+        };
+        let tail = Caret {
+            blob: 1,
+            line: 1,
+            byte: 3,
+        };
+        let at = selected(&rows, Some(head), Some(tail)).expect("two ends, two blobs");
+        assert_eq!((at.from_row, at.to_row), (0, 3));
+
+        // Painted: part of the row it starts on, all of the rows between, part
+        // of the one it ends on.
+        let on = |row: usize, blob, line| selection_on(&d, at, row, blob, line);
+        assert_eq!(on(0, 0, 0), Some((4, 14)));
+        assert_eq!(on(1, 0, 1), Some((0, 14)));
+        assert_eq!(on(3, 1, 1), Some((0, 3)));
+
+        // Commented on both sides, deletions on the old blob and additions on
+        // the new — what the gutter would have produced for the same rows.
+        let compose = derive_compose(&rows, at.from_row, at.to_row).expect("both sides");
+        assert_eq!(comment_anchor(compose).map(|side| side.blob), Some(1));
+        assert_eq!(compose.old.map(|side| (side.start, side.end)), Some((0, 1)));
+        assert_eq!(compose.new.map(|side| (side.start, side.end)), Some((0, 1)));
+
+        // And quoted from both, on one line.
+        assert_eq!(
+            quoted(&d, Stream::Files, (head, tail)).as_deref(),
+            Some("a = one(); let b = two(); let a = ONE(); let")
+        );
+    }
+
+    /// What a comment made on a selection says it is about: the words it is on,
+    /// in the composer's own heading.
+    #[test]
+    fn a_quote_names_itself_in_the_composer() {
+        let rows = vec![code(LineKind::Context, 0, 0), code(LineKind::Context, 0, 1)];
+        let d = ReviewDoc {
+            blobs: vec![Blob::new(
+                oid(1),
+                "rs".into(),
+                "    let names =\n        resolve(key);\n".into(),
+            )],
+            files_rows: rows,
+            tab: Stream::Files,
+            blob_paths: HashMap::from([(0u32, "a.rs".to_string())]),
+            ..Default::default()
+        };
+        let caret = |line, byte| Caret {
+            blob: 0,
+            line,
+            byte,
+        };
+        let compose = |span| {
+            Composing::Lines(Compose {
+                old: None,
+                new: Some(Side {
+                    blob: 0,
+                    start: 0,
+                    end: 1,
+                }),
+                span,
+            })
+        };
+        let with = ReviewDoc {
+            compose: Some(compose(Some((caret(1, 8), caret(1, 21))))),
+            ..d.clone()
+        };
+        assert_eq!(
+            compose_title(&with, &[]),
+            "Add a comment on “resolve(key);”"
+        );
+        // Without one it names the lines, as a comment from the gutter does.
+        let without = ReviewDoc {
+            compose: Some(compose(None)),
+            ..d
+        };
+        assert_eq!(
+            compose_title(&without, &[]),
+            "Add a comment on a.rs lines 1–2"
+        );
+    }
+
     #[test]
     fn widening_a_comment_returns_a_selection_within_the_same_file() {
         let mut d = ReviewDoc {
@@ -2022,6 +2223,7 @@ mod tests {
                     end: 4,
                 }),
                 new: None,
+                span: None,
             })),
             ..Default::default()
         };
@@ -2107,21 +2309,24 @@ mod tests {
         assert_eq!(
             comment_anchor(Compose {
                 old: Some(a),
-                new: Some(b)
+                new: Some(b),
+                span: None,
             }),
             Some(b)
         );
         assert_eq!(
             comment_anchor(Compose {
                 old: Some(a),
-                new: None
+                new: None,
+                span: None,
             }),
             Some(a)
         );
         assert_eq!(
             comment_anchor(Compose {
                 old: None,
-                new: None
+                new: None,
+                span: None,
             }),
             None
         );
@@ -2139,6 +2344,7 @@ mod tests {
             parent: None,
             external: None,
             cursors: None,
+            quote: None,
         }
     }
 

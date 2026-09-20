@@ -111,6 +111,12 @@ pub struct DiffLine {
     /// composed will appear.
     #[rust]
     caret_rect: Option<Rect>,
+    /// Where this row painted the last of the selection that runs through it,
+    /// in window coordinates. The chip that offers to comment on a selection
+    /// needs somewhere to sit, and only the row that drew it knows where that
+    /// is — the same reason the caret's rect is read back for the IME.
+    #[rust]
+    sel_rect: Option<Rect>,
     /// The top of every visual row this line drew, in window coordinates and in
     /// order. One entry for a line that fits; the rest are what soft wrap
     /// produced, and the gutter marks them.
@@ -148,6 +154,12 @@ impl DiffLine {
     /// Where this row drew the caret, if it had one. Valid until the next draw.
     pub fn caret_rect(&self) -> Option<Rect> {
         self.caret_rect
+    }
+
+    /// Where this row painted the end of the selection, if any of it is here.
+    /// Valid until the next draw.
+    pub fn selection_rect(&self) -> Option<Rect> {
+        self.sel_rect
     }
 
     /// The tops of the rows soft wrap added, in window coordinates: every
@@ -409,10 +421,14 @@ impl Widget for DiffLine {
 
         self.text_right = self.draw_line(cx, theme, flow);
 
-        if let Some((anchor, cursor)) = self.sel {
+        self.sel_rect = None;
+        // A caret is a selection of nothing: it paints nothing, and there is
+        // nothing to offer a comment on.
+        if let Some((anchor, cursor)) = self.sel.filter(|(a, c)| a != c) {
             let (start, end) = (anchor.min(cursor), anchor.max(cursor));
             for rect in self.sel_track.selection_rects(start, end) {
                 self.draw_sel.draw_abs(cx, rect);
+                self.sel_rect = Some(rect);
             }
         }
 

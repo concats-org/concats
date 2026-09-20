@@ -34,6 +34,9 @@ pub(crate) enum ReviewCmd {
         path: String,
         anchor: Anchor,
         body: String,
+        /// The words of those lines the comment is about, when it was made on
+        /// a selection. Read off the content at the click, where the text is.
+        quote: Option<String>,
         /// Minted on the UI thread, where the buffer is, when the file is a
         /// worktree file: the comment's lines as a cursor pair in its document.
         cursors: Option<store::Cursors>,
@@ -426,6 +429,7 @@ impl Service for AppService {
                 path,
                 anchor,
                 body,
+                quote,
                 cursors,
             } => {
                 // The author read hits git's config files, so it belongs here
@@ -441,6 +445,7 @@ impl Service for AppService {
                     parent: None,
                     external: None,
                     cursors,
+                    quote,
                 });
                 self.publish_comments_changed(&git_dir);
             }
@@ -740,6 +745,7 @@ mod tests {
             },
             body: "keep this seen".into(),
             cursors: None,
+            quote: None,
         });
         assert!(Arc::ptr_eq(&seen, &out.load().seen));
 
@@ -765,6 +771,7 @@ mod tests {
             },
             body: "keep this line".into(),
             cursors: None,
+            quote: None,
         });
         let before = out.load();
         let mut blob = concats_diff::Blob::new(oid(2), "rs".into(), "line\n".into());
@@ -794,6 +801,7 @@ mod tests {
             },
             body: "why though?".into(),
             cursors: None,
+            quote: None,
         });
         let state = out.load();
         assert_eq!(state.comments.len(), 1);
@@ -834,6 +842,7 @@ mod tests {
             parent: None,
             external: None,
             cursors: None,
+            quote: None,
         });
 
         svc.handle(ReviewCmd::Poll {

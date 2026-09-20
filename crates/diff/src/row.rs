@@ -105,6 +105,11 @@ pub enum Row {
         parent: Option<u64>,
         body: String,
         meta: String,
+        /// The text the comment was written about, when it was left on a
+        /// selection rather than on whole lines. Read from the content when
+        /// the comment was made, not typed into it: it says which words of the
+        /// line the thread is about.
+        quote: Option<String>,
     },
     /// 10pt of air between a card's code and the chrome that brackets it — its
     /// header and bottom cap, or the collapsed-run bands that sit against them.

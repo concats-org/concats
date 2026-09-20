@@ -117,6 +117,9 @@ fn add(spec: &str, body: &str, author: Option<String>, range: &RangeArgs) -> Out
         parent: None,
         external: None,
         cursors: document_cursors(&loaded, &path, at),
+        // NOTE: the CLI comments on lines; a quote comes from a selection,
+        // which only the app has.
+        quote: None,
     });
     println!(
         "added comment #{id} on {path}:{}–{}",
@@ -169,6 +172,7 @@ fn reply(
             parent: Some(thread),
             external: None,
             cursors: document_cursors(loaded, &path, at),
+            quote: None,
         });
         println!(
             "added comment #{id} replying to #{thread}, on {path}:{}–{}",
@@ -770,6 +774,8 @@ fn store_entry(
         parent,
         external: entry.external.clone(),
         cursors: document_cursors(loaded, &r.path, at),
+        // NOTE: an imported entry names lines; a quote is the app's selection.
+        quote: None,
     }))
 }
 

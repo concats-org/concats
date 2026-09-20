@@ -437,6 +437,7 @@ mod tests {
             parent: None,
             body: "a needle in the comment".into(),
             meta: "Alice".into(),
+            quote: None,
         }];
         d.guide_rows = vec![
             Row::Title {
@@ -505,6 +506,7 @@ mod tests {
                 parent: None,
                 body: "x".into(),
                 meta: "author".into(),
+                quote: None,
             },
         ];
         d.selection_anchor = d.caret;

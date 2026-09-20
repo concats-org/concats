@@ -94,6 +94,12 @@ fn row_spans(blob: &Blob, line: usize) -> Option<Vec<concats_syntax::Span>> {
     None
 }
 
+/// The air between the end of a selection and the chip offering to comment on
+/// it.
+const CHIP_GAP: f64 = 8.0;
+/// What the chip measures, near enough to know whether it fits above the
+/// selection. It is one line of 8.25pt text in 4pt of padding.
+const CHIP_HEIGHT: f64 = 24.0;
 const STICKY_HEIGHT: f64 = 32.0;
 const FILE_HEADER_TOP_PADDING: f64 = 16.0;
 /// The pinned header rests this far below the top of the scroll area. The gap
@@ -191,6 +197,11 @@ pub(super) enum ReviewItemAction {
         id: u64,
         near: usize,
     },
+    /// The chip beside a text selection: comment on what is selected.
+    Quote {
+        tab: Stream,
+        near: usize,
+    },
     Outdated {
         path: String,
     },
@@ -231,6 +242,7 @@ script_mod! {
     use mod.widgets.C_FAINT
     use mod.widgets.C_YELLOW
     use mod.widgets.C_ACCENT
+    use mod.widgets.C_ON_ACCENT
     use mod.widgets.C_DELETED
     use mod.widgets.C_ELEMENT_HOVER
 
@@ -361,6 +373,16 @@ script_mod! {
                             width: Fill
                             draw_text.color: C_FAINT
                             draw_text.text_style: FONT{font_size: 8}
+                        }
+                        // What the comment is about, when it was left on a
+                        // selection rather than on whole lines. Quoted from
+                        // the content, so it reads as the code's words and not
+                        // as the reviewer's; hidden when there is none.
+                        cm_quote := Prose {
+                            visible: false
+                            width: Fill
+                            draw_text.color: C_DIM
+                            draw_text.text_style: FONT{font_size: 8.5}
                         }
                         cm_body := Prose {
                             width: Fill
@@ -779,6 +801,41 @@ script_mod! {
             }
         }
 
+        // The offer to comment on selected text, parked at the end of the
+        // selection. It is the selection's own affordance — the gutter's `+`
+        // comments on whole lines, this one on the words — so it appears with
+        // the selection and goes when the composer it opened does.
+        quote_chip := View {
+            visible: false
+            width: Fit height: Fit
+            quote_button := ButtonFlatter {
+                width: Fit height: Fit
+                padding: Inset{top: 4 bottom: 4 left: 8 right: 8}
+                spacing: 5
+                text: "Comment"
+                icon_walk: Walk{width: 11 height: Fit}
+                draw_icon +: {
+                    color: C_ON_ACCENT
+                    color_hover: C_ON_ACCENT
+                    svg: crate_resource("self:resources/icons/comment.svg")
+                }
+                draw_bg +: {
+                    color: C_ACCENT
+                    color_hover: C_ACCENT
+                    color_down: C_ACCENT
+                    border_radius: 4.0
+                }
+                draw_text +: {
+                    color: C_ON_ACCENT
+                    color_hover: C_ON_ACCENT
+                    color_down: C_ON_ACCENT
+                    color_focus: C_ON_ACCENT
+                    color_disabled: C_ON_ACCENT
+                    text_style: FONT{font_size: 8.25}
+                }
+            }
+        }
+
         // The tab strip's shadow over the content. Drawn before the pinned
         // header so the header sits in front of it, the way it does in the
         // design: the strip's shadow is clipped short by the header's own top.
@@ -951,6 +1008,10 @@ pub struct ReviewList {
     find_at: Option<(usize, usize)>,
     #[rust]
     seek_row: Option<usize>,
+    /// Where the selection ended this pass and the row it ended on: what the
+    /// chip is placed against, and what the comment it opens anchors to.
+    #[rust]
+    selection_end: Option<(Rect, usize)>,
     /// The stream this instance last drew. `tab_of` walks the widget tree,
     /// which only resolves while drawing; asked during event handling, every
     /// instance fell back to the same answer, and gating a keystroke on that
@@ -1084,6 +1145,18 @@ impl ReviewList {
     }
 }
 
+/// Where a pointer event is, for the widgets that have to know whether it is
+/// over them before anyone handles it.
+fn pointer_at(event: &Event) -> Option<DVec2> {
+    match event {
+        Event::MouseDown(e) => Some(e.abs),
+        Event::MouseUp(e) => Some(e.abs),
+        Event::MouseMove(e) => Some(e.abs),
+        Event::TouchUpdate(e) => e.touches.first().map(|touch| touch.abs),
+        _ => None,
+    }
+}
+
 /// Whether the pointer gesture that is ending belongs to the view laid out at
 /// `rect`: its press went down inside it. `pressed` carries that answer from
 /// the press to the release.
@@ -1193,6 +1266,10 @@ struct DrawPass<'a> {
     focus_composer: bool,
     requested_composer: bool,
     draft: &'a str,
+    /// Where the document's selection sits in this stream, resolved once: per
+    /// row it is a lookup, and resolving it per row would walk the stream for
+    /// every line on screen.
+    selected: Option<crate::review_doc::Selected>,
     /// The font's wrap setting, read once rather than per row.
     wrap: bool,
     /// The window a highlight request answers to: the highlighter runs off
@@ -1265,6 +1342,11 @@ impl Widget for ReviewList {
                     && cx.has_key_focus(self.composer.area())),
             requested_composer: frame.focus_composer == Some(tab),
             draft: &frame.compose_draft,
+            selected: crate::review_doc::selected(
+                frame.document.stream(tab),
+                frame.document.caret,
+                frame.document.selection_anchor,
+            ),
             wrap: crate::theme::active_font().wrap,
             window: frame.state.id,
         };
@@ -1272,6 +1354,7 @@ impl Widget for ReviewList {
         // Re-established by whichever row draws the caret this pass; stale
         // geometry would aim the IME at a line that has scrolled away.
         self.caret_rect = None;
+        self.selection_end = None;
         self.drawn_rows.clear();
         let find_bar = self.view.view(cx, ids!(find_bar));
         if find_bar.visible() != self.find.is_some() {
@@ -1319,6 +1402,7 @@ impl Widget for ReviewList {
                 self.place_sticky(&list, &drawn, &range, &pass)
             };
             self.draw_sticky(cx, &pass, push, lift);
+            self.draw_chip(cx, &pass);
         }
         if std::mem::take(&mut self.focus_find) {
             let input = self.view.text_input(cx, ids!(find_input));
@@ -1348,6 +1432,15 @@ impl Widget for ReviewList {
             Event::KeyDown(ke) if self.caret_keys(cx, ke) => return,
             Event::TextInput(ti) if self.caret_text(cx, &ti.input) => return,
             _ => {}
+        }
+        // The chip floats over the rows, so while the pointer is on it the rows
+        // do not see the pointer at all: dispatched to the whole tree in order,
+        // the press lands on the line underneath as well and clears the very
+        // selection the chip is offering to comment on.
+        let chip = self.view.view(cx, ids!(quote_chip));
+        if chip.visible() && pointer_at(event).is_some_and(|at| chip.area().rect(cx).contains(at)) {
+            chip.handle_event(cx, event, scope);
+            return;
         }
         self.view.handle_event(cx, event, scope);
         // ...and its position is read back afterwards, because the gesture that
@@ -1573,6 +1666,7 @@ impl ReviewList {
                 parent,
                 body,
                 meta,
+                quote,
             } => {
                 let template = if parent.is_some() {
                     id!(Reply)
@@ -1589,6 +1683,11 @@ impl ReviewList {
                 item.widget(cx, ids!(cm_delete))
                     .set_action_data(ReviewItemAction::Delete { id: *id });
                 item.label(cx, ids!(cm_meta)).set_text(cx, meta);
+                let quoted = item.label(cx, ids!(cm_quote));
+                quoted.set_visible(cx, quote.is_some());
+                if let Some(quote) = quote {
+                    quoted.set_text(cx, &format!("“{quote}”"));
+                }
                 item.label(cx, ids!(cm_body)).set_text(cx, body);
                 item.draw_all(cx, &mut Scope::with_props(theme));
             }
@@ -1769,7 +1868,10 @@ impl ReviewList {
             dl.wrap = pass.wrap || b.prose.is_some();
             dl.set_hits(hits_in(text, self.find.as_deref()));
             if pass.paint_selection {
-                match crate::review_doc::selection_on(d, *blob, *line) {
+                match pass
+                    .selected
+                    .and_then(|at| crate::review_doc::selection_on(d, at, r, *blob, *line))
+                {
                     Some((from, to)) => dl.selection_set(from, to),
                     None => dl.selection_clear(),
                 }
@@ -1798,6 +1900,15 @@ impl ReviewList {
             top: band.pos.y,
             bottom: band.pos.y + band.size.y,
         });
+        // Rows draw in order, so the last one carrying the selection is where
+        // it ends — and that is where the chip goes.
+        if let Some(rect) = item
+            .widget(cx, ids!(dl))
+            .borrow::<DiffLine>()
+            .and_then(|dl| dl.selection_rect())
+        {
+            self.selection_end = Some((rect, r));
+        }
         // Read back where the caret landed: the IME has to be told where
         // composed text will appear, and only the row that drew it knows.
         if caret.is_some() {
@@ -1833,6 +1944,47 @@ impl ReviewList {
             }
         }
         self.composer = input;
+    }
+
+    /// Park the chip at the end of the selection, when this list is the one
+    /// holding it and nothing has been opened on it yet.
+    ///
+    /// `d.tab` is the stream whose gesture made the selection, so it is also
+    /// the one that gets to offer the comment: every other list draws the same
+    /// selection wherever it shows those lines, and three chips for one
+    /// selection is three places to click for one comment.
+    fn draw_chip(&mut self, cx: &mut Cx2d, pass: &DrawPass) {
+        let chip = self.view.view(cx, ids!(quote_chip));
+        let place = self
+            .selection_end
+            .filter(|_| pass.doc.tab == pass.tab && pass.doc.composer_tab != Some(pass.tab));
+        let Some((rect, row)) = place else {
+            if chip.visible() {
+                chip.set_visible(cx, false);
+            }
+            return;
+        };
+        chip.set_visible(cx, true);
+        self.view
+            .widget(cx, ids!(quote_button))
+            .set_action_data(ReviewItemAction::Quote {
+                tab: pass.tab,
+                near: row,
+            });
+        // Over the end of the selection rather than beside it: beside covers the
+        // rest of the line, which is the one thing a reviewer is reading right
+        // then. Under it instead when the selection ends at the top of the
+        // list, where there is nothing above to sit in.
+        let top = self.view.portal_list(cx, ids!(list)).area().rect(cx).pos.y;
+        let above = rect.pos.y - CHIP_HEIGHT - CHIP_GAP;
+        let y = if above >= top {
+            above
+        } else {
+            rect.pos.y + rect.size.y + CHIP_GAP
+        };
+        if let Some(mut view) = chip.borrow_mut() {
+            view.walk.abs_pos = Some(dvec2(rect.pos.x + rect.size.x - CHIP_GAP, y));
+        }
     }
 
     /// Which card's header the pinned copy mirrors this pass, and where it

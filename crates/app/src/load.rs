@@ -308,6 +308,9 @@ pub(crate) fn carry_forward(d: &mut ReviewDoc, prev: &ReviewDoc) {
             Composing::Lines(c) => Composing::Lines(Compose {
                 old: c.old.and_then(|side| carry_side(d, prev, side)),
                 new: c.new.and_then(|side| carry_side(d, prev, side)),
+                // NOTE: a byte range in the old document names other text in
+                // the new one; the lines carry the compose across a reload.
+                span: None,
             }),
         });
         d.compose_anchor = prev.compose_anchor;
@@ -363,6 +366,7 @@ fn compose_from_env(d: &mut ReviewDoc) {
             start: s.min(e),
             end: s.max(e),
         }),
+        span: None,
     }));
     d.compose_anchor = 0;
     splice_composer(d);

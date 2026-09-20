@@ -1063,6 +1063,7 @@ mod tests {
                 parent: None,
                 external: None,
                 cursors: None,
+                quote: None,
             },
             Comment {
                 id: 2,
@@ -1074,6 +1075,7 @@ mod tests {
                 parent: Some(1),
                 external: None,
                 cursors: None,
+                quote: None,
             },
             Comment {
                 id: 3,
@@ -1085,6 +1087,7 @@ mod tests {
                 parent: None,
                 external: None,
                 cursors: None,
+                quote: None,
             },
         ];
         let entries = entries_from(&comments, &old, &new);

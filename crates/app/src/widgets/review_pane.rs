@@ -34,8 +34,8 @@ use crate::{
     makepad_widgets::*,
     review_doc::{
         Compose, Composing, Stream, blob_label, card_keys, code_row_near, comment_anchor,
-        derive_compose, expand_collapsed, reveal_removed, seen_progress, splice_composer,
-        stream_has_composer, strip_composer, widen_compose,
+        derive_compose, expand_collapsed, quoted, reveal_removed, seen_progress, selected,
+        splice_composer, stream_has_composer, strip_composer, widen_compose,
     },
     service::{self, ReviewCmd, review, review_state},
     terminal,
@@ -1281,10 +1281,12 @@ impl ReviewPane {
                     LineKind::Del => Compose {
                         old: side,
                         new: None,
+                        span: None,
                     },
                     _ => Compose {
                         old: None,
                         new: side,
+                        span: None,
                     },
                 }));
                 d.compose_anchor = item_id;
@@ -1327,6 +1329,43 @@ impl ReviewPane {
             if let Some(c) = derive_compose(rows, lo, hi) {
                 d.compose = Some(Composing::Lines(c));
             }
+        }
+        self.redraw_streams(cx);
+    }
+
+    /// The chip beside a text selection: comment on the lines it covers, and on
+    /// the words themselves.
+    ///
+    /// The lines stay the anchor — that is what places the thread, exports to a
+    /// pull request and survives a reload — and the selection rides along as
+    /// the quote, so a comment about one call in a line does not have to say
+    /// which by hand.
+    fn compose_span(&mut self, cx: &mut Cx, tab: Stream, near: usize) {
+        self.set_gesture_tab(cx, tab);
+        {
+            let mut docs = self.state().write();
+            let d = Arc::make_mut(&mut docs);
+            let (Some(head), Some(tail)) = (d.caret, d.selection_anchor) else {
+                return;
+            };
+            // The rows the selection covers, folded into the two sides the way
+            // a gutter drag folds them: deletions anchor on the old blob, the
+            // rest on the new one, and a selection running across a hunk's
+            // boundary carries both.
+            let Some(compose) = selected(d.active(), Some(head), Some(tail))
+                .and_then(|at| derive_compose(d.active(), at.from_row, at.to_row))
+            else {
+                return;
+            };
+            strip_composer(d);
+            d.compose = Some(Composing::Lines(Compose {
+                span: Some((head, tail)),
+                ..compose
+            }));
+            d.compose_anchor = near;
+            self.state().compose_draft.write().unwrap().clear();
+            splice_composer(d);
+            d.compose_focus = true;
         }
         self.redraw_streams(cx);
     }
@@ -1390,6 +1429,10 @@ impl ReviewPane {
                     let Some(primary) = comment_anchor(c) else {
                         return;
                     };
+                    // What the selection named, read now rather than stored as
+                    // a range: the comment says which words of its lines it is
+                    // about, and says it in the words themselves.
+                    let quote = c.span.and_then(|span| quoted(d, d.tab, span));
                     // A worktree file gets the comment's lines as cursors in
                     // its document, minted here where the buffer is, so the
                     // comment rides every edit from the start.
@@ -1409,6 +1452,7 @@ impl ReviewPane {
                         path,
                         anchor: side_anchor(primary),
                         body,
+                        quote,
                         cursors,
                     }
                 }
@@ -1937,6 +1981,9 @@ impl ReviewPane {
                 }
                 ReviewItemAction::Reply { tab, id, near } if clicked => {
                     self.reply_to_comment(cx, *tab, *id, *near);
+                }
+                ReviewItemAction::Quote { tab, near } if clicked => {
+                    self.compose_span(cx, *tab, *near);
                 }
                 ReviewItemAction::Outdated { path } if clicked => {
                     self.toggle_card_outdated(cx, path);
