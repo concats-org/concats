@@ -43,6 +43,11 @@ script_mod! {
     }
 }
 
+/// How much of a row an indent may take and still carry the hang: past it the
+/// continuation would have less room than the indent it lines up under, so the
+/// line wraps at the margin instead.
+const HANG_LIMIT: f64 = 0.5;
+
 /// Caret width. Solid, not blinking: this row lives in a virtualized list, so
 /// a blink would redraw every visible row twice a second to animate one quad.
 const CARET_WIDTH: f64 = 1.5;
@@ -106,6 +111,11 @@ pub struct DiffLine {
     /// composed will appear.
     #[rust]
     caret_rect: Option<Rect>,
+    /// The top of every visual row this line drew, in window coordinates and in
+    /// order. One entry for a line that fits; the rest are what soft wrap
+    /// produced, and the gutter marks them.
+    #[rust]
+    rows: Vec<f64>,
 }
 
 impl DiffLine {
@@ -140,6 +150,13 @@ impl DiffLine {
         self.caret_rect
     }
 
+    /// The tops of the rows soft wrap added, in window coordinates: every
+    /// visual row of this line except the one the line starts on. Empty when
+    /// the line fits. Valid until the next draw.
+    pub fn wrapped_rows(&self) -> &[f64] {
+        self.rows.get(1..).unwrap_or_default()
+    }
+
     /// The caret as a thin quad, taken from the geometry of the character it
     /// sits in front of.
     ///
@@ -166,6 +183,111 @@ impl DiffLine {
         })
     }
 
+    /// Draw the line's glyphs and record what they came out as: the indent
+    /// first, then the rest of the line, coloured run by coloured run, in a
+    /// turtle that hangs under that indent. Returns the right edge of the last
+    /// row it drew.
+    #[expect(
+        clippy::cognitive_complexity,
+        reason = "One line's indent, its coloured runs and the gaps between them are drawn in order."
+    )]
+    fn draw_line(&mut self, cx: &mut Cx2d, theme: &crate::theme::Theme, flow: Layout) -> f64 {
+        self.sel_track.clear();
+        self.rows.clear();
+        let mut right = 0.0;
+        let bytes = self.text.as_bytes();
+        // What the line is indented by, drawn on its own so the rest of it can
+        // flow in a turtle that starts after it. That is what makes a wrapped
+        // line hang under its own code instead of resuming at the margin,
+        // where it reads as a new statement.
+        let indent = self
+            .text
+            .find(|c: char| c != ' ' && c != '\t')
+            .unwrap_or(self.text.len());
+        let mut at = 0usize;
+        let mut hanging = false;
+        if indent > 0 {
+            self.draw_text.color = paint(theme.syntax_color(None));
+            right = draw_run(
+                cx,
+                &mut self.draw_text,
+                &mut self.sel_track,
+                &mut self.rows,
+                &self.text[..indent],
+            );
+            at = indent;
+            let inner = cx.turtle().inner_rect();
+            // Unless the indent is deep enough that the hang would leave the
+            // continuation less room than the indent itself.
+            hanging = self.wrap && (right - inner.pos.x) < inner.size.x * HANG_LIMIT;
+            if hanging {
+                cx.begin_turtle(
+                    Walk {
+                        width: Size::fill(),
+                        height: Size::fit(),
+                        ..Walk::default()
+                    },
+                    flow,
+                );
+            }
+        }
+        for sp in &self.spans {
+            let start = sp.start.min(bytes.len()).max(at);
+            let end = sp.end.min(bytes.len());
+            if start > at {
+                self.draw_text.color = paint(theme.syntax_color(None));
+                if let Ok(s) = std::str::from_utf8(&bytes[at..start]) {
+                    right = draw_run(
+                        cx,
+                        &mut self.draw_text,
+                        &mut self.sel_track,
+                        &mut self.rows,
+                        s,
+                    );
+                }
+            }
+            if end > start {
+                self.draw_text.color = paint(theme.syntax_color(sp.hl));
+                if let Ok(s) = std::str::from_utf8(&bytes[start..end]) {
+                    right = draw_run(
+                        cx,
+                        &mut self.draw_text,
+                        &mut self.sel_track,
+                        &mut self.rows,
+                        s,
+                    );
+                }
+            }
+            at = at.max(end);
+        }
+        if at < bytes.len() {
+            self.draw_text.color = paint(theme.syntax_color(None));
+            if let Ok(s) = std::str::from_utf8(&bytes[at..]) {
+                right = draw_run(
+                    cx,
+                    &mut self.draw_text,
+                    &mut self.sel_track,
+                    &mut self.rows,
+                    s,
+                );
+            }
+        }
+        if self.text.is_empty() {
+            self.draw_text.color = paint(theme.syntax_color(None));
+            right = draw_run(
+                cx,
+                &mut self.draw_text,
+                &mut self.sel_track,
+                &mut self.rows,
+                " ",
+            );
+        }
+        if hanging {
+            cx.end_turtle();
+        }
+        right
+    }
+
     /// What this row contributes to a selection: the text it draws, no more. An
     /// empty line draws one space (`DrawText` skips an empty string), and
     /// reporting that space keeps blank lines in a copied range: the list joins
@@ -181,25 +303,51 @@ impl DiffLine {
 
 /// Draw one already-coloured run and record it for selection. Free-standing so
 /// the caller can hold `text`/`spans` borrowed while `draw_text` and
-/// `sel_track` are borrowed mutably. Returns the run's right edge.
+/// `sel_track` are borrowed mutably. Returns the right edge of its last row.
 ///
-/// The run is laid out unpositioned and the turtle places it. Handing the
-/// layout a `first_row_indent` as well would apply the offset twice, once in
-/// the glyph positions and once by the flow. That compounds across a line and
-/// tears it apart — though only once syntax colours split the line into runs at
-/// all.
+/// A run resumes where the previous one ended and breaks at the edge of the
+/// row when the line is wider than the pane, so a long line is read by
+/// scrolling down rather than sideways. Both halves have to agree about that:
+/// the layout recorded for selection is laid out with the same indent, width
+/// and wrapping the draw uses, or the highlight and the caret land where the
+/// glyphs are not. (`Fonts` caches the layout, so asking twice costs one.)
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "Layout is asked for in f32 lpxs; a window is not 2^24 pixels wide."
+)]
 fn draw_run(
     cx: &mut Cx2d,
     draw_text: &mut DrawText,
     sel_track: &mut SelectionTracker,
+    rows: &mut Vec<f64>,
     text: &str,
 ) -> f64 {
-    // Laid out here rather than through `draw_walk` so one layout answers both
-    // the glyphs and the selection geometry (`Fonts` caches it either way).
-    let laidout = draw_text.layout(cx, 0.0, 0.0, None, false, Align::default(), text);
-    let rect = draw_text.draw_walk_laidout(cx, Walk::fit(), &laidout);
-    sel_track.push_text(laidout, rect.pos, draw_text.font_scale, text);
-    rect.pos.x + rect.size.x
+    let turtle_pos = cx.turtle().pos();
+    let turtle_rect = cx.turtle().inner_rect();
+    let indent = (turtle_pos.x - turtle_rect.pos.x) as f32;
+    let row_height = draw_text.resumable_first_row_min_spacing(cx);
+    let wrap = matches!(cx.turtle().layout().flow, Flow::Right { wrap: true, .. });
+    // Only a wrapping line has a width to obey; handing one to a line that does
+    // not wrap is how it would come back truncated instead.
+    let max_width = (wrap && !turtle_rect.size.x.is_nan()).then_some(turtle_rect.size.x as f32);
+    let align = draw_text.layout_align;
+    let laidout = draw_text.layout(cx, indent, row_height, max_width, wrap, align, text);
+    sel_track.push_text(
+        laidout,
+        dvec2(turtle_rect.pos.x, turtle_pos.y),
+        draw_text.font_scale,
+        text,
+    );
+    let mut right = turtle_pos.x;
+    draw_text.draw_walk_resumable_with(cx, text, |_, rect, _| {
+        right = rect.pos.x + rect.size.x;
+        // Runs share the row they continue on, so the same top arrives once per
+        // run; the line's rows are the distinct ones, in order.
+        if rows.last() != Some(&rect.pos.y) {
+            rows.push(rect.pos.y);
+        }
+    });
+    right
 }
 
 impl Widget for DiffLine {
@@ -212,10 +360,6 @@ impl Widget for DiffLine {
         false
     }
 
-    #[expect(
-        clippy::cognitive_complexity,
-        reason = "Text, selection, caret, and gutter are painted in one row’s draw pass."
-    )]
     fn draw_walk(&mut self, cx: &mut Cx2d, scope: &mut Scope, walk: Walk) -> DrawStep {
         let kind = self.kind.unwrap_or(LineKind::Context);
         let Some(theme) = frame_theme(scope) else {
@@ -263,39 +407,7 @@ impl Widget for DiffLine {
         // washing over it. Same trick as makepad's `TextInput`.
         self.draw_sel.append_to_draw_call(cx);
 
-        // the line, span by span
-        self.sel_track.clear();
-        let mut right = 0.0;
-        let bytes = self.text.as_bytes();
-        let mut at = 0usize;
-        for sp in &self.spans {
-            let start = sp.start.min(bytes.len());
-            let end = sp.end.min(bytes.len());
-            if start > at {
-                self.draw_text.color = paint(theme.syntax_color(None));
-                if let Ok(s) = std::str::from_utf8(&bytes[at..start]) {
-                    right = draw_run(cx, &mut self.draw_text, &mut self.sel_track, s);
-                }
-            }
-            if end > start {
-                self.draw_text.color = paint(theme.syntax_color(sp.hl));
-                if let Ok(s) = std::str::from_utf8(&bytes[start..end]) {
-                    right = draw_run(cx, &mut self.draw_text, &mut self.sel_track, s);
-                }
-            }
-            at = at.max(end);
-        }
-        if at < bytes.len() {
-            self.draw_text.color = paint(theme.syntax_color(None));
-            if let Ok(s) = std::str::from_utf8(&bytes[at..]) {
-                right = draw_run(cx, &mut self.draw_text, &mut self.sel_track, s);
-            }
-        }
-        if self.text.is_empty() {
-            self.draw_text.color = paint(theme.syntax_color(None));
-            right = draw_run(cx, &mut self.draw_text, &mut self.sel_track, " ");
-        }
-        self.text_right = right;
+        self.text_right = self.draw_line(cx, theme, flow);
 
         if let Some((anchor, cursor)) = self.sel {
             let (start, end) = (anchor.min(cursor), anchor.max(cursor));

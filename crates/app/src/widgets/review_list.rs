@@ -1696,6 +1696,10 @@ impl ReviewList {
 
     /// A code row: the gutter's numbers and marks, the line's text and colours,
     /// and the caret when it is on this line.
+    #[expect(
+        clippy::cognitive_complexity,
+        reason = "One row's review state, colours, text, caret and rail are assembled in draw order."
+    )]
     fn draw_code(&mut self, cx: &mut Cx2d, item: &WidgetRef, r: usize, pass: &DrawPass) {
         let Some(
             row @ Row::Code {
@@ -1773,6 +1777,22 @@ impl ReviewList {
         }
         item.draw_all(cx, &mut Scope::with_props(&pass.theme));
         let band = item.area().rect(cx);
+        // The rail is drawn before the line it belongs to, so it only learns
+        // how tall a soft-wrapped row is, and where the rows soft wrap added
+        // start, once the line has been laid out.
+        let wrapped = item
+            .widget(cx, ids!(dl))
+            .borrow::<DiffLine>()
+            .map(|dl| dl.wrapped_rows().to_vec())
+            .unwrap_or_default();
+        if let Some(mut g) = item.widget(cx, ids!(gut)).borrow_mut::<Gutter>() {
+            g.paint(
+                cx,
+                &mut Scope::with_props(&pass.theme),
+                band.size.y,
+                &wrapped,
+            );
+        }
         self.drawn_rows.push(DrawnRow {
             row: r,
             top: band.pos.y,

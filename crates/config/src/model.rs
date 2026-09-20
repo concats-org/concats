@@ -126,7 +126,9 @@ impl Default for AppConfig {
             theme: "Concats".into(),
             font: String::new(),
             font_size: 9.0,
-            wrap: false,
+            // A line you cannot read is not a line you can review, so the
+            // default is to wrap it. `wrap = false` puts it back on one row.
+            wrap: true,
         }
     }
 }

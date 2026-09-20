@@ -73,6 +73,11 @@ script_mod! {
     }
 }
 
+/// What a row that soft wrap added is marked with, in the column the line
+/// numbers use — a continuation has no number of its own, and without a mark
+/// there is nothing to tell it from a line that simply starts further in.
+const WRAPPED: &str = "↳";
+
 /// The outermost slot's full width: a comment, a range being dragged, and the
 /// hover affordance all fill it. Also the width of the slot the change bar gets.
 const MARKER_WIDE: f64 = 6.0;
@@ -160,6 +165,10 @@ pub struct Gutter {
     line: u32,
     #[rust]
     marks: RowMarks,
+    /// The column this rail reserved this draw, which [`Gutter::paint`] fills
+    /// once the row's height is known.
+    #[rust]
+    rect: Rect,
     #[rust]
     hovered: bool,
     /// The last y emitted during a drag, so a move that does not actually
@@ -213,6 +222,143 @@ impl Gutter {
         self.blob = blob;
         self.line = line;
         self.marks = marks;
+    }
+
+    /// The rail's own width: the two marker slots, the air after them, and the
+    /// column the number sits in.
+    fn width(&mut self, cx: &mut Cx2d) -> f64 {
+        let number =
+            self.draw_text
+                .layout(cx, 0.0, 0.0, None, false, Align::default(), &self.number);
+        self.lead() + f64::from(number.size_in_lpxs.width * self.draw_text.font_scale) + self.pad()
+    }
+
+    /// 6 (comment slot) + 6 (change slot) + 12 of air before the numbers, like
+    /// the design. A prose line keeps the slots and skips the air its numbers
+    /// would need.
+    fn lead(&self) -> f64 {
+        if self.prose { 14.0 } else { 24.0 }
+    }
+
+    /// The air between the number column and the line.
+    fn pad(&self) -> f64 {
+        if self.prose { 4.0 } else { 10.0 }
+    }
+
+    /// One line of the rail: what the row is as tall as until the line beside
+    /// it wraps and makes it taller.
+    fn row_height(&mut self, cx: &mut Cx2d) -> f64 {
+        let number =
+            self.draw_text
+                .layout(cx, 0.0, 0.0, None, false, Align::default(), &self.number);
+        f64::from(number.size_in_lpxs.height * self.draw_text.font_scale) + ROW_PAD * 2.0
+    }
+
+    /// Paint the rail, now that the line beside it has been laid out: the row
+    /// is as tall as it is going to be, and the rows soft wrap added are known.
+    ///
+    /// Everything here waits for that. A soft-wrapped line is several rows of
+    /// glyphs and decides the height of the row it sits in, while the rail is
+    /// drawn first and one line tall — so the tint, the markers and the `+`,
+    /// which all describe the whole line, have nothing to size themselves by
+    /// until the line is done. Painting the rail from here also gives the
+    /// hover the whole row to answer on.
+    ///
+    /// `wrapped` are the tops of the rows soft wrap added, in window
+    /// coordinates, from the line that drew them.
+    pub fn paint(&mut self, cx: &mut Cx2d, scope: &mut Scope, height: f64, wrapped: &[f64]) {
+        let kind = self.kind.unwrap_or(LineKind::Context);
+        let Some(theme) = frame_theme(scope) else {
+            return;
+        };
+        let under = if self.prose {
+            prose_bg(theme)
+        } else {
+            row_bg(theme, kind)
+        };
+        self.draw_bg.color = if self.marks.selected {
+            selected_bg(theme, under)
+        } else {
+            under
+        };
+        let r = Rect {
+            pos: self.rect.pos,
+            size: dvec2(self.rect.size.x, height),
+        };
+        self.draw_bg.draw_abs(cx, r);
+
+        // The number, and a `↳` on each row soft wrap added — a continuation
+        // has no number of its own, and without the mark there is nothing to
+        // tell it from a line that simply starts further in. Both are
+        // right-aligned in the same column, so it reads as one.
+        self.draw_text.color = paint(theme.text_faint);
+        let right = r.pos.x + r.size.x - self.pad();
+        let number =
+            self.draw_text
+                .layout(cx, 0.0, 0.0, None, false, Align::default(), &self.number);
+        let width = f64::from(number.size_in_lpxs.width * self.draw_text.font_scale);
+        self.draw_text
+            .draw_abs(cx, dvec2(right - width, r.pos.y + ROW_PAD), &self.number);
+        let mark = self
+            .draw_text
+            .layout(cx, 0.0, 0.0, None, false, Align::default(), WRAPPED);
+        let width = f64::from(mark.size_in_lpxs.width * self.draw_text.font_scale);
+        for top in wrapped {
+            self.draw_text
+                .draw_abs(cx, dvec2(right - width, *top + ROW_PAD), WRAPPED);
+        }
+
+        // Two 6px marker slots at the card's left edge, like the design: the
+        // outer one is the comment/selection bar (the comment strip below the
+        // range continues it), the inner one the change bar. Separate slots
+        // mean commenting a changed line never displaces its green. Seen and
+        // commented share the outer slot and the accent colour and differ only
+        // in width: 6pt for a comment, 2pt for merely seen. Same colour on
+        // purpose — commenting on a line implies having seen it — so the width
+        // tells the two apart. A comment takes the slot outright rather than
+        // drawing both.
+        let marker = if self.marks.commented || self.marks.selected {
+            Some(MARKER_WIDE)
+        } else if self.marks.seen {
+            Some(MARKER_THIN)
+        } else {
+            None
+        };
+        if let Some(width) = marker {
+            self.draw_mark.color = paint(theme.accent);
+            self.draw_mark.striped = 0.0;
+            self.draw_mark.draw_abs(
+                cx,
+                Rect {
+                    pos: r.pos,
+                    size: dvec2(width, r.size.y),
+                },
+            );
+        }
+        if let Some(color) = row_marker(theme, kind) {
+            self.draw_mark.color = color;
+            self.draw_mark.striped = f32::from(kind == LineKind::Del);
+            self.draw_mark.draw_abs(
+                cx,
+                Rect {
+                    pos: dvec2(r.pos.x + MARKER_WIDE, r.pos.y),
+                    size: dvec2(MARKER_WIDE, r.size.y),
+                },
+            );
+        }
+        // The + affordance, in the outermost slot the marker itself uses, so
+        // the hover, the drag and the posted comment all mark the same column.
+        // Drawn last: while the pointer is on a row it stands in for whatever
+        // marker that row already carries.
+        if self.hovered {
+            self.draw_plus.draw_abs(
+                cx,
+                Rect {
+                    pos: r.pos,
+                    size: dvec2(MARKER_WIDE, r.size.y),
+                },
+            );
+        }
     }
 }
 
@@ -270,93 +416,15 @@ impl Widget for Gutter {
         }
     }
 
-    fn draw_walk(&mut self, cx: &mut Cx2d, scope: &mut Scope, walk: Walk) -> DrawStep {
-        let kind = self.kind.unwrap_or(LineKind::Context);
-        let Some(theme) = frame_theme(scope) else {
-            return DrawStep::done();
-        };
-        let under = if self.prose {
-            prose_bg(theme)
-        } else {
-            row_bg(theme, kind)
-        };
-        self.draw_bg.color = if self.marks.selected {
-            selected_bg(theme, under)
-        } else {
-            under
-        };
-        self.draw_bg.begin(
-            cx,
-            walk,
-            // 6 (comment slot) + 6 (change slot) + 12 of air before the
-            // numbers, like the design. A prose line keeps the slots and skips
-            // the air its numbers would need.
-            Layout::flow_right().with_padding(Inset {
-                left: if self.prose { 14.0 } else { 24.0 },
-                right: if self.prose { 4.0 } else { 10.0 },
-                top: ROW_PAD,
-                bottom: ROW_PAD,
-            }),
-        );
-        self.draw_text.color = paint(theme.text_faint);
-        // One number column, like the design: the new line number, or the
-        // old one for deletions.
-        self.draw_text
-            .draw_walk(cx, Walk::fit(), Align::default(), &self.number);
-        self.draw_bg.end(cx);
-
-        // Two 6px marker slots at the card's left edge, like the design: the
-        // outer one is the comment/selection bar (the comment strip below the
-        // range continues it), the inner one the change bar. Separate slots
-        // mean commenting a changed line never displaces its green. Seen and
-        // commented share the outer slot and the accent colour and differ only
-        // in width: 6pt for a comment, 2pt for merely seen. Same colour on
-        // purpose — commenting on a line implies having seen it — so the width
-        // tells the two apart. A comment takes the slot outright rather than
-        // drawing both.
-        let r = self.draw_bg.area().rect(cx);
-        let marker = if self.marks.commented || self.marks.selected {
-            Some(MARKER_WIDE)
-        } else if self.marks.seen {
-            Some(MARKER_THIN)
-        } else {
-            None
-        };
-        if let Some(width) = marker {
-            self.draw_mark.color = paint(theme.accent);
-            self.draw_mark.striped = 0.0;
-            self.draw_mark.draw_abs(
-                cx,
-                Rect {
-                    pos: r.pos,
-                    size: dvec2(width, r.size.y),
-                },
-            );
-        }
-        if let Some(color) = row_marker(theme, kind) {
-            self.draw_mark.color = color;
-            self.draw_mark.striped = f32::from(kind == LineKind::Del);
-            self.draw_mark.draw_abs(
-                cx,
-                Rect {
-                    pos: dvec2(r.pos.x + MARKER_WIDE, r.pos.y),
-                    size: dvec2(MARKER_WIDE, r.size.y),
-                },
-            );
-        }
-        // The + affordance, in the outermost slot the marker itself uses, so
-        // the hover, the drag and the posted comment all mark the same column.
-        // Drawn last: while the pointer is on a row it stands in for whatever
-        // marker that row already carries.
-        if self.hovered {
-            self.draw_plus.draw_abs(
-                cx,
-                Rect {
-                    pos: r.pos,
-                    size: dvec2(MARKER_WIDE, r.size.y),
-                },
-            );
-        }
+    /// Reserve the rail's column and remember it. The painting happens in
+    /// [`Gutter::paint`], once the line beside it has decided the row's height.
+    fn draw_walk(&mut self, cx: &mut Cx2d, _scope: &mut Scope, walk: Walk) -> DrawStep {
+        let (width, height) = (self.width(cx), self.row_height(cx));
+        self.rect = cx.walk_turtle(Walk {
+            width: Size::Fixed(width),
+            height: Size::Fixed(height),
+            ..walk
+        });
         DrawStep::done()
     }
 }
