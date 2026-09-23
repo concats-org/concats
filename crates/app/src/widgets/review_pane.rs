@@ -1432,7 +1432,7 @@ impl ReviewPane {
                     // What the selection named, read now rather than stored as
                     // a range: the comment says which words of its lines it is
                     // about, and says it in the words themselves.
-                    let quote = c.span.and_then(|span| quoted(d, d.tab, span));
+                    let quote = c.span.and_then(|span| quoted(d, d.tab, span, primary));
                     // A worktree file gets the comment's lines as cursors in
                     // its document, minted here where the buffer is, so the
                     // comment rides every edit from the start.

@@ -36,7 +36,7 @@ pub(crate) enum ReviewCmd {
         body: String,
         /// The words of those lines the comment is about, when it was made on
         /// a selection. Read off the content at the click, where the text is.
-        quote: Option<String>,
+        quote: Option<store::Quote>,
         /// Minted on the UI thread, where the buffer is, when the file is a
         /// worktree file: the comment's lines as a cursor pair in its document.
         cursors: Option<store::Cursors>,

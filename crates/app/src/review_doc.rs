@@ -185,6 +185,11 @@ pub struct ReviewDoc {
     /// including the ones this range cannot place, which are otherwise
     /// invisible. Same scope and lifetime as `folded`.
     pub show_all_comments: HashSet<String>,
+    /// Where each comment's quote sits, by the blob and line a row carries:
+    /// the byte ranges to underline. Rebuilt by [`splice_comments`], because
+    /// it is a reading of the comments against the content on screen and not a
+    /// property of either.
+    pub quote_spans: std::collections::HashMap<(u32, u32), Vec<(u32, u32)>>,
     /// Thread roots the last comment splice found a line for. A card header
     /// counts what is missing from this set instead of deciding for itself
     /// whether a thread is outdated. The splice already decided; two answers to
@@ -635,30 +640,59 @@ pub(crate) fn blob_name(d: &ReviewDoc, blob: u32) -> Option<&str> {
         .or_else(|| d.blob_paths.get(&blob).map(String::as_str))
 }
 
-/// The text a selection names, gathered row by row and read as one line — a
-/// quote sits beside a comment, however many lines it was dragged across, and
-/// however many blobs those lines came from.
-pub(crate) fn quoted(d: &ReviewDoc, tab: Stream, span: (Caret, Caret)) -> Option<String> {
+/// What a selection names: the words it covers, and where they sit in the
+/// lines the comment will be anchored to.
+///
+/// The text is gathered row by row and read as one line — a quote sits beside
+/// a comment, however many lines it was dragged across and however many blobs
+/// those lines came from. The offsets are into the first and last of the
+/// comment's own lines, which is what underlines the words again on a later
+/// load, when the blob is a different one.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "Byte offsets are stored as u32, like every other position in the diff model; a line is not 4 GiB."
+)]
+pub(crate) fn quoted(
+    d: &ReviewDoc,
+    tab: Stream,
+    span: (Caret, Caret),
+    anchor: Side,
+) -> Option<store::Quote> {
     let rows = d.stream(tab);
     let at = selected(rows, Some(span.0), Some(span.1))?;
     let mut out = String::new();
+    // Where the run starts and ends on the anchored side. A selection across a
+    // hunk's boundary is anchored on one of the two, and underlines that one.
+    let (mut from, mut to) = (None, None);
     for row in at.from_row..=at.to_row {
         let Some(Row::Code { blob, line, .. }) = rows.get(row) else {
             continue;
         };
-        let Some((from, to)) = selection_on(d, at, row, *blob, *line) else {
+        let Some((start, end)) = selection_on(d, at, row, *blob, *line) else {
             continue;
         };
         out.push_str(
             d.blobs[*blob as usize]
                 .line_text(*line as usize)
-                .get(from..to)
+                .get(start..end)
                 .unwrap_or_default(),
         );
         out.push(' ');
+        if *blob == anchor.blob {
+            if *line == anchor.start {
+                from = Some(start as u32);
+            }
+            if *line == anchor.end {
+                to = Some(end as u32);
+            }
+        }
     }
-    let quote = out.split_whitespace().collect::<Vec<_>>().join(" ");
-    (!quote.is_empty()).then_some(quote)
+    let text = out.split_whitespace().collect::<Vec<_>>().join(" ");
+    (!text.is_empty()).then(|| store::Quote {
+        text,
+        from: from.unwrap_or(0),
+        to: to.unwrap_or(u32::MAX),
+    })
 }
 
 pub(crate) fn blob_label(d: &ReviewDoc, blob: u32) -> String {
@@ -784,6 +818,7 @@ pub(crate) fn splice_comments(
     // The Comments tab is rebuilt here rather than patched: which threads
     // exist, where their content lives now and who answered last all change
     // with the comment list, and this is the one place that list arrives.
+    d.quote_spans = quote_spans(&d.blobs, comments);
     let (comments_rows, outdated_paths) = comments_stream(&d.blobs, &d.blob_paths, comments);
     d.comments_rows = comments_rows;
     d.has_comments = !comments.is_empty();
@@ -806,6 +841,65 @@ pub(crate) fn splice_comments(
         splice_composer(d);
     }
     minted
+}
+
+/// Where every comment's quoted words sit now, as byte ranges by `(blob, line)`.
+///
+/// A comment stores the offsets its words had in the lines it was made on. A
+/// later revision of the same file can have moved them along the line, so on
+/// one line the words themselves decide: if they are not where they were, they
+/// are looked for, and the offsets are the fallback. A quote dragged across
+/// several lines reads as one line and cannot be looked for, so it keeps what
+/// it stored.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "Blob indices and byte offsets are u32 throughout the diff model."
+)]
+fn quote_spans(
+    blobs: &[Blob],
+    comments: &[store::Comment],
+) -> std::collections::HashMap<(u32, u32), Vec<(u32, u32)>> {
+    let mut of_oid: std::collections::HashMap<ObjectId, Vec<u32>> =
+        std::collections::HashMap::new();
+    for (blob, content) in blobs.iter().enumerate() {
+        of_oid.entry(content.oid).or_default().push(blob as u32);
+    }
+    let mut out: std::collections::HashMap<(u32, u32), Vec<(u32, u32)>> =
+        std::collections::HashMap::new();
+    for comment in comments {
+        let Some(quote) = &comment.quote else {
+            continue;
+        };
+        let anchor = comment.anchor;
+        for &blob in of_oid.get(&anchor.blob).into_iter().flatten() {
+            for line in anchor.start..=anchor.end {
+                let text = blobs[blob as usize].line_text(line as usize);
+                let from = if line == anchor.start { quote.from } else { 0 } as usize;
+                let to = (if line == anchor.end {
+                    quote.to
+                } else {
+                    u32::MAX
+                } as usize)
+                    .min(text.len());
+                let stored = (from <= to).then_some((from, to));
+                let range = if anchor.start == anchor.end
+                    && text.get(from..to) != Some(quote.text.as_str())
+                {
+                    text.find(&quote.text)
+                        .map(|at| (at, at + quote.text.len()))
+                        .or(stored)
+                } else {
+                    stored
+                };
+                if let Some((from, to)) = range {
+                    out.entry((blob, line))
+                        .or_default()
+                        .push((from as u32, to as u32));
+                }
+            }
+        }
+    }
+    out
 }
 
 pub(crate) fn splice_stream(
@@ -1361,8 +1455,11 @@ pub(crate) fn compose_title(d: &ReviewDoc, comments: &[Comment]) -> String {
     };
     // A comment made on a selection says so in the words it is about; where it
     // sits is the blue bar's business, as it is for a reply.
-    if let Some(quote) = c.span.and_then(|span| quoted(d, d.tab, span)) {
-        return format!("Add a comment on “{quote}”");
+    if let Some(quote) = c
+        .span
+        .and_then(|span| quoted(d, d.tab, span, comment_anchor(c)?))
+    {
+        return format!("Add a comment on “{}”", quote.text);
     }
     let path = blob_label(d, side.blob);
     match (c.old, c.new) {
@@ -2150,11 +2247,57 @@ mod tests {
         assert_eq!(compose.old.map(|side| (side.start, side.end)), Some((0, 1)));
         assert_eq!(compose.new.map(|side| (side.start, side.end)), Some((0, 1)));
 
-        // And quoted from both, on one line.
-        assert_eq!(
-            quoted(&d, Stream::Files, (head, tail)).as_deref(),
-            Some("a = one(); let b = two(); let a = ONE(); let")
-        );
+        // And quoted from both, on one line, with where the words sit on the
+        // side the comment anchors to — the new one here.
+        let anchor = comment_anchor(compose).expect("an anchor");
+        let quote = quoted(&d, Stream::Files, (head, tail), anchor).expect("a quote");
+        assert_eq!(quote.text, "a = one(); let b = two(); let a = ONE(); let");
+        assert_eq!((quote.from, quote.to), (0, 3));
+    }
+
+    /// The words underlined on a line are the ones the comment was made on,
+    /// wherever they have moved to since: the offsets it stored are a starting
+    /// point, and the words themselves are what settles it.
+    #[test]
+    fn a_quote_is_underlined_where_its_words_are_now() {
+        let blobs = vec![Blob::new(
+            oid(1),
+            "rs".into(),
+            "let names = resolve(key);\n".into(),
+        )];
+        let quote = |from, to| {
+            Some(store::Quote {
+                text: "resolve(key)".into(),
+                from,
+                to,
+            })
+        };
+        let comment = |quote| store::Comment {
+            quote,
+            ..stored(1, "a.rs", oid(1), 0, 0)
+        };
+
+        // Where it was written, and where a line that has grown by four bytes
+        // in front of it puts it now.
+        let spans = quote_spans(&blobs, &[comment(quote(12, 24))]);
+        assert_eq!(spans.get(&(0, 0)), Some(&vec![(12, 24)]));
+        let spans = quote_spans(&blobs, &[comment(quote(8, 20))]);
+        assert_eq!(spans.get(&(0, 0)), Some(&vec![(12, 24)]));
+
+        // Gone from the line: the thread keeps its line, and nothing is
+        // underlined that is not what it is about.
+        let gone = store::Comment {
+            quote: Some(store::Quote {
+                text: "resolve(other)".into(),
+                from: 40,
+                to: 54,
+            }),
+            ..stored(1, "a.rs", oid(1), 0, 0)
+        };
+        assert_eq!(quote_spans(&blobs, &[gone]).get(&(0, 0)), None);
+
+        // A comment made on lines, not words, underlines nothing.
+        assert!(quote_spans(&blobs, &[comment(None)]).is_empty());
     }
 
     /// What a comment made on a selection says it is about: the words it is on,

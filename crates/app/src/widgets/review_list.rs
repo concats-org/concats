@@ -1797,6 +1797,7 @@ impl ReviewList {
     /// and the caret when it is on this line.
     #[expect(
         clippy::cognitive_complexity,
+        clippy::too_many_lines,
         reason = "One row's review state, colours, text, caret and rail are assembled in draw order."
     )]
     fn draw_code(&mut self, cx: &mut Cx2d, item: &WidgetRef, r: usize, pass: &DrawPass) {
@@ -1867,6 +1868,17 @@ impl ReviewList {
             // paragraph, and truncating it would hide what is being reviewed.
             dl.wrap = pass.wrap || b.prose.is_some();
             dl.set_hits(hits_in(text, self.find.as_deref()));
+            dl.set_quotes(
+                d.quote_spans
+                    .get(&(*blob, *line))
+                    .map(|spans| {
+                        spans
+                            .iter()
+                            .map(|(from, to)| (*from as usize, *to as usize))
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+            );
             if pass.paint_selection {
                 match pass
                     .selected

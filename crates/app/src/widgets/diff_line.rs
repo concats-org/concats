@@ -40,6 +40,11 @@ script_mod! {
         draw_find +: {
             color: mod.app_theme.color_find
         }
+        // The words a comment was made on: underlined in the colour its marker
+        // uses, so the line says which of it the thread is about.
+        draw_quote +: {
+            color: mod.app_theme.color_accent
+        }
     }
 }
 
@@ -47,6 +52,9 @@ script_mod! {
 /// continuation would have less room than the indent it lines up under, so the
 /// line wraps at the margin instead.
 const HANG_LIMIT: f64 = 0.5;
+
+/// How thick the rule under a quoted run is drawn.
+const RULE_HEIGHT: f64 = 1.5;
 
 /// Caret width. Solid, not blinking: this row lives in a virtualized list, so
 /// a blink would redraw every visible row twice a second to animate one quad.
@@ -72,6 +80,8 @@ pub struct DiffLine {
     draw_caret: DrawColor,
     #[live]
     draw_find: DrawColor,
+    #[live]
+    draw_quote: DrawColor,
 
     #[rust]
     kind: Option<LineKind>,
@@ -106,6 +116,10 @@ pub struct DiffLine {
     /// from the live text, so an edit can never leave a stale one behind.
     #[rust]
     hits: Vec<(usize, usize)>,
+    /// Byte ranges of this row a comment was made on, from the document's
+    /// reading of the comments against the content.
+    #[rust]
+    quotes: Vec<(usize, usize)>,
     /// Where the caret was drawn, in window coordinates. The list reads it back
     /// after drawing to place the IME — which has to know where the text being
     /// composed will appear.
@@ -149,6 +163,12 @@ impl DiffLine {
     /// and only the second changes as you type in the find bar.
     pub fn set_hits(&mut self, hits: Vec<(usize, usize)>) {
         self.hits = hits;
+    }
+
+    /// Mark the words of this row a comment was made on, for the same reason:
+    /// what the line says and what has been said about it are two things.
+    pub fn set_quotes(&mut self, quotes: Vec<(usize, usize)>) {
+        self.quotes = quotes;
     }
 
     /// Where this row drew the caret, if it had one. Valid until the next draw.
@@ -435,6 +455,20 @@ impl Widget for DiffLine {
         for (start, end) in &self.hits {
             for rect in self.sel_track.selection_rects(*start, *end) {
                 self.draw_find.draw_abs(cx, rect);
+            }
+        }
+
+        // A rule under the quoted words rather than a wash over them: a comment
+        // is about text that stays as readable as the rest of the line.
+        for (start, end) in &self.quotes {
+            for rect in self.sel_track.selection_rects(*start, *end) {
+                self.draw_quote.draw_abs(
+                    cx,
+                    Rect {
+                        pos: dvec2(rect.pos.x, rect.pos.y + rect.size.y - RULE_HEIGHT),
+                        size: dvec2(rect.size.x, RULE_HEIGHT),
+                    },
+                );
             }
         }
 

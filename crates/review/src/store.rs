@@ -60,6 +60,20 @@ impl Anchor {
     }
 }
 
+/// The words a comment is about, and where they sit in its lines.
+///
+/// Read from the content when the comment was made, so a thread can say which
+/// words of its lines it is about without anyone copying them into the body —
+/// and so those words can be found again when the line has moved under them.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Quote {
+    pub text: String,
+    /// Byte offset into the first of the comment's lines, and into the last. A
+    /// quote inside one line is `from..to` of it.
+    pub from: u32,
+    pub to: u32,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Comment {
     pub id: u64,
@@ -74,11 +88,9 @@ pub struct Comment {
     /// `--author` was given (agents pass their name). Absent on old records.
     pub author: Option<String>,
     pub created_at: u64,
-    /// The text this comment was written about, when it was left on a
-    /// selection rather than on whole lines. Taken from the content at the
-    /// time, so the thread can say which words of its lines it is about
-    /// without anyone copying them into the body.
-    pub quote: Option<String>,
+    /// What this comment is about inside its lines, when it was left on a
+    /// selection rather than on whole lines.
+    pub quote: Option<Quote>,
     /// The thread root this replies to, never an intermediate reply.
     /// [`Store::root_of`] normalizes on the way in, so threads are exactly one
     /// level deep (GitHub's `in_reply_to_id` semantics); [`thread_key`] and the
@@ -163,7 +175,9 @@ CREATE TABLE IF NOT EXISTS comments(
   created_at INTEGER NOT NULL,
   parent INTEGER,
   external TEXT,
-  quote TEXT
+  quote TEXT,
+  quote_from INTEGER,
+  quote_to INTEGER
 );
 CREATE TABLE IF NOT EXISTS guides(
   id INTEGER PRIMARY KEY,
@@ -230,11 +244,20 @@ pub(crate) fn open_db(git_dir: &Path) -> rusqlite::Result<Connection> {
     conn.execute_batch(SCHEMA)?;
     // `CREATE TABLE IF NOT EXISTS` leaves a table that already exists alone, so
     // a column added later has to be asked for by name.
-    let has_quote = conn
-        .prepare("SELECT 1 FROM pragma_table_info('comments') WHERE name = 'quote'")?
-        .exists([])?;
-    if !has_quote {
-        conn.execute("ALTER TABLE comments ADD COLUMN quote TEXT", ())?;
+    for (column, kind) in [
+        ("quote", "TEXT"),
+        ("quote_from", "INTEGER"),
+        ("quote_to", "INTEGER"),
+    ] {
+        let present = conn
+            .prepare("SELECT 1 FROM pragma_table_info('comments') WHERE name = ?1")?
+            .exists([column])?;
+        if !present {
+            conn.execute(
+                &format!("ALTER TABLE comments ADD COLUMN {column} {kind}"),
+                (),
+            )?;
+        }
     }
     Ok(conn)
 }
@@ -298,7 +321,8 @@ impl Store {
 
         let mut comments = Vec::new();
         if let Ok(mut stmt) = self.conn.prepare(
-            "SELECT id, path, blob, start, end, body, author, created_at, parent, external, quote
+            "SELECT id, path, blob, start, end, body, author, created_at, parent, external,
+                    quote, quote_from, quote_to
              FROM comments ORDER BY id",
         ) {
             let rows = stmt.query_map([], |row| {
@@ -318,7 +342,12 @@ impl Store {
                     created_at: row.get(7)?,
                     parent: row.get(8)?,
                     external: row.get(9)?,
-                    quote: row.get(10)?,
+                    // A quote is its text and where it sits; without both it
+                    // is not one, and the comment reads as being on the lines.
+                    quote: match (row.get(10)?, row.get(11)?, row.get(12)?) {
+                        (Some(text), Some(from), Some(to)) => Some(Quote { text, from, to }),
+                        _ => None,
+                    },
                     cursors: None,
                 }))
             });
@@ -402,8 +431,9 @@ impl Store {
         };
         let write = self.conn.execute(
             "INSERT INTO comments
-             (path, blob, start, end, body, author, created_at, parent, external, quote)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+             (path, blob, start, end, body, author, created_at, parent, external,
+              quote, quote_from, quote_to)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
             (
                 &comment.path,
                 comment.anchor.blob.to_string(),
@@ -414,7 +444,9 @@ impl Store {
                 comment.created_at,
                 comment.parent,
                 &comment.external,
-                &comment.quote,
+                comment.quote.as_ref().map(|quote| &quote.text),
+                comment.quote.as_ref().map(|quote| quote.from),
+                comment.quote.as_ref().map(|quote| quote.to),
             ),
         );
         if let Err(error) = &write {
@@ -725,7 +757,7 @@ pub fn inject_comments(
                 parent: c.parent,
                 body: c.body.clone(),
                 meta: byline(c),
-                quote: c.quote.clone(),
+                quote: c.quote.as_ref().map(|quote| quote.text.clone()),
             });
         }
     }
@@ -996,7 +1028,7 @@ fn flush_outdated(
             } else {
                 format!("{byline} · outdated")
             },
-            quote: c.quote.clone(),
+            quote: c.quote.as_ref().map(|quote| quote.text.clone()),
         });
     }
 }
@@ -1063,7 +1095,11 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let mut store = Store::open(tmp.path());
         let id = store.add_comment(Comment {
-            quote: Some("resolve(&names, \"greeting\")".into()),
+            quote: Some(Quote {
+                text: "resolve(&names, \"greeting\")".into(),
+                from: 8,
+                to: 35,
+            }),
             ..comment(
                 "a.txt",
                 anchor(oid(7), 1, 1),
@@ -1074,12 +1110,21 @@ mod tests {
         store.reply_comment(id, "it does not".into(), None, 0, None);
 
         let reopened = Store::open(tmp.path());
-        let quotes: Vec<Option<&str>> = reopened
+        let quotes: Vec<Option<(&str, u32, u32)>> = reopened
             .comments
             .iter()
-            .map(|comment| comment.quote.as_deref())
+            .map(|comment| {
+                comment
+                    .quote
+                    .as_ref()
+                    .map(|quote| (quote.text.as_str(), quote.from, quote.to))
+            })
             .collect();
-        assert_eq!(quotes, [Some("resolve(&names, \"greeting\")"), None]);
+        // Where the words sit comes back with them: it is what underlines them.
+        assert_eq!(
+            quotes,
+            [Some(("resolve(&names, \"greeting\")", 8, 35)), None]
+        );
 
         let blobs = vec![Blob::new(oid(7), "txt".into(), "a\nb\nc\n".into())];
         let mut rows = card("a.txt", 0, 3);
