@@ -818,7 +818,7 @@ pub(crate) fn splice_comments(
     // The Comments tab is rebuilt here rather than patched: which threads
     // exist, where their content lives now and who answered last all change
     // with the comment list, and this is the one place that list arrives.
-    d.quote_spans = quote_spans(&d.blobs, comments);
+    d.quote_spans = quote_spans(&d.blobs, &d.blob_paths, comments);
     let (comments_rows, outdated_paths) = comments_stream(&d.blobs, &d.blob_paths, comments);
     d.comments_rows = comments_rows;
     d.has_comments = !comments.is_empty();
@@ -843,54 +843,86 @@ pub(crate) fn splice_comments(
     minted
 }
 
+/// Name -> blob indices, ascending: the order the loader interned them.
+/// Authored text is in here under the name it carries — it has no path, and a
+/// thread on a transcript entry is tracked like any other.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "Blob indices are u32 throughout the diff model."
+)]
+fn blobs_by_name<'a>(
+    blobs: &'a [Blob],
+    blob_paths: &'a std::collections::HashMap<u32, String>,
+) -> std::collections::HashMap<&'a str, Vec<u32>> {
+    let mut out: std::collections::HashMap<&str, Vec<u32>> = std::collections::HashMap::new();
+    for (blob, path) in blob_paths {
+        out.entry(path.as_str()).or_default().push(*blob);
+    }
+    for (blob, name) in blobs
+        .iter()
+        .enumerate()
+        .filter_map(|(blob, b)| Some((blob as u32, b.prose.as_deref()?)))
+    {
+        out.entry(name).or_default().push(blob);
+    }
+    for list in out.values_mut() {
+        list.sort_unstable();
+    }
+    out
+}
+
 /// Where every comment's quoted words sit now, as byte ranges by `(blob, line)`.
 ///
-/// A comment stores the offsets its words had in the lines it was made on. A
-/// later revision of the same file can have moved them along the line, so on
-/// one line the words themselves decide: if they are not where they were, they
-/// are looked for, and the offsets are the fallback. A quote dragged across
-/// several lines reads as one line and cannot be looked for, so it keeps what
-/// it stored.
+/// Located by [`store::place`], the same way the thread itself is: a comment on
+/// a file being typed into is held by cursors, and its words have to follow the
+/// line those cursors moved to rather than the line it was written on.
+///
+/// Within the line, the offsets the comment stored say where to look and the
+/// words themselves settle it — the occurrence nearest where they were, so a
+/// line that says the same thing twice underlines the half the thread is about.
+/// A quote dragged across several lines reads as one line and cannot be looked
+/// for, so it keeps what it stored.
 #[expect(
     clippy::cast_possible_truncation,
     reason = "Blob indices and byte offsets are u32 throughout the diff model."
 )]
 fn quote_spans(
     blobs: &[Blob],
+    blob_paths: &std::collections::HashMap<u32, String>,
     comments: &[store::Comment],
 ) -> std::collections::HashMap<(u32, u32), Vec<(u32, u32)>> {
-    let mut of_oid: std::collections::HashMap<ObjectId, Vec<u32>> =
-        std::collections::HashMap::new();
-    for (blob, content) in blobs.iter().enumerate() {
-        of_oid.entry(content.oid).or_default().push(blob as u32);
-    }
+    let of_name = blobs_by_name(blobs, blob_paths);
     let mut out: std::collections::HashMap<(u32, u32), Vec<(u32, u32)>> =
         std::collections::HashMap::new();
     for comment in comments {
         let Some(quote) = &comment.quote else {
             continue;
         };
-        let anchor = comment.anchor;
-        for &blob in of_oid.get(&anchor.blob).into_iter().flatten() {
-            for line in anchor.start..=anchor.end {
+        let path_blobs = of_name
+            .get(comment.path.as_str())
+            .map_or(&[][..], Vec::as_slice);
+        let Some(run) = store::place(comment, blobs, path_blobs) else {
+            continue;
+        };
+        // Every blob holding that content underlines it, because every one of
+        // them renders the thread: `inject_comments` places by oid, not index.
+        let oid = blobs[run.blob as usize].oid;
+        for &blob in path_blobs.iter().filter(|&&i| blobs[i as usize].oid == oid) {
+            for line in run.start..=run.end {
                 let text = blobs[blob as usize].line_text(line as usize);
-                let from = if line == anchor.start { quote.from } else { 0 } as usize;
-                let to = (if line == anchor.end {
-                    quote.to
-                } else {
-                    u32::MAX
-                } as usize)
-                    .min(text.len());
+                let from = if line == run.start { quote.from } else { 0 } as usize;
+                let to =
+                    (if line == run.end { quote.to } else { u32::MAX } as usize).min(text.len());
                 let stored = (from <= to).then_some((from, to));
-                let range = if anchor.start == anchor.end
-                    && text.get(from..to) != Some(quote.text.as_str())
-                {
-                    text.find(&quote.text)
-                        .map(|at| (at, at + quote.text.len()))
-                        .or(stored)
-                } else {
-                    stored
-                };
+                let range =
+                    if run.start == run.end && text.get(from..to) != Some(quote.text.as_str()) {
+                        text.match_indices(quote.text.as_str())
+                            .min_by_key(|(at, _)| at.abs_diff(from))
+                            .map(|(at, _)| (at, at + quote.text.len()))
+                            .or(stored)
+                    } else {
+                        stored
+                    };
                 if let Some((from, to)) = range {
                     out.entry((blob, line))
                         .or_default()
@@ -961,23 +993,7 @@ fn comments_stream(
         return (rows, outdated_paths);
     }
 
-    // name -> blob indices, ascending — the order the loader interned them.
-    // Authored text is in here under the name it carries: it has no path, and a
-    // thread on a transcript entry is tracked like any other.
-    let mut of_path: std::collections::HashMap<&str, Vec<u32>> = std::collections::HashMap::new();
-    for (blob, path) in blob_paths {
-        of_path.entry(path.as_str()).or_default().push(*blob);
-    }
-    for (blob, name) in blobs
-        .iter()
-        .enumerate()
-        .filter_map(|(blob, b)| Some((blob as u32, b.prose.as_deref()?)))
-    {
-        of_path.entry(name).or_default().push(blob);
-    }
-    for list in of_path.values_mut() {
-        list.sort_unstable();
-    }
+    let of_path = blobs_by_name(blobs, blob_paths);
 
     // One meta line per thread: where it sits, and who has answered.
     let meta = |root: &store::Comment| -> String {
@@ -2276,12 +2292,13 @@ mod tests {
             quote,
             ..stored(1, "a.rs", oid(1), 0, 0)
         };
+        let paths = HashMap::from([(0u32, "a.rs".to_string())]);
 
         // Where it was written, and where a line that has grown by four bytes
         // in front of it puts it now.
-        let spans = quote_spans(&blobs, &[comment(quote(12, 24))]);
+        let spans = quote_spans(&blobs, &paths, &[comment(quote(12, 24))]);
         assert_eq!(spans.get(&(0, 0)), Some(&vec![(12, 24)]));
-        let spans = quote_spans(&blobs, &[comment(quote(8, 20))]);
+        let spans = quote_spans(&blobs, &paths, &[comment(quote(8, 20))]);
         assert_eq!(spans.get(&(0, 0)), Some(&vec![(12, 24)]));
 
         // Gone from the line: the thread keeps its line, and nothing is
@@ -2294,10 +2311,66 @@ mod tests {
             }),
             ..stored(1, "a.rs", oid(1), 0, 0)
         };
-        assert_eq!(quote_spans(&blobs, &[gone]).get(&(0, 0)), None);
+        assert_eq!(quote_spans(&blobs, &paths, &[gone]).get(&(0, 0)), None);
 
         // A comment made on lines, not words, underlines nothing.
-        assert!(quote_spans(&blobs, &[comment(None)]).is_empty());
+        assert!(quote_spans(&blobs, &paths, &[comment(None)]).is_empty());
+    }
+
+    /// A line that says the same thing twice underlines the half the thread is
+    /// about: the offsets it stored pick between the occurrences.
+    #[test]
+    fn a_quote_takes_the_occurrence_nearest_where_it_was() {
+        let blobs = vec![Blob::new(
+            oid(1),
+            "rs".into(),
+            "  total = cost(x) + cost(x);\n".into(),
+        )];
+        let paths = HashMap::from([(0u32, "a.rs".to_string())]);
+        let on = |from, to| {
+            let comment = store::Comment {
+                quote: Some(store::Quote {
+                    text: "cost(x)".into(),
+                    from,
+                    to,
+                }),
+                ..stored(1, "a.rs", oid(1), 0, 0)
+            };
+            quote_spans(&blobs, &paths, &[comment])
+                .get(&(0, 0))
+                .cloned()
+        };
+
+        // Both occurrences reachable from the offsets they were written with,
+        // and from offsets two bytes off after the line was indented.
+        assert_eq!(on(10, 17), Some(vec![(10, 17)]));
+        assert_eq!(on(20, 27), Some(vec![(20, 27)]));
+        assert_eq!(on(8, 15), Some(vec![(10, 17)]));
+        assert_eq!(on(18, 25), Some(vec![(20, 27)]));
+    }
+
+    /// A comment on a file being typed into is held by cursors, and its words
+    /// follow the line those cursors moved to — not the line it was written on.
+    #[test]
+    fn a_quote_follows_the_line_its_comment_is_held_by() {
+        let mut blob = Blob::new(oid(1), "rs".into(), "let names = resolve(key);\n".into());
+        blob.hold(1, 0, 0);
+        blob.edit(0..0, "\n\n");
+        let blobs = vec![blob];
+        let paths = HashMap::from([(0u32, "a.rs".to_string())]);
+        let comment = store::Comment {
+            quote: Some(store::Quote {
+                text: "resolve(key)".into(),
+                from: 12,
+                to: 24,
+            }),
+            ..stored(1, "a.rs", oid(1), 0, 0)
+        };
+
+        // Two lines above it: the underline came down with the line.
+        let spans = quote_spans(&blobs, &paths, &[comment]);
+        assert_eq!(spans.get(&(0, 0)), None);
+        assert_eq!(spans.get(&(0, 2)), Some(&vec![(12, 24)]));
     }
 
     /// What a comment made on a selection says it is about: the words it is on,
