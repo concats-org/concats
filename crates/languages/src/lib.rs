@@ -55,11 +55,9 @@ pub fn lang_for_ext(ext: &str) -> &'static str {
 mod grammars {
     use std::collections::HashMap;
 
-    use concats_syntax::CAPTURES;
-    use tree_sitter_highlight::HighlightConfiguration;
+    use tree_sitter::{Language, Query};
 
-    /// Every built grammar, by file extension, configured to report
-    /// [`CAPTURES`].
+    /// Every built grammar and its highlights query, by file extension.
     ///
     /// One entry per extension rather than per language, because that is how a
     /// caller asks: it has a filename, not a language.
@@ -67,47 +65,37 @@ mod grammars {
     // line count is measuring the table rather than any logic.
     #[allow(clippy::too_many_lines)]
     #[must_use]
-    pub fn registry() -> HashMap<&'static str, HighlightConfiguration> {
+    pub fn registry() -> HashMap<&'static str, (Language, Query)> {
         let mut langs = HashMap::new();
 
         // NB: the grammar crates are maddeningly inconsistent — some export
-        // HIGHLIGHT_QUERY, some HIGHLIGHTS_QUERY; php exports LANGUAGE_PHP; and
-        // the query consts are #[cfg]-gated on the .scm file actually shipping,
-        // so an absent injections.scm means the const does not exist at all.
-        let mut add =
-            |name: &'static str, lang: tree_sitter::Language, hl: &str, inj: &str, loc: &str| {
-                // The extensions come off the shared table rather than being
-                // repeated here, so a grammar is reachable by exactly the
-                // extensions `lang_for_ext` names it for.
-                let exts = super::EXTENSIONS
-                    .iter()
-                    .find(|(n, _)| *n == name)
-                    .map_or(&[][..], |(_, exts)| *exts);
-                for ext in exts {
-                    if let Ok(mut cfg) =
-                        HighlightConfiguration::new(lang.clone(), name, hl, inj, loc)
-                    {
-                        cfg.configure(CAPTURES);
-                        langs.insert(*ext, cfg);
-                    }
+        // HIGHLIGHT_QUERY, some HIGHLIGHTS_QUERY; php exports LANGUAGE_PHP.
+        let mut add = |name: &'static str, lang: Language, hl: &str| {
+            // The extensions come off the shared table rather than being
+            // repeated here, so a grammar is reachable by exactly the
+            // extensions `lang_for_ext` names it for.
+            let exts = super::EXTENSIONS
+                .iter()
+                .find(|(n, _)| *n == name)
+                .map_or(&[][..], |(_, exts)| *exts);
+            for ext in exts {
+                if let Ok(query) = Query::new(&lang, hl) {
+                    langs.insert(*ext, (lang.clone(), query));
                 }
-            };
+            }
+        };
 
         #[cfg(feature = "rust")]
         add(
             "rust",
             tree_sitter_rust::LANGUAGE.into(),
             tree_sitter_rust::HIGHLIGHTS_QUERY,
-            tree_sitter_rust::INJECTIONS_QUERY,
-            "",
         );
         #[cfg(feature = "javascript")]
         add(
             "javascript",
             tree_sitter_javascript::LANGUAGE.into(),
             tree_sitter_javascript::HIGHLIGHT_QUERY,
-            tree_sitter_javascript::INJECTIONS_QUERY,
-            tree_sitter_javascript::LOCALS_QUERY,
         );
         // NB: tree-sitter-typescript ships only the *delta* over JavaScript —
         // types, parameters, and the TS-only keywords. Everything a `.ts` file
@@ -121,145 +109,102 @@ mod grammars {
                 tree_sitter_typescript::HIGHLIGHTS_QUERY,
             ]
             .concat();
-            let loc = [
-                tree_sitter_javascript::LOCALS_QUERY,
-                tree_sitter_typescript::LOCALS_QUERY,
-            ]
-            .concat();
             add(
                 "typescript",
                 tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
                 &hl,
-                tree_sitter_javascript::INJECTIONS_QUERY,
-                &loc,
             );
-            add(
-                "tsx",
-                tree_sitter_typescript::LANGUAGE_TSX.into(),
-                &hl,
-                tree_sitter_javascript::INJECTIONS_QUERY,
-                &loc,
-            );
+            add("tsx", tree_sitter_typescript::LANGUAGE_TSX.into(), &hl);
         }
         #[cfg(feature = "python")]
         add(
             "python",
             tree_sitter_python::LANGUAGE.into(),
             tree_sitter_python::HIGHLIGHTS_QUERY,
-            "",
-            "",
         );
         #[cfg(feature = "go")]
         add(
             "go",
             tree_sitter_go::LANGUAGE.into(),
             tree_sitter_go::HIGHLIGHTS_QUERY,
-            "",
-            "",
         );
         #[cfg(feature = "c")]
         add(
             "c",
             tree_sitter_c::LANGUAGE.into(),
             tree_sitter_c::HIGHLIGHT_QUERY,
-            "",
-            "",
         );
         #[cfg(feature = "cpp")]
         add(
             "cpp",
             tree_sitter_cpp::LANGUAGE.into(),
             tree_sitter_cpp::HIGHLIGHT_QUERY,
-            "",
-            "",
         );
         #[cfg(feature = "java")]
         add(
             "java",
             tree_sitter_java::LANGUAGE.into(),
             tree_sitter_java::HIGHLIGHTS_QUERY,
-            "",
-            "",
         );
         #[cfg(feature = "c-sharp")]
         add(
             "c_sharp",
             tree_sitter_c_sharp::LANGUAGE.into(),
             tree_sitter_c_sharp::HIGHLIGHTS_QUERY,
-            "",
-            "",
         );
         #[cfg(feature = "ruby")]
         add(
             "ruby",
             tree_sitter_ruby::LANGUAGE.into(),
             tree_sitter_ruby::HIGHLIGHTS_QUERY,
-            "",
-            tree_sitter_ruby::LOCALS_QUERY,
         );
         #[cfg(feature = "php")]
         add(
             "php",
             tree_sitter_php::LANGUAGE_PHP.into(),
             tree_sitter_php::HIGHLIGHTS_QUERY,
-            tree_sitter_php::INJECTIONS_QUERY,
-            "",
         );
         #[cfg(feature = "html")]
         add(
             "html",
             tree_sitter_html::LANGUAGE.into(),
             tree_sitter_html::HIGHLIGHTS_QUERY,
-            tree_sitter_html::INJECTIONS_QUERY,
-            "",
         );
         #[cfg(feature = "css")]
         add(
             "css",
             tree_sitter_css::LANGUAGE.into(),
             tree_sitter_css::HIGHLIGHTS_QUERY,
-            "",
-            "",
         );
         #[cfg(feature = "scala")]
         add(
             "scala",
             tree_sitter_scala::LANGUAGE.into(),
             tree_sitter_scala::HIGHLIGHTS_QUERY,
-            "",
-            tree_sitter_scala::LOCALS_QUERY,
         );
         #[cfg(feature = "haskell")]
         add(
             "haskell",
             tree_sitter_haskell::LANGUAGE.into(),
             tree_sitter_haskell::HIGHLIGHTS_QUERY,
-            tree_sitter_haskell::INJECTIONS_QUERY,
-            tree_sitter_haskell::LOCALS_QUERY,
         );
         #[cfg(feature = "json")]
         add(
             "json",
             tree_sitter_json::LANGUAGE.into(),
             tree_sitter_json::HIGHLIGHTS_QUERY,
-            "",
-            "",
         );
         #[cfg(feature = "bash")]
         add(
             "bash",
             tree_sitter_bash::LANGUAGE.into(),
             tree_sitter_bash::HIGHLIGHT_QUERY,
-            "",
-            "",
         );
         #[cfg(feature = "markdown")]
         add(
             "markdown",
             tree_sitter_md::LANGUAGE.into(),
             tree_sitter_md::HIGHLIGHT_QUERY_BLOCK,
-            tree_sitter_md::INJECTION_QUERY_BLOCK,
-            "",
         );
 
         langs

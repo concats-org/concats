@@ -24,7 +24,6 @@ concats_languages = { workspace = true }
 gix = { workspace = true, optional = true }
 
 tree-sitter = { workspace = true, optional = true }
-tree-sitter-highlight = { workspace = true, optional = true }
 
 [features]
 # The native engine. Off, everything falls back to unstyled runs — the shape
@@ -33,6 +32,5 @@ default = ["treesitter"]
 treesitter = [
     "dep:gix",
     "dep:tree-sitter",
-    "dep:tree-sitter-highlight",
     "concats_languages/all",
 ]

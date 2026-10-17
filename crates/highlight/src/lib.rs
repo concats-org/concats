@@ -159,7 +159,7 @@ impl Parsed {
 /// parse is worth keeping and the query is worth scoping.
 pub struct Highlighter {
     #[cfg(feature = "treesitter")]
-    langs: HashMap<&'static str, tree_sitter_highlight::HighlightConfiguration>,
+    langs: HashMap<&'static str, (tree_sitter::Language, tree_sitter::Query)>,
     /// One parsed tree per buffer, with the text and revision it was parsed at.
     ///
     /// The revision is in the value, not the key. Keying by it would give each
@@ -253,120 +253,40 @@ impl Highlighter {
         buffer: Buffer<'_>,
         lines: std::ops::Range<usize>,
     ) -> LineSpans {
-        use tree_sitter::{QueryCursor, StreamingIterator};
-
         let src = buffer.text;
-        let Some(config) = self.langs.get(buffer.ext) else {
+        let Some((language, query)) = self.langs.get(buffer.ext) else {
             return plain(src);
         };
-        let starts = line_starts(src);
-        // Off the line table rather than off `src.lines()`, so this agrees with
-        // the table a blob keeps — and so an empty file has no lines to fill
-        // instead of one that is not there.
-        let count = starts.len() - 1;
-        let lines = lines.start.min(count)..lines.end.min(count);
-        let mut out: LineSpans = vec![Vec::new(); count];
-        if lines.is_empty() {
-            return out;
-        }
-
         let tree = match self.parsed.entry(buffer.key()) {
             std::collections::hash_map::Entry::Occupied(held) => {
                 let held = held.into_mut();
                 if held.rev != buffer.rev {
-                    held.catch_up(src, buffer.rev, &config.language);
+                    held.catch_up(src, buffer.rev, language);
                 }
                 &held.tree
             }
             std::collections::hash_map::Entry::Vacant(slot) => {
-                let Some(fresh) = Parsed::new(src, buffer.rev, &config.language) else {
+                let Some(fresh) = Parsed::new(src, buffer.rev, language) else {
                     return plain(src);
                 };
                 &slot.insert(fresh).tree
             }
         };
-
-        let from = starts[lines.start] as usize;
-        let to = starts.get(lines.end).map_or(src.len(), |at| *at as usize);
-        let mut cursor = QueryCursor::new();
-        cursor.set_byte_range(from..to);
-        let names = config.query.capture_names();
-        // Captured runs, per line, before overlaps are resolved.
-        let mut caught: Vec<Vec<Caught>> = vec![Vec::new(); lines.len()];
-        let mut matches = cursor.matches(&config.query, tree.root_node(), src.as_bytes());
-        let mut seq = 0usize;
-        while let Some(found) = matches.next() {
-            for capture in found.captures {
-                seq += 1;
-                let hl = names
-                    .get(capture.index as usize)
-                    .and_then(|name| capture_to_hl(name));
-                let node = capture.node.byte_range();
-                clip_to_lines(&mut caught, &starts, node, (hl, seq), &lines);
-            }
-        }
-        for (offset, runs) in caught.into_iter().enumerate() {
-            let line = lines.start + offset;
-            out[line] = partition(runs, width_of(&starts, line));
-        }
-        out
+        query_lines(query, tree, src, lines)
     }
 
+    /// Every line's spans, off a fresh parse and through the same loop as
+    /// [`Self::spans_for_lines`], so a file coloured whole looks as it would
+    /// row by row.
     #[cfg(feature = "treesitter")]
     pub fn compute(&mut self, ext: &str, src: &str) -> LineSpans {
-        use tree_sitter_highlight::{HighlightEvent, Highlighter as TsHighlighter};
-
-        let Some(config) = self.langs.get(ext) else {
+        let Some((language, query)) = self.langs.get(ext) else {
             return plain(src);
         };
-
-        let starts = line_starts(src);
-        let column = |at: usize| at - starts[line_of(&starts, at)] as usize;
-
-        let mut out: LineSpans = vec![Vec::new(); starts.len() - 1];
-        let mut ts = TsHighlighter::new();
-        let Ok(events) = ts.highlight(config, src.as_bytes(), None, |_| None) else {
-            return plain(src);
-        };
-
-        let mut stack: Vec<usize> = Vec::new();
-        for ev in events {
-            let Ok(ev) = ev else { return plain(src) };
-            match ev {
-                HighlightEvent::HighlightStart(h) => stack.push(h.0),
-                HighlightEvent::HighlightEnd => {
-                    stack.pop();
-                }
-                HighlightEvent::Source { start, end } => {
-                    let hl = stack
-                        .last()
-                        .and_then(|&i| capture_to_hl(concats_syntax::CAPTURES[i]));
-                    let (mut l, mut c) = (line_of(&starts, start), column(start));
-                    let el = line_of(&starts, end);
-                    let ec = column(end);
-                    while l < el {
-                        let eol = width_of(&starts, l);
-                        if l < out.len() && eol > c {
-                            out[l].push(Span {
-                                start: c,
-                                end: eol,
-                                hl,
-                            });
-                        }
-                        l += 1;
-                        c = 0;
-                    }
-                    if l < out.len() && ec > c {
-                        out[l].push(Span {
-                            start: c,
-                            end: ec,
-                            hl,
-                        });
-                    }
-                }
-            }
+        match Parsed::new(src, 0, language) {
+            Some(parsed) => query_lines(query, &parsed.tree, src, 0..usize::MAX),
+            None => plain(src),
         }
-        out
     }
 
     #[cfg(not(feature = "treesitter"))]
@@ -374,6 +294,60 @@ impl Highlighter {
         // Web build: no C grammars. syntect/fancy-regex slots in here.
         plain(src)
     }
+}
+
+/// The capture loop behind both entry points: `lines` of `src`, coloured off
+/// `tree`, in a table the length of the file.
+#[cfg(feature = "treesitter")]
+fn query_lines(
+    query: &tree_sitter::Query,
+    tree: &tree_sitter::Tree,
+    src: &str,
+    lines: std::ops::Range<usize>,
+) -> LineSpans {
+    use tree_sitter::{QueryCursor, StreamingIterator};
+
+    let starts = line_starts(src);
+    // Off the line table rather than off `src.lines()`, so this agrees with
+    // the table a blob keeps — and so an empty file has no lines to fill
+    // instead of one that is not there.
+    let count = starts.len() - 1;
+    let lines = lines.start.min(count)..lines.end.min(count);
+    let mut out: LineSpans = vec![Vec::new(); count];
+    if lines.is_empty() {
+        return out;
+    }
+
+    let from = starts[lines.start] as usize;
+    let to = starts.get(lines.end).map_or(src.len(), |at| *at as usize);
+    let mut cursor = QueryCursor::new();
+    cursor.set_byte_range(from..to);
+    let names = query.capture_names();
+    // Captured runs, per line, before overlaps are resolved.
+    let mut caught: Vec<Vec<Caught>> = vec![Vec::new(); lines.len()];
+    let mut matches = cursor.matches(query, tree.root_node(), src.as_bytes());
+    let mut seq = 0usize;
+    while let Some(found) = matches.next() {
+        for capture in found.captures {
+            // NOTE: a capture no theme colours (`@escape`, `@label`) is left
+            // out rather than painted as plain, or it would blank the colour
+            // of the node it sits in.
+            let Some(hl) = names
+                .get(capture.index as usize)
+                .and_then(|name| capture_to_hl(name))
+            else {
+                continue;
+            };
+            seq += 1;
+            let node = capture.node.byte_range();
+            clip_to_lines(&mut caught, &starts, node, (hl, seq), &lines);
+        }
+    }
+    for (offset, runs) in caught.into_iter().enumerate() {
+        let line = lines.start + offset;
+        out[line] = partition(runs, width_of(&starts, line));
+    }
+    out
 }
 
 /// How many columns a line has, not counting the newline that ends it — the
@@ -385,14 +359,14 @@ fn width_of(starts: &[u32], line: usize) -> usize {
         .map_or(0, |end| (end - 1).saturating_sub(starts[line]) as usize)
 }
 
-/// One capture, clipped to a line: its columns, its colour, and where it came in
-/// the query — which decides who wins when two patterns catch the same node.
+/// One capture, clipped to a line: its columns, its colour, and when the cursor
+/// reported it — which decides who wins when two patterns catch the same node.
 #[cfg(feature = "treesitter")]
 #[derive(Clone)]
 struct Caught {
     from: usize,
     to: usize,
-    hl: Option<Hl>,
+    hl: Hl,
     seq: usize,
 }
 
@@ -408,7 +382,7 @@ fn clip_to_lines(
     caught: &mut [Vec<Caught>],
     starts: &[u32],
     bytes: std::ops::Range<usize>,
-    (hl, seq): (Option<Hl>, usize),
+    (hl, seq): (Hl, usize),
     wanted: &std::ops::Range<usize>,
 ) {
     let first = line_of(starts, bytes.start);
@@ -442,15 +416,17 @@ fn partition(mut caught: Vec<Caught>, width: usize) -> Vec<Span> {
         return Vec::new();
     }
     // Widest first, so narrower captures paint over them; for two captures of
-    // the same range, the later one first, so the earlier one lands on top.
-    // That is tree-sitter's own precedence: a node caught by two patterns takes
-    // the colour of whichever comes first in the query, which is how
-    // `names.get(key)` reads as a method call rather than a field.
+    // the same range, the later one first, so the one the cursor reported first
+    // lands on top: the call's pattern, reported before `(field_identifier)`,
+    // is why `names.get(key)` reads as a method call rather than a field.
+    // NOTE: first-wins, not tree-sitter-highlight's later-wins: Go and Python
+    // list their call patterns before the identifier patterns they override,
+    // so later-wins would recolour Go functions and Python method calls.
     caught.sort_by_key(|c| (c.from, std::cmp::Reverse(c.to), std::cmp::Reverse(c.seq)));
     let mut column: Vec<Option<Hl>> = vec![None; width];
     for run in caught {
         for at in column.iter_mut().take(run.to.min(width)).skip(run.from) {
-            *at = run.hl;
+            *at = Some(run.hl);
         }
     }
     let mut out: Vec<Span> = Vec::new();
@@ -581,9 +557,8 @@ fn main() {
     /// The colour of every column, which is what a reader actually sees.
     ///
     /// Compared this way rather than span for span because the segmentation is
-    /// an implementation detail: two adjacent captures of the same colour are one
-    /// run here and two in the whole-file path, and that is a difference in how
-    /// many quads get drawn, not in what anybody sees.
+    /// an implementation detail: how many runs a line is cut into changes how
+    /// many quads get drawn, not what anybody sees.
     fn colours(spans: &[Span], width: usize) -> Vec<Option<Hl>> {
         let mut out = vec![None; width];
         for span in spans {
@@ -594,24 +569,65 @@ fn main() {
         out
     }
 
+    const JS: &str = r#"import { readFile } from "fs";
+
+const LIMIT = 10;
+// Read a file, then cut it short.
+export function head(path) {
+  return readFile(path, "utf8").then((text) => text.slice(0, LIMIT));
+}
+console.log(head("notes\n.txt"));
+"#;
+
+    const PY: &str = r#"import os
+
+LIMIT = 3
+
+
+class Greeter:
+    def greet(self, name):
+        """Say hello."""
+        return f"hello {name!r}\n" * LIMIT  # a comment
+
+
+print(Greeter().greet(os.getenv("USER")))
+"#;
+
     /// Asking for a few lines must give the same colours as asking for the
     /// file. Scoping the query is only sound if it changes the cost and not the
     /// answer, and the answer is what a frame is painted from.
     #[test]
     fn a_viewport_is_coloured_exactly_as_the_whole_file_would_be() {
-        let mut hl = Highlighter::new();
-        let whole = hl.compute("rs", SRC);
-        let width = |line: usize| SRC.lines().nth(line).map_or(0, str::len);
-        for lines in [0..3, 3..6, 4..5, 10..13] {
-            let part = hl.spans_for_lines(buf(SRC, 0, "rs"), lines.clone());
-            for line in lines.clone() {
-                assert_eq!(
-                    colours(&part[line], width(line)),
-                    colours(&whole[line], width(line)),
-                    "line {line} differs when asked for as {lines:?}"
-                );
+        let cases = [
+            ("rs", SRC, [0..3, 3..6, 4..5, 10..13]),
+            ("js", JS, [0..2, 2..5, 4..5, 5..8]),
+            ("py", PY, [0..3, 3..7, 7..9, 11..12]),
+        ];
+        for (ext, src, windows) in cases {
+            let mut hl = Highlighter::new();
+            let whole = hl.compute(ext, src);
+            let width = |line: usize| src.lines().nth(line).map_or(0, str::len);
+            for lines in windows {
+                let part = hl.spans_for_lines(buf(src, 0, ext), lines.clone());
+                for line in lines.clone() {
+                    assert_eq!(
+                        colours(&part[line], width(line)),
+                        colours(&whole[line], width(line)),
+                        ".{ext} line {line} differs when asked for as {lines:?}"
+                    );
+                }
             }
         }
+    }
+
+    /// A capture no theme colours, like Rust's `@escape`, says nothing about
+    /// the text under it, so the string around it keeps its colour.
+    #[test]
+    fn a_colourless_capture_does_not_blank_the_colour_under_it() {
+        let src = "let s = \"a\\nb\";\n";
+        let mut hl = Highlighter::new();
+        let spans = hl.spans_for_lines(buf(src, 0, "rs"), 0..1);
+        assert_eq!(colours(&spans[0], 15)[8..14], [Some(Hl::String); 6]);
     }
 
     /// …and it covers every column, because a row paints its spans in order and

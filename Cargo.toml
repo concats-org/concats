@@ -88,7 +88,6 @@ toml = "0.8"
 # Pinned in one place so the grammar registry and the engine that queries it
 # cannot end up on two incompatible tree-sitter versions.
 tree-sitter = "0.25"
-tree-sitter-highlight = "0.25"
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
 

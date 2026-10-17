@@ -45,10 +45,7 @@ thread_local! {
 ///
 /// For a blob under the budget this is the only source, not a fallback until
 /// the worker's result lands. With two sources the colours of a frame depended
-/// on whether the worker had finished, and the two split a line differently
-/// (this one merges adjacent runs of one colour, the worker keeps a run per
-/// capture), so the same file rendered two slightly different ways depending on
-/// timing. One source, no race, no flash.
+/// on whether the worker had finished. One source, no race, no flash.
 ///
 /// It is the only source for a buffer with unsaved edits too, and there it is
 /// the only correct one: the worker keys its trees by oid, typing does not

@@ -38,44 +38,6 @@ pub enum Hl {
 /// A file's spans, by 0-based line.
 pub type LineSpans = Vec<Vec<Span>>;
 
-/// The capture names a highlight query is configured with, in the order their
-/// indices are handed back.
-///
-/// Lives here rather than with the grammars because it is the other half of
-/// [`capture_to_hl`]: the names an engine asks for and the names a theme keys on
-/// have to be one list, or a theme colours a capture nothing ever emits.
-pub const CAPTURES: &[&str] = &[
-    "attribute",
-    "comment",
-    "constant",
-    "constant.builtin",
-    "constructor",
-    "function",
-    "function.builtin",
-    "function.method",
-    "keyword",
-    "number",
-    "operator",
-    "property",
-    "punctuation",
-    "punctuation.bracket",
-    "punctuation.delimiter",
-    "string",
-    "string.escape",
-    "tag",
-    // Markdown's block grammar speaks text.*; without these it colours almost
-    // nothing (only punctuation), which reads as broken highlighting.
-    "text.literal",
-    "text.reference",
-    "text.title",
-    "text.uri",
-    "type",
-    "type.builtin",
-    "variable",
-    "variable.builtin",
-    "variable.parameter",
-];
-
 /// Capture-name prefix to colour, in precedence order: the first prefix a name
 /// starts with wins, so `variable.parameter` sits ahead of `variable`.
 const PREFIXES: &[(&str, Hl)] = &[
@@ -118,19 +80,6 @@ pub fn capture_to_hl(name: &str) -> Option<Hl> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// A capture an engine is configured to emit but no theme can name would be
-    /// colourless text nobody can style. That is what this crate exists to
-    /// prevent.
-    #[test]
-    fn every_configured_capture_names_a_colour() {
-        for name in CAPTURES {
-            assert!(
-                capture_to_hl(name).is_some(),
-                "{name} is queried for but maps to no Hl"
-            );
-        }
-    }
 
     #[test]
     fn a_grammars_finer_capture_lands_on_the_coarser_colour() {

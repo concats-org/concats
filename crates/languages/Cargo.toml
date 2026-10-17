@@ -19,7 +19,6 @@ concats_syntax = { workspace = true }
 # here lets the highlighting engine compile and test with none of them present,
 # and makes adding a language a change to this crate only.
 tree-sitter = { workspace = true, optional = true }
-tree-sitter-highlight = { workspace = true, optional = true }
 
 tree-sitter-rust = { version = "0.24", optional = true }
 tree-sitter-javascript = { version = "0.23", optional = true }
@@ -46,7 +45,7 @@ default = ["all"]
 
 # What every language feature turns on. Named so the code can `cfg` the whole
 # registry on "is there a parser at all" without listing eighteen languages.
-grammars = ["dep:tree-sitter", "dep:tree-sitter-highlight"]
+grammars = ["dep:tree-sitter"]
 
 all = [
     "rust",

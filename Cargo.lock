@@ -747,7 +747,6 @@ dependencies = [
  "concats-text",
  "gix",
  "tree-sitter",
- "tree-sitter-highlight",
 ]
 
 [[package]]
@@ -779,7 +778,6 @@ dependencies = [
  "tree-sitter-css",
  "tree-sitter-go",
  "tree-sitter-haskell",
- "tree-sitter-highlight",
  "tree-sitter-html",
  "tree-sitter-java",
  "tree-sitter-javascript",
@@ -5242,18 +5240,6 @@ checksum = "977c51e504548cba13fc27cb5a2edab2124cf6716a1934915d07ab99523b05a4"
 dependencies = [
  "cc",
  "tree-sitter-language",
-]
-
-[[package]]
-name = "tree-sitter-highlight"
-version = "0.25.10"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "adc5f880ad8d8f94e88cb81c3557024cf1a8b75e3b504c50481ed4f5a6006ff3"
-dependencies = [
- "regex",
- "streaming-iterator",
- "thiserror 2.0.20",
- "tree-sitter",
 ]
 
 [[package]]
