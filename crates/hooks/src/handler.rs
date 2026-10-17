@@ -137,36 +137,11 @@ mod tests {
 
     use concats_core::{
         session, snapshot,
-        turn::{self, TurnEntry, TurnEntryKind},
+        turn::{self, TurnEntry},
     };
+    use concats_fixture::init_repo_with_commit;
 
     use super::*;
-
-    fn init_repo_with_commit(dir: &std::path::Path) {
-        let git = |args: &[&str]| {
-            let status = std::process::Command::new("git")
-                .arg("-C")
-                .arg(dir)
-                .args(args)
-                .envs([
-                    // Hermetic: the user's git config (signing, hooks) must
-                    // not leak into fixtures.
-                    ("GIT_CONFIG_GLOBAL", "/dev/null"),
-                    ("GIT_CONFIG_SYSTEM", "/dev/null"),
-                    ("GIT_AUTHOR_NAME", "test"),
-                    ("GIT_AUTHOR_EMAIL", "test@test"),
-                    ("GIT_COMMITTER_NAME", "test"),
-                    ("GIT_COMMITTER_EMAIL", "test@test"),
-                ])
-                .status()
-                .unwrap();
-            assert!(status.success());
-        };
-        git(&["init", "-q"]);
-        std::fs::write(dir.join("init.txt"), "init").unwrap();
-        git(&["add", "-A"]);
-        git(&["commit", "-q", "-m", "initial"]);
-    }
 
     mod on_session_started {
         use super::*;
@@ -228,12 +203,7 @@ mod tests {
             assert_eq!(turns[0].subject(), "hello");
             assert_eq!(turns[0].agent_name(), Some("Test"));
             assert_eq!(snapshot.reason(), Some(SnapshotReason::TurnCommit));
-            assert!(matches!(
-                turns[0].entries(),
-                [TurnEntry {
-                    kind: TurnEntryKind::Prompt { text }
-                }] if text == "hello"
-            ));
+            assert_eq!(turns[0].entries(), [TurnEntry::prompt_now("hello")]);
         }
     }
 
@@ -306,17 +276,13 @@ mod tests {
             let snapshot = snapshot::get(&session, turns[0].oid).unwrap();
 
             assert_eq!(snapshot.reason(), Some(SnapshotReason::TurnAmend));
-            assert!(matches!(
+            assert_eq!(
                 turns[0].entries(),
                 [
-                    TurnEntry {
-                        kind: TurnEntryKind::Prompt { text: prompt }
-                    },
-                    TurnEntry {
-                        kind: TurnEntryKind::Response { text: response }
-                    }
-                ] if prompt == "hello" && response == "done"
-            ));
+                    TurnEntry::prompt_now("hello"),
+                    TurnEntry::response_now("done")
+                ]
+            );
         }
 
         #[test]
@@ -342,20 +308,14 @@ mod tests {
             let snapshot = snapshot::get(&session, turns[0].oid).unwrap();
 
             assert_eq!(snapshot.reason(), Some(SnapshotReason::TurnAmend));
-            assert!(matches!(
+            assert_eq!(
                 turns[0].entries(),
                 [
-                    TurnEntry {
-                        kind: TurnEntryKind::Prompt { text: prompt }
-                    },
-                    TurnEntry {
-                        kind: TurnEntryKind::Response { text: first }
-                    },
-                    TurnEntry {
-                        kind: TurnEntryKind::Response { text: second }
-                    }
-                ] if prompt == "hello" && first == "first" && second == "second"
-            ));
+                    TurnEntry::prompt_now("hello"),
+                    TurnEntry::response_now("first"),
+                    TurnEntry::response_now("second")
+                ]
+            );
         }
 
         #[test]
@@ -379,12 +339,7 @@ mod tests {
             assert_eq!(turns.len(), 1);
             assert_eq!(turns[0].subject(), "done now");
             assert_eq!(snapshot.reason(), Some(SnapshotReason::TurnCommit));
-            assert!(matches!(
-                turns[0].entries(),
-                [TurnEntry {
-                    kind: TurnEntryKind::Response { text }
-                }] if text == "done now"
-            ));
+            assert_eq!(turns[0].entries(), [TurnEntry::response_now("done now")]);
         }
     }
 }

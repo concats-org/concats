@@ -88,19 +88,4 @@ mod tests {
             assert!(data.contains("concats hook copilot PostToolUse"));
         }
     }
-
-    mod uninstall {
-        use super::*;
-
-        #[test]
-        fn removes_config_file() {
-            let dir = tempfile::tempdir().unwrap();
-            let path = dir.path().join("concats.json");
-            write_config(&path, Path::new("concats")).unwrap();
-            assert!(path.exists());
-
-            std::fs::remove_file(&path).unwrap();
-            assert!(!path.exists());
-        }
-    }
 }

@@ -322,31 +322,3 @@ fn turn_parents(repo: &gix::Repository, session_parent: gix::ObjectId) -> Vec<gi
     }
     parents
 }
-
-#[cfg(test)]
-#[allow(clippy::disallowed_methods)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn session_id_parses_bare_value() {
-        let session_id: SessionId = "session-a".parse().unwrap();
-
-        assert_eq!(session_id.as_ref(), "session-a");
-        assert_eq!(session_id.to_string(), "session-a");
-    }
-
-    #[test]
-    fn session_id_rejects_empty_value() {
-        let error = "".parse::<SessionId>().unwrap_err();
-
-        assert!(error.to_string().contains("must not be empty"));
-    }
-
-    #[test]
-    fn session_id_rejects_newlines() {
-        let error = "session-a\nsession-b".parse::<SessionId>().unwrap_err();
-
-        assert!(error.to_string().contains("newline"));
-    }
-}

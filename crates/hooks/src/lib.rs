@@ -182,34 +182,9 @@ mod tests {
     use std::rc::Rc;
 
     use concats_core::session;
+    use concats_fixture::init_repo_with_commit;
 
     use super::*;
-
-    fn init_repo_with_commit(dir: &std::path::Path) {
-        let git = |args: &[&str]| {
-            let status = std::process::Command::new("git")
-                .arg("-C")
-                .arg(dir)
-                .args(args)
-                .envs([
-                    // Hermetic: the user's git config (signing, hooks) must
-                    // not leak into fixtures.
-                    ("GIT_CONFIG_GLOBAL", "/dev/null"),
-                    ("GIT_CONFIG_SYSTEM", "/dev/null"),
-                    ("GIT_AUTHOR_NAME", "test"),
-                    ("GIT_AUTHOR_EMAIL", "test@test"),
-                    ("GIT_COMMITTER_NAME", "test"),
-                    ("GIT_COMMITTER_EMAIL", "test@test"),
-                ])
-                .status()
-                .unwrap();
-            assert!(status.success());
-        };
-        git(&["init", "-q"]);
-        std::fs::write(dir.join("init.txt"), "init").unwrap();
-        git(&["add", "-A"]);
-        git(&["commit", "-q", "-m", "initial"]);
-    }
 
     mod find_agent {
         use super::*;

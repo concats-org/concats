@@ -3,20 +3,28 @@
 // value alone. `all`, `style` and `complexity` stay on, as everywhere.
 #![allow(clippy::pedantic)]
 
-use std::{ffi::OsStr, path::Path, process::Command};
+use std::{path::Path, rc::Rc};
 
-use concats_core::Oid;
+use concats_core::{Oid, session, session::Session};
+use concats_fixture::git;
 use concats_message::Turn as TurnMessage;
+use tempfile::TempDir;
 
 const SESSION_REF_PREFIX: &str = "refs/agent/sessions/";
 const SNAPSHOT_REF_PREFIX: &str = "refs/agent/snapshots/";
 
 pub fn init_repo_with_commit(dir: &Path) -> gix::Repository {
-    run_git(dir, ["init", "-q"]);
-    std::fs::write(dir.join("init.txt"), "init").unwrap();
-    run_git(dir, ["add", "-A"]);
-    run_git(dir, ["commit", "-q", "-m", "initial"]);
+    concats_fixture::init_repo_with_commit(dir);
     gix::open(dir).unwrap()
+}
+
+/// A session `id` started at the head of a one-commit repo.
+pub fn session(id: &str) -> (TempDir, Rc<gix::Repository>, Session, Oid) {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = Rc::new(init_repo_with_commit(dir.path()));
+    let head = Oid::from(repo.head_id().unwrap().detach());
+    let session = session::create(repo.clone(), id, head).unwrap();
+    (dir, repo, session, head)
 }
 
 pub fn turn_message(session_id: &str) -> TurnMessage {
@@ -33,42 +41,9 @@ pub fn commit_head(
 ) -> Oid {
     std::fs::write(worktree_root.join(file_name), contents).unwrap();
     let message = format!("commit {file_name}");
-    run_git(worktree_root, ["add", "-A"]);
-    run_git(worktree_root, ["commit", "-q", "-m", message.as_str()]);
+    git(worktree_root, &["add", "-A"]);
+    git(worktree_root, &["commit", "-q", "-m", &message]);
     Oid::from(repo.head_id().unwrap().detach())
-}
-
-pub fn add_origin_remote(repo: &gix::Repository, remote_path: &Path) {
-    let url = remote_path.to_string_lossy();
-    run_git(
-        repo.workdir().unwrap(),
-        ["remote", "add", "origin", url.as_ref()],
-    );
-}
-
-pub fn run_git<I, S>(repo_path: &Path, args: I) -> String
-where
-    I: IntoIterator<Item = S>,
-    S: AsRef<OsStr>,
-{
-    let output = Command::new("git")
-        .args(args)
-        .current_dir(repo_path)
-        // Hermetic: user/system git config must not leak into fixtures.
-        .env("GIT_CONFIG_GLOBAL", "/dev/null")
-        .env("GIT_CONFIG_SYSTEM", "/dev/null")
-        .env("GIT_AUTHOR_NAME", "test")
-        .env("GIT_AUTHOR_EMAIL", "test@test")
-        .env("GIT_COMMITTER_NAME", "test")
-        .env("GIT_COMMITTER_EMAIL", "test@test")
-        .output()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "git failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    String::from_utf8(output.stdout).unwrap()
 }
 
 pub fn session_ref_name(session_id: &str) -> String {

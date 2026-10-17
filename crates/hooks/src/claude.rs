@@ -507,36 +507,11 @@ fn entry_role(entry: &serde_json::Value) -> Option<&str> {
 mod tests {
     use std::path::Path;
 
-    use concats_core::turn::{TurnEntry, TurnEntryKind};
+    use concats_core::turn::TurnEntry;
+    use concats_fixture::init_repo_with_commit;
 
     use super::*;
     use crate::Agent;
-
-    fn init_repo_with_commit(dir: &std::path::Path) {
-        let git = |args: &[&str]| {
-            let status = std::process::Command::new("git")
-                .arg("-C")
-                .arg(dir)
-                .args(args)
-                .envs([
-                    // Hermetic: the user's git config (signing, hooks) must
-                    // not leak into fixtures.
-                    ("GIT_CONFIG_GLOBAL", "/dev/null"),
-                    ("GIT_CONFIG_SYSTEM", "/dev/null"),
-                    ("GIT_AUTHOR_NAME", "test"),
-                    ("GIT_AUTHOR_EMAIL", "test@test"),
-                    ("GIT_COMMITTER_NAME", "test"),
-                    ("GIT_COMMITTER_EMAIL", "test@test"),
-                ])
-                .status()
-                .unwrap();
-            assert!(status.success());
-        };
-        git(&["init", "-q"]);
-        std::fs::write(dir.join("init.txt"), "init").unwrap();
-        git(&["add", "-A"]);
-        git(&["commit", "-q", "-m", "initial"]);
-    }
 
     fn project_scope(dir: &std::path::Path) -> InstallScope {
         InstallScope::Project {
@@ -664,17 +639,13 @@ mod tests {
             let sessions = concats_core::session::list(&repo).unwrap();
             let turns = concats_core::turn::list(&sessions[0]).unwrap();
             assert_eq!(turns.len(), 1);
-            assert!(matches!(
+            assert_eq!(
                 turns[0].entries(),
                 [
-                    TurnEntry {
-                        kind: TurnEntryKind::Prompt { text: prompt }
-                    },
-                    TurnEntry {
-                        kind: TurnEntryKind::Response { text: response }
-                    }
-                ] if prompt == "hello" && response == "done"
-            ));
+                    TurnEntry::prompt_now("hello"),
+                    TurnEntry::response_now("done")
+                ]
+            );
         }
     }
 
@@ -820,23 +791,15 @@ mod tests {
             let repo = std::rc::Rc::new(gix::open(dir.path()).unwrap());
             let session = concats_core::session::open(repo, "session-plan").unwrap();
             let turns = concats_core::turn::list(&session).unwrap();
-            assert!(matches!(
+            assert_eq!(
                 turns[0].entries(),
                 [
-                    TurnEntry {
-                        kind: TurnEntryKind::Prompt { .. }
-                    },
-                    TurnEntry {
-                        kind: TurnEntryKind::Response { text: plan }
-                    },
-                    TurnEntry {
-                        kind: TurnEntryKind::Response { text: first }
-                    },
-                    TurnEntry {
-                        kind: TurnEntryKind::Response { text: second }
-                    }
-                ] if plan == "# Plan\n\nStep one.\n" && first == "Implementing now." && second == "All done."
-            ));
+                    TurnEntry::prompt_now("please plan"),
+                    TurnEntry::response_now("# Plan\n\nStep one.\n"),
+                    TurnEntry::response_now("Implementing now."),
+                    TurnEntry::response_now("All done.")
+                ]
+            );
         }
 
         #[test]
@@ -886,34 +849,17 @@ mod tests {
             ]);
 
             let entries = resolve_stop_entries(Some(&jsonl), None);
-            assert!(matches!(
-                entries.as_slice(),
+            assert_eq!(
+                entries,
                 [
-                    TurnEntry {
-                        kind: TurnEntryKind::Prompt { text: answer }
-                    },
-                    TurnEntry {
-                        kind: TurnEntryKind::Response { text: first_plan }
-                    },
-                    TurnEntry {
-                        kind: TurnEntryKind::Prompt { text: rejection }
-                    },
-                    TurnEntry {
-                        kind: TurnEntryKind::Response { text: second_plan }
-                    },
-                    TurnEntry {
-                        kind: TurnEntryKind::Prompt { text: approval }
-                    },
-                    TurnEntry {
-                        kind: TurnEntryKind::Response { text: done }
-                    }
-                ] if answer == "User answered: keep provider packages separate"
-                    && first_plan == "plan one"
-                    && rejection == "User rejected the plan: add the verification commands"
-                    && second_plan == "plan two"
-                    && approval == "User has approved your plan."
-                    && done == "implementation done"
-            ));
+                    TurnEntry::prompt_now("User answered: keep provider packages separate"),
+                    TurnEntry::response_now("plan one"),
+                    TurnEntry::prompt_now("User rejected the plan: add the verification commands"),
+                    TurnEntry::response_now("plan two"),
+                    TurnEntry::prompt_now("User has approved your plan."),
+                    TurnEntry::response_now("implementation done")
+                ]
+            );
         }
 
         #[test]
@@ -930,12 +876,7 @@ mod tests {
             ]);
 
             let entries = resolve_stop_entries(Some(&jsonl), Some("fallback response"));
-            assert!(matches!(
-                entries.as_slice(),
-                [TurnEntry {
-                    kind: TurnEntryKind::Response { text }
-                }] if text == "fallback response"
-            ));
+            assert_eq!(entries, [TurnEntry::response_now("fallback response")]);
         }
 
         #[test]
@@ -952,12 +893,7 @@ mod tests {
             ]);
 
             let entries = resolve_stop_entries(Some(&jsonl), Some("normal response"));
-            assert!(matches!(
-                entries.as_slice(),
-                [TurnEntry {
-                    kind: TurnEntryKind::Response { text }
-                }] if text == "normal response"
-            ));
+            assert_eq!(entries, [TurnEntry::response_now("normal response")]);
         }
 
         #[test]
@@ -972,7 +908,7 @@ mod tests {
             std::fs::write(&nearest_path, "nearest").unwrap();
             std::fs::write(&after_path, "after").unwrap();
 
-            let jsonl = [
+            let jsonl = jsonl([
                 serde_json::json!({"role": "user", "content": "please plan"}),
                 serde_json::json!({
                     "role": "assistant",
@@ -995,19 +931,10 @@ mod tests {
                         },
                     ],
                 }),
-            ]
-            .into_iter()
-            .map(|entry| entry.to_string())
-            .collect::<Vec<_>>()
-            .join("\n");
+            ]);
 
             let entries = resolve_stop_entries(Some(&jsonl), None);
-            assert!(matches!(
-                entries.as_slice(),
-                [TurnEntry {
-                    kind: TurnEntryKind::Response { text }
-                }] if text == "nearest"
-            ));
+            assert_eq!(entries, [TurnEntry::response_now("nearest")]);
         }
 
         #[test]
@@ -1032,17 +959,13 @@ mod tests {
             let repo = std::rc::Rc::new(gix::open(dir.path()).unwrap());
             let session = concats_core::session::open(repo, "session-plan").unwrap();
             let turns = concats_core::turn::list(&session).unwrap();
-            assert!(matches!(
+            assert_eq!(
                 turns[0].entries(),
                 [
-                    TurnEntry {
-                        kind: TurnEntryKind::Prompt { .. }
-                    },
-                    TurnEntry {
-                        kind: TurnEntryKind::Response { text }
-                    }
-                ] if text == "plan body"
-            ));
+                    TurnEntry::prompt_now("please plan"),
+                    TurnEntry::response_now("plan body")
+                ]
+            );
         }
 
         #[test]
@@ -1067,17 +990,13 @@ mod tests {
             let repo = std::rc::Rc::new(gix::open(dir.path()).unwrap());
             let session = concats_core::session::open(repo, "session-plan").unwrap();
             let turns = concats_core::turn::list(&session).unwrap();
-            assert!(matches!(
+            assert_eq!(
                 turns[0].entries(),
                 [
-                    TurnEntry {
-                        kind: TurnEntryKind::Prompt { .. }
-                    },
-                    TurnEntry {
-                        kind: TurnEntryKind::Response { text }
-                    }
-                ] if text == "fallback"
-            ));
+                    TurnEntry::prompt_now("please plan"),
+                    TurnEntry::response_now("fallback")
+                ]
+            );
         }
     }
 

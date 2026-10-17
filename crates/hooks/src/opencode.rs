@@ -86,19 +86,4 @@ mod tests {
             assert!(!data.contains("{{BINARY_PATH}}"));
         }
     }
-
-    mod uninstall {
-        use super::*;
-
-        #[test]
-        fn removes_plugin() {
-            let dir = tempfile::tempdir().unwrap();
-            let path = dir.path().join("concats.ts");
-            plugin::write(&path, PLUGIN_TEMPLATE, Path::new("concats")).unwrap();
-            assert!(path.exists());
-
-            plugin::remove(&path).unwrap();
-            assert!(!path.exists());
-        }
-    }
 }

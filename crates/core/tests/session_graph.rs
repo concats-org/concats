@@ -1,18 +1,13 @@
 pub mod support;
 
-use std::rc::Rc;
-
 use concats_core::{
-    Oid, session,
+    session,
     snapshot::{self, SnapshotReason},
 };
 
 #[test]
 fn first_turn_omits_duplicate_head_parent_and_uses_empty_tree() {
-    let dir = tempfile::tempdir().unwrap();
-    let repo = Rc::new(support::init_repo_with_commit(dir.path()));
-    let head = Oid::from(repo.head_id().unwrap().detach());
-    let session = session::create(repo.clone(), "session-a", head).unwrap();
+    let (_dir, repo, session, head) = support::session("session-a");
 
     let turn = session::commit(&session, &support::turn_message("session-a")).unwrap();
     let commit = repo.find_commit(turn.oid.as_gix()).unwrap();
@@ -24,10 +19,7 @@ fn first_turn_omits_duplicate_head_parent_and_uses_empty_tree() {
 
 #[test]
 fn later_turn_links_previous_turn_and_current_head() {
-    let dir = tempfile::tempdir().unwrap();
-    let repo = Rc::new(support::init_repo_with_commit(dir.path()));
-    let head = Oid::from(repo.head_id().unwrap().detach());
-    let session = session::create(repo.clone(), "session-a", head).unwrap();
+    let (dir, repo, session, _) = support::session("session-a");
 
     let turn = session::commit(&session, &support::turn_message("session-a")).unwrap();
     let branch_head = support::commit_head(&repo, dir.path(), "branch.txt", "branch");
@@ -47,10 +39,7 @@ fn later_turn_links_previous_turn_and_current_head() {
 
 #[test]
 fn amend_refreshes_branch_parent_without_changing_session_parent() {
-    let dir = tempfile::tempdir().unwrap();
-    let repo = Rc::new(support::init_repo_with_commit(dir.path()));
-    let head = Oid::from(repo.head_id().unwrap().detach());
-    let session = session::create(repo.clone(), "session-a", head).unwrap();
+    let (dir, repo, session, head) = support::session("session-a");
 
     let turn = session::commit(&session, &support::turn_message("session-a")).unwrap();
     let branch_head = support::commit_head(&repo, dir.path(), "branch.txt", "branch");
@@ -84,10 +73,7 @@ fn amend_refreshes_branch_parent_without_changing_session_parent() {
 
 #[test]
 fn forked_first_turn_uses_source_turn_as_first_parent() {
-    let dir = tempfile::tempdir().unwrap();
-    let repo = Rc::new(support::init_repo_with_commit(dir.path()));
-    let head = Oid::from(repo.head_id().unwrap().detach());
-    let source_session = session::create(repo.clone(), "session-a", head).unwrap();
+    let (dir, repo, source_session, _) = support::session("session-a");
     let source_turn =
         session::commit(&source_session, &support::turn_message("session-a")).unwrap();
 
@@ -109,10 +95,7 @@ fn forked_first_turn_uses_source_turn_as_first_parent() {
 
 #[test]
 fn first_snapshot_points_only_to_corresponding_turn() {
-    let dir = tempfile::tempdir().unwrap();
-    let repo = Rc::new(support::init_repo_with_commit(dir.path()));
-    let head = Oid::from(repo.head_id().unwrap().detach());
-    let session = session::create(repo.clone(), "session-a", head).unwrap();
+    let (_dir, repo, session, _) = support::session("session-a");
 
     let turn = session::commit(&session, &support::turn_message("session-a")).unwrap();
     let _ = snapshot::capture(&session, turn.oid, SnapshotReason::TurnCommit).unwrap();
@@ -128,10 +111,7 @@ fn first_snapshot_points_only_to_corresponding_turn() {
 
 #[test]
 fn later_snapshot_links_previous_snapshot_and_current_turn() {
-    let dir = tempfile::tempdir().unwrap();
-    let repo = Rc::new(support::init_repo_with_commit(dir.path()));
-    let head = Oid::from(repo.head_id().unwrap().detach());
-    let session = session::create(repo.clone(), "session-a", head).unwrap();
+    let (dir, repo, session, _) = support::session("session-a");
 
     let first_turn = session::commit(&session, &support::turn_message("session-a")).unwrap();
     let _ = snapshot::capture(&session, first_turn.oid, SnapshotReason::TurnCommit).unwrap();
@@ -156,20 +136,17 @@ fn later_snapshot_links_previous_snapshot_and_current_turn() {
 
 #[test]
 fn git_for_each_ref_contains_finds_session_refs() {
-    let dir = tempfile::tempdir().unwrap();
-    let repo = Rc::new(support::init_repo_with_commit(dir.path()));
-    let head = Oid::from(repo.head_id().unwrap().detach());
-    let session = session::create(repo.clone(), "session-a", head).unwrap();
+    let (dir, _, session, head) = support::session("session-a");
     let expected_ref = support::session_ref_name("session-a");
 
     let _turn = session::commit(&session, &support::turn_message("session-a")).unwrap();
-    let output = support::run_git(
+    let output = concats_fixture::git(
         dir.path(),
-        vec![
-            "for-each-ref".to_string(),
-            "--format=%(refname)".to_string(),
-            "--contains".to_string(),
-            head.to_string(),
+        &[
+            "for-each-ref",
+            "--format=%(refname)",
+            "--contains",
+            &head.to_string(),
         ],
     );
 
@@ -178,10 +155,7 @@ fn git_for_each_ref_contains_finds_session_refs() {
 
 #[test]
 fn git_log_ancestry_path_walks_snapshot_history() {
-    let dir = tempfile::tempdir().unwrap();
-    let repo = Rc::new(support::init_repo_with_commit(dir.path()));
-    let head = Oid::from(repo.head_id().unwrap().detach());
-    let session = session::create(repo.clone(), "session-a", head).unwrap();
+    let (dir, _, session, _) = support::session("session-a");
 
     let first_turn = session::commit(&session, &support::turn_message("session-a")).unwrap();
     let _ = snapshot::capture(&session, first_turn.oid, SnapshotReason::TurnCommit).unwrap();
@@ -191,17 +165,17 @@ fn git_log_ancestry_path_walks_snapshot_history() {
     let _ = snapshot::capture(&session, second_turn.oid, SnapshotReason::TurnCommit).unwrap();
     let second_snapshot = snapshot::get(&session, second_turn.oid).unwrap();
 
-    let output = support::run_git(
+    let output = concats_fixture::git(
         dir.path(),
-        vec![
-            "log".to_string(),
-            "--ancestry-path".to_string(),
-            format!(
+        &[
+            "log",
+            "--ancestry-path",
+            &format!(
                 "{}..{}",
                 first_turn.oid,
                 support::snapshot_ref_name("session-a")
             ),
-            "--format=%H".to_string(),
+            "--format=%H",
         ],
     );
     let commits = output.lines().collect::<Vec<_>>();
@@ -214,10 +188,7 @@ fn git_log_ancestry_path_walks_snapshot_history() {
 
 #[test]
 fn contains_reaches_turns_and_branch_history() {
-    let dir = tempfile::tempdir().unwrap();
-    let repo = Rc::new(support::init_repo_with_commit(dir.path()));
-    let head = Oid::from(repo.head_id().unwrap().detach());
-    let session = session::create(repo.clone(), "session-a", head).unwrap();
+    let (dir, repo, session, head) = support::session("session-a");
 
     let first_turn = session::commit(&session, &support::turn_message("session-a")).unwrap();
     let branch_head = support::commit_head(&repo, dir.path(), "branch.txt", "branch");
@@ -231,10 +202,7 @@ fn contains_reaches_turns_and_branch_history() {
 
 #[test]
 fn containing_returns_all_sessions_for_shared_turn_newest_first() {
-    let dir = tempfile::tempdir().unwrap();
-    let repo = Rc::new(support::init_repo_with_commit(dir.path()));
-    let head = Oid::from(repo.head_id().unwrap().detach());
-    let source_session = session::create(repo.clone(), "session-a", head).unwrap();
+    let (dir, repo, source_session, _) = support::session("session-a");
     let source_turn =
         session::commit(&source_session, &support::turn_message("session-a")).unwrap();
 
