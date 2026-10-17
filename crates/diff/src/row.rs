@@ -177,7 +177,6 @@ pub struct LoadStats {
     pub dels: usize,
     pub renames_exact: usize,
     pub renames_inexact: usize,
-    pub rename_limit_hit: bool,
 }
 
 /// A contiguous, inclusive run of lines (`start..=end`, 0-based) on one blob,

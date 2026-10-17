@@ -231,13 +231,15 @@ fn load_worktree(repo_path: &Path, base_rev: &str) -> Result<Loaded, Error> {
     // against — the index's blobs, or the base commit's tree.
     let base_is_index = base_rev.trim() == INDEX_REV;
     let mut base_commit = None;
-    let base_of: HashMap<String, ObjectId> = if base_is_index {
-        index_of.clone()
+    let base_tree;
+    let base_of: &HashMap<String, ObjectId> = if base_is_index {
+        &index_of
     } else {
         let oid = resolve(&repo, base_rev)?;
         let tree = commit_tree(&repo, oid)?;
         base_commit = Some(oid);
-        flatten_tree(&repo, tree)?
+        base_tree = flatten_tree(&repo, tree)?;
+        &base_tree
     };
 
     // Status decides which paths changed: the worktree-vs-index scan (gix
@@ -308,12 +310,7 @@ fn load_worktree(repo_path: &Path, base_rev: &str) -> Result<Loaded, Error> {
     // object database.
     let from_worktree: HashMap<ObjectId, &Path> = changes
         .iter()
-        .filter_map(|c| match c {
-            Change::Added { path, oid } => Some((*oid, Path::new(path))),
-            Change::Modified { path, new_oid, .. } => Some((*new_oid, Path::new(path))),
-            Change::Renamed { path, new_oid, .. } => Some((*new_oid, Path::new(path))),
-            Change::Deleted { .. } => None,
-        })
+        .filter_map(|c| Some((c.new_oid()?, Path::new(c.path()))))
         .collect();
     for blob in &mut blobs {
         if let Some(path) = from_worktree.get(&blob.oid) {
@@ -328,28 +325,12 @@ fn load_worktree(repo_path: &Path, base_rev: &str) -> Result<Loaded, Error> {
     let stage = changes
         .iter()
         .filter_map(|c| {
-            let (path, from, old, new) = match c {
-                Change::Added { path, oid } => (path, None, None, Some(*oid)),
-                Change::Deleted { path, oid } => (path, None, Some(*oid), None),
-                Change::Modified {
-                    path,
-                    old_oid,
-                    new_oid,
-                } => (path, None, Some(*old_oid), Some(*new_oid)),
-                Change::Renamed {
-                    from,
-                    path,
-                    old_oid,
-                    new_oid,
-                    ..
-                } => (path, Some(from.clone()), Some(*old_oid), Some(*new_oid)),
-            };
-            let fc = file_of.get(path.as_str())?;
+            let fc = file_of.get(c.path())?;
             Some(StageFile {
-                path: path.clone(),
-                from,
-                old,
-                new,
+                path: fc.path.clone(),
+                from: fc.from.clone(),
+                old: c.old_oid(),
+                new: c.new_oid(),
                 hunks: fc
                     .hunks
                     .iter()
@@ -372,14 +353,15 @@ fn load_worktree(repo_path: &Path, base_rev: &str) -> Result<Loaded, Error> {
         .collect();
     let mut tree: Vec<String> = index_of
         .keys()
-        .cloned()
-        .chain(changes.iter().filter_map(|c| match c {
-            Change::Deleted { .. } => None,
-            Change::Added { path, .. }
-            | Change::Modified { path, .. }
-            | Change::Renamed { path, .. } => Some(path.clone()),
-        }))
-        .filter(|p| !gone.contains(p.as_str()))
+        .map(String::as_str)
+        .chain(
+            changes
+                .iter()
+                .filter(|c| c.new_oid().is_some())
+                .map(Change::path),
+        )
+        .filter(|p| !gone.contains(p))
+        .map(str::to_string)
         .collect();
     tree.sort();
     tree.dedup();
@@ -819,6 +801,14 @@ fn detect_renames(
         }
     }
 
+    let renamed = |ai: usize, di: usize, similarity: u8| Change::Renamed {
+        from: dels[di].0.clone(),
+        path: adds[ai].0.clone(),
+        old_oid: dels[di].1,
+        new_oid: adds[ai].1,
+        similarity,
+    };
+
     // --- pass 1: exact, by oid. Free. ---
     let mut del_by_oid: HashMap<ObjectId, Vec<usize>> = HashMap::new();
     for (i, (_, oid)) in dels.iter().enumerate() {
@@ -827,24 +817,12 @@ fn detect_renames(
     let mut del_taken = vec![false; dels.len()];
     let mut add_taken = vec![false; adds.len()];
 
-    for (ai, (apath, aoid)) in adds.iter().enumerate() {
-        if let Some(cands) = del_by_oid.get_mut(aoid) {
-            while let Some(di) = cands.pop() {
-                if del_taken[di] {
-                    continue;
-                }
-                del_taken[di] = true;
-                add_taken[ai] = true;
-                out.push(Change::Renamed {
-                    from: dels[di].0.clone(),
-                    path: apath.clone(),
-                    old_oid: dels[di].1,
-                    new_oid: *aoid,
-                    similarity: 100,
-                });
-                st.renames_exact += 1;
-                break;
-            }
+    for (ai, (_, aoid)) in adds.iter().enumerate() {
+        if let Some(di) = del_by_oid.get_mut(aoid).and_then(Vec::pop) {
+            del_taken[di] = true;
+            add_taken[ai] = true;
+            out.push(renamed(ai, di, 100));
+            st.renames_exact += 1;
         }
     }
 
@@ -870,26 +848,24 @@ fn detect_renames(
             Some(m)
         };
 
-        let mut a_sigs = HashMap::new();
-        for &ai in &rem_a {
-            if let Some(s) = sig(repo, &adds[ai].1) {
-                a_sigs.insert(ai, s);
-            }
-        }
-        let mut d_sigs = HashMap::new();
-        for &di in &rem_d {
-            if let Some(s) = sig(repo, &dels[di].1) {
-                d_sigs.insert(di, s);
-            }
-        }
+        // NOTE: in change order, not a hash map's. The stable sort keeps ties
+        // in this order, so every process pairs and numbers them the same.
+        let a_sigs: Vec<_> = rem_a
+            .iter()
+            .filter_map(|&ai| Some((ai, sig(repo, &adds[ai].1)?)))
+            .collect();
+        let d_sigs: Vec<_> = rem_d
+            .iter()
+            .filter_map(|&di| Some((di, sig(repo, &dels[di].1)?)))
+            .collect();
 
         // score every surviving pair, then take best-first
         let mut scored: Vec<(u8, usize, usize)> = Vec::new();
-        for (&ai, asig) in &a_sigs {
-            for (&di, dsig) in &d_sigs {
+        for (ai, asig) in &a_sigs {
+            for (di, dsig) in &d_sigs {
                 let s = similarity(dsig, asig);
                 if s >= RENAME_THRESHOLD {
-                    scored.push((s, ai, di));
+                    scored.push((s, *ai, *di));
                 }
             }
         }
@@ -901,17 +877,9 @@ fn detect_renames(
             }
             add_taken[ai] = true;
             del_taken[di] = true;
-            out.push(Change::Renamed {
-                from: dels[di].0.clone(),
-                path: adds[ai].0.clone(),
-                old_oid: dels[di].1,
-                new_oid: adds[ai].1,
-                similarity: s,
-            });
+            out.push(renamed(ai, di, s));
             st.renames_inexact += 1;
         }
-    } else if !rem_a.is_empty() && !rem_d.is_empty() {
-        st.rename_limit_hit = true;
     }
 
     for (i, (path, oid)) in adds.into_iter().enumerate() {
@@ -1477,5 +1445,40 @@ mod tests {
         // browser reads as a deletion.
         assert_eq!(loaded.tree, ["kept.txt"]);
         assert!(loaded.files.iter().any(|f| f.path == "gone.txt"));
+    }
+
+    /// Equal scores pair and order by position. Anything else gives the same
+    /// range different file and hunk ids in the CLI and in the app.
+    #[test]
+    fn rename_ties_break_by_position() {
+        let (_tmp, root) = init_repo();
+        let text = |word: &str| -> String { (1..=20).map(|n| format!("{word} {n}\n")).collect() };
+        std::fs::write(root.join("old.txt"), text("line")).unwrap();
+        std::fs::write(root.join("old2.txt"), text("other")).unwrap();
+        commit(&root, "base");
+        std::fs::remove_file(root.join("old.txt")).unwrap();
+        std::fs::remove_file(root.join("old2.txt")).unwrap();
+        // a and b are equally like old.txt; c is as like old2.txt as they are.
+        let edited = |word: &str| text(word).replace(" 7\n", " 7 edited\n");
+        std::fs::write(root.join("a.txt"), edited("line")).unwrap();
+        std::fs::write(root.join("b.txt"), edited("line")).unwrap();
+        std::fs::write(root.join("c.txt"), edited("other")).unwrap();
+        commit(&root, "head");
+
+        let loaded = load(&root, "HEAD~1", "HEAD").unwrap();
+
+        let files: Vec<_> = loaded
+            .files
+            .iter()
+            .map(|f| (f.id.as_str(), f.path.as_str(), f.from.as_deref()))
+            .collect();
+        assert_eq!(
+            files,
+            [
+                ("f0", "a.txt", Some("old.txt")),
+                ("f1", "c.txt", Some("old2.txt")),
+                ("f2", "b.txt", None),
+            ]
+        );
     }
 }
