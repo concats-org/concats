@@ -711,7 +711,6 @@ dependencies = [
  "concats-message",
  "gix",
  "ignore",
- "imara-diff",
  "miette",
  "serde",
  "tempfile",

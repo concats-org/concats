@@ -16,7 +16,6 @@ path = "src/lib.rs"
 concats_message = { workspace = true }
 gix = { workspace = true }
 ignore = { workspace = true }
-imara-diff = { workspace = true }
 miette = { workspace = true }
 thiserror = { workspace = true }
 serde = { workspace = true }

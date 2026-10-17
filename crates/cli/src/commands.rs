@@ -330,13 +330,8 @@ fn print_turn(session: &Session, turn: &Turn) {
                 DiffStatus::Added => "A",
                 DiffStatus::Modified => "M",
                 DiffStatus::Deleted => "D",
-                DiffStatus::Renamed { .. } => "R",
             };
-            let path = match &file.status {
-                DiffStatus::Renamed { old_path } => format!("{old_path} -> {}", file.path),
-                _ => file.path.clone(),
-            };
-            println!("  {icon} {path}");
+            println!("  {icon} {}", file.path);
         }
     }
 
