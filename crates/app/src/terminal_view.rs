@@ -571,14 +571,7 @@ impl TerminalView {
             if flags.contains(Flags::INVERSE) {
                 let ink = fg;
                 fg = bg.unwrap_or_else(|| {
-                    colors::foreground(
-                        alacritty_terminal::vte::ansi::Color::Named(
-                            alacritty_terminal::vte::ansi::NamedColor::Background,
-                        ),
-                        Flags::empty(),
-                        content.colors,
-                        &theme,
-                    )
+                    colors::foreground(indexed.cell.bg, Flags::empty(), content.colors, &theme)
                 });
                 bg = Some(ink);
             }

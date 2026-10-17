@@ -15,37 +15,29 @@ use alacritty_terminal::{
     vte::ansi::{Color, NamedColor, Rgb},
 };
 use concats_theme::Rgba;
-use makepad_widgets::{Vec4f, vec4};
+use makepad_widgets::Vec4f;
 
-use crate::theme::Theme;
+use crate::theme::{Theme, paint};
 
 /// What a dim cell keeps of its colour.
 const DIM: f32 = 0.66;
 
 /// A cell's foreground, with bold and dim folded into the colour.
 pub fn foreground(color: Color, flags: Flags, colors: &Colors, theme: &Theme) -> Vec4f {
-    let rgba = match color {
+    paint(match color {
         // A true colour says exactly what it wants; only dim still touches it.
-        Color::Spec(rgb) if flags.contains(Flags::DIM) => dimmed(from_rgb(rgb)),
+        Color::Spec(rgb) if flags.contains(Flags::DIM) => from_rgb(rgb).darken(DIM),
         Color::Spec(rgb) => from_rgb(rgb),
-        Color::Named(named) => index(shade(named, flags) as usize, colors, theme),
-        Color::Indexed(idx) => index(shade_indexed(idx, flags), colors, theme),
-    };
-    to_vec4(rgba)
+        Color::Named(named) => slot(shade(named, flags) as usize, colors, theme),
+        Color::Indexed(idx) => slot(shade_indexed(idx, flags), colors, theme),
+    })
 }
 
 /// A cell's background, or `None` when it is the panel's own — nothing to
 /// paint there, and the chrome shows through.
 pub fn background(color: Color, colors: &Colors, theme: &Theme) -> Option<Vec4f> {
-    if color == Color::Named(NamedColor::Background) {
-        return None;
-    }
-    let rgba = match color {
-        Color::Spec(rgb) => from_rgb(rgb),
-        Color::Named(named) => index(named as usize, colors, theme),
-        Color::Indexed(idx) => index(idx as usize, colors, theme),
-    };
-    Some(to_vec4(rgba))
+    (color != Color::Named(NamedColor::Background))
+        .then(|| foreground(color, Flags::empty(), colors, theme))
 }
 
 /// The palette slot for a named colour once bold and dim have had their say.
@@ -74,7 +66,7 @@ fn shade_indexed(idx: u8, flags: Flags) -> usize {
     clippy::cast_possible_truncation,
     reason = "The cube and grey-ramp match arms bound each channel to 0..=255."
 )]
-fn index(idx: usize, colors: &Colors, theme: &Theme) -> Rgba {
+fn slot(idx: usize, colors: &Colors, theme: &Theme) -> Rgba {
     if let Some(rgb) = colors[idx] {
         return from_rgb(rgb);
     }
@@ -94,8 +86,8 @@ fn index(idx: usize, colors: &Colors, theme: &Theme) -> Rgba {
         257 => theme.terminal_bg,
         258 => theme.terminal_cursor,
         // The eight dim slots sit right after the cursor, in ANSI order.
-        259..=266 => dimmed(theme.ansi[idx - NamedColor::DimBlack as usize]),
-        268 => dimmed(theme.terminal_fg),
+        259..=266 => theme.ansi[idx - NamedColor::DimBlack as usize].darken(DIM),
+        268 => theme.terminal_fg.darken(DIM),
         // The foreground (256) and its bright form (267): there is no bright
         // foreground of its own, so bold text on the default colour stays the
         // default colour.
@@ -103,25 +95,14 @@ fn index(idx: usize, colors: &Colors, theme: &Theme) -> Rgba {
     }
 }
 
-fn dimmed(color: Rgba) -> Rgba {
-    Rgba {
-        r: color.r * DIM,
-        g: color.g * DIM,
-        b: color.b * DIM,
-        a: color.a,
-    }
-}
-
 fn from_rgb(rgb: Rgb) -> Rgba {
     Rgba::opaque(rgb.r, rgb.g, rgb.b)
 }
 
-fn to_vec4(color: Rgba) -> Vec4f {
-    vec4(color.r, color.g, color.b, color.a)
-}
-
 #[cfg(test)]
 mod tests {
+    use makepad_widgets::vec4;
+
     use super::*;
 
     fn theme() -> Theme {
@@ -138,7 +119,7 @@ mod tests {
             &colors,
             &theme,
         );
-        assert_eq!(red, to_vec4(theme.ansi[1]));
+        assert_eq!(red, paint(theme.ansi[1]));
     }
 
     #[test]
@@ -146,9 +127,9 @@ mod tests {
         let theme = theme();
         let colors = Colors::default();
         let bold = foreground(Color::Named(NamedColor::Red), Flags::BOLD, &colors, &theme);
-        assert_eq!(bold, to_vec4(theme.ansi[9]));
+        assert_eq!(bold, paint(theme.ansi[9]));
         let bold_indexed = foreground(Color::Indexed(1), Flags::BOLD, &colors, &theme);
-        assert_eq!(bold_indexed, to_vec4(theme.ansi[9]));
+        assert_eq!(bold_indexed, paint(theme.ansi[9]));
     }
 
     #[test]
@@ -161,7 +142,7 @@ mod tests {
             b: 0,
         };
         let dim = foreground(Color::Spec(spec), Flags::DIM, &colors, &theme);
-        assert_eq!(dim, to_vec4(dimmed(from_rgb(spec))));
+        assert_eq!(dim, paint(from_rgb(spec).darken(DIM)));
     }
 
     #[test]
@@ -179,7 +160,7 @@ mod tests {
         );
         assert_eq!(
             foreground(Color::Indexed(244), Flags::empty(), &colors, &theme),
-            to_vec4(Rgba::opaque(128, 128, 128))
+            paint(Rgba::opaque(128, 128, 128))
         );
     }
 
@@ -195,7 +176,7 @@ mod tests {
                 &colors,
                 &theme
             ),
-            to_vec4(Rgba::opaque(1, 2, 3))
+            paint(Rgba::opaque(1, 2, 3))
         );
     }
 
@@ -209,7 +190,7 @@ mod tests {
         );
         assert_eq!(
             background(Color::Named(NamedColor::Blue), &colors, &theme),
-            Some(to_vec4(theme.ansi[4]))
+            Some(paint(theme.ansi[4]))
         );
     }
 }
