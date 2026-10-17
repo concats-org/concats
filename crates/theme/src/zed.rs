@@ -7,7 +7,7 @@
 
 use std::collections::HashMap;
 
-use concats_syntax::capture_to_hl;
+use concats_syntax::capture_row;
 use serde::Deserialize;
 
 use crate::{Rgba, Theme};
@@ -111,15 +111,20 @@ fn theme(zt: &Entry, base: &Theme) -> Theme {
     let editor_bg = hex("editor.background").unwrap_or(background);
 
     // NOTE: Several captures map to one category. Apply specialized names
-    // first so general colors win, with lexical order breaking alias ties.
-    let mut tokens: Vec<_> = zt.style.syntax.iter().collect();
-    tokens.sort_unstable_by_key(|(name, _)| (name.matches('.').count(), name.as_str()));
+    // first so general colors win; between names as general as each other the
+    // earlier vocabulary row wins, then the name, so `constant` beats its alias
+    // `boolean`.
+    let mut tokens: Vec<_> = zt
+        .style
+        .syntax
+        .iter()
+        .filter_map(|(tok, hl)| Some((capture_row(tok)?, tok, hl)))
+        .collect();
+    tokens
+        .sort_unstable_by_key(|((row, _), tok, _)| (tok.matches('.').count(), *row, tok.as_str()));
     let mut syntax = base.syntax.clone();
-    for (tok, hl) in tokens.into_iter().rev() {
-        if let (Some(h), Some(c)) = (
-            capture_to_hl(tok),
-            hl.color.as_deref().and_then(parse_color),
-        ) {
+    for ((_, h), _, hl) in tokens.into_iter().rev() {
+        if let Some(c) = hl.color.as_deref().and_then(parse_color) {
             syntax.insert(h, c);
         }
     }
@@ -226,6 +231,21 @@ mod tests {
             assert_eq!(syntax[&concats_syntax::Hl::Keyword], Rgba::opaque(4, 5, 6));
             assert_eq!(syntax[&concats_syntax::Hl::String], Rgba::opaque(7, 8, 9));
         }
+    }
+
+    /// Zed keys a colour on `boolean` and `character` too, and themes give
+    /// them their own colours; the slot belongs to `constant` and `string`.
+    #[test]
+    fn a_dialect_alias_does_not_take_a_slot_from_the_name_it_stands_in_for() {
+        let json = r##"{"themes":[{"name":"Fixture","style":{"syntax":{
+            "boolean":{"color":"#aabbcc"},
+            "constant":{"color":"#010203"},
+            "character":{"color":"#aabbcc"},
+            "string":{"color":"#040506"}
+        }}}]}"##;
+        let syntax = &import(json)[0].syntax;
+        assert_eq!(syntax[&concats_syntax::Hl::Constant], Rgba::opaque(1, 2, 3));
+        assert_eq!(syntax[&concats_syntax::Hl::String], Rgba::opaque(4, 5, 6));
     }
 
     #[test]

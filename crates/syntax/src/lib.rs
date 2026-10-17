@@ -40,6 +40,11 @@ pub type LineSpans = Vec<Vec<Span>>;
 
 /// Capture-name prefix to colour, in precedence order: the first prefix a name
 /// starts with wins, so `variable.parameter` sits ahead of `variable`.
+///
+/// The classic tree-sitter names come first, then the dialects the bundled
+/// grammars also speak: Scala's and Haskell's nvim names, C's `delimiter`, and
+/// the bare `escape` of Rust, Python, Go, Ruby and JSON. Last, so a theme that
+/// colours both `constant` and its alias `boolean` takes `constant`.
 const PREFIXES: &[(&str, Hl)] = &[
     ("attribute", Hl::Attribute),
     ("comment", Hl::Comment),
@@ -62,6 +67,18 @@ const PREFIXES: &[(&str, Hl)] = &[
     ("type", Hl::Type),
     ("variable.parameter", Hl::Parameter),
     ("variable", Hl::Variable),
+    ("method", Hl::Function),
+    ("conditional", Hl::Keyword),
+    ("repeat", Hl::Keyword),
+    ("include", Hl::Keyword),
+    ("exception", Hl::Keyword),
+    ("storageclass", Hl::Keyword),
+    ("boolean", Hl::Constant),
+    ("float", Hl::Number),
+    ("character", Hl::String),
+    ("escape", Hl::String),
+    ("parameter", Hl::Parameter),
+    ("delimiter", Hl::Punctuation),
 ];
 
 /// Map a tree-sitter / Zed capture name onto the [`Hl`] vocabulary.
@@ -71,10 +88,18 @@ const PREFIXES: &[(&str, Hl)] = &[
 /// than any one grammar's capture set on purpose.
 #[must_use]
 pub fn capture_to_hl(name: &str) -> Option<Hl> {
+    capture_row(name).map(|(_, hl)| hl)
+}
+
+/// The vocabulary row a capture name lands on, with its colour. A theme breaks
+/// ties between two names of one colour by row, so a classic name wins over
+/// its dialect alias.
+#[must_use]
+pub fn capture_row(name: &str) -> Option<(usize, Hl)> {
     PREFIXES
         .iter()
-        .find(|(prefix, _)| name.starts_with(prefix))
-        .map(|(_, hl)| *hl)
+        .position(|(prefix, _)| name.starts_with(prefix))
+        .map(|row| (row, PREFIXES[row].1))
 }
 
 #[cfg(test)]

@@ -252,4 +252,32 @@ mod tests {
             );
         }
     }
+
+    /// A grammar that speaks another dialect of capture names shows up here
+    /// rather than as text nobody can colour.
+    #[cfg(feature = "grammars")]
+    #[test]
+    fn every_capture_a_query_reports_has_a_colour() {
+        // Left plain on purpose: `_` names only feed predicates, `embedded`
+        // spans an interpolation whose parts have captures of their own, `none`
+        // and `spell` are markers, and there is no colour for a label or a
+        // module.
+        const PLAIN: &[&str] = &[
+            "_",
+            "embedded",
+            "label",
+            "module",
+            "namespace",
+            "none",
+            "spell",
+        ];
+        let langs = registry();
+        let uncoloured: std::collections::BTreeSet<_> = langs
+            .values()
+            .flat_map(|(_, query)| query.capture_names())
+            .filter(|name| !PLAIN.iter().any(|plain| name.starts_with(plain)))
+            .filter(|name| concats_syntax::capture_to_hl(name).is_none())
+            .collect();
+        assert!(uncoloured.is_empty(), "no colour for {uncoloured:?}");
+    }
 }
