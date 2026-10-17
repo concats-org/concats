@@ -472,34 +472,25 @@ mod tests {
         }));
 
         let mode = *term(session).expect("session has a term").lock().mode();
-        let colon = KeyEvent {
-            key_code: KeyCode::Semicolon,
-            modifiers: KeyModifiers {
-                shift: true,
+        // `:` and `q` may arrive as text, enter has to be encoded.
+        for (key_code, shift, text) in [
+            (KeyCode::Semicolon, true, Some(b":".as_slice())),
+            (KeyCode::KeyQ, false, Some(b"q".as_slice())),
+            (KeyCode::ReturnKey, false, None),
+        ] {
+            let key = KeyEvent {
+                key_code,
+                modifiers: KeyModifiers {
+                    shift,
+                    ..Default::default()
+                },
                 ..Default::default()
-            },
-            ..Default::default()
-        };
-        input(
-            session,
-            crate::terminal::keys::encode(&colon, true, mode).unwrap_or_else(|| b":".to_vec()),
-        );
-        let q = KeyEvent {
-            key_code: KeyCode::KeyQ,
-            ..Default::default()
-        };
-        input(
-            session,
-            crate::terminal::keys::encode(&q, true, mode).unwrap_or_else(|| b"q".to_vec()),
-        );
-        let enter = KeyEvent {
-            key_code: KeyCode::ReturnKey,
-            ..Default::default()
-        };
-        input(
-            session,
-            crate::terminal::keys::encode(&enter, true, mode).expect("enter is encoded"),
-        );
+            };
+            let bytes = crate::terminal::keys::encode(&key, true, mode)
+                .or_else(|| text.map(<[u8]>::to_vec))
+                .expect("enter is encoded");
+            input(session, bytes);
+        }
 
         assert!(until(|| {
             term(session).is_some_and(|term| !term.lock().mode().contains(TermMode::ALT_SCREEN))

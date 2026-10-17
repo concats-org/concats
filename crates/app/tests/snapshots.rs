@@ -1,10 +1,10 @@
 //! Visual snapshot tests for the editor's surfaces.
 //!
-//! Each test drives the real app through the same `CONCATS_APP_*`
-//! hooks the capture script uses, and compares the frame to a committed golden
-//! pixel for pixel. A caret that fails to land, a line that moves by one pixel
-//! or a colour that shifts fails the test. That is what we want: before these,
-//! such states could only be checked by looking at a picture.
+//! Each test drives the real app through its `CONCATS_APP_*` hooks and
+//! compares the frame to a committed golden pixel for pixel. A caret that
+//! fails to land, a line that moves by one pixel or a colour that shifts fails
+//! the test. That is what we want: before these, such states could only be
+//! checked by looking at a picture.
 //!
 //! ```text
 //! cargo test -p concats-app --features dev-hooks --test snapshots -- --ignored          # run them
@@ -70,6 +70,8 @@ use std::{
     time::{Duration, Instant},
 };
 
+use concats_fixture::git;
+
 /// Logical window size. Fixed, because the layout responds to width — a capture
 /// at another size is a different picture, not the same one scaled.
 const CANVAS: &str = "1280x880";
@@ -113,24 +115,10 @@ fn artifacts() -> PathBuf {
 }
 
 /// A repo to capture: one commit, then a worktree edit, so every scenario has a
-/// diff to show rather than a plain listing. Byte-for-byte the fixture the
-/// capture script builds, so the goldens correspond.
+/// diff to show rather than a plain listing.
 fn fixture(dir: &Path) {
-    let git = |args: &[&str]| {
-        let status = Command::new("git")
-            .current_dir(dir)
-            .args(args)
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .expect("git is on PATH");
-        assert!(status.success(), "git {args:?} failed");
-    };
     std::fs::create_dir_all(dir).expect("fixture dir");
-    git(&["init", "-q", "."]);
-    git(&["config", "user.email", "design@example.com"]);
-    git(&["config", "user.name", "Design"]);
-    git(&["config", "commit.gpgsign", "false"]);
+    git(dir, &["init", "-q", "."]);
     std::fs::write(
         dir.join("editor.rs"),
         "use std::collections::HashMap;\n\
@@ -160,8 +148,8 @@ fn fixture(dir: &Path) {
          greeting.\n",
     )
     .expect("write README.md");
-    git(&["add", "-A"]);
-    git(&["commit", "-qm", "initial"]);
+    git(dir, &["add", "-A"]);
+    git(dir, &["commit", "-qm", "initial"]);
     // The worktree change the review is of.
     let edited = std::fs::read_to_string(dir.join("editor.rs"))
         .expect("read back")
@@ -337,6 +325,12 @@ fn assert_matches(name: &str, actual: &Path, tolerance: Tolerance) {
     }
 }
 
+/// The state the app wrote next to `shot`.
+fn state(shot: &Path, file: &str) -> serde_json::Value {
+    let bytes = std::fs::read(shot.with_file_name(file)).expect(file);
+    serde_json::from_slice(&bytes).expect("state JSON")
+}
+
 fn snapshot(name: &str, hooks: &[(&str, &str)]) {
     let actual = capture(name, hooks, |_| {});
     assert_matches(name, &actual, EXACT);
@@ -383,10 +377,7 @@ fn distance(a: &Path, b: &Path) -> usize {
 /// identical.
 fn assert_interaction(name: &str, hooks: &[(&str, &str)], byte: usize, dirty_buffers: usize) {
     let (before, after) = capture_pair(name, hooks);
-    let data: serde_json::Value = serde_json::from_slice(
-        &std::fs::read(after.with_file_name("state.json")).expect("captured state"),
-    )
-    .expect("state JSON");
+    let data = state(&after, "state.json");
     assert_eq!(data["caret"], serde_json::json!([1, 2, byte]), "{name}");
     assert_eq!(data["dirty_buffers"], dirty_buffers, "{name}");
     assert!(
@@ -444,15 +435,8 @@ fn typing_reaches_a_composer_recreated_after_a_comment_arrives() {
         ],
         |_| {},
     );
-    let data: serde_json::Value = serde_json::from_slice(
-        &std::fs::read(shot.with_file_name("state.json")).expect("captured state"),
-    )
-    .expect("state JSON");
-    let before: serde_json::Value = serde_json::from_slice(
-        &std::fs::read(shot.with_file_name("state-before-refresh.json"))
-            .expect("state before refresh"),
-    )
-    .expect("state JSON");
+    let data = state(&shot, "state.json");
+    let before = state(&shot, "state-before-refresh.json");
     assert_eq!(before["draft"], "before");
     assert!(before["composer_input"].is_number());
     assert!(data["composer_input"].is_number());
@@ -483,10 +467,7 @@ fn an_offscreen_composer_is_revealed_before_typing() {
             }
         },
     );
-    let data: serde_json::Value = serde_json::from_slice(
-        &std::fs::read(shot.with_file_name("state.json")).expect("captured state"),
-    )
-    .expect("state JSON");
+    let data = state(&shot, "state.json");
     assert_eq!(data["draft"], "offscreen draft");
     assert_eq!(data["dirty_buffers"], 0);
     assert_eq!(data["focus_pending"], false);
@@ -517,10 +498,7 @@ fn search_stays_in_its_tab_without_a_code_caret() {
             std::fs::write(repo.join("README.md"), "A needle in the README\n")
                 .expect("readme fixture");
         });
-        let data: serde_json::Value = serde_json::from_slice(
-            &std::fs::read(shot.with_file_name("state.json")).expect("captured state"),
-        )
-        .expect("state JSON");
+        let data = state(&shot, "state.json");
         assert_eq!(data["find_query"], "needle", "{name}");
         assert_eq!(data["find_count"], expected, "{name}");
         assert_eq!(
@@ -547,10 +525,7 @@ fn find_does_not_take_keys_from_the_composer() {
         ],
         |_| {},
     );
-    let data: serde_json::Value = serde_json::from_slice(
-        &std::fs::read(shot.with_file_name("state.json")).expect("captured state"),
-    )
-    .expect("state JSON");
+    let data = state(&shot, "state.json");
     assert_eq!(data["find_query"], "");
     assert_eq!(data["draft"], "beforeafter");
     assert_eq!(data["dirty_buffers"], 0);
@@ -573,10 +548,7 @@ fn file_browser_search_stays_in_its_own_pane() {
             std::fs::write(repo.join("deep/other.rs"), "other\n").expect("unmatched file");
         },
     );
-    let data: serde_json::Value = serde_json::from_slice(
-        &std::fs::read(shot.with_file_name("state.json")).expect("captured state"),
-    )
-    .expect("state JSON");
+    let data = state(&shot, "state.json");
     assert_eq!(data["file_find_query"], "deep/target");
     assert_eq!(data["file_find_count"], "1 file");
     assert_eq!(data["find_query"], "");
@@ -603,10 +575,7 @@ fn the_pinned_seen_control_marks_its_file() {
             std::fs::write(repo.join("editor.rs"), text).expect("long file fixture");
         },
     );
-    let data: serde_json::Value = serde_json::from_slice(
-        &std::fs::read(shot.with_file_name("state.json")).expect("captured state"),
-    )
-    .expect("state JSON");
+    let data = state(&shot, "state.json");
     assert!(
         data["seen_lines"].as_u64().unwrap() >= 200,
         "the header marks the entire file"
@@ -628,15 +597,8 @@ fn file_tab_titles_follow_typing_and_save_acknowledgements() {
             ],
             |_| {},
         );
-        let data: serde_json::Value = serde_json::from_slice(
-            &std::fs::read(shot.with_file_name("state.json")).expect("captured state"),
-        )
-        .expect("state JSON");
-        let before: serde_json::Value = serde_json::from_slice(
-            &std::fs::read(shot.with_file_name("state-before-refresh.json"))
-                .expect("state before saving"),
-        )
-        .expect("state JSON");
+        let data = state(&shot, "state.json");
+        let before = state(&shot, "state-before-refresh.json");
         assert_eq!(
             before["dirty_buffers"], 1,
             "the native keystroke edited the file"
@@ -677,10 +639,7 @@ fn terminal_search_finds_literal_text_in_scrollback() {
             ).expect("terminal fixture");
         },
     );
-    let data: serde_json::Value = serde_json::from_slice(
-        &std::fs::read(shot.with_file_name("state.json")).expect("captured state"),
-    )
-    .expect("state JSON");
+    let data = state(&shot, "state.json");
     assert_eq!(data["terminal_find_query"], "[needle]");
     assert_eq!(data["terminal_selection"], "[needle]");
     assert!(data["terminal_offset"].as_u64().unwrap() > 0);
@@ -705,10 +664,7 @@ fn terminal_draws_combining_marks_and_unicode() {
             ).expect("terminal fixture");
         },
     );
-    let state: serde_json::Value = serde_json::from_slice(
-        &std::fs::read(shot.with_file_name("state.json")).expect("captured state"),
-    )
-    .expect("state JSON");
+    let state = state(&shot, "state.json");
     assert!(
         state["terminal_height"].as_f64().unwrap() > 100.0,
         "terminal must be visible: {state}"
@@ -751,10 +707,7 @@ fn loading_another_window_keeps_typing_in_the_clicked_window() {
         ],
         |_| {},
     );
-    let state: serde_json::Value = serde_json::from_slice(
-        &std::fs::read(shot.with_file_name("state.json")).expect("captured state"),
-    )
-    .expect("state JSON");
+    let state = state(&shot, "state.json");
     assert_eq!(
         state["windows"],
         serde_json::json!([
@@ -782,10 +735,7 @@ fn restoring_the_sidebar_does_not_start_a_hidden_shell() {
             .expect("terminal fixture");
         },
     );
-    let state: serde_json::Value = serde_json::from_slice(
-        &std::fs::read(shot.with_file_name("state.json")).expect("captured state"),
-    )
-    .expect("state JSON");
+    let state = state(&shot, "state.json");
     assert_eq!(
         state["terminal_cursor"],
         serde_json::Value::Null,
@@ -806,10 +756,7 @@ fn a_gutter_drag_spans_deleted_and_added_lines() {
         ],
         |_| {},
     );
-    let data: serde_json::Value = serde_json::from_slice(
-        &std::fs::read(shot.with_file_name("state.json")).expect("captured state"),
-    )
-    .expect("state JSON");
+    let data = state(&shot, "state.json");
     assert_eq!(
         data["compose_ranges"],
         serde_json::json!([[12, 12], [12, 12]])

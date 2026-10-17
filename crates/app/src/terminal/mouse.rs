@@ -202,22 +202,17 @@ mod tests {
     #[test]
     fn sgr_names_the_button_on_the_way_up() {
         let mode = TermMode::MOUSE_REPORT_CLICK | TermMode::SGR_MOUSE;
-        let down = report(
-            MouseButton::PRIMARY,
-            true,
-            KeyModifiers::default(),
-            point(4, 2),
-            mode,
-        );
-        assert_eq!(text(down), "\x1b[<0;5;3M");
-        let up = report(
-            MouseButton::PRIMARY,
-            false,
-            KeyModifiers::default(),
-            point(4, 2),
-            mode,
-        );
-        assert_eq!(text(up), "\x1b[<0;5;3m");
+        let primary = |pressed| {
+            text(report(
+                MouseButton::PRIMARY,
+                pressed,
+                KeyModifiers::default(),
+                point(4, 2),
+                mode,
+            ))
+        };
+        assert_eq!(primary(true), "\x1b[<0;5;3M");
+        assert_eq!(primary(false), "\x1b[<0;5;3m");
     }
 
     #[test]
@@ -279,52 +274,22 @@ mod tests {
         let mode = TermMode::MOUSE_DRAG | TermMode::SGR_MOUSE;
         assert!(wants_motion(true, mode));
         assert!(!wants_motion(false, mode));
-        assert_eq!(
-            text(motion(
-                Some(MouseButton::PRIMARY),
-                KeyModifiers::default(),
-                point(1, 1),
-                mode
-            )),
-            "\x1b[<32;2;2M"
-        );
-        assert_eq!(
-            text(motion(None, KeyModifiers::default(), point(1, 1), mode)),
-            "\x1b[<35;2;2M"
-        );
+        let moved = |held| text(motion(held, KeyModifiers::default(), point(1, 1), mode));
+        assert_eq!(moved(Some(MouseButton::PRIMARY)), "\x1b[<32;2;2M");
+        assert_eq!(moved(None), "\x1b[<35;2;2M");
     }
 
     #[test]
     fn the_wheel_reports_per_line_then_falls_back_to_arrows() {
+        let scroll = |up, mode| wheel(up, 2, KeyModifiers::default(), point(0, 0), mode);
         let tracked = TermMode::MOUSE_REPORT_CLICK | TermMode::SGR_MOUSE;
-        assert_eq!(
-            text(wheel(
-                true,
-                2,
-                KeyModifiers::default(),
-                point(0, 0),
-                tracked
-            )),
-            "\x1b[<64;1;1M\x1b[<64;1;1M"
-        );
+        assert_eq!(text(scroll(true, tracked)), "\x1b[<64;1;1M\x1b[<64;1;1M");
 
         let alt = TermMode::ALT_SCREEN | TermMode::ALTERNATE_SCROLL;
-        assert_eq!(
-            text(wheel(false, 2, KeyModifiers::default(), point(0, 0), alt)),
-            "\x1bOB\x1bOB"
-        );
+        assert_eq!(text(scroll(false, alt)), "\x1bOB\x1bOB");
 
         // A plain terminal keeps its wheel: the panel scrolls the scrollback.
-        assert_eq!(
-            wheel(
-                true,
-                2,
-                KeyModifiers::default(),
-                point(0, 0),
-                TermMode::empty()
-            ),
-            None
-        );
+        assert_eq!(scroll(true, TermMode::empty()), None);
     }
 
     #[test]

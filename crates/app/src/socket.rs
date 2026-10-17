@@ -244,9 +244,9 @@ mod tests {
     use std::{
         collections::HashSet,
         io::{Read, Write},
-        process::Command,
     };
 
+    use concats_fixture::git;
     use concats_review::store::Anchor;
 
     use super::*;
@@ -297,30 +297,10 @@ mod tests {
     fn a_window_answers_for_its_checkout_with_the_threads_it_shows() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().canonicalize().unwrap();
-        let git = |args: &[&str]| {
-            assert!(
-                Command::new("git")
-                    .current_dir(&root)
-                    .args(args)
-                    .status()
-                    .unwrap()
-                    .success()
-            );
-        };
-        git(&["init", "-q"]);
+        git(&root, &["init", "-q"]);
         std::fs::write(root.join("file.rs"), "old\n").unwrap();
-        git(&["add", "file.rs"]);
-        git(&[
-            "-c",
-            "user.name=Fixture",
-            "-c",
-            "user.email=fixture@example.com",
-            "-c",
-            "commit.gpgsign=false",
-            "commit",
-            "-qm",
-            "fixture",
-        ]);
+        git(&root, &["add", "file.rs"]);
+        git(&root, &["commit", "-qm", "fixture"]);
         std::fs::write(root.join("file.rs"), "new\n").unwrap();
 
         let git_dir = root.join(".git");
