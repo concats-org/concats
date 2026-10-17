@@ -712,7 +712,6 @@ dependencies = [
  "gix",
  "ignore",
  "miette",
- "serde",
  "tempfile",
  "thiserror 2.0.20",
  "time",

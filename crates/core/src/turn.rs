@@ -4,7 +4,7 @@ use time::OffsetDateTime;
 
 use crate::{
     error::{Error, Result},
-    git::{self, Oid},
+    git,
     session::Session,
     snapshot,
 };
@@ -12,7 +12,7 @@ use crate::{
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Turn {
     message: concats_message::Turn,
-    pub oid: Oid,
+    pub oid: gix::ObjectId,
     pub created_at: OffsetDateTime,
 }
 
@@ -68,7 +68,7 @@ impl TryFrom<&gix::Commit<'_>> for Turn {
 
         Ok(Self {
             message,
-            oid: Oid::from(commit.id),
+            oid: commit.id,
             created_at: git::commit_time(commit.time().map_err(Error::git)?)?,
         })
     }
@@ -113,10 +113,10 @@ pub fn list(session: &Session) -> Result<Vec<Turn>> {
 ///
 /// Returns an error if turn listing fails or the requested turn is not present
 /// in the session history.
-pub fn get(session: &Session, oid: Oid) -> Result<Turn> {
+pub fn get(session: &Session, oid: gix::ObjectId) -> Result<Turn> {
     let commit = session
         .repo()
-        .find_commit(oid.as_gix())
+        .find_commit(oid)
         .map_err(|_| Error::session(format!("turn not found: {oid}")))?;
     let turn =
         Turn::try_from(&commit).map_err(|_| Error::session(format!("turn not found: {oid}")))?;
@@ -140,9 +140,7 @@ pub fn get(session: &Session, oid: Oid) -> Result<Turn> {
 pub fn restore(session: &Session, turn: &Turn, force: bool) -> Result<()> {
     let repo = session.repo();
     let snapshot = snapshot::get(session, turn.oid)?;
-    let commit = repo
-        .find_commit(snapshot.oid.as_gix())
-        .map_err(Error::git)?;
+    let commit = repo.find_commit(snapshot.oid).map_err(Error::git)?;
     let tree_id = commit.tree_id().map_err(Error::git)?.detach();
     git::checkout_tree(repo, tree_id, force)
 }

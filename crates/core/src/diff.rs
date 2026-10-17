@@ -46,11 +46,9 @@ impl FileDiff {
 /// git cannot render the diff.
 pub fn for_turn(session: &Session, turn: &Turn) -> Result<Vec<FileDiff>> {
     let repo = session.repo();
-    let turn_commit = repo.find_commit(turn.oid.as_gix()).map_err(Error::git)?;
+    let turn_commit = repo.find_commit(turn.oid).map_err(Error::git)?;
     let snapshot = snapshot::get(session, turn.oid)?;
-    let snapshot_commit = repo
-        .find_commit(snapshot.oid.as_gix())
-        .map_err(Error::git)?;
+    let snapshot_commit = repo.find_commit(snapshot.oid).map_err(Error::git)?;
     let head_tree = snapshot_commit.tree().map_err(Error::git)?;
 
     let base_tree = match turn_commit.parent_ids().next().map(gix::Id::detach) {
@@ -64,7 +62,7 @@ pub fn for_turn(session: &Session, turn: &Turn) -> Result<Vec<FileDiff>> {
                         session::open(session.repo().clone(), parent_turn.session_id().as_ref())?
                     };
                     let parent_snapshot = snapshot::get(&parent_session, parent_turn.oid)?;
-                    repo.find_commit(parent_snapshot.oid.as_gix())
+                    repo.find_commit(parent_snapshot.oid)
                         .map_err(Error::git)?
                         .tree()
                         .map_err(Error::git)?

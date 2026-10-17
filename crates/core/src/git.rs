@@ -9,70 +9,15 @@ use time::{OffsetDateTime, UtcOffset};
 
 use crate::error::{Error, Result};
 
-/// An opaque commit identifier.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Oid(gix::ObjectId);
-
-impl Oid {
-    #[must_use]
-    pub fn short(&self) -> String {
-        self.0.to_string()[..7].to_string()
-    }
-
-    #[must_use]
-    pub fn as_gix(self) -> gix::ObjectId {
-        self.0
-    }
-}
-
-impl From<gix::ObjectId> for Oid {
-    fn from(oid: gix::ObjectId) -> Self {
-        Self(oid)
-    }
-}
-
-impl std::str::FromStr for Oid {
-    type Err = gix::hash::decode::Error;
-
-    fn from_str(value: &str) -> std::result::Result<Self, Self::Err> {
-        gix::ObjectId::from_hex(value.as_bytes()).map(Self)
-    }
-}
-
-impl std::fmt::Display for Oid {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
-
-impl serde::Serialize for Oid {
-    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        serializer.serialize_str(&self.0.to_string())
-    }
-}
-
-impl<'de> serde::Deserialize<'de> for Oid {
-    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let value = <String as serde::Deserialize>::deserialize(deserializer)?;
-        value.parse().map_err(serde::de::Error::custom)
-    }
-}
-
 /// Resolve `HEAD` to a commit object ID.
 ///
 /// # Errors
 ///
 /// Returns an error if the repository cannot be opened, `HEAD` cannot be
 /// resolved, or `HEAD` does not point to a commit.
-pub fn current_head_oid(repo: &gix::Repository) -> Result<Oid> {
+pub fn current_head_oid(repo: &gix::Repository) -> Result<gix::ObjectId> {
     let id = repo.head_id().map_err(Error::git)?;
-    Ok(Oid::from(id.detach()))
+    Ok(id.detach())
 }
 
 pub(crate) fn commit_time(time: gix::date::Time) -> Result<OffsetDateTime> {

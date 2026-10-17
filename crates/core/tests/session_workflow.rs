@@ -172,7 +172,7 @@ fn older_snapshots_without_reason_still_parse() {
     let (_dir, repo, session, _) = support::session("session-a");
 
     let turn = session::commit(&session, &support::turn_message("session-a")).unwrap();
-    let turn_commit = repo.find_commit(turn.oid.as_gix()).unwrap();
+    let turn_commit = repo.find_commit(turn.oid).unwrap();
     let sig = gix::actor::Signature {
         name: "test".into(),
         email: "test@test".into(),

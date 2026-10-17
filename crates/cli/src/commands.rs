@@ -303,7 +303,7 @@ fn print_turn(session: &Session, turn: &Turn) {
         .created_at
         .format(&time::format_description::well_known::Rfc3339)
         .unwrap_or_else(|_| turn.created_at.unix_timestamp().to_string());
-    println!("turn {} {ts}", turn.oid.short());
+    println!("turn {} {ts}", turn.oid.to_hex_with_len(7));
 
     for entry in turn.entries() {
         match &entry.kind {
@@ -386,7 +386,7 @@ fn run_checkout(
              Continue from this point. To see the full conversation up to here:\n  \
              concats log {ref_display}\n\n\
              The working tree has been restored to the state at this turn.",
-            resolved.turn.oid.short(),
+            resolved.turn.oid.to_hex_with_len(7),
             resolved.session.id,
         );
     }

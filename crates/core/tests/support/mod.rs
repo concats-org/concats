@@ -5,7 +5,7 @@
 
 use std::{path::Path, rc::Rc};
 
-use concats_core::{Oid, session, session::Session};
+use concats_core::{session, session::Session};
 use concats_fixture::git;
 use concats_message::Turn as TurnMessage;
 use tempfile::TempDir;
@@ -19,10 +19,10 @@ pub fn init_repo_with_commit(dir: &Path) -> gix::Repository {
 }
 
 /// A session `id` started at the head of a one-commit repo.
-pub fn session(id: &str) -> (TempDir, Rc<gix::Repository>, Session, Oid) {
+pub fn session(id: &str) -> (TempDir, Rc<gix::Repository>, Session, gix::ObjectId) {
     let dir = tempfile::tempdir().unwrap();
     let repo = Rc::new(init_repo_with_commit(dir.path()));
-    let head = Oid::from(repo.head_id().unwrap().detach());
+    let head = repo.head_id().unwrap().detach();
     let session = session::create(repo.clone(), id, head).unwrap();
     (dir, repo, session, head)
 }
@@ -38,12 +38,12 @@ pub fn commit_head(
     worktree_root: &Path,
     file_name: &str,
     contents: &str,
-) -> Oid {
+) -> gix::ObjectId {
     std::fs::write(worktree_root.join(file_name), contents).unwrap();
     let message = format!("commit {file_name}");
     git(worktree_root, &["add", "-A"]);
     git(worktree_root, &["commit", "-q", "-m", &message]);
-    Oid::from(repo.head_id().unwrap().detach())
+    repo.head_id().unwrap().detach()
 }
 
 pub fn session_ref_name(session_id: &str) -> String {

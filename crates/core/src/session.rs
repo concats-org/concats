@@ -5,7 +5,7 @@ use time::OffsetDateTime;
 
 use crate::{
     error::{Error, Result},
-    git::{self, CommitParts, Oid},
+    git::{self, CommitParts},
     turn::Turn,
 };
 
@@ -36,7 +36,7 @@ impl Eq for Session {}
 ///
 /// Returns an error if the session already exists, the base commit cannot be
 /// loaded, or the session ref cannot be written.
-pub fn create(repo: Rc<gix::Repository>, session_id: &str, base: Oid) -> Result<Session> {
+pub fn create(repo: Rc<gix::Repository>, session_id: &str, base: gix::ObjectId) -> Result<Session> {
     let session_id = parse_session_id(session_id)?;
     let ref_name = ref_name(&session_id);
     if repo.find_reference(&ref_name).is_ok() {
@@ -45,7 +45,7 @@ pub fn create(repo: Rc<gix::Repository>, session_id: &str, base: Oid) -> Result<
         )));
     }
 
-    let base_oid = repo.find_commit(base.as_gix()).map_err(Error::git)?.id;
+    let base_oid = repo.find_commit(base).map_err(Error::git)?.id;
     repo.reference(
         ref_name.as_str(),
         base_oid,
@@ -119,9 +119,9 @@ pub fn list(repo: &Rc<gix::Repository>) -> Result<Vec<Session>> {
 /// # Errors
 ///
 /// Returns an error if the session ref does not resolve to a commit.
-pub fn tip(session: &Session) -> Result<Oid> {
+pub fn tip(session: &Session) -> Result<gix::ObjectId> {
     let tip = resolve_tip(session)?;
-    Ok(Oid::from(tip.id))
+    Ok(tip.id)
 }
 
 /// Resolve the timestamp of the current session tip commit.
@@ -139,18 +139,18 @@ pub fn modified_at(session: &Session) -> Result<OffsetDateTime> {
 /// # Errors
 ///
 /// Returns an error if the session ref is missing or the git graph query fails.
-pub fn contains(session: &Session, oid: Oid) -> Result<bool> {
+pub fn contains(session: &Session, oid: gix::ObjectId) -> Result<bool> {
     let repo = session.repo();
-    if repo.find_commit(oid.as_gix()).is_err() {
+    if repo.find_commit(oid).is_err() {
         return Ok(false);
     }
 
     let tip = resolve_tip(session)?;
-    if tip.id == oid.as_gix() {
+    if tip.id == oid {
         return Ok(true);
     }
 
-    git::reachable_from(repo, tip.id, oid.as_gix())
+    git::reachable_from(repo, tip.id, oid)
 }
 
 /// Create a new turn commit and advance the session ref.

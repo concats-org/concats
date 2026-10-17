@@ -10,10 +10,10 @@ fn first_turn_omits_duplicate_head_parent_and_uses_empty_tree() {
     let (_dir, repo, session, head) = support::session("session-a");
 
     let turn = session::commit(&session, &support::turn_message("session-a")).unwrap();
-    let commit = repo.find_commit(turn.oid.as_gix()).unwrap();
+    let commit = repo.find_commit(turn.oid).unwrap();
 
     assert_eq!(commit.parent_ids().count(), 1);
-    assert_eq!(commit.parent_ids().next().unwrap().detach(), head.as_gix());
+    assert_eq!(commit.parent_ids().next().unwrap().detach(), head);
     assert_eq!(commit.tree().unwrap().iter().count(), 0);
 }
 
@@ -24,17 +24,11 @@ fn later_turn_links_previous_turn_and_current_head() {
     let turn = session::commit(&session, &support::turn_message("session-a")).unwrap();
     let branch_head = support::commit_head(&repo, dir.path(), "branch.txt", "branch");
     let next_turn = session::commit(&session, &support::turn_message("session-a")).unwrap();
-    let commit = repo.find_commit(next_turn.oid.as_gix()).unwrap();
+    let commit = repo.find_commit(next_turn.oid).unwrap();
 
     assert_eq!(commit.parent_ids().count(), 2);
-    assert_eq!(
-        commit.parent_ids().next().unwrap().detach(),
-        turn.oid.as_gix()
-    );
-    assert_eq!(
-        commit.parent_ids().nth(1).unwrap().detach(),
-        branch_head.as_gix()
-    );
+    assert_eq!(commit.parent_ids().next().unwrap().detach(), turn.oid);
+    assert_eq!(commit.parent_ids().nth(1).unwrap().detach(), branch_head);
 }
 
 #[test]
@@ -44,30 +38,24 @@ fn amend_refreshes_branch_parent_without_changing_session_parent() {
     let turn = session::commit(&session, &support::turn_message("session-a")).unwrap();
     let branch_head = support::commit_head(&repo, dir.path(), "branch.txt", "branch");
     let updated = session::amend(&session, turn.message()).unwrap();
-    let updated_commit = repo.find_commit(updated.oid.as_gix()).unwrap();
+    let updated_commit = repo.find_commit(updated.oid).unwrap();
 
     assert_eq!(updated_commit.parent_ids().count(), 2);
-    assert_eq!(
-        updated_commit.parent_ids().next().unwrap().detach(),
-        head.as_gix()
-    );
+    assert_eq!(updated_commit.parent_ids().next().unwrap().detach(), head);
     assert_eq!(
         updated_commit.parent_ids().nth(1).unwrap().detach(),
-        branch_head.as_gix()
+        branch_head
     );
 
     let refreshed_head = support::commit_head(&repo, dir.path(), "branch-2.txt", "branch-2");
     let refreshed = session::amend(&session, updated.message()).unwrap();
-    let refreshed_commit = repo.find_commit(refreshed.oid.as_gix()).unwrap();
+    let refreshed_commit = repo.find_commit(refreshed.oid).unwrap();
 
     assert_eq!(refreshed_commit.parent_ids().count(), 2);
-    assert_eq!(
-        refreshed_commit.parent_ids().next().unwrap().detach(),
-        head.as_gix()
-    );
+    assert_eq!(refreshed_commit.parent_ids().next().unwrap().detach(), head);
     assert_eq!(
         refreshed_commit.parent_ids().nth(1).unwrap().detach(),
-        refreshed_head.as_gix()
+        refreshed_head
     );
 }
 
@@ -80,17 +68,14 @@ fn forked_first_turn_uses_source_turn_as_first_parent() {
     let branch_head = support::commit_head(&repo, dir.path(), "branch.txt", "branch");
     let fork_session = session::create(repo.clone(), "session-b", source_turn.oid).unwrap();
     let fork_turn = session::commit(&fork_session, &support::turn_message("session-b")).unwrap();
-    let commit = repo.find_commit(fork_turn.oid.as_gix()).unwrap();
+    let commit = repo.find_commit(fork_turn.oid).unwrap();
 
     assert_eq!(commit.parent_ids().count(), 2);
     assert_eq!(
         commit.parent_ids().next().unwrap().detach(),
-        source_turn.oid.as_gix()
+        source_turn.oid
     );
-    assert_eq!(
-        commit.parent_ids().nth(1).unwrap().detach(),
-        branch_head.as_gix()
-    );
+    assert_eq!(commit.parent_ids().nth(1).unwrap().detach(), branch_head);
 }
 
 #[test]
@@ -100,12 +85,12 @@ fn first_snapshot_points_only_to_corresponding_turn() {
     let turn = session::commit(&session, &support::turn_message("session-a")).unwrap();
     let _ = snapshot::capture(&session, turn.oid, SnapshotReason::TurnCommit).unwrap();
     let snapshot = snapshot::get(&session, turn.oid).unwrap();
-    let snapshot_commit = repo.find_commit(snapshot.oid.as_gix()).unwrap();
+    let snapshot_commit = repo.find_commit(snapshot.oid).unwrap();
 
     assert_eq!(snapshot_commit.parent_ids().count(), 1);
     assert_eq!(
         snapshot_commit.parent_ids().next().unwrap().detach(),
-        turn.oid.as_gix()
+        turn.oid
     );
 }
 
@@ -121,16 +106,16 @@ fn later_snapshot_links_previous_snapshot_and_current_turn() {
     let second_turn = session::commit(&session, &support::turn_message("session-a")).unwrap();
     let _ = snapshot::capture(&session, second_turn.oid, SnapshotReason::TurnCommit).unwrap();
     let second_snapshot = snapshot::get(&session, second_turn.oid).unwrap();
-    let snapshot_commit = repo.find_commit(second_snapshot.oid.as_gix()).unwrap();
+    let snapshot_commit = repo.find_commit(second_snapshot.oid).unwrap();
 
     assert_eq!(snapshot_commit.parent_ids().count(), 2);
     assert_eq!(
         snapshot_commit.parent_ids().next().unwrap().detach(),
-        first_snapshot.oid.as_gix()
+        first_snapshot.oid
     );
     assert_eq!(
         snapshot_commit.parent_ids().nth(1).unwrap().detach(),
-        second_turn.oid.as_gix()
+        second_turn.oid
     );
 }
 

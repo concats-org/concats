@@ -4,7 +4,7 @@ use time::OffsetDateTime;
 
 use crate::{
     error::{Error, Result},
-    git::{self, CommitParts, Oid},
+    git::{self, CommitParts},
     session::Session,
     turn::Turn,
 };
@@ -12,8 +12,8 @@ use crate::{
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Snapshot {
     message: concats_message::Snapshot,
-    pub turn_oid: Oid,
-    pub oid: Oid,
+    pub turn_oid: gix::ObjectId,
+    pub oid: gix::ObjectId,
     pub created_at: OffsetDateTime,
 }
 
@@ -41,8 +41,8 @@ impl TryFrom<&gix::Commit<'_>> for Snapshot {
 
         let parents: Vec<_> = commit.parent_ids().map(gix::Id::detach).collect();
         let turn_oid = match parents.len() {
-            1 => Ok(Oid::from(parents[0])),
-            2 => Ok(Oid::from(parents[1])),
+            1 => Ok(parents[0]),
+            2 => Ok(parents[1]),
             count => Err(Error::snapshot(format!(
                 "snapshot has unsupported parent count: {count}"
             ))),
@@ -51,7 +51,7 @@ impl TryFrom<&gix::Commit<'_>> for Snapshot {
         Ok(Self {
             message,
             turn_oid,
-            oid: Oid::from(commit.id),
+            oid: commit.id,
             created_at: git::commit_time(commit.time().map_err(Error::git)?)?,
         })
     }
@@ -77,7 +77,7 @@ pub fn list(session: &Session) -> Result<Vec<Snapshot>> {
 ///
 /// Returns an error if the session's snapshot ref is missing, or no snapshot
 /// in that chain points to the requested turn.
-pub fn get(session: &Session, turn_oid: Oid) -> Result<Snapshot> {
+pub fn get(session: &Session, turn_oid: gix::ObjectId) -> Result<Snapshot> {
     let repo = session.repo();
     let mut current = git::resolve_ref(repo, &ref_name(&session.id));
     while let Some(commit) = current {
@@ -114,12 +114,12 @@ pub fn get(session: &Session, turn_oid: Oid) -> Result<Snapshot> {
 /// snapshot commit cannot be written.
 pub fn capture(
     session: &Session,
-    turn_oid: Oid,
+    turn_oid: gix::ObjectId,
     reason: SnapshotReason,
 ) -> Result<Option<Snapshot>> {
     let repo = session.repo();
     let turn = repo
-        .find_commit(turn_oid.as_gix())
+        .find_commit(turn_oid)
         .map_err(|_| Error::snapshot(format!("turn not found: {turn_oid}")))?;
     let turn_metadata = Turn::try_from(&turn)
         .map_err(|_| Error::snapshot(format!("turn not found: {turn_oid}")))?;

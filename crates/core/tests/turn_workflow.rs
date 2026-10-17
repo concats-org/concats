@@ -52,7 +52,7 @@ fn restore_uses_turn_snapshot_tree() {
         std::fs::read_to_string(dir.path().join("src.txt")).unwrap(),
         "hello"
     );
-    let turn_commit = repo.find_commit(created.oid.as_gix()).unwrap();
+    let turn_commit = repo.find_commit(created.oid).unwrap();
     assert_eq!(turn_commit.tree().unwrap().iter().count(), 0);
 }
 
