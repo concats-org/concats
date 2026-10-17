@@ -158,6 +158,8 @@ impl Parsed {
 /// asking about a few lines cheap. The numbers are in the module docs — the
 /// parse is worth keeping and the query is worth scoping.
 pub struct Highlighter {
+    /// Each language's grammar and query, by language name, compiled the first
+    /// time a file in it is coloured rather than all of them up front.
     #[cfg(feature = "treesitter")]
     langs: HashMap<&'static str, (tree_sitter::Language, tree_sitter::Query)>,
     /// One parsed tree per buffer, with the text and revision it was parsed at.
@@ -181,14 +183,14 @@ impl Highlighter {
     pub fn new() -> Self {
         Self {
             #[cfg(feature = "treesitter")]
-            langs: concats_languages::registry(),
+            langs: HashMap::new(),
             #[cfg(feature = "treesitter")]
             parsed: HashMap::new(),
             stats: HlStats::default(),
         }
     }
 
-    /// Number of extensions mapped to a grammar.
+    /// Number of languages compiled so far.
     #[must_use]
     pub fn grammar_count(&self) -> usize {
         #[cfg(feature = "treesitter")]
@@ -254,7 +256,7 @@ impl Highlighter {
         lines: std::ops::Range<usize>,
     ) -> LineSpans {
         let src = buffer.text;
-        let Some((language, query)) = self.langs.get(buffer.ext) else {
+        let Some((language, query)) = compiled(&mut self.langs, buffer.ext) else {
             return plain(src);
         };
         let tree = match self.parsed.entry(buffer.key()) {
@@ -280,7 +282,7 @@ impl Highlighter {
     /// row by row.
     #[cfg(feature = "treesitter")]
     pub fn compute(&mut self, ext: &str, src: &str) -> LineSpans {
-        let Some((language, query)) = self.langs.get(ext) else {
+        let Some((language, query)) = compiled(&mut self.langs, ext) else {
             return plain(src);
         };
         match Parsed::new(src, 0, language) {
@@ -294,6 +296,19 @@ impl Highlighter {
         // Web build: no C grammars. syntect/fancy-regex slots in here.
         plain(src)
     }
+}
+
+/// `ext`'s grammar and query, compiled on first use.
+#[cfg(feature = "treesitter")]
+fn compiled<'a>(
+    langs: &'a mut HashMap<&'static str, (tree_sitter::Language, tree_sitter::Query)>,
+    ext: &str,
+) -> Option<&'a (tree_sitter::Language, tree_sitter::Query)> {
+    let language = concats_languages::language(ext)?;
+    Some(langs.entry(language.name).or_insert_with(|| {
+        concats_languages::compile(language)
+            .expect("every bundled query compiles; the languages tests check each one")
+    }))
 }
 
 /// The capture loop behind both entry points: `lines` of `src`, coloured off

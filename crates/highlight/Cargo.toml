@@ -32,5 +32,5 @@ default = ["treesitter"]
 treesitter = [
     "dep:gix",
     "dep:tree-sitter",
-    "concats_languages/all",
+    "concats_languages/grammars",
 ]

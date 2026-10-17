@@ -46,7 +46,7 @@ concats_state = { package = "concats-state", path = "crates/state" }
 concats_syntax = { package = "concats-syntax", path = "crates/syntax" }
 concats_sync = { package = "concats-sync", path = "crates/sync" }
 # Default-off: the extension table costs nothing, the eighteen C grammars do.
-# Whoever wants them says so (`concats_languages/all`, or one language at a time).
+# Whoever wants them says so (`concats_languages/grammars`).
 concats_languages = { package = "concats-languages", path = "crates/languages", default-features = false }
 concats_highlight = { package = "concats-highlight", path = "crates/highlight" }
 concats_theme = { package = "concats-theme", path = "crates/theme" }
@@ -85,7 +85,7 @@ tempfile = "3.20.0"
 thiserror = "2.0.12"
 time = { version = "0.3.39", features = ["formatting", "parsing", "serde"] }
 toml = "0.8"
-# Pinned in one place so the grammar registry and the engine that queries it
+# Pinned in one place so the language table and the engine that queries it
 # cannot end up on two incompatible tree-sitter versions.
 tree-sitter = "0.25"
 tracing = "0.1.41"
