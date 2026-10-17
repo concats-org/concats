@@ -18,7 +18,6 @@ concats_diff = { workspace = true }
 # layer writes with, so a review can never drift from the recorded format.
 concats_message = { workspace = true }
 concats_sync = { workspace = true }
-concats_text = { workspace = true }
 gix = { workspace = true }
 # Review state (seen hunks, line comments, guides) in `.git/concats-app/`.
 # SQLite because every table has at least two concurrent writers — GUI instances

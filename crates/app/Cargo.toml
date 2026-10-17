@@ -70,7 +70,6 @@ concats_state = { workspace = true }
 concats_review = { workspace = true }
 concats_sync = { workspace = true }
 concats_syntax = { workspace = true }
-concats_text = { workspace = true }
 concats_theme = { workspace = true }
 
 makepad-service = { workspace = true }

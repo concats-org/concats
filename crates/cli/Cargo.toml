@@ -22,7 +22,6 @@ clap = { workspace = true }
 gix = { workspace = true }
 miette = { workspace = true }
 time = { workspace = true }
-tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 
 # The review half. Optional so the standalone binary — the one to hand someone

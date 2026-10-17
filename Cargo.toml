@@ -40,7 +40,6 @@ concats_config = { package = "concats-config", path = "crates/config" }
 concats_message = { package = "concats-message", path = "crates/message" }
 concats_core = { package = "concats-core", path = "crates/core" }
 concats_hooks = { package = "concats-hooks", path = "crates/hooks" }
-concats_cli = { package = "concats-cli", path = "crates/cli" }
 concats_text = { package = "concats-text", path = "crates/text" }
 concats_state = { package = "concats-state", path = "crates/state" }
 concats_syntax = { package = "concats-syntax", path = "crates/syntax" }
@@ -55,13 +54,9 @@ concats_review = { package = "concats-review", path = "crates/review" }
 # The terminal emulation, PTY and I/O loop behind the in-app shell. serde is
 # on by default and only serialises a grid we never persist.
 alacritty_terminal = { version = "0.26", default-features = false }
-async-trait = "0.1"
 clap = { version = "4.5.31", features = ["derive"] }
-console = "0.15.8"
 dirs = "6"
-documented = "0.9.2"
 figment = { version = "0.10", features = ["toml", "env"] }
-futures-util = "0.3"
 gix = { version = "0.85", default-features = false, features = [
     "sha1",
     "parallel",
@@ -76,15 +71,9 @@ loro = "1.13"
 makepad-platform = { git = "https://github.com/concats-org/makepad", branch = "int" }
 makepad-service = { path = "crates/makepad-service" }
 makepad-widgets = { git = "https://github.com/concats-org/makepad", branch = "int" }
-indicatif = "0.18.3"
-indoc = "2"
 miette = { version = "7.6.0", features = ["fancy"] }
-mockall = "0.14.0"
 pest = "2.8.3"
 pest_derive = "2.8.3"
-proptest = "1.6.0"
-rand = "0.9.2"
-rayon = "1.11.0"
 rusqlite = { version = "0.37", features = ["bundled"] }
 rfd = "0.15"
 serde = { version = "1", features = ["derive"] }
@@ -93,25 +82,12 @@ shlex = "2"
 tempfile = "3.20.0"
 thiserror = "2.0.12"
 time = { version = "0.3.39", features = ["formatting", "parsing", "serde"] }
-tokio = { version = "1.43.0", features = [
-    "fs",
-    "macros",
-    "process",
-    "rt-multi-thread",
-    "sync",
-    "signal",
-    "io-util",
-] }
-tokio-retry = "0.3.0"
-tokio-stream = { version = "0.1.17", features = ["fs", "sync"] }
-tokio-util = { version = "0.7.15", features = ["compat", "rt"] }
 toml = "0.8"
 # Pinned in one place so the grammar registry and the engine that queries it
 # cannot end up on two incompatible tree-sitter versions.
 tree-sitter = "0.25"
 tree-sitter-highlight = "0.25"
 tracing = "0.1.41"
-tracing-indicatif = "0.3.6"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
 
 [profile.profiling]
