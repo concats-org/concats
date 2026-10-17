@@ -815,6 +815,7 @@ impl TerminalView {
     }
 
     fn dropped_text_payload(items: &[DragItem]) -> Option<String> {
+        let items: Vec<_> = items.iter().filter(|item| from_outside(item)).collect();
         if items.is_empty() {
             return None;
         }
@@ -838,7 +839,7 @@ impl TerminalView {
     fn handle_drop(&mut self, cx: &mut Cx, session: Session, hit: DragHit, mode: TermMode) -> bool {
         match hit {
             DragHit::Drag(drag) => {
-                if drag.items.is_empty() {
+                if !drag.items.iter().any(from_outside) {
                     return false;
                 }
                 *drag.response.lock().unwrap() = DragResponse::Copy;
@@ -1242,6 +1243,21 @@ impl Widget for TerminalView {
     }
 }
 
+/// Whether a dragged item comes from outside the app. A dock tab drags as an
+/// empty path carrying its id, and is not text for the shell.
+fn from_outside(item: &DragItem) -> bool {
+    matches!(
+        item,
+        DragItem::FilePath {
+            internal_id: None,
+            ..
+        } | DragItem::String {
+            internal_id: None,
+            ..
+        }
+    )
+}
+
 fn paste_bytes(text: &str, bracketed: bool) -> Vec<u8> {
     if bracketed {
         // NOTE: removing ESC and ETX prevents pasted text from ending the
@@ -1323,6 +1339,15 @@ mod tests {
             }]),
             Some("'/tmp/it'\\''s%41.txt' ".into())
         );
+    }
+
+    #[test]
+    fn a_dragged_dock_tab_is_not_pasted() {
+        let tab = DragItem::FilePath {
+            path: String::new(),
+            internal_id: Some(LiveId(1)),
+        };
+        assert_eq!(TerminalView::dropped_text_payload(&[tab]), None);
     }
 
     fn dots(c: char) -> Vec<(usize, usize)> {
