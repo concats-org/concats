@@ -12,6 +12,8 @@
 
 //! - [`interchange`] — a review's comments as one markdown file, in and
 //!   out;
+//! - [`comments`] — comments against a loaded diff: anchors, cursors, and
+//!   the export, shared by the CLI and the app's socket;
 //! - [`github`] — a pull request's review comments, mapped onto the same
 //!   entries;
 
@@ -26,6 +28,7 @@
 // the workspace enables (`all`, `style`, `complexity`) is on.
 #![allow(clippy::pedantic, clippy::cognitive_complexity)]
 
+pub mod comments;
 pub mod error;
 pub mod github;
 pub mod guide;

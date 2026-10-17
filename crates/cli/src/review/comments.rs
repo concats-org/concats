@@ -1,20 +1,15 @@
 //! Review comments outside the GUI, so a hook can read them, an agent can
 //! answer them, and they can be exported and imported from a pull request.
 //!
-//! Everything here anchors to content: a comment names a blob and a line range,
-//! so it renders in every view that shows those lines. Line numbers come in as
-//! 1-based new-side numbers, the same the manifest's links carry (never
-//! computed by hand), and every anchor is checked against the loaded diff
-//! before anything is stored.
+//! What a comment anchors to, and how it exports, is
+//! [`concats_review::comments`]' — the app's socket answers through the same
+//! functions.
 
-use std::{
-    collections::{HashMap, HashSet},
-    path::Path,
-    process::ExitCode,
-};
+use std::{collections::HashMap, process::ExitCode};
 
-use concats_diff::{Blob, load::Loaded};
+use concats_diff::load::Loaded;
 use concats_review::{
+    comments::{self, document_cursors},
     github, interchange,
     store::{self, Anchor, Comment, Store},
 };
@@ -102,9 +97,7 @@ fn list(repo: Option<&str>, delete: Option<u64>) -> Outcome {
 fn add(spec: &str, body: &str, author: Option<String>, range: &RangeArgs) -> Outcome {
     let body = non_empty(body)?;
     let (loaded, root) = super::load(&range.resolve()?)?;
-    let Some((path, at)) = resolve_anchor(spec, &loaded, &root) else {
-        return Err(ExitCode::from(FINDINGS));
-    };
+    let (path, at) = resolve_anchor(spec, &loaded, &root)?;
 
     let mut store = Store::open(&loaded.git_dir);
     let id = store.add_comment(Comment {
@@ -159,9 +152,7 @@ fn reply(
     };
 
     if let (Some(spec), Some((loaded, root))) = (moved, &diff) {
-        let Some((path, at)) = resolve_anchor(spec, loaded, root) else {
-            return Err(ExitCode::from(FINDINGS));
-        };
+        let (path, at) = resolve_anchor(spec, loaded, root)?;
         let id = store.add_comment(Comment {
             id: 0,
             path: path.clone(),
@@ -205,142 +196,17 @@ fn non_empty(body: &str) -> Result<String, ExitCode> {
     Ok(body.to_string())
 }
 
-/// `<path>:<start>[-<end>]` resolved against the loaded diff. `add` and `reply`
-/// share this grammar, so they cannot disagree about what addresses a line.
-///
-/// Every line of the range must be in the diff; context lines count, the GUI
-/// lets you comment on them too. Pure deletions have no new-side number, so you
-/// cannot address them from here — `import` reaches them via `old L…` anchors.
-/// Prints its own diagnostics, including the file's reviewable ranges, so a fix
-/// is a copy rather than fresh line arithmetic.
-fn resolve_anchor(
-    spec: &str,
-    loaded: &concats_diff::load::Loaded,
-    root: &str,
-) -> Option<(String, Anchor)> {
-    let Some((path_part, lines)) = spec.rsplit_once(':') else {
-        eprintln!("error: anchor must be <path>:<start>[-<end>]");
-        return None;
-    };
-    let (first, last) = lines.split_once('-').unwrap_or((lines, lines));
-    let (Ok(start), Ok(end)) = (first.trim().parse::<u32>(), last.trim().parse::<u32>()) else {
-        eprintln!("error: cannot parse line range `{lines}` — lines are 1-based new-side numbers");
-        return None;
-    };
-    if start == 0 || end == 0 {
-        eprintln!("error: lines are 1-based");
-        return None;
-    }
-    let (start, end) = (start.min(end), start.max(end));
-
-    let Some(file) = concats_review::guide::find_file(loaded, path_part.trim_end_matches('/'))
-    else {
-        eprintln!("error: `{path_part}` is not part of this diff");
-        eprintln!("       run `concats manifest` for the reviewable files");
-        return None;
-    };
-    let (new_side, _) = interchange::line_maps(file);
-    let missing: Vec<u32> = (start..=end)
-        .filter(|n| !new_side.contains_key(n))
-        .take(5)
-        .collect();
-    if !missing.is_empty() {
-        let shown: Vec<String> = missing.iter().take(5).map(u32::to_string).collect();
-        eprintln!(
-            "error: line(s) {} of {} are not part of this diff",
-            shown.join(", "),
-            file.path
-        );
-        print_reviewable_ranges(file, root);
-        return None;
-    }
-    let (blob, line_start) = new_side[&start];
-    let (_, line_end) = new_side[&end];
-    Some((
-        file.path.clone(),
-        Anchor {
-            blob: loaded.blobs[blob as usize].oid,
-            start: line_start,
-            end: line_end,
-        },
-    ))
-}
-
-/// The comment's lines as a cursor pair in its file's document, for a comment
-/// on a worktree file — minted where the app mints its own, so the comment
-/// rides edits from the start. The document is the app's cached one when there
-/// is one, else a fresh one on the bytes this load read; either way it is
-/// cached back, so the app and the next CLI run read the same history. `None`
-/// for a git blob, which never moves and needs none.
-fn document_cursors(loaded: &Loaded, path: &str, at: Anchor) -> Option<store::Cursors> {
-    let mut buffer = worktree_buffer(loaded, path)?;
-    let cursors = buffer.cursors_on_disk(at.start, at.end)?;
-    if let Some(saved) = buffer.saved_state() {
-        store::save_buffer(&loaded.git_dir, buffer.origin.as_deref()?, &saved);
-    }
-    Some(cursors)
-}
-
-/// The worktree blob at `path`, with the app's cached document restored onto
-/// it when there is one: what a comment's cursors are minted in and read from.
-/// `None` for a commit range, which has no worktree side.
-fn worktree_buffer(loaded: &Loaded, path: &str) -> Option<Blob> {
-    let origin = loaded.workdir.as_ref()?.join(path);
-    let blob = loaded
-        .blobs
-        .iter()
-        .find(|b| b.origin.as_deref() == Some(origin.as_path()))?;
-    let mut buffer = blob.clone();
-    if let Some(saved) = store::load_buffer(&loaded.git_dir, &origin) {
-        buffer.restore_state(&saved, blob.oid);
-    }
-    Some(buffer)
-}
-
-/// Where a comment sits for this export: its own lines when its blob is in the
-/// range, else — for a comment on a worktree file whose cursors the file's
-/// document reads — the lines those cursors cover in the file on disk. A
-/// comment the range cannot place either way exports as recorded.
-fn relocate(
-    loaded: &Loaded,
-    buffers: &mut HashMap<String, Option<Blob>>,
-    in_range: &HashSet<gix::ObjectId>,
-    c: &Comment,
-) -> Comment {
-    let Some((from, to)) = &c.cursors else {
-        return c.clone();
-    };
-    if in_range.contains(&c.anchor.blob) {
-        return c.clone();
-    }
-    let buffer = buffers
-        .entry(c.path.clone())
-        .or_insert_with(|| worktree_buffer(loaded, &c.path));
-    let Some(buffer) = buffer else {
-        return c.clone();
-    };
-    if !buffer.adopt(c.id, from, to) {
-        return c.clone();
-    }
-    match buffer.held_lines_on_disk(c.id) {
-        Some((start, end)) => Comment {
-            anchor: Anchor {
-                blob: buffer.oid,
-                start,
-                end,
-            },
-            ..c.clone()
-        },
-        None => c.clone(),
-    }
+/// [`comments::resolve_anchor`], with its diagnostics printed.
+fn resolve_anchor(spec: &str, loaded: &Loaded, root: &str) -> Result<(String, Anchor), ExitCode> {
+    comments::resolve_anchor(spec, loaded, root).map_err(|error| {
+        eprintln!("error: {error}");
+        ExitCode::from(FINDINGS)
+    })
 }
 
 /// Ranges to copy, so a caller fixing an anchor never does line arithmetic.
 fn print_reviewable_ranges(file: &concats_diff::FileChange, root: &str) {
-    eprintln!("\nThe file's reviewable ranges — comment within one of these:\n");
-    for hunk in &file.hunks {
-        eprintln!("{}\n", concats_review::guide::hunk_link(file, hunk, root));
-    }
+    eprintln!("\n{}", comments::reviewable_ranges(file, root));
 }
 
 /// The whole store as one interchange document. Canonical by default;
@@ -351,25 +217,7 @@ fn export(prompt: bool, out: Option<&str>, range: &RangeArgs) -> Outcome {
     let (loaded, root) = super::load(&target)?;
     let store = Store::open(&loaded.git_dir);
 
-    let rows = loaded
-        .files
-        .iter()
-        .flat_map(|f| f.hunks.iter())
-        .flat_map(|h| h.rows.iter());
-    let (old, new) = interchange::blob_sides(rows, &loaded.blobs);
-    // A comment on a worktree file that changed since it was made reads where
-    // its cursors sit in the file now, not where it was written.
-    let in_range: HashSet<gix::ObjectId> = old.union(&new).copied().collect();
-    let mut buffers = HashMap::new();
-    let comments: Vec<Comment> = store
-        .comments
-        .iter()
-        .map(|c| relocate(&loaded, &mut buffers, &in_range, c))
-        .collect();
-    let stale = comments
-        .iter()
-        .filter(|c| interchange::outside_range(c, &old, &new))
-        .count();
+    let (entries, stale) = comments::entries(&loaded, &store.comments);
     if stale > 0 {
         eprintln!(
             "warning: {stale} comment(s) do not anchor in {}...{} — exported as recorded, \
@@ -378,26 +226,10 @@ fn export(prompt: bool, out: Option<&str>, range: &RangeArgs) -> Outcome {
         );
     }
 
-    let mut entries = interchange::entries_from(&comments, &old, &new);
-    // Diff order, stale paths after, then by line, then by thread — the order a
-    // reviewer reads, with each conversation kept whole.
-    let file_ix: HashMap<&str, usize> = loaded
-        .files
-        .iter()
-        .enumerate()
-        .map(|(i, f)| (f.path.as_str(), i))
-        .collect();
-    let thread = |e: &interchange::Entry| e.reply_to.or(e.id);
-    entries.sort_by(|x, y| {
-        let ix =
-            |e: &interchange::Entry| file_ix.get(e.path.as_str()).copied().unwrap_or(usize::MAX);
-        (ix(x), &x.path, x.start, thread(x), x.id).cmp(&(ix(y), &y.path, y.start, thread(y), y.id))
-    });
-
     let markdown = if prompt {
         interchange::render_prompt(&entries)
     } else {
-        interchange::render(&document_meta(&loaded, &root), &entries)
+        interchange::render(&comments::meta(&loaded, &root), &entries)
     };
 
     match out {
@@ -411,22 +243,6 @@ fn export(prompt: bool, out: Option<&str>, range: &RangeArgs) -> Outcome {
         None => print!("{markdown}"),
     }
     Ok(())
-}
-
-/// The frontmatter an export carries: what repository, and which two oids the
-/// anchors were resolved against.
-fn document_meta(loaded: &concats_diff::load::Loaded, root: &str) -> interchange::Meta {
-    interchange::Meta {
-        repo: Path::new(root)
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned()),
-        base: Some(endpoint(loaded.merge_base, concats_diff::load::INDEX_REV)),
-        head: Some(endpoint(loaded.head, concats_diff::load::WORKTREE_REV)),
-    }
-}
-
-fn endpoint(oid: Option<gix::ObjectId>, sentinel: &str) -> String {
-    oid.map_or_else(|| sentinel.to_string(), |o| o.to_string())
 }
 
 /// Bulk import: parse, resolve every entry (collecting all failures, like
@@ -467,7 +283,7 @@ fn import(input: &str, author: Option<&str>, dry: bool, range: &RangeArgs) -> Ou
     }
 
     let (loaded, root) = super::load(&range.resolve()?)?;
-    warn_on_range_mismatch(&doc, &loaded);
+    warn_on_range_mismatch(&doc, &comments::meta(&loaded, &root));
 
     // Roots must anchor; a reply anchors where it can and otherwise takes its
     // root's place, so an outdated line number in a reply cannot fail a batch.
@@ -502,21 +318,14 @@ fn read_input(input: &str) -> Result<String, ExitCode> {
 /// A document that names endpoints is checked against the loaded ones — the
 /// anchors are validated against the diff either way, so this is a warning
 /// rather than a refusal.
-fn warn_on_range_mismatch(doc: &interchange::Document, loaded: &concats_diff::load::Loaded) {
+fn warn_on_range_mismatch(doc: &interchange::Document, loaded: &interchange::Meta) {
     for (name, have, want) in [
-        (
-            "base",
-            &doc.meta.base,
-            endpoint(loaded.merge_base, concats_diff::load::INDEX_REV),
-        ),
-        (
-            "head",
-            &doc.meta.head,
-            endpoint(loaded.head, concats_diff::load::WORKTREE_REV),
-        ),
+        ("base", &doc.meta.base, &loaded.base),
+        ("head", &doc.meta.head, &loaded.head),
     ] {
-        if have.as_ref().is_some_and(|have| *have != want) {
-            let have = have.as_ref().expect("checked");
+        if let (Some(have), Some(want)) = (have, want)
+            && have != want
+        {
             eprintln!(
                 "warning: document {name} {have} is not the loaded range's {want} — \
                  anchors are validated against the loaded diff"
