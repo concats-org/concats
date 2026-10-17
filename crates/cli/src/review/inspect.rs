@@ -1,7 +1,7 @@
 //! Looking at a range without changing anything: which recorded turns produced
 //! it, and what loading it costs.
 
-use std::{collections::HashMap, path::Path};
+use std::collections::HashMap;
 
 use concats_highlight::Highlighter;
 use concats_languages::lang_for_ext;
@@ -14,16 +14,19 @@ use super::{Outcome, RangeArgs, counted};
 /// hook) without opening a window.
 pub(crate) fn turns(range: &RangeArgs) -> Outcome {
     let target = range.resolve()?;
-    let (loaded, root) = super::load(&target)?;
-    let Ok(repo) = gix::open(Path::new(&root)) else {
-        eprintln!("error: cannot open {root}");
+    let loaded = super::load(&target)?;
+    let Ok(repo) = gix::open(&loaded.root) else {
+        eprintln!("error: cannot open {}", loaded.root.display());
         return Err(std::process::ExitCode::from(super::BAD_INPUT));
     };
 
     let diff = sessions::review_diff(&repo, &loaded);
     let turns = sessions::load_turns(&repo, &diff);
     if turns.is_empty() {
-        println!("no agent sessions (refs/agent/sessions/*) in {root}");
+        println!(
+            "no agent sessions (refs/agent/sessions/*) in {}",
+            loaded.root.display()
+        );
         return Ok(());
     }
 
@@ -66,7 +69,7 @@ pub(crate) fn turns(range: &RangeArgs) -> Outcome {
 
 /// Where the wall-clock goes on a cold load, per stage and per language.
 pub(crate) fn bench(no_hl: bool, range: &RangeArgs) -> Outcome {
-    let (mut loaded, _) = super::load(&range.resolve()?)?;
+    let mut loaded = super::load(&range.resolve()?)?;
     let stats = loaded.stats.clone();
     let rows: usize = loaded.files.iter().map(|f| f.default_rows().len()).sum();
 

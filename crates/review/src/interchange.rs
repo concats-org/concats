@@ -937,6 +937,7 @@ mod tests {
         Loaded {
             merge_base: Some(oid(1)),
             head: Some(oid(2)),
+            root: std::path::PathBuf::new(),
             git_dir: std::path::PathBuf::new(),
             workdir: None,
             stage: Vec::new(),

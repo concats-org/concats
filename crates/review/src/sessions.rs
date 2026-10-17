@@ -31,7 +31,6 @@
 use std::{
     collections::{HashMap, HashSet},
     hash::{DefaultHasher, Hash, Hasher},
-    path::Path,
 };
 
 use concats_diff::{
@@ -595,11 +594,8 @@ pub struct Mined {
 /// none (one refs directory listing), so the GUI just always calls it. Takes
 /// `loaded` mutably because the sessions tab lowers each turn's own diff into
 /// the same blob table the review uses.
-pub fn mine(repo_path: &Path, loaded: &mut Loaded) -> Mined {
-    let Some(root) = load::discover(repo_path) else {
-        return Mined::default();
-    };
-    let Ok(mut repo) = gix::open(&root) else {
+pub fn mine(loaded: &mut Loaded) -> Mined {
+    let Ok(mut repo) = gix::open(&loaded.root) else {
         return Mined::default();
     };
     // The mining pass re-reads the same snapshot trees constantly; a small
@@ -873,7 +869,7 @@ fn turn_rows(
 
 #[cfg(test)]
 mod tests {
-    use std::str::FromStr;
+    use std::{path::Path, str::FromStr};
 
     use concats_fixture::git;
     use concats_message::{SessionId, TurnEntry};
@@ -998,7 +994,7 @@ mod tests {
                 assert!(matches!(h.rows.first(), Some(Row::HunkBar { .. })));
             }
         }
-        let mined = mine(dir, &mut loaded);
+        let mined = mine(&mut loaded);
         let sess = &mined.sessions;
         let read = prose(sess, &loaded.blobs);
         assert!(read.contains("test-session"));
@@ -1035,7 +1031,7 @@ mod tests {
         let head = git(dir, &["rev-parse", "HEAD"]);
 
         let mut loaded = load::load(dir, &base, &head).unwrap();
-        let mined = mine(dir, &mut loaded);
+        let mined = mine(&mut loaded);
 
         assert!(matches!(
             mined.commits.first(),
@@ -1173,7 +1169,7 @@ mod tests {
         assert_eq!(matching_turns(&range, &turns).len(), 1);
 
         let mut loaded = load::load(dir, &base, &head).unwrap();
-        let sess = mine(dir, &mut loaded).sessions;
+        let sess = mine(&mut loaded).sessions;
         let titles: Vec<&String> = sess
             .iter()
             .filter_map(|r| match r {

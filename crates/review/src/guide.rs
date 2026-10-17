@@ -52,7 +52,7 @@
 //! strict: a reference that resolves to nothing becomes a loud
 //! [`Row::Warning`], never a silent omission.
 
-use std::collections::HashSet;
+use std::{collections::HashSet, path::Path};
 
 use concats_diff::{FileChange, Hunk, Row, load::Loaded};
 
@@ -60,7 +60,7 @@ use concats_diff::{FileChange, Hunk, Row, load::Loaded};
 ///
 /// Markdown, not JSON, because this goes into a prompt: the agent copies a line
 /// of it straight into its answer, no parsing on its side.
-pub fn manifest(loaded: &Loaded, repo_root: &str) -> String {
+pub fn manifest(loaded: &Loaded) -> String {
     let mut md = String::new();
     let s = &loaded.stats;
 
@@ -94,7 +94,7 @@ pub fn manifest(loaded: &Loaded, repo_root: &str) -> String {
         }
 
         for h in &f.hunks {
-            md.push_str(&hunk_link(f, h, repo_root));
+            md.push_str(&hunk_link(f, h, &loaded.root));
             md.push_str("\n\n");
         }
     }
@@ -109,7 +109,7 @@ pub fn manifest(loaded: &Loaded, repo_root: &str) -> String {
 /// pasting it verbatim, exactly as the skill instructed, rendered it as prose
 /// and counted zero coverage, with no error. The tool was handing out lines
 /// that could not be used as told. So: annotation above, link alone below.
-pub fn hunk_link(f: &FileChange, h: &Hunk, repo_root: &str) -> String {
+pub fn hunk_link(f: &FileChange, h: &Hunk, root: &Path) -> String {
     let end = h.new_start as usize + h.adds.max(1) - 1;
     format!(
         "+{}/-{}  `{}`\n[{} ({}:{})](file://{}/{}#L{}-{})",
@@ -119,7 +119,7 @@ pub fn hunk_link(f: &FileChange, h: &Hunk, repo_root: &str) -> String {
         f.path.rsplit('/').next().unwrap_or(&f.path),
         h.new_start,
         end,
-        repo_root.trim_end_matches('/'),
+        root.to_string_lossy().trim_end_matches('/'),
         f.path,
         h.new_start,
         end,
@@ -226,7 +226,7 @@ impl Report {
 }
 
 /// Check an agent's review guide against the diff it claims to describe.
-pub fn lint(guide: &str, loaded: &Loaded, repo_root: &str) -> Report {
+pub fn lint(guide: &str, loaded: &Loaded) -> Report {
     let mut broken = Vec::new();
     let mut duplicates = Vec::new();
     let mut placed: HashSet<String> = HashSet::new();
@@ -312,7 +312,7 @@ pub fn lint(guide: &str, loaded: &Loaded, repo_root: &str) -> Report {
                     new_file_hunks_placed += 1;
                 }
             } else {
-                links.push(hunk_link(f, h, repo_root));
+                links.push(hunk_link(f, h, &loaded.root));
             }
         }
         if !links.is_empty() {

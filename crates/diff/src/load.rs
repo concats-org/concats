@@ -100,6 +100,9 @@ pub struct Loaded {
     pub merge_base: Option<ObjectId>,
     /// The resolved head commit; `None` for a WORKTREE load.
     pub head: Option<ObjectId>,
+    /// The checkout's root, canonical: what every link into the repository
+    /// is relative to.
+    pub root: PathBuf,
     /// The repo's common `.git` directory — the identity of the review store.
     ///
     /// The common dir rather than this worktree's own git dir, because
@@ -142,8 +145,9 @@ pub fn discover(start: &Path) -> Option<PathBuf> {
 }
 
 pub fn load(repo_path: &Path, base_rev: &str, head_rev: &str) -> Result<Loaded, Error> {
+    let root = discover(repo_path).ok_or_else(|| Error::NoRepository(repo_path.to_path_buf()))?;
     if head_rev.trim() == WORKTREE_REV {
-        return load_worktree(repo_path, base_rev);
+        return load_worktree(root, base_rev);
     }
     if base_rev.trim() == INDEX_REV || base_rev.trim() == WORKTREE_REV {
         return Err(Error::WorktreeOnly {
@@ -153,8 +157,6 @@ pub fn load(repo_path: &Path, base_rev: &str, head_rev: &str) -> Result<Loaded, 
 
     let t_total = Instant::now();
     let mut st = LoadStats::default();
-
-    let root = discover(repo_path).ok_or_else(|| Error::NoRepository(repo_path.to_path_buf()))?;
 
     let t = Instant::now();
     let repo = open_repo(&root)?;
@@ -193,6 +195,7 @@ pub fn load(repo_path: &Path, base_rev: &str, head_rev: &str) -> Result<Loaded, 
     Ok(Loaded {
         merge_base: Some(merge_base),
         head: Some(head),
+        root,
         git_dir: repo.common_dir().to_path_buf(),
         workdir: None,
         files,
@@ -209,11 +212,9 @@ pub fn load(repo_path: &Path, base_rev: &str, head_rev: &str) -> Result<Loaded, 
 /// go into an overlay keyed by their real git blob hash, so everything
 /// downstream — lowering, seen state, comments — works on content-addressed
 /// oids, the same as in a commit review.
-fn load_worktree(repo_path: &Path, base_rev: &str) -> Result<Loaded, Error> {
+fn load_worktree(root: PathBuf, base_rev: &str) -> Result<Loaded, Error> {
     let t_total = Instant::now();
     let mut st = LoadStats::default();
-
-    let root = discover(repo_path).ok_or_else(|| Error::NoRepository(repo_path.to_path_buf()))?;
 
     let t = Instant::now();
     let repo = open_repo(&root)?;
@@ -372,6 +373,7 @@ fn load_worktree(repo_path: &Path, base_rev: &str) -> Result<Loaded, Error> {
     Ok(Loaded {
         merge_base: base_commit,
         head: None,
+        root: root.clone(),
         git_dir: repo.common_dir().to_path_buf(),
         workdir: Some(root),
         files,

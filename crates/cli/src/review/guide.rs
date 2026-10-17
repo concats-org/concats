@@ -17,8 +17,8 @@ use concats_review::{guide, store};
 use super::{BAD_INPUT, FINDINGS, GuideArgs, Outcome, RangeArgs, counted};
 
 pub(crate) fn manifest(range: &RangeArgs) -> Outcome {
-    let (loaded, root) = super::load(&range.resolve()?)?;
-    print!("{}", guide::manifest(&loaded, &root));
+    let loaded = super::load(&range.resolve()?)?;
+    print!("{}", guide::manifest(&loaded));
     Ok(())
 }
 
@@ -89,9 +89,9 @@ fn check(
         eprintln!("error: cannot read {path}");
         return Err(ExitCode::from(BAD_INPUT));
     };
-    let (loaded, root) = super::load(&target)?;
+    let loaded = super::load(&target)?;
 
-    let report = guide::lint(&markdown, &loaded, &root);
+    let report = guide::lint(&markdown, &loaded);
     let pct = report.coverage_pct();
     let coverage_fail = pct + 1e-9 < gate.min_coverage;
     let failed = !report.broken.is_empty() || coverage_fail;

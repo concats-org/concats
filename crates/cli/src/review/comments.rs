@@ -99,8 +99,8 @@ fn list(repo: Option<&str>, delete: Option<u64>) -> Outcome {
 
 fn add(spec: &str, body: &str, author: Option<String>, range: &RangeArgs) -> Outcome {
     let body = non_empty(body)?;
-    let (loaded, root) = super::load(&range.resolve()?)?;
-    let (path, at) = resolve_anchor(spec, &loaded, &root)?;
+    let loaded = super::load(&range.resolve()?)?;
+    let (path, at) = resolve_anchor(spec, &loaded)?;
 
     let mut store = Store::open(&loaded.git_dir);
     let id = store.add_comment(Comment {
@@ -146,7 +146,7 @@ fn reply(
         None => None,
     };
     let mut store = match &diff {
-        Some((loaded, _)) => Store::open(&loaded.git_dir),
+        Some(loaded) => Store::open(&loaded.git_dir),
         None => super::open_store(range.repo.as_deref())?,
     };
     // The root, not the id given: a reply to a reply threads under the root.
@@ -154,8 +154,8 @@ fn reply(
         return Err(no_such_comment(parent));
     };
 
-    if let (Some(spec), Some((loaded, root))) = (moved, &diff) {
-        let (path, at) = resolve_anchor(spec, loaded, root)?;
+    if let (Some(spec), Some(loaded)) = (moved, &diff) {
+        let (path, at) = resolve_anchor(spec, loaded)?;
         let id = store.add_comment(Comment {
             id: 0,
             path: path.clone(),
@@ -200,16 +200,16 @@ fn non_empty(body: &str) -> Result<String, ExitCode> {
 }
 
 /// [`comments::resolve_anchor`], with its diagnostics printed.
-fn resolve_anchor(spec: &str, loaded: &Loaded, root: &str) -> Result<(String, Anchor), ExitCode> {
-    comments::resolve_anchor(spec, loaded, root).map_err(|error| {
+fn resolve_anchor(spec: &str, loaded: &Loaded) -> Result<(String, Anchor), ExitCode> {
+    comments::resolve_anchor(spec, loaded).map_err(|error| {
         eprintln!("error: {error}");
         ExitCode::from(FINDINGS)
     })
 }
 
 /// Ranges to copy, so a caller fixing an anchor never does line arithmetic.
-fn print_reviewable_ranges(file: &concats_diff::FileChange, root: &str) {
-    eprintln!("\n{}", comments::reviewable_ranges(file, root));
+fn print_reviewable_ranges(loaded: &Loaded, file: &concats_diff::FileChange) {
+    eprintln!("\n{}", comments::reviewable_ranges(loaded, file));
 }
 
 /// The range's threads as one interchange document; `--all` for the whole
@@ -219,7 +219,7 @@ fn print_reviewable_ranges(file: &concats_diff::FileChange, root: &str) {
 /// to an agent. Stdout by default so it pipes.
 fn export(prompt: bool, all: bool, out: Option<&str>, range: &RangeArgs) -> Outcome {
     let target = range.resolve()?;
-    let (loaded, root) = super::load(&target)?;
+    let loaded = super::load(&target)?;
     let store = Store::open(&loaded.git_dir);
 
     let (mut entries, elsewhere) = comments::entries(&loaded, &store.comments);
@@ -244,7 +244,7 @@ fn export(prompt: bool, all: bool, out: Option<&str>, range: &RangeArgs) -> Outc
     let markdown = if prompt {
         interchange::render_prompt(&entries)
     } else {
-        interchange::render(&comments::meta(&loaded, &root), &entries)
+        interchange::render(&comments::meta(&loaded), &entries)
     };
 
     match out {
@@ -297,8 +297,8 @@ fn import(input: &str, author: Option<&str>, dry: bool, range: &RangeArgs) -> Ou
         return Err(ExitCode::from(FINDINGS));
     }
 
-    let (loaded, root) = super::load(&range.resolve()?)?;
-    warn_on_range_mismatch(&doc, &comments::meta(&loaded, &root));
+    let loaded = super::load(&range.resolve()?)?;
+    warn_on_range_mismatch(&doc, &comments::meta(&loaded));
 
     // Roots must anchor; a reply anchors where it can and otherwise takes its
     // root's place, so an outdated line number in a reply cannot fail a batch.
@@ -310,7 +310,7 @@ fn import(input: &str, author: Option<&str>, dry: bool, range: &RangeArgs) -> Ou
     let resolved = if from_pull_request {
         resolve_pull_request_roots(&doc.entries, &loaded, input)
     } else {
-        resolve_document_roots(&doc.entries, &loaded, input, &root)?
+        resolve_document_roots(&doc.entries, &loaded, input)?
     };
 
     write_entries(&loaded, &resolved, &replies, author, dry);
@@ -356,12 +356,11 @@ fn resolve_document_roots<'a>(
     entries: &'a [interchange::Entry],
     loaded: &Loaded,
     input: &str,
-    root: &str,
 ) -> Result<Roots<'a>, ExitCode> {
     let (resolved, failed) = resolve_roots(entries, loaded, |entry, error| {
         print_resolution_error(entry, error, input, "error");
         if let interchange::ResolveError::MissingLines { file, .. } = error {
-            print_reviewable_ranges(file, root);
+            print_reviewable_ranges(loaded, file);
         }
     });
     if failed > 0 {

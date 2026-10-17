@@ -124,7 +124,7 @@ fn links_multiple_sessions_to_worktree_changes() {
     let worktree = tmp.path().join("linked");
     for base in ["HEAD", "INDEX"] {
         let mut loaded = concats_diff::load::load(&worktree, base, "WORKTREE").unwrap();
-        let mined = concats_review::sessions::mine(&worktree, &mut loaded);
+        let mined = concats_review::sessions::mine(&mut loaded);
         for id in ["first", "second"] {
             assert!(mined.sessions.iter().any(|row| matches!(row,
                 concats_diff::Row::Title { text } if text == &format!("## Session `{id}`"))));
@@ -136,7 +136,7 @@ fn links_multiple_sessions_to_worktree_changes() {
         std::fs::write(worktree.join("file.txt"), "unrelated\n").unwrap();
         let mut loaded = concats_diff::load::load(&worktree, "HEAD", "WORKTREE").unwrap();
         assert!(
-            concats_review::sessions::mine(&worktree, &mut loaded)
+            concats_review::sessions::mine(&mut loaded)
                 .sessions
                 .is_empty()
         );

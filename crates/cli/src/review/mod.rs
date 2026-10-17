@@ -353,20 +353,12 @@ pub(crate) fn counted(n: usize) -> f64 {
     n as f64
 }
 
-/// Load `target`'s diff, or say why not. Returns the repository root alongside
-/// it, which is what every link in the output is relative to.
-pub(crate) fn load(target: &Target) -> Result<(Loaded, String), ExitCode> {
-    let Some(root) = load::discover(Path::new(&target.repo)) else {
-        eprintln!("error: no git repository at {}", target.repo);
-        return Err(ExitCode::from(BAD_INPUT));
-    };
-    match load::load(Path::new(&target.repo), &target.base, &target.head) {
-        Ok(loaded) => Ok((loaded, root.display().to_string())),
-        Err(error) => {
-            eprintln!("error: {error}");
-            Err(ExitCode::from(BAD_INPUT))
-        }
-    }
+/// Load `target`'s diff, or say why not.
+pub(crate) fn load(target: &Target) -> Result<Loaded, ExitCode> {
+    load::load(Path::new(&target.repo), &target.base, &target.head).map_err(|error| {
+        eprintln!("error: {error}");
+        ExitCode::from(BAD_INPUT)
+    })
 }
 
 /// Open the repository at `repo` for a command that needs the review store but

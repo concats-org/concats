@@ -146,7 +146,7 @@ fn reply_to(path: &str) -> Option<u64> {
 /// The threads `doc` places, whole, as the document `concats comments export`
 /// writes; with `all`, every thread in the store.
 fn shown_comments(doc: &ReviewDoc, all: bool) -> Answer {
-    let (loaded, root) = match load(doc) {
+    let loaded = match load(doc) {
         Ok(loaded) => loaded,
         Err(answer) => return answer,
     };
@@ -161,7 +161,7 @@ fn shown_comments(doc: &ReviewDoc, all: bool) -> Answer {
     typed(
         200,
         "text/markdown; charset=utf-8",
-        interchange::render(&comments::meta(&loaded, &root), &entries),
+        interchange::render(&comments::meta(&loaded), &entries),
     )
 }
 
@@ -186,11 +186,11 @@ fn reply(doc: &ReviewDoc, to: u64, body: &str, url: &url::Url) -> Answer {
             None => text(404, &format!("no comment with id {to}")),
         };
     };
-    let (loaded, root) = match load(doc) {
+    let loaded = match load(doc) {
         Ok(loaded) => loaded,
         Err(answer) => return answer,
     };
-    let (path, anchor) = match comments::resolve_anchor(&spec, &loaded, &root) {
+    let (path, anchor) = match comments::resolve_anchor(&spec, &loaded) {
         Ok(resolved) => resolved,
         Err(error) => return text(422, &error.to_string()),
     };
@@ -217,15 +217,11 @@ fn reply(doc: &ReviewDoc, to: u64, body: &str, url: &url::Url) -> Answer {
     )
 }
 
-/// The diff `doc` shows, loaded fresh the way the CLI loads it, with the root
-/// its links are relative to.
-fn load(doc: &ReviewDoc) -> Result<(concats_diff::load::Loaded, String), Answer> {
+/// The diff `doc` shows, loaded fresh the way the CLI loads it.
+fn load(doc: &ReviewDoc) -> Result<concats_diff::load::Loaded, Answer> {
     let target = doc.target();
-    let root = concats_diff::load::discover(Path::new(&target.repo))
-        .ok_or_else(|| text(503, &format!("no git repository at {}", target.repo)))?;
-    let loaded = concats_diff::load::load(Path::new(&target.repo), &target.base, &target.head)
-        .map_err(|error| text(503, &error.to_string()))?;
-    Ok((loaded, root.display().to_string()))
+    concats_diff::load::load(Path::new(&target.repo), &target.base, &target.head)
+        .map_err(|error| text(503, &error.to_string()))
 }
 
 fn text(status: u16, body: &str) -> Answer {

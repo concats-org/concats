@@ -7,10 +7,7 @@
 //! computed by hand), and every anchor is checked against the loaded diff
 //! before anything is stored.
 
-use std::{
-    collections::{HashMap, HashSet},
-    path::Path,
-};
+use std::collections::{HashMap, HashSet};
 
 use concats_diff::{
     Blob, FileChange,
@@ -33,7 +30,7 @@ use crate::{
 /// cannot address them from here — `import` reaches them via `old L…` anchors.
 /// A miss names the file's reviewable ranges, so a fix is a copy rather than
 /// fresh line arithmetic.
-pub fn resolve_anchor(spec: &str, loaded: &Loaded, root: &str) -> Result<(String, Anchor), Error> {
+pub fn resolve_anchor(spec: &str, loaded: &Loaded) -> Result<(String, Anchor), Error> {
     let (path_part, lines) = spec.rsplit_once(':').ok_or(Error::AnchorSyntax)?;
     let (first, last) = lines.split_once('-').unwrap_or((lines, lines));
     let (Ok(start), Ok(end)) = (first.trim().parse::<u32>(), last.trim().parse::<u32>()) else {
@@ -52,18 +49,18 @@ pub fn resolve_anchor(spec: &str, loaded: &Loaded, root: &str) -> Result<(String
                 .collect::<Vec<_>>()
                 .join(", "),
             path: file.path.clone(),
-            ranges: reviewable_ranges(file, root),
+            ranges: reviewable_ranges(loaded, file),
         },
     })
 }
 
 /// A file's hunks as ready-made links, so a caller fixing an anchor never does
 /// line arithmetic.
-pub fn reviewable_ranges(file: &FileChange, root: &str) -> String {
+pub fn reviewable_ranges(loaded: &Loaded, file: &FileChange) -> String {
     let links: Vec<String> = file
         .hunks
         .iter()
-        .map(|hunk| format!("{}\n", guide::hunk_link(file, hunk, root)))
+        .map(|hunk| format!("{}\n", guide::hunk_link(file, hunk, &loaded.root)))
         .collect();
     format!(
         "The file's reviewable ranges — comment within one of these:\n\n{}",
@@ -185,12 +182,13 @@ pub fn entries(loaded: &Loaded, comments: &[Comment]) -> (Vec<Entry>, HashSet<u6
 
 /// The frontmatter a document carries: what repository, and which two oids the
 /// anchors were resolved against.
-pub fn meta(loaded: &Loaded, root: &str) -> Meta {
+pub fn meta(loaded: &Loaded) -> Meta {
     let endpoint = |oid: Option<ObjectId>, sentinel: &str| {
         oid.map_or_else(|| sentinel.to_string(), |o| o.to_string())
     };
     Meta {
-        repo: Path::new(root)
+        repo: loaded
+            .root
             .file_name()
             .map(|n| n.to_string_lossy().into_owned()),
         base: Some(endpoint(loaded.merge_base, INDEX_REV)),

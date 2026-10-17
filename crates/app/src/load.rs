@@ -402,7 +402,7 @@ pub(crate) fn build_review(
     });
     // The recorded agent sessions next to the diff: the Sessions and Commits
     // tabs. Costs one refs listing when there are none.
-    let mut mined = sessions::mine(std::path::Path::new(&target.repo), &mut loaded);
+    let mut mined = sessions::mine(&mut loaded);
     d.has_guide = guide_md.is_some();
 
     // What the file browser lists, and which of those paths this range creates
