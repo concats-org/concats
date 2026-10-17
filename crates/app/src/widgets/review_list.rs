@@ -11,10 +11,7 @@ use concats_diff::{Blob, LineKind, Row};
 use concats_review::store::{self, LineKey};
 
 use super::{
-    DiffLine, Gutter,
-    collapsed_run::CollapsedRun,
-    drop_shadow::{DropShadow, ShadowUp},
-    gutter::RowMarks,
+    DiffLine, Gutter, collapsed_run::CollapsedRun, drop_shadow::DropShadow, gutter::RowMarks,
 };
 #[allow(
     clippy::wildcard_imports,
@@ -2142,19 +2139,10 @@ impl ReviewList {
             view.walk.margin.top = push - STICKY_SHADOW;
         }
         // Ramp both shadows rather than toggling them.
-        if let Some(mut shadow) = self
-            .view
-            .widget(cx, ids!(st_shadow))
-            .borrow_mut::<DropShadow>()
-        {
-            shadow.fade = lift as f32;
-        }
-        if let Some(mut shadow) = self
-            .view
-            .widget(cx, ids!(st_shadow_up))
-            .borrow_mut::<ShadowUp>()
-        {
-            shadow.fade = lift as f32;
+        for ids in [ids!(st_shadow), ids!(st_shadow_up)] {
+            if let Some(mut shadow) = self.view.widget(cx, ids).borrow_mut::<DropShadow>() {
+                shadow.fade = lift as f32;
+            }
         }
         if !sticky.visible() {
             sticky.set_visible(cx, true);
