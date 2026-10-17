@@ -485,14 +485,7 @@ fn commit_change_rows(
     let mut shown = 0usize;
     let mut binary = 0usize;
     for (j, c) in cd.changes.iter().enumerate() {
-        match low.file(
-            format!("{id_prefix}-c{j}"),
-            c.path().to_string(),
-            None,
-            None,
-            c.old_oid(),
-            c.new_oid(),
-        ) {
+        match low.file(format!("{id_prefix}-c{j}"), c) {
             Ok(Some(fc)) => {
                 for h in &fc.hunks {
                     for r in &h.rows {
@@ -501,14 +494,7 @@ fn commit_change_rows(
                         }
                     }
                 }
-                rows.push(Row::FileHeader {
-                    path: fc.path.clone(),
-                    lang: fc.lang,
-                    adds: fc.adds,
-                    dels: fc.dels,
-                    from: fc.from.clone(),
-                    similarity: fc.similarity,
-                });
+                rows.push(fc.header());
                 rows.extend(fc.default_rows());
                 shown += 1;
             }
@@ -688,23 +674,8 @@ fn commits_stream(
         ),
     });
 
-    let mut blob_ix: HashMap<ObjectId, u32> = loaded
-        .blobs
-        .iter()
-        .enumerate()
-        .map(|(i, b)| (b.oid, i as u32))
-        .collect();
-    let mut next_hunk_id = 0usize;
     let mut scratch = LoadStats::default();
-    let mut low = FileLowerer {
-        repo,
-        blobs: &mut loaded.blobs,
-        blob_ix: &mut blob_ix,
-        next_hunk_id: &mut next_hunk_id,
-        hunk_prefix: "c",
-        overlay: None,
-        st: &mut scratch,
-    };
+    let mut low = FileLowerer::new((repo, None), &mut loaded.blobs, "c", &mut scratch);
 
     for cd in range.by_commit.iter().rev() {
         commit_header_rows(&mut rows, cd, &mut low);
@@ -742,26 +713,11 @@ fn sessions_rows(
         return rows;
     }
 
-    // Resume interning into the review's blob table: identical content (the
-    // usual case, a turn's final state is what got committed) costs nothing.
-    let mut blob_ix: HashMap<ObjectId, u32> = loaded
-        .blobs
-        .iter()
-        .enumerate()
-        .map(|(i, b)| (b.oid, i as u32))
-        .collect();
-    let mut next_hunk_id = 0usize;
     // Session lowering must not skew the review's perf numbers.
     let mut scratch = LoadStats::default();
-    let mut low = FileLowerer {
-        repo,
-        blobs: &mut loaded.blobs,
-        blob_ix: &mut blob_ix,
-        next_hunk_id: &mut next_hunk_id,
-        hunk_prefix: "t",
-        overlay: None,
-        st: &mut scratch,
-    };
+    // Resume interning into the review's blob table: identical content (the
+    // usual case, a turn's final state is what got committed) costs nothing.
+    let mut low = FileLowerer::new((repo, None), &mut loaded.blobs, "t", &mut scratch);
 
     let linked_sessions: HashSet<&str> =
         via.keys().map(|&i| turns[i].session_id.as_str()).collect();

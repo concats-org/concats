@@ -490,20 +490,8 @@ mod tests {
         d.guide_rows = vec![
             d.files_rows[0].clone(),
             d.files_rows[0].clone(),
-            Row::Code {
-                kind: LineKind::Add,
-                old_no: None,
-                new_no: Some(1),
-                blob: 1,
-                line: 0,
-            },
-            Row::Code {
-                kind: LineKind::Del,
-                old_no: Some(1),
-                new_no: None,
-                blob: 2,
-                line: 0,
-            },
+            Row::add(1, 0),
+            Row::del(2, 0),
             Row::Comment {
                 id: 1,
                 parent: None,

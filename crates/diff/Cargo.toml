@@ -20,7 +20,6 @@ concats_text = { workspace = true }
 # anything can highlight it, and you need no grammar to say "rust".
 concats_languages = { workspace = true }
 gix = { workspace = true }
-imara-diff = { workspace = true }
 loro = { workspace = true }
 thiserror = { workspace = true }
 

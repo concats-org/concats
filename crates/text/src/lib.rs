@@ -16,6 +16,7 @@
 
 use std::ops::Range;
 
+pub use imara_diff::Hunk;
 use imara_diff::{Algorithm, Diff, InternedInput};
 
 /// Byte offset of each line start, with a trailing sentinel at `text.len()` so
@@ -86,6 +87,17 @@ fn shrink(range: Range<usize>, old: &str, ins: &str) -> (Range<usize>, String) {
     )
 }
 
+/// The line diff: histogram, then slider adjustment and indent heuristics
+/// (`postprocess_lines`), which move hunk boundaries to where a human would put
+/// them. Hunks come in file order, as line ranges on each side.
+#[must_use]
+pub fn line_hunks(old: &str, new: &str) -> Vec<Hunk> {
+    let input = InternedInput::new(old, new);
+    let mut diff = Diff::compute(Algorithm::Histogram, &input);
+    diff.postprocess_lines(&input);
+    diff.hunks().collect()
+}
+
 /// The byte-range replacements taking `old` to `new`, highest offset first.
 ///
 /// The order is part of the wire format: applying the same hunk list front to
@@ -95,13 +107,10 @@ fn shrink(range: Range<usize>, old: &str, ins: &str) -> (Range<usize>, String) {
 /// edits to one syntax tree needs as well.
 #[must_use]
 pub fn replacements(old: &str, new: &str) -> Vec<(Range<usize>, String)> {
-    let input = InternedInput::new(old, new);
-    let mut diff = Diff::compute(Algorithm::Histogram, &input);
-    diff.postprocess_lines(&input);
     let (old_starts, new_starts) = (line_starts(old), line_starts(new));
     let at = |starts: &[u32], line: u32| starts[line as usize] as usize;
-    let mut out: Vec<(Range<usize>, String)> = diff
-        .hunks()
+    let mut out: Vec<(Range<usize>, String)> = line_hunks(old, new)
+        .into_iter()
         .map(|h| {
             let del = at(&old_starts, h.before.start)..at(&old_starts, h.before.end);
             let ins = &new[at(&new_starts, h.after.start)..at(&new_starts, h.after.end)];

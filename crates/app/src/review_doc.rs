@@ -1373,13 +1373,7 @@ pub(crate) fn expand_collapsed(d: &mut ReviewDoc, tab: Stream, row: usize, end: 
         CollapsedEnd::Head => 0,
         CollapsedEnd::Tail => hidden,
     };
-    let revealed = (first..first + take).map(|k| Row::Code {
-        kind: LineKind::Context,
-        old_no: Some(old_start + k + 1),
-        new_no: Some(new_start + k + 1),
-        blob,
-        line: new_start + k,
-    });
+    let revealed = (first..first + take).map(|k| Row::context(blob, old_start + k, new_start + k));
     // What is left of the run, if anything: taking from the head moves its
     // start, taking from the tail only shortens it.
     let rest = (hidden > 0).then(|| match end {
@@ -1419,15 +1413,7 @@ pub(crate) fn reveal_removed(d: &mut ReviewDoc, tab: Stream, row: usize) {
     let Some(&Row::Removed { blob, start, end }) = d.stream(tab).get(row) else {
         return;
     };
-    let revealed: Vec<Row> = (start..=end)
-        .map(|line| Row::Code {
-            kind: LineKind::Del,
-            old_no: Some(line + 1),
-            new_no: None,
-            blob,
-            line,
-        })
-        .collect();
+    let revealed: Vec<Row> = (start..=end).map(|line| Row::del(blob, line)).collect();
     replace_row(d, tab, row, revealed);
 }
 
@@ -1649,13 +1635,7 @@ mod tests {
                 old: None,
                 new: None,
             },
-            Row::Code {
-                kind: LineKind::Add,
-                old_no: None,
-                new_no: Some(1),
-                blob: 0,
-                line: 0,
-            },
+            Row::add(0, 0),
             run(),
         ];
         let blobs = [Blob::new(oid(1), "rs".into(), "a\n".into())];
@@ -1696,13 +1676,7 @@ mod tests {
                 from: None,
                 similarity: None,
             },
-            Row::Code {
-                kind: LineKind::Add,
-                old_no: None,
-                new_no: Some(1),
-                blob: 0,
-                line: 0,
-            },
+            Row::add(0, 0),
             Row::Code {
                 kind: LineKind::Context,
                 old_no: None,

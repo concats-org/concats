@@ -1,7 +1,7 @@
 //! git -> blobs + reference rows, with per-stage timing.
 //!
 //! `merge_base` + `diff_commits` give three-dot (`base...head`) semantics;
-//! imara's histogram diff gives the line ops.
+//! [`concats_text::line_hunks`] gives the line ops.
 //!
 //! NOTE: no highlighting happens here. It is the expensive part of a cold load,
 //! and a reviewer opens a handful of the changed files, so blobs highlight
@@ -10,15 +10,15 @@
 use std::{
     collections::{HashMap, HashSet},
     io::Read,
+    ops::Range,
     path::{Component, Path, PathBuf},
     time::Instant,
 };
 
 use concats_languages::lang_for_ext;
 use concats_sync::hash_object;
-use concats_text::fnv1a;
+use concats_text::{fnv1a, line_hunks};
 use gix::{ObjectId, Repository};
-use imara_diff::{Algorithm, Diff, InternedInput};
 
 use crate::{Blob, Error, FileChange, Hunk, LineKind, LoadStats, Row, Side, stage::StageFile};
 
@@ -410,32 +410,9 @@ fn lower(
 ) -> Result<(Vec<FileChange>, Vec<Blob>), Error> {
     let mut files = Vec::new();
     let mut blobs: Vec<Blob> = Vec::new();
-    // Dedup blobs across files by oid — content-addressed, so identical content
-    // (a pure rename, a vendored file) is stored once.
-    let mut blob_ix: HashMap<ObjectId, u32> = HashMap::new();
-    // Hunk ids are unique across the whole review, not per file — an agent
-    // references them globally.
-    let mut next_hunk_id = 0usize;
-
-    let mut low = FileLowerer {
-        repo,
-        blobs: &mut blobs,
-        blob_ix: &mut blob_ix,
-        next_hunk_id: &mut next_hunk_id,
-        hunk_prefix: "h",
-        overlay,
-        st,
-    };
+    let mut low = FileLowerer::new((repo, overlay), &mut blobs, "h", st);
     for ch in changes {
-        let (from, similarity) = match ch {
-            Change::Renamed {
-                from, similarity, ..
-            } => (Some(from.clone()), Some(*similarity)),
-            _ => (None, None),
-        };
-        let id = format!("f{}", files.len());
-        let path = ch.path().to_string();
-        if let Some(fc) = low.file(id, path, from, similarity, ch.old_oid(), ch.new_oid())? {
+        if let Some(fc) = low.file(format!("f{}", files.len()), ch)? {
             files.push(fc);
         }
     }
@@ -447,20 +424,51 @@ fn lower(
 /// Sessions tab's per-turn diffs both go through here, so blobs dedupe by oid
 /// across the whole document and identical content renders identically.
 pub struct FileLowerer<'a> {
-    pub repo: &'a Repository,
-    pub blobs: &'a mut Vec<Blob>,
-    pub blob_ix: &'a mut HashMap<ObjectId, u32>,
-    pub next_hunk_id: &'a mut usize,
-    /// "h" for review hunks (the ids the manifest/linter hand to agents),
-    /// "t" for session-turn hunks — distinct namespaces, no collisions.
-    pub hunk_prefix: &'a str,
+    repo: &'a Repository,
     /// WORKTREE loads: content for oids that exist nowhere in the object DB —
     /// the worktree files, keyed by their (unwritten) git blob hash.
-    pub overlay: Option<&'a HashMap<ObjectId, Vec<u8>>>,
-    pub st: &'a mut LoadStats,
+    overlay: Option<&'a HashMap<ObjectId, Vec<u8>>>,
+    blobs: &'a mut Vec<Blob>,
+    /// Dedup blobs across files by oid — content-addressed, so identical
+    /// content (a pure rename, a vendored file) is stored once.
+    blob_ix: HashMap<ObjectId, u32>,
+    /// Hunk ids are unique across the whole document, not per file — an agent
+    /// references them globally.
+    next_hunk_id: usize,
+    /// "h" for review hunks (the ids the manifest/linter hand to agents),
+    /// "t" for session-turn hunks — distinct namespaces, no collisions.
+    hunk_prefix: &'a str,
+    st: &'a mut LoadStats,
 }
 
-impl FileLowerer<'_> {
+impl<'a> FileLowerer<'a> {
+    /// Resume lowering into `blobs`, reading content from the object database
+    /// and, for a WORKTREE load, the overlay first.
+    pub fn new(
+        (repo, overlay): (&'a Repository, Option<&'a HashMap<ObjectId, Vec<u8>>>),
+        blobs: &'a mut Vec<Blob>,
+        hunk_prefix: &'a str,
+        st: &'a mut LoadStats,
+    ) -> Self {
+        // Prose stays out, as `prose` keeps it out: a file that happens to hold
+        // a prompt's bytes is still a file.
+        let blob_ix = blobs
+            .iter()
+            .enumerate()
+            .filter(|(_, b)| b.prose.is_none())
+            .map(|(i, b)| (b.oid, i as u32))
+            .collect();
+        Self {
+            repo,
+            overlay,
+            blobs,
+            blob_ix,
+            next_hunk_id: 0,
+            hunk_prefix,
+            st,
+        }
+    }
+
     /// Lower authored text — a turn's prompt or response, a commit message — to
     /// one row per line over a prose blob ([`Blob::prose`]), named by what it
     /// is.
@@ -499,22 +507,22 @@ impl FileLowerer<'_> {
             .collect()
     }
 
-    /// Diff `old_oid` → `new_oid` at `path` and lower the hunks into a
-    /// self-contained, addressable `FileChange`. Each hunk carries its own
-    /// context and a stable id, so an agent can select and reorder hunks by id
-    /// without seeing the code inside them — or inventing any. Returns `None`
-    /// for binary content (counted in the stats).
-    pub fn file(
-        &mut self,
-        id: String,
-        path: String,
-        from: Option<String>,
-        similarity: Option<u8>,
-        old_oid: Option<ObjectId>,
-        new_oid: Option<ObjectId>,
-    ) -> Result<Option<FileChange>, Error> {
+    /// Diff one change's blobs and lower the hunks into a self-contained,
+    /// addressable `FileChange`. Each hunk carries its own context and a
+    /// stable id, so an agent can select and reorder hunks by id without seeing
+    /// the code inside them — or inventing any. Returns `None` for binary
+    /// content (counted in the stats).
+    pub fn file(&mut self, id: String, change: &Change) -> Result<Option<FileChange>, Error> {
+        let (from, similarity) = match change {
+            Change::Renamed {
+                from, similarity, ..
+            } => (Some(from.clone()), Some(*similarity)),
+            _ => (None, None),
+        };
+        let path = change.path().to_string();
+        let (old_oid, new_oid) = (change.old_oid(), change.new_oid());
         let blobs = &mut *self.blobs;
-        let blob_ix = &mut *self.blob_ix;
+        let blob_ix = &mut self.blob_ix;
         let st = &mut *self.st;
 
         // A pure rename (identical content) has nothing to review. Collapse it
@@ -556,18 +564,9 @@ impl FileLowerer<'_> {
         let old_src = String::from_utf8_lossy(&old_bytes).into_owned();
         let new_src = String::from_utf8_lossy(&new_bytes).into_owned();
 
-        // --- line diff: histogram, linear space ---
         let t = Instant::now();
-        let input = InternedInput::new(old_src.as_str(), new_src.as_str());
-        let mut diff = Diff::compute(Algorithm::Histogram, &input);
-        // Slider adjustment + indent heuristics: moves hunk boundaries to where
-        // a human would put them. This is most of why histogram diffs read better.
-        diff.postprocess_lines(&input);
-        let hunks: Vec<_> = diff.hunks().collect();
+        let hunks = line_hunks(&old_src, &new_src);
         st.diff_ms += t.elapsed().as_secs_f64() * 1000.0;
-
-        let old_n = input.before.len();
-        let new_n = input.after.len();
 
         // Intern each side's blob: the text is stored once, spans are filled
         // lazily.
@@ -583,6 +582,10 @@ impl FileLowerer<'_> {
         };
         let old_b = intern(old_oid, &old_src);
         let new_b = intern(new_oid, &new_src);
+        // The diff's line counts: a blob's line table splits where the diff
+        // does, and a missing side is empty.
+        let lines = |b: Option<u32>| b.map_or(0, |b| blobs[b as usize].line_count());
+        let (old_n, new_n) = (lines(old_b), lines(new_b));
 
         let t = Instant::now();
         let (mut adds, mut dels) = (0usize, 0usize);
@@ -591,13 +594,7 @@ impl FileLowerer<'_> {
 
         let emit_ctx = |rows: &mut Vec<Row>, o: usize, n: usize| {
             if let Some(b) = new_b {
-                rows.push(Row::Code {
-                    kind: LineKind::Context,
-                    old_no: Some(o as u32 + 1),
-                    new_no: Some(n as u32 + 1),
-                    blob: b,
-                    line: n as u32,
-                });
+                rows.push(Row::context(b, o as u32, n as u32));
             }
         };
 
@@ -610,25 +607,9 @@ impl FileLowerer<'_> {
             let gap = hb.saturating_sub(old_at);
             let lead = CONTEXT.min(gap);
 
-            let mut rows: Vec<Row> = Vec::new();
             // The hunk's head row hosts the seen tick box. It is part of the
             // hunk's own rows, so every view that shows the hunk shows the box.
-            // Each side is the run of changed lines as an inclusive `Side`; an
-            // empty run (nothing changed on that side) is `None`.
-            rows.push(Row::HunkBar {
-                old: old_b
-                    .filter(|_| h.before.end > h.before.start)
-                    .map(|b| Side {
-                        blob: b,
-                        start: h.before.start,
-                        end: h.before.end - 1,
-                    }),
-                new: new_b.filter(|_| h.after.end > h.after.start).map(|b| Side {
-                    blob: b,
-                    start: h.after.start,
-                    end: h.after.end - 1,
-                }),
-            });
+            let mut rows: Vec<Row> = vec![hunk_bar(old_b, new_b, h)];
             for k in (gap - lead)..gap {
                 emit_ctx(&mut rows, old_at + k, new_at + k);
             }
@@ -636,25 +617,13 @@ impl FileLowerer<'_> {
             let (mut h_adds, mut h_dels) = (0usize, 0usize);
             if let Some(b) = old_b {
                 for l in h.before.clone() {
-                    rows.push(Row::Code {
-                        kind: LineKind::Del,
-                        old_no: Some(l + 1),
-                        new_no: None,
-                        blob: b,
-                        line: l,
-                    });
+                    rows.push(Row::del(b, l));
                     h_dels += 1;
                 }
             }
             if let Some(b) = new_b {
                 for l in h.after.clone() {
-                    rows.push(Row::Code {
-                        kind: LineKind::Add,
-                        old_no: None,
-                        new_no: Some(l + 1),
-                        blob: b,
-                        line: l,
-                    });
+                    rows.push(Row::add(b, l));
                     h_adds += 1;
                 }
             }
@@ -704,7 +673,7 @@ impl FileLowerer<'_> {
                 preview: preview.chars().take(90).collect(),
                 rows,
             });
-            *self.next_hunk_id += 1;
+            self.next_hunk_id += 1;
 
             // Past the trailing context, not merely past the hunk. Two hunks
             // closer together than twice `CONTEXT` share the equal run between
@@ -1083,40 +1052,19 @@ pub fn whole_file_rows(blobs: &[Blob], old: Option<u32>, new: u32) -> Vec<Row> {
     let new_src = blobs[new as usize].text.as_str();
     let old_src = old.map_or("", |b| blobs[b as usize].text.as_str());
 
-    let input = InternedInput::new(old_src, new_src);
-    let mut diff = Diff::compute(Algorithm::Histogram, &input);
-    diff.postprocess_lines(&input);
-
     let mut rows: Vec<Row> = Vec::with_capacity(blobs[new as usize].line_count() + 8);
     // Walks the new side; `old_at` tracks the base line the equal run is at, so
     // context rows carry both numbers exactly as the diff view's do.
     let (mut new_at, mut old_at) = (0u32, 0u32);
-    for h in diff.hunks() {
+    for h in line_hunks(old_src, new_src) {
         while new_at < h.after.start {
-            rows.push(Row::Code {
-                kind: LineKind::Context,
-                old_no: Some(old_at + 1),
-                new_no: Some(new_at + 1),
-                blob: new,
-                line: new_at,
-            });
+            rows.push(Row::context(new, old_at, new_at));
             new_at += 1;
             old_at += 1;
         }
         // The anchor the seen tick box and the progress bar read. Emitted here
         // too, so a hunk ticked in the file view is ticked in the diff.
-        rows.push(Row::HunkBar {
-            old: old.filter(|_| h.before.end > h.before.start).map(|b| Side {
-                blob: b,
-                start: h.before.start,
-                end: h.before.end - 1,
-            }),
-            new: (h.after.end > h.after.start).then_some(new).map(|b| Side {
-                blob: b,
-                start: h.after.start,
-                end: h.after.end - 1,
-            }),
-        });
+        rows.push(hunk_bar(old, Some(new), &h));
         // What went, as a marker rather than as content — the reveal splices
         // the real rows in on demand.
         if let (Some(b), true) = (old, h.before.end > h.before.start) {
@@ -1127,29 +1075,34 @@ pub fn whole_file_rows(blobs: &[Blob], old: Option<u32>, new: u32) -> Vec<Row> {
             });
         }
         while new_at < h.after.end {
-            rows.push(Row::Code {
-                kind: LineKind::Add,
-                old_no: None,
-                new_no: Some(new_at + 1),
-                blob: new,
-                line: new_at,
-            });
+            rows.push(Row::add(new, new_at));
             new_at += 1;
         }
         old_at = h.before.end;
     }
     while (new_at as usize) < blobs[new as usize].line_count() {
-        rows.push(Row::Code {
-            kind: LineKind::Context,
-            old_no: Some(old_at + 1),
-            new_no: Some(new_at + 1),
-            blob: new,
-            line: new_at,
-        });
+        rows.push(Row::context(new, old_at, new_at));
         new_at += 1;
         old_at += 1;
     }
     rows
+}
+
+/// The head row of one hunk, shared by the diff and the whole-file view so a
+/// tick in one is a tick in the other. Each side is its run of changed lines as
+/// an inclusive `Side`; a side with no blob, or nothing changed, is `None`.
+fn hunk_bar(old: Option<u32>, new: Option<u32>, h: &concats_text::Hunk) -> Row {
+    let side = |blob: Option<u32>, lines: &Range<u32>| {
+        blob.filter(|_| lines.end > lines.start).map(|blob| Side {
+            blob,
+            start: lines.start,
+            end: lines.end - 1,
+        })
+    };
+    Row::HunkBar {
+        old: side(old, &h.before),
+        new: side(new, &h.after),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1312,17 +1265,8 @@ mod tests {
     fn prose_interns_by_name_and_content() {
         let (_tmp, root) = init_repo();
         let repo = open_repo(&root).unwrap();
-        let (mut blobs, mut blob_ix, mut next_hunk_id, mut st) =
-            (Vec::new(), HashMap::new(), 0, LoadStats::default());
-        let mut low = FileLowerer {
-            repo: &repo,
-            blobs: &mut blobs,
-            blob_ix: &mut blob_ix,
-            next_hunk_id: &mut next_hunk_id,
-            hunk_prefix: "t",
-            overlay: None,
-            st: &mut st,
-        };
+        let (mut blobs, mut st) = (Vec::new(), LoadStats::default());
+        let mut low = FileLowerer::new((&repo, None), &mut blobs, "t", &mut st);
         let text = || "one\ntwo\n".to_string();
         // A line per line, over the blob the name interned to.
         let lines = |rows: Vec<Row>| -> Vec<(u32, u32)> {
@@ -1343,10 +1287,12 @@ mod tests {
             lines(low.prose("turn/def1234567/prompt/0".into(), text())),
             [(1, 0), (1, 1)]
         );
-        assert_eq!(blobs.len(), 2);
         // Prose stays out of the oid index, so a file with these bytes is
-        // still lowered as a file.
-        assert!(blob_ix.is_empty());
+        // still lowered as a file — also by a lowerer resuming over the table.
+        assert!(low.blob_ix.is_empty());
+        let resumed = FileLowerer::new((&repo, None), &mut blobs, "t", &mut st);
+        assert!(resumed.blob_ix.is_empty());
+        assert_eq!(blobs.len(), 2);
     }
 
     #[test]

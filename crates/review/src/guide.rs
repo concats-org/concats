@@ -495,7 +495,7 @@ pub fn render(guide: &str, loaded: &Loaded) -> Rendered {
             }
             Piece::Ref { locator: loc, .. } => match resolve(&loc, loaded) {
                 Some(r) if !r.hunks.is_empty() => {
-                    rows.push(file_header(r.file));
+                    rows.push(r.file.header());
                     for h in r.hunks {
                         placed.insert(h.id.as_str());
                         rows.extend(h.rows.iter().cloned());
@@ -504,7 +504,7 @@ pub fn render(guide: &str, loaded: &Loaded) -> Rendered {
                 // Resolved to a file, but that file has no hunks (a pure
                 // rename).
                 Some(r) if r.file.from.is_some() => {
-                    rows.push(file_header(r.file));
+                    rows.push(r.file.header());
                 }
                 _ => {
                     rows.push(Row::Warning {
@@ -548,7 +548,7 @@ pub fn render(guide: &str, loaded: &Loaded) -> Rendered {
             ),
         });
         for f in missed {
-            rows.push(file_header(f));
+            rows.push(f.header());
             for h in f.hunks.iter().filter(|h| !placed.contains(h.id.as_str())) {
                 rows.extend(h.gap_before.clone());
                 rows.extend(h.rows.iter().cloned());
@@ -561,16 +561,5 @@ pub fn render(guide: &str, loaded: &Loaded) -> Rendered {
         unresolved,
         hunks_placed: placed.len(),
         hunks_total: total,
-    }
-}
-
-fn file_header(f: &FileChange) -> Row {
-    Row::FileHeader {
-        path: f.path.clone(),
-        lang: f.lang,
-        adds: f.adds,
-        dels: f.dels,
-        from: f.from.clone(),
-        similarity: f.similarity,
     }
 }

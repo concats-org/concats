@@ -432,14 +432,7 @@ pub(crate) fn build_review(
     let mut order: Vec<_> = loaded.files.iter().collect();
     order.sort_by(|a, b| a.path.cmp(&b.path));
     for f in order {
-        d.files_rows.push(Row::FileHeader {
-            path: f.path.clone(),
-            lang: f.lang,
-            adds: f.adds,
-            dels: f.dels,
-            from: f.from.clone(),
-            similarity: f.similarity,
-        });
+        d.files_rows.push(f.header());
         d.files_rows.extend(f.default_rows());
     }
 

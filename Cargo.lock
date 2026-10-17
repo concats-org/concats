@@ -729,7 +729,6 @@ dependencies = [
  "concats-syntax",
  "concats-text",
  "gix",
- "imara-diff",
  "loro",
  "tempfile",
  "thiserror 2.0.20",

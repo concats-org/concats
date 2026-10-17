@@ -923,34 +923,10 @@ mod tests {
         let old_b = Blob::new(oid(7), "rs".into(), "old\n".into());
         let new_b = Blob::new(oid(8), "rs".into(), "a\nb\nc\n".into());
         let rows = vec![
-            Row::Code {
-                kind: LineKind::Del,
-                old_no: Some(10),
-                new_no: None,
-                blob: 0,
-                line: 9,
-            },
-            Row::Code {
-                kind: LineKind::Add,
-                old_no: None,
-                new_no: Some(10),
-                blob: 1,
-                line: 9,
-            },
-            Row::Code {
-                kind: LineKind::Add,
-                old_no: None,
-                new_no: Some(11),
-                blob: 1,
-                line: 10,
-            },
-            Row::Code {
-                kind: LineKind::Context,
-                old_no: Some(11),
-                new_no: Some(12),
-                blob: 1,
-                line: 11,
-            },
+            Row::del(0, 9),
+            Row::add(1, 9),
+            Row::add(1, 10),
+            Row::context(1, 10, 11),
         ];
         Loaded {
             merge_base: Some(oid(1)),

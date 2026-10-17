@@ -128,6 +128,40 @@ pub enum Row {
     Composer,
 }
 
+/// Diff lines by 0-based line index; the gutter's 1-based numbers derive here.
+impl Row {
+    /// Unchanged at `old` and `new`; references the new side's blob.
+    pub fn context(blob: u32, old: u32, new: u32) -> Row {
+        Row::Code {
+            kind: LineKind::Context,
+            old_no: Some(old + 1),
+            new_no: Some(new + 1),
+            blob,
+            line: new,
+        }
+    }
+
+    pub fn add(blob: u32, line: u32) -> Row {
+        Row::Code {
+            kind: LineKind::Add,
+            old_no: None,
+            new_no: Some(line + 1),
+            blob,
+            line,
+        }
+    }
+
+    pub fn del(blob: u32, line: u32) -> Row {
+        Row::Code {
+            kind: LineKind::Del,
+            old_no: Some(line + 1),
+            new_no: None,
+            blob,
+            line,
+        }
+    }
+}
+
 /// Where the wall-clock went.
 #[derive(Default, Clone)]
 pub struct LoadStats {
@@ -213,6 +247,18 @@ pub struct FileChange {
 }
 
 impl FileChange {
+    /// The row that opens this file's card in every stream.
+    pub fn header(&self) -> Row {
+        Row::FileHeader {
+            path: self.path.clone(),
+            lang: self.lang,
+            adds: self.adds,
+            dels: self.dels,
+            from: self.from.clone(),
+            similarity: self.similarity,
+        }
+    }
+
     /// The default, un-organized rendering: every hunk in file order, with the
     /// collapsed runs between them. This is what you get with no agent.
     pub fn default_rows(&self) -> Vec<Row> {

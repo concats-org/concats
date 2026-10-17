@@ -1452,14 +1452,7 @@ mod tests {
     #[test]
     fn injects_comments_below_the_last_line_of_their_range() {
         let blobs = vec![Blob::new(oid(7), "txt".into(), "a\nb\nc\n".into())];
-        let code = |line: u32| Row::Code {
-            kind: concats_diff::LineKind::Add,
-            old_no: None,
-            new_no: Some(line + 1),
-            blob: 0,
-            line,
-        };
-        let mut rows = vec![code(0), code(1), code(2)];
+        let mut rows = vec![Row::add(0, 0), Row::add(0, 1), Row::add(0, 2)];
         let comments = vec![Comment {
             id: 1,
             author: Some("claude".into()),
@@ -1560,13 +1553,7 @@ mod tests {
     #[test]
     fn injects_threads_contiguously_whatever_their_ids() {
         let blobs = vec![Blob::new(oid(7), "txt".into(), "a\n".into())];
-        let mut rows = vec![Row::Code {
-            kind: concats_diff::LineKind::Add,
-            old_no: None,
-            new_no: Some(1),
-            blob: 0,
-            line: 0,
-        }];
+        let mut rows = vec![Row::add(0, 0)];
         // Two threads on the same line, interleaved by id — the order
         // `refresh`'s `ORDER BY id` hands them back in.
         let at = anchor(oid(7), 0, 0);
