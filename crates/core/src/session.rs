@@ -6,13 +6,12 @@ use time::OffsetDateTime;
 use crate::{
     error::{Error, Result},
     git::{self, CommitParts, Oid},
-    turn::{self, Turn},
+    turn::Turn,
 };
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Session {
     pub id: SessionId,
-    pub name: Option<String>,
     repo: Rc<gix::Repository>,
 }
 
@@ -23,18 +22,9 @@ impl Session {
     }
 }
 
-impl std::fmt::Debug for Session {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Session")
-            .field("id", &self.id)
-            .field("name", &self.name)
-            .finish_non_exhaustive()
-    }
-}
-
 impl PartialEq for Session {
     fn eq(&self, other: &Self) -> bool {
-        self.id == other.id && self.name == other.name
+        self.id == other.id
     }
 }
 
@@ -63,27 +53,32 @@ pub fn create(repo: Rc<gix::Repository>, session_id: &str, base: Oid) -> Result<
         "session",
     )
     .map_err(Error::git)?;
-    load_session(repo, session_id)
+    Ok(Session {
+        id: session_id,
+        repo,
+    })
 }
 
 /// Open an existing session by its identifier.
 ///
 /// # Errors
 ///
-/// Returns an error if the session ref does not exist, or the session metadata
-/// cannot be loaded.
+/// Returns an error if the session ref does not exist.
 pub fn open(repo: Rc<gix::Repository>, session_id: &str) -> Result<Session> {
     let session_id = parse_session_id(session_id)?;
     resolve_session_ref(&repo, &session_id)?;
-    load_session(repo, session_id)
+    Ok(Session {
+        id: session_id,
+        repo,
+    })
 }
 
 /// List all sessions stored in the repository, newest first.
 ///
 /// # Errors
 ///
-/// Returns an error if the session refs cannot be enumerated, or a discovered
-/// session cannot be loaded.
+/// Returns an error if the session refs cannot be enumerated, or a session
+/// tip's commit time cannot be read.
 pub fn list(repo: &Rc<gix::Repository>) -> Result<Vec<Session>> {
     let platform = repo.references().map_err(Error::git)?;
     let refs = platform.prefixed(SESSION_REF_PREFIX).map_err(Error::git)?;
@@ -107,7 +102,10 @@ pub fn list(repo: &Rc<gix::Repository>) -> Result<Vec<Session>> {
         let time = tip.time().map_err(Error::git)?;
 
         sessions.push((
-            load_session(repo.clone(), session_id)?,
+            Session {
+                id: session_id,
+                repo: repo.clone(),
+            },
             git::commit_time(time)?,
         ));
     }
@@ -153,55 +151,6 @@ pub fn contains(session: &Session, oid: Oid) -> Result<bool> {
     }
 
     git::reachable_from(repo, tip.id, oid.as_gix())
-}
-
-/// List the sessions whose refs can reach the given commit, newest first.
-///
-/// # Errors
-///
-/// Returns an error if session enumeration fails or a graph query fails.
-pub fn containing(repo: &Rc<gix::Repository>, oid: Oid) -> Result<Vec<Session>> {
-    if repo.find_commit(oid.as_gix()).is_err() {
-        return Ok(Vec::new());
-    }
-
-    let mut sessions: Vec<(Session, OffsetDateTime, Oid)> = Vec::new();
-    for session in list(repo)? {
-        if contains(&session, oid)? {
-            let tip = resolve_tip(&session)?;
-            let modified_at = git::commit_time(tip.time().map_err(Error::git)?)?;
-            let tip_oid = Oid::from(tip.id);
-            drop(tip);
-            let mut index = sessions.len();
-            for (position, other) in sessions.iter().enumerate() {
-                if modified_at > other.1 {
-                    index = position;
-                    break;
-                }
-                if modified_at < other.1 {
-                    continue;
-                }
-
-                if git::reachable_from(repo, tip_oid.as_gix(), other.2.as_gix())? {
-                    index = position;
-                    break;
-                }
-                if git::reachable_from(repo, other.2.as_gix(), tip_oid.as_gix())? {
-                    continue;
-                }
-                if session.id.as_ref() > other.0.id.as_ref() {
-                    index = position;
-                    break;
-                }
-            }
-            sessions.insert(index, (session, modified_at, tip_oid));
-        }
-    }
-
-    Ok(sessions
-        .into_iter()
-        .map(|(session, _, _)| session)
-        .collect())
 }
 
 /// Create a new turn commit and advance the session ref.
@@ -253,20 +202,6 @@ pub(crate) fn resolve_session_ref<'repo>(
 ) -> Result<gix::Commit<'repo>> {
     git::resolve_ref(repo, &ref_name(session_id))
         .ok_or_else(|| Error::session_not_found(session_id.to_string()))
-}
-
-fn load_session(repo: Rc<gix::Repository>, session_id: SessionId) -> Result<Session> {
-    let base = Session {
-        id: session_id,
-        name: None,
-        repo,
-    };
-
-    let name = turn::list(&base)?
-        .first()
-        .map(|turn| turn.subject().to_string());
-
-    Ok(Session { name, ..base })
 }
 
 fn parse_session_id(value: &str) -> Result<SessionId> {

@@ -13,7 +13,6 @@ fn create_session_without_turns() {
     let (_dir, _, session, _) = support::session("session-a");
 
     assert_eq!(session.id, "session-a");
-    assert_eq!(session.name, None);
     assert_eq!(turn::list(&session).unwrap(), [] as [turn::Turn; 0]);
     assert_eq!(
         snapshot::list(&session).unwrap(),
@@ -26,7 +25,7 @@ fn open_and_list_include_empty_sessions() {
     let (_dir, repo, _, _) = support::session("session-a");
 
     let loaded = session::open(repo.clone(), "session-a").unwrap();
-    assert_eq!(loaded.name, None);
+    assert_eq!(loaded.id, "session-a");
 
     let sessions = session::list(&repo).unwrap();
     assert_eq!(sessions.len(), 1);
@@ -44,30 +43,6 @@ fn open_missing_session_returns_session_not_found() {
         error,
         Error::SessionNotFound { session_id } if session_id == "missing-session"
     ));
-}
-
-#[test]
-fn session_name_uses_first_turn_subject() {
-    let (_dir, repo, session, _) = support::session("session-a");
-
-    let message = support::turn_message("session-a")
-        .with_subject("hello world from prompt")
-        .unwrap()
-        .with_entry(TurnEntry::prompt_now("  hello \n world from   prompt "));
-    session::commit(&session, &message).unwrap();
-
-    let loaded = session::open(repo.clone(), "session-a").unwrap();
-    assert_eq!(loaded.name.as_deref(), Some("hello world from prompt"));
-}
-
-#[test]
-fn session_name_falls_back_to_turn_without_prompt() {
-    let (_dir, repo, session, _) = support::session("session-a");
-
-    session::commit(&session, &support::turn_message("session-a")).unwrap();
-
-    let loaded = session::open(repo.clone(), "session-a").unwrap();
-    assert_eq!(loaded.name.as_deref(), Some("turn"));
 }
 
 #[test]

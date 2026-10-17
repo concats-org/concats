@@ -199,22 +199,3 @@ fn contains_reaches_turns_and_branch_history() {
     assert!(session::contains(&session, branch_head).unwrap());
     assert!(session::contains(&session, second_turn.oid).unwrap());
 }
-
-#[test]
-fn containing_returns_all_sessions_for_shared_turn_newest_first() {
-    let (dir, repo, source_session, _) = support::session("session-a");
-    let source_turn =
-        session::commit(&source_session, &support::turn_message("session-a")).unwrap();
-
-    support::commit_head(&repo, dir.path(), "branch.txt", "branch");
-    let fork_session = session::create(repo.clone(), "session-b", source_turn.oid).unwrap();
-    let _fork_turn = session::commit(&fork_session, &support::turn_message("session-b")).unwrap();
-
-    let sessions = session::containing(&repo, source_turn.oid).unwrap();
-    let ids = sessions
-        .iter()
-        .map(|session| session.id.as_ref())
-        .collect::<Vec<_>>();
-
-    assert_eq!(ids, vec!["session-b", "session-a"]);
-}
