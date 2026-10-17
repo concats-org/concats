@@ -1445,10 +1445,6 @@ mod tests {
     /// used to be derived from the bar's own position, which made it always
     /// zero, and every scroll snapped to the bottom.
     #[test]
-    #[expect(
-        clippy::float_cmp,
-        reason = "These fixture coordinates and expected offsets are exactly representable in binary."
-    )]
     fn the_bar_and_the_scrollback_agree_in_both_directions() {
         let (cell_height, max_scroll) = (15.0, 1500.0);
         for offset in [0usize, 1, 7, 50, 99, 100] {

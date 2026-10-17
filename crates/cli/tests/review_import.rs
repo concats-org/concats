@@ -2,7 +2,7 @@
 
 use std::{fs, process::Command};
 
-use concats_review::store::Store;
+use concats_review::store::{Comment, Store};
 
 #[test]
 #[expect(
@@ -64,7 +64,7 @@ fn import_policies_preserve_atomicity_dry_runs_and_thread_identity() {
     let rejected = import("review.md", &[]);
     assert_eq!(rejected.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&rejected.stderr).contains("nothing imported"));
-    assert!(Store::open(&repo.join(".git")).comments.is_empty());
+    assert_eq!(Store::open(&repo.join(".git")).comments, [] as [Comment; 0]);
 
     let payload = serde_json::json!([
         {"id": 1, "path": "file.rs", "line": 1, "side": "RIGHT", "body": "Root"},
@@ -73,7 +73,7 @@ fn import_policies_preserve_atomicity_dry_runs_and_thread_identity() {
     ]);
     fs::write(repo.join("review.json"), payload.to_string()).unwrap();
     assert!(import("review.json", &["--dry-run"]).status.success());
-    assert!(Store::open(&repo.join(".git")).comments.is_empty());
+    assert_eq!(Store::open(&repo.join(".git")).comments, [] as [Comment; 0]);
     let accepted = import("review.json", &[]);
     assert!(
         accepted.status.success(),

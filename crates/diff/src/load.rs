@@ -924,7 +924,7 @@ fn detect_renames(
                 }
             }
         }
-        scored.sort_by(|x, y| y.0.cmp(&x.0));
+        scored.sort_by_key(|x| std::cmp::Reverse(x.0));
 
         for (s, ai, di) in scored {
             if add_taken[ai] || del_taken[di] {
@@ -1111,13 +1111,11 @@ pub fn whole_file_rows(blobs: &[Blob], old: Option<u32>, new: u32) -> Vec<Row> {
                 start: h.before.start,
                 end: h.before.end - 1,
             }),
-            new: Some(new)
-                .filter(|_| h.after.end > h.after.start)
-                .map(|b| Side {
-                    blob: b,
-                    start: h.after.start,
-                    end: h.after.end - 1,
-                }),
+            new: (h.after.end > h.after.start).then_some(new).map(|b| Side {
+                blob: b,
+                start: h.after.start,
+                end: h.after.end - 1,
+            }),
         });
         // What went, as a marker rather than as content — the reveal splices
         // the real rows in on demand.

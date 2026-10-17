@@ -50,7 +50,7 @@ impl crate::Agent for OpenCodeAgent {
 
     fn is_installed(&self, scope: &InstallScope) -> bool {
         let _ = scope;
-        plugin_path().ok().is_some_and(|p| plugin::exists(&p))
+        plugin_path().is_ok_and(|p| plugin::exists(&p))
     }
 }
 

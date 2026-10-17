@@ -23,8 +23,11 @@ fn create_session_without_turns() {
 
     assert_eq!(session.id, "session-a");
     assert_eq!(session.name, None);
-    assert!(turn::list(&session).unwrap().is_empty());
-    assert!(snapshot::list(&session).unwrap().is_empty());
+    assert_eq!(turn::list(&session).unwrap(), [] as [turn::Turn; 0]);
+    assert_eq!(
+        snapshot::list(&session).unwrap(),
+        [] as [snapshot::Snapshot; 0]
+    );
 }
 
 #[test]
@@ -110,7 +113,10 @@ fn commit_does_not_create_snapshot_until_capture() {
     let turn = session::commit(&session, &support::turn_message("session-a")).unwrap();
 
     assert!(snapshot::get(&session, turn.oid).is_err());
-    assert!(snapshot::list(&session).unwrap().is_empty());
+    assert_eq!(
+        snapshot::list(&session).unwrap(),
+        [] as [snapshot::Snapshot; 0]
+    );
 }
 
 #[test]
@@ -282,5 +288,8 @@ fn list_returns_empty_when_session_has_no_snapshots() {
     let head = Oid::from(repo.head_id().unwrap().detach());
     let session = session::create(repo.clone(), "session-a", head).unwrap();
 
-    assert!(snapshot::list(&session).unwrap().is_empty());
+    assert_eq!(
+        snapshot::list(&session).unwrap(),
+        [] as [snapshot::Snapshot; 0]
+    );
 }

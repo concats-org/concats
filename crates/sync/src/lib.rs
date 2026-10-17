@@ -300,7 +300,9 @@ pub fn decode_version(bytes: &[u8]) -> Option<Frontiers> {
     }
     Some(
         bytes
-            .chunks_exact(12)
+            .as_chunks::<12>()
+            .0
+            .iter()
             .map(|id| loro::ID {
                 peer: u64::from_le_bytes(id[..8].try_into().expect("8 bytes")),
                 counter: i32::from_le_bytes(id[8..].try_into().expect("4 bytes")),

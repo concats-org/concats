@@ -476,7 +476,7 @@ mod tests {
         );
 
         let (nodes, root) = build(&paths, &HashMap::new(), "repo", "missing");
-        assert!(children_of(&nodes, root).is_empty());
+        assert_eq!(children_of(&nodes, root), [] as [&str; 0]);
     }
 
     fn name_of(nodes: &HashMap<LiveId, Node>, path: &str) -> String {

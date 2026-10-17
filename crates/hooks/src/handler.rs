@@ -207,7 +207,7 @@ mod tests {
             let error = super::load_or_create_session(repo.clone(), "bad\nsession").unwrap_err();
 
             assert!(matches!(error, Error::Session { .. }));
-            assert!(session::list(&repo).unwrap().is_empty());
+            assert_eq!(session::list(&repo).unwrap(), [] as [session::Session; 0]);
         }
     }
 
@@ -279,7 +279,7 @@ mod tests {
             assert_eq!(turns.len(), 1);
             assert_eq!(turns[0].subject(), "files changed");
             assert_eq!(snapshot.reason(), Some(SnapshotReason::FilesChanged));
-            assert!(turns[0].entries().is_empty());
+            assert_eq!(turns[0].entries(), []);
         }
     }
 

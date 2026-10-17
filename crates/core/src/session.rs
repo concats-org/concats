@@ -112,7 +112,7 @@ pub fn list(repo: &Rc<gix::Repository>) -> Result<Vec<Session>> {
         ));
     }
 
-    sessions.sort_by(|left, right| right.1.cmp(&left.1));
+    sessions.sort_by_key(|session| std::cmp::Reverse(session.1));
     Ok(sessions.into_iter().map(|(session, _)| session).collect())
 }
 

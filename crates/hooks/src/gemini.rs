@@ -54,7 +54,7 @@ impl crate::Agent for GeminiAgent {
 
     fn is_installed(&self, scope: &InstallScope) -> bool {
         let _ = scope;
-        config_path().ok().is_some_and(|path| {
+        config_path().is_ok_and(|path| {
             fs::read_to_string(path)
                 .is_ok_and(|data| data.contains(&format!("concats hook {AGENT}")))
         })

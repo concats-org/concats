@@ -48,7 +48,7 @@ impl crate::Agent for CopilotAgent {
 
     fn is_installed(&self, scope: &InstallScope) -> bool {
         let _ = scope;
-        config_path().ok().is_some_and(|p| p.exists())
+        config_path().is_ok_and(|p| p.exists())
     }
 }
 

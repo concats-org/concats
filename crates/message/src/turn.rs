@@ -416,7 +416,7 @@ mod tests {
         assert_eq!(message.subject(), "turn");
         assert_eq!(message.session_id().as_ref(), "session-a");
         assert_eq!(message.agent_name(), None);
-        assert!(message.entries().is_empty());
+        assert_eq!(message.entries(), []);
     }
 
     #[test]
@@ -430,15 +430,15 @@ mod tests {
 
         assert_eq!(base.subject(), "turn");
         assert_eq!(base.agent_name(), None);
-        assert!(base.entries().is_empty());
+        assert_eq!(base.entries(), []);
 
         assert_eq!(with_subject.subject(), "custom");
         assert_eq!(with_subject.agent_name(), None);
-        assert!(with_subject.entries().is_empty());
+        assert_eq!(with_subject.entries(), []);
 
         assert_eq!(with_agent.subject(), "custom");
         assert_eq!(with_agent.agent_name(), Some("Claude"));
-        assert!(with_agent.entries().is_empty());
+        assert_eq!(with_agent.entries(), []);
 
         assert_eq!(with_entry.subject(), "custom");
         assert_eq!(with_entry.agent_name(), Some("Claude"));
@@ -552,7 +552,7 @@ mod tests {
         assert_eq!(parsed.subject(), "custom subject");
         assert_eq!(parsed.session_id().as_ref(), "session-a");
         assert_eq!(parsed.agent_name(), None);
-        assert!(parsed.entries().is_empty());
+        assert_eq!(parsed.entries(), []);
     }
 
     #[test]

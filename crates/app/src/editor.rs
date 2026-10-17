@@ -460,7 +460,10 @@ mod tests {
         assert_eq!(search_hits(&d, Stream::Comments, "alice"), [(0, 0)]);
         assert_eq!(search_hits(&d, Stream::Guide, "needle").len(), 2);
         assert_eq!(search_hits(&d, Stream::File(42), "needle").len(), 1);
-        assert!(search_hits(&d, Stream::Files, "").is_empty());
+        assert_eq!(
+            search_hits(&d, Stream::Files, ""),
+            [] as [(usize, usize); 0]
+        );
     }
 
     #[test]

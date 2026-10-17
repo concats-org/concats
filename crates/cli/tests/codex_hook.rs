@@ -49,7 +49,7 @@ fn hook(root: &Path, payload: &serde_json::Value) {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    assert!(output.stdout.is_empty());
+    assert_eq!(output.stdout, b"");
 }
 
 fn recorded_worktree() -> tempfile::TempDir {

@@ -2725,10 +2725,6 @@ mod tests {
     }
 
     #[test]
-    #[expect(
-        clippy::float_cmp,
-        reason = "These fixture coordinates and expected offsets are exactly representable in binary."
-    )]
     fn the_pinned_copy_rides_the_real_header_while_it_is_on_screen() {
         let (push, lift) = sticky_offsets(Some(100.0), None);
         assert_eq!(push, 100.0 + FILE_HEADER_TOP_PADDING);
@@ -2741,10 +2737,6 @@ mod tests {
     }
 
     #[test]
-    #[expect(
-        clippy::float_cmp,
-        reason = "These fixture coordinates and expected offsets are exactly representable in binary."
-    )]
     fn the_cards_bottom_edge_pushes_the_copy_out_instead_of_over_the_next_card() {
         // The card's end just above the top edge: the copy slides out with it…
         let end_top = STICKY_HEIGHT - CARD_END_EDGE - 20.0;
@@ -2755,10 +2747,6 @@ mod tests {
     }
 
     #[test]
-    #[expect(
-        clippy::float_cmp,
-        reason = "These fixture coordinates and expected offsets are exactly representable in binary."
-    )]
     fn the_shadow_ramps_continuously_as_the_header_lifts_away() {
         let lift_at = |top: f64| sticky_offsets(Some(top), None).1;
         let start = STICKY_TOP_GAP - FILE_HEADER_TOP_PADDING;
@@ -2772,12 +2760,12 @@ mod tests {
         assert_eq!(hits_in("let x = x + 1;", Some("x")), [(4, 5), (8, 9)]);
         assert_eq!(hits_in("Row::Code", Some("code")), [(5, 9)]);
         assert_eq!(hits_in("aaa", Some("aa")), [(0, 2)], "hits do not overlap");
-        assert!(hits_in("anything", None).is_empty());
+        assert_eq!(hits_in("anything", None), [] as [(usize, usize); 0]);
         assert!(
             hits_in("anything", Some("")).is_empty(),
             "an empty query finds nothing"
         );
-        assert!(hits_in("anything", Some("zz")).is_empty());
+        assert_eq!(hits_in("anything", Some("zz")), [] as [(usize, usize); 0]);
     }
 
     /// Rows of different heights: one wrapped line is taller than its

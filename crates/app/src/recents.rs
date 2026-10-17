@@ -30,8 +30,7 @@ pub fn record_recent(repo: &str) {
     let Some(conn) = open_app_db() else { return };
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
+        .map_or(0, |d| d.as_secs());
     let _ = conn.execute(
         "INSERT OR REPLACE INTO recents(path, last_opened) VALUES (?1, ?2)",
         (repo, now),

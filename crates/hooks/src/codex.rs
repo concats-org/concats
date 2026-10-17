@@ -22,9 +22,7 @@ impl crate::Agent for CodexAgent {
     }
 
     fn is_detected(&self) -> bool {
-        config_path()
-            .ok()
-            .is_some_and(|path| path.parent().is_some_and(Path::is_dir))
+        config_path().is_ok_and(|path| path.parent().is_some_and(Path::is_dir))
     }
 
     fn dispatch(&self, event: Option<&str>, payload_json: &str) -> Result<()> {
@@ -73,7 +71,7 @@ impl crate::Agent for CodexAgent {
     }
 
     fn is_installed(&self, _scope: &InstallScope) -> bool {
-        config_path().ok().is_some_and(|path| {
+        config_path().is_ok_and(|path| {
             toml_config::read(&path).is_ok_and(|value| {
                 EVENTS.iter().all(|event| {
                     value

@@ -90,7 +90,7 @@ impl crate::Agent for ClaudeAgent {
     }
 
     fn is_installed(&self, scope: &InstallScope) -> bool {
-        settings_path(scope).ok().is_some_and(|path| {
+        settings_path(scope).is_ok_and(|path| {
             std::fs::read_to_string(path)
                 .is_ok_and(|data| data.contains(&format!("concats hook {AGENT}")))
         })

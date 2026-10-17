@@ -1518,7 +1518,7 @@ mod tests {
             git_dir: Some(std::path::PathBuf::from(".git")),
             ..Default::default()
         };
-        assert!(status_line(&d).is_empty());
+        assert_eq!(status_line(&d), "");
         assert!(status_line(&ReviewDoc::default()).contains("open a repository"));
     }
 
@@ -2799,6 +2799,9 @@ mod tests {
         ];
         assert_eq!(card_keys(&rows, "b.rs", 4, &blobs), [(oid(2), 0)]);
         assert_eq!(card_keys(&rows, "b.rs", 1, &blobs), [(oid(1), 0)]);
-        assert!(card_keys(&rows, "deleted.rs", 3, &blobs).is_empty());
+        assert_eq!(
+            card_keys(&rows, "deleted.rs", 3, &blobs),
+            [] as [(gix::ObjectId, u32); 0]
+        );
     }
 }
