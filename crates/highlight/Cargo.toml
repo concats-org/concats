@@ -15,8 +15,7 @@ path = "src/lib.rs"
 [dependencies]
 concats_syntax = { workspace = true }
 concats_text = { workspace = true }
-# Only the extension table by default; `treesitter` adds the grammars.
-concats_languages = { workspace = true }
+concats_languages = { workspace = true, optional = true }
 # A retained tree is keyed by the oid of the content it describes, so this rides
 # with the engine that retains them. The workspace `gix` rather than `gix-hash`
 # alone, so the key is the same type the loader hands over and not one that has
@@ -32,5 +31,6 @@ default = ["treesitter"]
 treesitter = [
     "dep:gix",
     "dep:tree-sitter",
+    "dep:concats_languages",
     "concats_languages/grammars",
 ]

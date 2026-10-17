@@ -28,6 +28,8 @@ tracing-subscriber = { workspace = true }
 # who just wants their agent's turns in git — carries none of it.
 concats_diff = { workspace = true, optional = true }
 concats_highlight = { workspace = true, optional = true }
+# The bench groups its cost table by language name.
+concats_languages = { workspace = true, optional = true }
 concats_state = { workspace = true, optional = true }
 concats_review = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
@@ -47,6 +49,7 @@ default = []
 review = [
     "dep:concats_diff",
     "dep:concats_highlight",
+    "dep:concats_languages",
     "dep:concats_state",
     "dep:concats_review",
     "dep:serde_json",

@@ -12,6 +12,7 @@
 //! answers in unstyled runs, which is what the web target needs (the C grammars
 //! do not build for wasm32).
 
+#[cfg(feature = "treesitter")]
 use std::collections::HashMap;
 
 #[cfg(feature = "treesitter")]
@@ -19,30 +20,6 @@ use concats_syntax::{Hl, capture_to_hl};
 use concats_syntax::{LineSpans, Span};
 #[cfg(feature = "treesitter")]
 use concats_text::{line_of, line_starts};
-
-/// Per-language cost, so you can compare grammars head to head.
-#[derive(Default, Clone)]
-pub struct LangStat {
-    pub lang: String,
-    pub blobs: usize,
-    pub lines: usize,
-    pub ms: f64,
-}
-
-#[derive(Default, Clone)]
-pub struct HlStats {
-    pub per_lang: HashMap<String, LangStat>,
-}
-
-impl HlStats {
-    /// Sorted slowest-first — the table the bench prints.
-    #[must_use]
-    pub fn ranked(&self) -> Vec<LangStat> {
-        let mut v: Vec<_> = self.per_lang.values().cloned().collect();
-        v.sort_by(|a, b| b.ms.total_cmp(&a.ms));
-        v
-    }
-}
 
 /// What the highlighter needs to know about a buffer to colour it.
 ///
@@ -169,7 +146,6 @@ pub struct Highlighter {
     /// and that is the tree an incremental reparse needs.
     #[cfg(feature = "treesitter")]
     parsed: HashMap<(gix::ObjectId, bool), Parsed>,
-    pub stats: HlStats,
 }
 
 impl Default for Highlighter {
@@ -186,7 +162,6 @@ impl Highlighter {
             langs: HashMap::new(),
             #[cfg(feature = "treesitter")]
             parsed: HashMap::new(),
-            stats: HlStats::default(),
         }
     }
 
@@ -201,22 +176,6 @@ impl Highlighter {
         {
             0
         }
-    }
-
-    /// Book-keeping for the bench's per-language cost table.
-    pub fn record(&mut self, ext: &str, lines: usize, dur: std::time::Duration) {
-        let lang = concats_languages::lang_for_ext(ext);
-        let e = self
-            .stats
-            .per_lang
-            .entry(lang.to_string())
-            .or_insert_with(|| LangStat {
-                lang: lang.to_string(),
-                ..Default::default()
-            });
-        e.blobs += 1;
-        e.lines += lines;
-        e.ms += dur.as_secs_f64() * 1000.0;
     }
 
     /// One line's spans for `buffer`.

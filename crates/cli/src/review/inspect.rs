@@ -1,9 +1,10 @@
 //! Looking at a range without changing anything: which recorded turns produced
 //! it, and what loading it costs.
 
-use std::path::Path;
+use std::{collections::HashMap, path::Path};
 
 use concats_highlight::Highlighter;
+use concats_languages::lang_for_ext;
 use concats_review::sessions;
 
 use super::{Outcome, RangeArgs, counted};
@@ -92,11 +93,17 @@ pub(crate) fn bench(no_hl: bool, range: &RangeArgs) -> Outcome {
 
     // The app highlights lazily; this forces every blob, i.e. the worst case.
     let mut hl = Highlighter::new();
+    // Per language: blobs, lines, and the milliseconds spent colouring them.
+    let mut per_lang: HashMap<&str, (usize, usize, f64)> = HashMap::new();
     let started = std::time::Instant::now();
     for blob in &mut loaded.blobs {
         let one = std::time::Instant::now();
         let spans = hl.compute(&blob.ext, &blob.text);
-        hl.record(&blob.ext, spans.len(), one.elapsed());
+        let ms = one.elapsed().as_secs_f64() * 1000.0;
+        let (blobs, lines, total) = per_lang.entry(lang_for_ext(&blob.ext)).or_default();
+        *blobs += 1;
+        *lines += spans.len();
+        *total += ms;
         blob.spans = Some(spans);
     }
     println!(
@@ -110,16 +117,12 @@ pub(crate) fn bench(no_hl: bool, range: &RangeArgs) -> Outcome {
         "\n{:<12} {:>6} {:>9} {:>10} {:>11}",
         "language", "blobs", "lines", "ms", "lines/ms"
     );
-    for lang in hl.stats.ranked() {
-        let rate = if lang.ms > 0.0 {
-            counted(lang.lines) / lang.ms
-        } else {
-            0.0
-        };
-        println!(
-            "{:<12} {:>6} {:>9} {:>10.1} {rate:>11.0}",
-            lang.lang, lang.blobs, lang.lines, lang.ms
-        );
+    // Slowest first.
+    let mut ranked: Vec<_> = per_lang.into_iter().collect();
+    ranked.sort_by(|(_, a), (_, b)| b.2.total_cmp(&a.2));
+    for (lang, (blobs, lines, ms)) in ranked {
+        let rate = if ms > 0.0 { counted(lines) / ms } else { 0.0 };
+        println!("{lang:<12} {blobs:>6} {lines:>9} {ms:>10.1} {rate:>11.0}");
     }
     Ok(())
 }
