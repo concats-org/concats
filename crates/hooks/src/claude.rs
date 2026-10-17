@@ -1,7 +1,6 @@
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
-    rc::Rc,
 };
 
 use concats_core::{
@@ -10,7 +9,7 @@ use concats_core::{
 };
 use serde::Deserialize;
 
-use crate::{InstallScope, find_worktree_root, handler, json_config};
+use crate::{InstallScope, handler, json_config, open_repo};
 
 const AGENT: &str = "claude";
 
@@ -34,33 +33,31 @@ impl crate::Agent for ClaudeAgent {
                     serde_json::from_str(payload_json).map_err(|error| {
                         Error::session(format!("invalid SessionStart payload: {error}"))
                     })?;
-                let worktree_root = find_worktree_root(payload.cwd.as_deref().map(Path::new))?;
-                let repo = Rc::new(gix::open(&worktree_root).map_err(Error::git)?);
-                handler::on_session_started(repo, &payload.session_id)
+                let repo = open_repo(payload.cwd.as_deref())?;
+                handler::load_or_create_session(repo, &payload.session_id).map(drop)
             }
             "UserPromptSubmit" => {
                 let payload: UserPromptSubmitPayload =
                     serde_json::from_str(payload_json).map_err(|error| {
                         Error::session(format!("invalid UserPromptSubmit payload: {error}"))
                     })?;
-                let worktree_root = find_worktree_root(payload.cwd.as_deref().map(Path::new))?;
-                let repo = Rc::new(gix::open(&worktree_root).map_err(Error::git)?);
-                handler::on_prompt_submitted(repo, &payload.session_id, "Claude", &payload.prompt)
+                let repo = open_repo(payload.cwd.as_deref())?;
+                let session = handler::load_or_create_session(repo, &payload.session_id)?;
+                handler::on_prompt_submitted(&session, "Claude", &payload.prompt)
             }
             "PostToolUse" => {
                 let payload: PostToolUsePayload =
                     serde_json::from_str(payload_json).map_err(|error| {
                         Error::session(format!("invalid PostToolUse payload: {error}"))
                     })?;
-                let worktree_root = find_worktree_root(payload.cwd.as_deref().map(Path::new))?;
-                let repo = Rc::new(gix::open(&worktree_root).map_err(Error::git)?);
-                handler::on_files_changed(repo, &payload.session_id, "Claude")
+                let repo = open_repo(payload.cwd.as_deref())?;
+                let session = handler::load_or_create_session(repo, &payload.session_id)?;
+                handler::on_files_changed(&session, "Claude")
             }
             "Stop" => {
                 let payload: StopPayload = serde_json::from_str(payload_json)
                     .map_err(|error| Error::session(format!("invalid Stop payload: {error}")))?;
-                let worktree_root = find_worktree_root(payload.cwd.as_deref().map(Path::new))?;
-                let repo = Rc::new(gix::open(&worktree_root).map_err(Error::git)?);
+                let repo = open_repo(payload.cwd.as_deref())?;
                 let transcript = payload
                     .transcript_path
                     .as_deref()
@@ -69,7 +66,8 @@ impl crate::Agent for ClaudeAgent {
                     transcript.as_deref(),
                     payload.last_assistant_message.as_deref(),
                 );
-                handler::on_stop(repo, &payload.session_id, "Claude", &entries)
+                let session = handler::load_or_create_session(repo, &payload.session_id)?;
+                handler::on_stop(&session, "Claude", &entries)
             }
             _ => Err(Error::session(format!(
                 "unknown Claude hook event: {event}"

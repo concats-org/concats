@@ -1,4 +1,4 @@
-use std::{path::Path, rc::Rc};
+use std::path::Path;
 
 use concats_core::{
     error::{Error, Result},
@@ -6,7 +6,7 @@ use concats_core::{
 };
 use serde::Deserialize;
 
-use crate::{InstallScope, find_worktree_root, handler, toml_config};
+use crate::{InstallScope, handler, open_repo, toml_config};
 
 const AGENT: &str = "codex";
 const PROMPT_EVENT: &str = "UserPromptSubmit";
@@ -34,26 +34,26 @@ impl crate::Agent for CodexAgent {
         if !EVENTS.contains(&event) {
             return Err(Error::session(format!("unknown Codex hook event: {event}")));
         }
-        let worktree_root = find_worktree_root(Some(Path::new(&payload.cwd)))?;
-        let repo = Rc::new(gix::open(&worktree_root).map_err(Error::git)?);
+        let repo = open_repo(Some(&payload.cwd))?;
+        // NOTE: Opened after the prompt check, so a bad payload creates no
+        // session.
+        let session = || handler::load_or_create_session(repo, &payload.session_id);
         match event {
-            PROMPT_EVENT => handler::on_prompt_submitted(
-                repo,
-                &payload.session_id,
-                "Codex",
-                payload
+            PROMPT_EVENT => {
+                let prompt = payload
                     .prompt
                     .as_deref()
-                    .ok_or_else(|| Error::session("Codex UserPromptSubmit is missing prompt"))?,
-            ),
-            TOOL_EVENT => handler::on_files_changed(repo, &payload.session_id, "Codex"),
+                    .ok_or_else(|| Error::session("Codex UserPromptSubmit is missing prompt"))?;
+                handler::on_prompt_submitted(&session()?, "Codex", prompt)
+            }
+            TOOL_EVENT => handler::on_files_changed(&session()?, "Codex"),
             _ => {
                 let entries: Vec<_> = payload
                     .last_assistant_message
                     .map(TurnEntry::response_now)
                     .into_iter()
                     .collect();
-                handler::on_stop(repo, &payload.session_id, "Codex", &entries)
+                handler::on_stop(&session()?, "Codex", &entries)
             }
         }
     }

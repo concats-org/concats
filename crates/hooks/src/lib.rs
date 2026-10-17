@@ -40,24 +40,25 @@ fn dispatch_simple(
     let payload: HookPayload = serde_json::from_str(payload_json)
         .map_err(|error| Error::session(format!("invalid {agent_name} payload: {error}")))?;
     let session_id = payload.session_id.as_deref().unwrap_or(default_session_id);
-    let worktree_root = find_worktree_root(payload.cwd.as_deref().map(Path::new))?;
-    let repo = Rc::new(gix::open(&worktree_root).map_err(Error::git)?);
+    let repo = open_repo(payload.cwd.as_deref())?;
+    // NOTE: Opened per action, so an ignored event, or a submit without a
+    // prompt, creates no session.
+    let session = || handler::load_or_create_session(repo, session_id);
 
     match resolve(event)? {
-        HandlerAction::SessionStarted => handler::on_session_started(repo, session_id),
+        HandlerAction::SessionStarted => session().map(drop),
         HandlerAction::PromptSubmitted => match payload.prompt.as_deref() {
-            Some(prompt) => handler::on_prompt_submitted(repo, session_id, agent_name, prompt),
+            Some(prompt) => handler::on_prompt_submitted(&session()?, agent_name, prompt),
             None => Ok(()),
         },
-        HandlerAction::FilesChanged => handler::on_files_changed(repo, session_id, agent_name),
+        HandlerAction::FilesChanged => handler::on_files_changed(&session()?, agent_name),
         HandlerAction::Stop => {
             let response = payload
                 .response
                 .as_deref()
                 .unwrap_or("(response not captured)");
             handler::on_stop(
-                repo,
-                session_id,
+                &session()?,
                 agent_name,
                 &[TurnEntry::response_now(response)],
             )
@@ -95,6 +96,14 @@ pub fn find_worktree_root(cwd: Option<&Path>) -> Result<PathBuf> {
         .workdir()
         .ok_or_else(|| Error::session("bare repository not supported"))?;
     Ok(workdir.to_path_buf())
+}
+
+fn open_repo(cwd: Option<&str>) -> Result<Rc<gix::Repository>> {
+    let worktree_root = find_worktree_root(cwd.map(Path::new))?;
+    // NOTE: Not the repository `find_worktree_root` discovered: for a repo
+    // the user does not own, discovery caps its object store at 32 index
+    // slots, which `gix::open` does not.
+    Ok(Rc::new(gix::open(&worktree_root).map_err(Error::git)?))
 }
 
 pub mod amp;
