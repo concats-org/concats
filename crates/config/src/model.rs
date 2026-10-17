@@ -99,17 +99,6 @@ pub struct AgentConfig {
     pub env: HashMap<String, String>,
 }
 
-impl AgentConfig {
-    #[must_use]
-    pub fn display_name(&self, fallback_id: &str) -> String {
-        if self.name.trim().is_empty() {
-            fallback_id.to_string()
-        } else {
-            self.name.clone()
-        }
-    }
-}
-
 /// Desktop presentation settings; independent of the renderer and CLI features.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]

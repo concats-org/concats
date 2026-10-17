@@ -200,8 +200,9 @@ pub(crate) fn resolve_session_ref<'repo>(
     repo: &'repo gix::Repository,
     session_id: &SessionId,
 ) -> Result<gix::Commit<'repo>> {
-    git::resolve_ref(repo, &ref_name(session_id))
-        .ok_or_else(|| Error::session_not_found(session_id.to_string()))
+    git::resolve_ref(repo, &ref_name(session_id)).ok_or_else(|| Error::SessionNotFound {
+        session_id: session_id.to_string(),
+    })
 }
 
 fn parse_session_id(value: &str) -> Result<SessionId> {

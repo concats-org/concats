@@ -12,37 +12,11 @@ pub use turn::{Turn, TurnEntry, TurnEntryKind, TurnToolKind};
 pub const SESSION_REF_PREFIX: &str = "refs/agent/sessions/";
 /// Git ref namespace for snapshot refs: `refs/agent/snapshots/<id>`.
 pub const SNAPSHOT_REF_PREFIX: &str = "refs/agent/snapshots/";
+/// Trailer naming the session a turn or snapshot commit belongs to.
+const SESSION_TRAILER_PREFIX: &str = "Session: ";
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-pub enum Error {
-    #[error("{message}")]
-    SessionId { message: String },
-
-    #[error("{message}")]
-    Snapshot { message: String },
-
-    #[error("{message}")]
-    Turn { message: String },
-}
-
-impl Error {
-    pub fn session_id(message: impl Into<String>) -> Self {
-        Self::SessionId {
-            message: message.into(),
-        }
-    }
-
-    pub fn snapshot(message: impl Into<String>) -> Self {
-        Self::Snapshot {
-            message: message.into(),
-        }
-    }
-
-    pub fn turn(message: impl Into<String>) -> Self {
-        Self::Turn {
-            message: message.into(),
-        }
-    }
-}
+#[error("{0}")]
+pub struct Error(String);
 
 pub type Result<T> = std::result::Result<T, Error>;

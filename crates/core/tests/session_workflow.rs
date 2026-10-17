@@ -93,7 +93,6 @@ fn amend_rewrites_tip_turn_without_touching_snapshot_ref() {
         initial_snapshot.oid
     );
     assert!(snapshot::get(&session, updated.oid).is_err());
-    assert_eq!(updated.len(), 2);
     assert_eq!(
         updated.entries(),
         [

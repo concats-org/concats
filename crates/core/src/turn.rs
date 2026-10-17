@@ -18,16 +18,6 @@ pub struct Turn {
 
 impl Turn {
     #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.message.entries().is_empty()
-    }
-
-    #[must_use]
-    pub fn len(&self) -> usize {
-        self.message.entries().len()
-    }
-
-    #[must_use]
     pub fn has_response(&self) -> bool {
         self.entries()
             .iter()
@@ -47,11 +37,6 @@ impl Turn {
     #[must_use]
     pub fn session_id(&self) -> &SessionId {
         self.message.session_id()
-    }
-
-    #[must_use]
-    pub fn agent_name(&self) -> Option<&str> {
-        self.message.agent_name()
     }
 
     #[must_use]

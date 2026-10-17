@@ -7,11 +7,8 @@ use std::{path::Path, rc::Rc};
 
 use concats_core::{session, session::Session};
 use concats_fixture::git;
-use concats_message::Turn as TurnMessage;
+use concats_message::{SESSION_REF_PREFIX, SNAPSHOT_REF_PREFIX, Turn as TurnMessage};
 use tempfile::TempDir;
-
-const SESSION_REF_PREFIX: &str = "refs/agent/sessions/";
-const SNAPSHOT_REF_PREFIX: &str = "refs/agent/snapshots/";
 
 pub fn init_repo_with_commit(dir: &Path) -> gix::Repository {
     concats_fixture::init_repo_with_commit(dir);

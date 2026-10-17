@@ -64,11 +64,9 @@ impl TryFrom<&gix::Commit<'_>> for Snapshot {
 /// Returns an error if the snapshot ref points to an invalid commit, or any
 /// snapshot commit cannot be decoded.
 pub fn list(session: &Session) -> Result<Vec<Snapshot>> {
-    let repo = session.repo();
-    let Some(tip) = git::resolve_ref(repo, &ref_name(&session.id)) else {
-        return Ok(Vec::new());
-    };
-    load_from_tip(repo, &session.id, &tip)
+    let mut snapshots = chain(session).collect::<Result<Vec<_>>>()?;
+    snapshots.reverse();
+    Ok(snapshots)
 }
 
 /// Resolve the snapshot recorded for a specific session turn.
@@ -78,31 +76,18 @@ pub fn list(session: &Session) -> Result<Vec<Snapshot>> {
 /// Returns an error if the session's snapshot ref is missing, or no snapshot
 /// in that chain points to the requested turn.
 pub fn get(session: &Session, turn_oid: gix::ObjectId) -> Result<Snapshot> {
-    let repo = session.repo();
-    let mut current = git::resolve_ref(repo, &ref_name(&session.id));
-    while let Some(commit) = current {
-        let snapshot = Snapshot::try_from(&commit)?;
-        if snapshot.session_id() != &session.id {
-            break;
-        }
-        if snapshot.turn_oid == turn_oid {
-            return Ok(snapshot);
-        }
-        let parents: Vec<_> = commit.parent_ids().map(gix::Id::detach).collect();
-        current =
-            if parents.len() == 2 {
-                Some(repo.find_commit(parents[0]).map_err(|_| {
-                    Error::snapshot("snapshot is missing its previous-snapshot parent")
-                })?)
-            } else {
-                None
-            };
-    }
-
-    Err(Error::snapshot(format!(
-        "snapshot not found for turn {} in session {}",
-        turn_oid, session.id
-    )))
+    chain(session)
+        .find(|snapshot| {
+            snapshot
+                .as_ref()
+                .map_or(true, |snapshot| snapshot.turn_oid == turn_oid)
+        })
+        .unwrap_or_else(|| {
+            Err(Error::snapshot(format!(
+                "snapshot not found for turn {} in session {}",
+                turn_oid, session.id
+            )))
+        })
 }
 
 /// Capture the current worktree state and advance the snapshot ref.
@@ -174,40 +159,25 @@ pub(crate) fn ref_name(session_id: &SessionId) -> String {
     format!("{SNAPSHOT_REF_PREFIX}{session_id}")
 }
 
-fn load_from_tip(
-    repo: &gix::Repository,
-    session_id: &SessionId,
-    tip: &gix::Commit<'_>,
-) -> Result<Vec<Snapshot>> {
-    let mut snapshots = Vec::new();
-    let first = Snapshot::try_from(tip)?;
-    if first.session_id() != session_id {
-        return Ok(snapshots);
-    }
-    snapshots.push(first);
-
-    let tip_parents: Vec<_> = tip.parent_ids().map(gix::Id::detach).collect();
-    let mut next_oid = if tip_parents.len() == 2 {
-        Some(tip_parents[0])
-    } else {
-        None
-    };
-
-    while let Some(oid) = next_oid {
-        let commit = repo.find_commit(oid).map_err(Error::git)?;
-        let snapshot = Snapshot::try_from(&commit)?;
-        if snapshot.session_id() != session_id {
-            break;
-        }
-        let parents: Vec<_> = commit.parent_ids().map(gix::Id::detach).collect();
-        next_oid = if parents.len() == 2 {
-            Some(parents[0])
-        } else {
-            None
-        };
-        snapshots.push(snapshot);
-    }
-
-    snapshots.reverse();
-    Ok(snapshots)
+/// The session's snapshots from its ref tip back, newest first, up to the
+/// first one recorded for another session.
+fn chain(session: &Session) -> impl Iterator<Item = Result<Snapshot>> + '_ {
+    let repo = session.repo();
+    std::iter::successors(
+        git::resolve_ref(repo, &ref_name(&session.id)).map(Ok),
+        move |commit: &Result<gix::Commit<'_>>| {
+            let parents: Vec<_> = commit.as_ref().ok()?.parent_ids().collect();
+            (parents.len() == 2).then(|| {
+                repo.find_commit(parents[0]).map_err(|_| {
+                    Error::snapshot("snapshot is missing its previous-snapshot parent")
+                })
+            })
+        },
+    )
+    .map(|commit| Snapshot::try_from(&commit?))
+    .take_while(|snapshot| {
+        snapshot
+            .as_ref()
+            .map_or(true, |snapshot| snapshot.session_id() == &session.id)
+    })
 }

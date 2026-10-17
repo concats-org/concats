@@ -30,12 +30,10 @@ impl FromStr for SessionId {
 
     fn from_str(value: &str) -> Result<Self> {
         if value.is_empty() {
-            return Err(Error::session_id("session id must not be empty"));
+            return Err(Error("session id must not be empty".into()));
         }
         if value.contains(['\n', '\r']) {
-            return Err(Error::session_id(
-                "session id cannot contain newline characters",
-            ));
+            return Err(Error("session id cannot contain newline characters".into()));
         }
         Ok(Self(value.to_string()))
     }

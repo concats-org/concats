@@ -105,7 +105,6 @@ pub mod cursor;
 pub mod droid;
 pub mod gemini;
 pub mod handler;
-pub mod helpers;
 pub mod json_config;
 pub mod opencode;
 pub mod plugin;

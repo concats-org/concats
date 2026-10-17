@@ -1,9 +1,8 @@
 use std::{fmt::Display, str::FromStr};
 
-use crate::{Error, Result, SessionId};
+use crate::{Error, Result, SESSION_TRAILER_PREFIX, SessionId};
 
 const SNAPSHOT_SUBJECT: &str = "snapshot";
-const SESSION_TRAILER_PREFIX: &str = "Session: ";
 const REASON_TRAILER_PREFIX: &str = "Reason: ";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -41,9 +40,7 @@ impl FromStr for SnapshotReason {
             "turn_amend" => Ok(Self::TurnAmend),
             "tool_write" => Ok(Self::ToolWrite),
             "files_changed" => Ok(Self::FilesChanged),
-            _ => Err(Error::snapshot(format!(
-                "unsupported snapshot reason: {value}"
-            ))),
+            _ => Err(Error(format!("unsupported snapshot reason: {value}"))),
         }
     }
 }
@@ -84,16 +81,16 @@ impl FromStr for Snapshot {
             if let Some(value) = line.strip_prefix(SESSION_TRAILER_PREFIX)
                 && session_id.replace(value.parse()?).is_some()
             {
-                return Err(Error::snapshot("snapshot has multiple Session trailers"));
+                return Err(Error("snapshot has multiple Session trailers".into()));
             }
             if let Some(value) = line.strip_prefix(REASON_TRAILER_PREFIX)
                 && reason.replace(value.parse()?).is_some()
             {
-                return Err(Error::snapshot("snapshot has multiple Reason trailers"));
+                return Err(Error("snapshot has multiple Reason trailers".into()));
             }
         }
         let session_id =
-            session_id.ok_or_else(|| Error::snapshot("snapshot Session trailer is required"))?;
+            session_id.ok_or_else(|| Error("snapshot Session trailer is required".into()))?;
         Ok(Self { session_id, reason })
     }
 }

@@ -201,7 +201,7 @@ mod tests {
             let turns = turn::list(&session).unwrap();
             let snapshot = snapshot::get(&session, turns[0].oid).unwrap();
             assert_eq!(turns[0].subject(), "hello");
-            assert_eq!(turns[0].agent_name(), Some("Test"));
+            assert_eq!(turns[0].message().agent_name(), Some("Test"));
             assert_eq!(snapshot.reason(), Some(SnapshotReason::TurnCommit));
             assert_eq!(turns[0].entries(), [TurnEntry::prompt_now("hello")]);
         }

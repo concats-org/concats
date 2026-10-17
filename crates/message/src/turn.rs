@@ -3,10 +3,9 @@ use std::{fmt::Display, str::FromStr};
 use pest::{Parser as _, iterators::Pair};
 use pest_derive::Parser;
 
-use crate::{Error, Result, SessionId};
+use crate::{Error, Result, SESSION_TRAILER_PREFIX, SessionId};
 
 const DEFAULT_TURN_SUBJECT: &str = "turn";
-const SESSION_TRAILER_PREFIX: &str = "Session: ";
 const AGENT_TRAILER_PREFIX: &str = "Agent: ";
 
 #[derive(Parser)]
@@ -117,11 +116,11 @@ impl FromStr for Turn {
 
     fn from_str(input: &str) -> Result<Self> {
         let mut pairs = TurnParser::parse(Rule::commit_message, input)
-            .map_err(|error| Error::turn(format!("invalid turn commit message: {error}")))?;
+            .map_err(|error| Error(format!("invalid turn commit message: {error}")))?;
 
         let commit_message = pairs
             .next()
-            .ok_or_else(|| Error::turn("invalid turn commit message"))?;
+            .ok_or_else(|| Error("invalid turn commit message".into()))?;
 
         let mut subject = None;
         let mut session_id = None;
@@ -151,9 +150,9 @@ impl FromStr for Turn {
             }
         }
 
-        let subject = subject.ok_or_else(|| Error::turn("turn subject is required"))?;
+        let subject = subject.ok_or_else(|| Error("turn subject is required".into()))?;
         let session_id =
-            session_id.ok_or_else(|| Error::turn("turn Session trailer is required"))?;
+            session_id.ok_or_else(|| Error("turn Session trailer is required".into()))?;
         validate_trailer_value("subject", &subject)?;
         if let Some(agent_name) = &agent_name {
             validate_trailer_value("agent name", agent_name)?;
@@ -271,7 +270,7 @@ impl FromStr for TurnToolKind {
             "fetch" => Ok(Self::Fetch),
             "switch_mode" => Ok(Self::SwitchMode),
             "other" => Ok(Self::Other),
-            _ => Err(Error::turn(format!("unsupported turn tool kind: {value}"))),
+            _ => Err(Error(format!("unsupported turn tool kind: {value}"))),
         }
     }
 }
@@ -368,7 +367,7 @@ fn unescape_entities(value: &str) -> Result<String> {
             decoded.push('"');
             remaining = rest;
         } else {
-            return Err(Error::turn("turn body contains invalid escape"));
+            return Err(Error("turn body contains invalid escape".into()));
         }
     }
 
@@ -378,12 +377,10 @@ fn unescape_entities(value: &str) -> Result<String> {
 
 fn validate_trailer_value(label: &str, value: &str) -> Result<()> {
     if value.is_empty() {
-        return Err(Error::turn(format!("{label} must not be empty")));
+        return Err(Error(format!("{label} must not be empty")));
     }
     if value.contains(['\n', '\r']) {
-        return Err(Error::turn(format!(
-            "{label} cannot contain newline characters"
-        )));
+        return Err(Error(format!("{label} cannot contain newline characters")));
     }
     Ok(())
 }

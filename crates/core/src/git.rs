@@ -263,7 +263,7 @@ pub(crate) fn checkout_tree(
             .collect();
         conflicts.sort();
         if !conflicts.is_empty() {
-            return Err(Error::restore_conflict(conflicts));
+            return Err(Error::RestoreConflict { paths: conflicts });
         }
     }
 

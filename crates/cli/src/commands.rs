@@ -117,7 +117,7 @@ pub fn run_hooks_action(action: HooksAction) -> miette::Result<()> {
 fn run_init(path: Option<&Path>) -> miette::Result<()> {
     let root = concats_hooks::find_worktree_root(path)
         .map_err(|error| miette::miette!("not inside a git repository: {error}"))?;
-    let binary = concats_hooks::helpers::binary_path().map_err(|e| miette::miette!("{e}"))?;
+    let binary = std::env::current_exe().map_err(concats_core::error::Error::from)?;
 
     let detected: Vec<HookAgent> = all_agents()
         .iter()
@@ -136,7 +136,7 @@ fn run_init(path: Option<&Path>) -> miette::Result<()> {
 }
 
 fn run_hooks_install(agents: &[String], scope: &InstallScope) -> miette::Result<()> {
-    let binary = concats_hooks::helpers::binary_path()?;
+    let binary = std::env::current_exe().map_err(concats_core::error::Error::from)?;
     let targets = agents
         .iter()
         .map(|name| resolve_agent(name))

@@ -43,27 +43,10 @@ impl Error {
         }
     }
 
-    pub fn turn(message: impl Into<String>) -> Self {
-        Self::Turn {
-            message: message.into(),
-        }
-    }
-
-    pub fn session_not_found(session_id: impl Into<String>) -> Self {
-        Self::SessionNotFound {
-            session_id: session_id.into(),
-        }
-    }
-
     pub fn snapshot(message: impl Into<String>) -> Self {
         Self::Snapshot {
             message: message.into(),
         }
-    }
-
-    #[must_use]
-    pub fn restore_conflict(paths: Vec<String>) -> Self {
-        Self::RestoreConflict { paths }
     }
 }
 
