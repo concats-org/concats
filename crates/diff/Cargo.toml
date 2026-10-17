@@ -25,4 +25,5 @@ loro = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]
+concats_fixture = { workspace = true }
 tempfile = { workspace = true }

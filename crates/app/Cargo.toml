@@ -97,6 +97,7 @@ regex = "1"
 rfd = { workspace = true }
 
 [dev-dependencies]
+concats_fixture = { workspace = true }
 # Visual snapshot tests (tests/snapshots.rs) compare PNG captures per pixel to
 # catch rendering regressions.
 image = { version = "0.25", default-features = false, features = ["png"] }

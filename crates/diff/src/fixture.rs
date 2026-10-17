@@ -7,6 +7,7 @@
 
 use std::path::{Path, PathBuf};
 
+use concats_fixture::git;
 use gix::ObjectId;
 
 use crate::stage::{StageFile, stage_file};
@@ -15,15 +16,7 @@ use crate::stage::{StageFile, stage_file};
 pub fn init_repo() -> (tempfile::TempDir, PathBuf) {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().canonicalize().unwrap();
-    let status = std::process::Command::new("git")
-        .arg("-C")
-        .arg(&root)
-        .args(["init", "-q"])
-        .env("GIT_CONFIG_GLOBAL", "/dev/null")
-        .env("GIT_CONFIG_SYSTEM", "/dev/null")
-        .status()
-        .unwrap();
-    assert!(status.success());
+    git(&root, &["init", "-q"]);
     (tmp, root)
 }
 
@@ -42,27 +35,8 @@ pub fn add(root: &Path, path: &str, content: &str) {
 }
 
 pub fn commit(root: &Path, message: &str) {
-    let env = [
-        ("GIT_CONFIG_GLOBAL", "/dev/null"),
-        ("GIT_CONFIG_SYSTEM", "/dev/null"),
-        ("GIT_AUTHOR_NAME", "test"),
-        ("GIT_AUTHOR_EMAIL", "test@example.com"),
-        ("GIT_COMMITTER_NAME", "test"),
-        ("GIT_COMMITTER_EMAIL", "test@example.com"),
-    ];
-    for args in [
-        ["add", "-A", "."].as_slice(),
-        ["commit", "-q", "--no-gpg-sign", "-m", message].as_slice(),
-    ] {
-        let status = std::process::Command::new("git")
-            .arg("-C")
-            .arg(root)
-            .args(args)
-            .envs(env)
-            .status()
-            .unwrap();
-        assert!(status.success());
-    }
+    git(root, &["add", "-A", "."]);
+    git(root, &["commit", "-q", "-m", message]);
 }
 
 /// The seen keys of one hunk of a [`StageFile`] — what the GUI's tick writes.

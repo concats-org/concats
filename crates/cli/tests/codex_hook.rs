@@ -6,27 +6,7 @@ use std::{
 };
 
 use concats_core::{session, snapshot, turn};
-
-fn git(dir: &Path, args: &[&str]) {
-    let output = Command::new("git")
-        .current_dir(dir)
-        .args(args)
-        .envs([
-            ("GIT_CONFIG_GLOBAL", "/dev/null"),
-            ("GIT_CONFIG_SYSTEM", "/dev/null"),
-            ("GIT_AUTHOR_NAME", "Test"),
-            ("GIT_AUTHOR_EMAIL", "test@example.com"),
-            ("GIT_COMMITTER_NAME", "Test"),
-            ("GIT_COMMITTER_EMAIL", "test@example.com"),
-        ])
-        .output()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-}
+use concats_fixture::git;
 
 fn hook(root: &Path, payload: &serde_json::Value) {
     let mut child = Command::new(env!("CARGO_BIN_EXE_concats"))

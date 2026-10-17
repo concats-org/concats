@@ -1,0 +1,13 @@
+[package]
+name = "concats-fixture"
+publish.workspace = true
+edition.workspace = true
+version.workspace = true
+license = "Apache-2.0"
+
+[lints]
+workspace = true
+
+[lib]
+name = "concats_fixture"
+path = "src/lib.rs"

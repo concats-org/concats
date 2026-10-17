@@ -35,6 +35,7 @@ serde_json = { workspace = true, optional = true }
 httparse = { version = "1", optional = true }
 
 [dev-dependencies]
+concats_fixture = { workspace = true }
 serde_json = { workspace = true }
 tempfile = { workspace = true }
 

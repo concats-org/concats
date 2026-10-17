@@ -23,4 +23,5 @@ shlex = { workspace = true }
 toml = { workspace = true }
 
 [dev-dependencies]
+concats_fixture = { workspace = true }
 tempfile = { workspace = true }

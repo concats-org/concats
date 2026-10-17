@@ -15,6 +15,7 @@ members = [
     "crates/theme",
     "crates/diff",
     "crates/review",
+    "crates/fixture",
     "crates/makepad-service",
     "crates/app",
 ]
@@ -51,6 +52,7 @@ concats_highlight = { package = "concats-highlight", path = "crates/highlight" }
 concats_theme = { package = "concats-theme", path = "crates/theme" }
 concats_diff = { package = "concats-diff", path = "crates/diff" }
 concats_review = { package = "concats-review", path = "crates/review" }
+concats_fixture = { package = "concats-fixture", path = "crates/fixture" }
 # The terminal emulation, PTY and I/O loop behind the in-app shell. serde is
 # on by default and only serialises a grid we never persist.
 alacritty_terminal = { version = "0.26", default-features = false }

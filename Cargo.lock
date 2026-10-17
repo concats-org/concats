@@ -646,6 +646,7 @@ dependencies = [
  "clap",
  "concats-config",
  "concats-diff",
+ "concats-fixture",
  "concats-highlight",
  "concats-review",
  "concats-state",
@@ -674,6 +675,7 @@ dependencies = [
  "clap",
  "concats-core",
  "concats-diff",
+ "concats-fixture",
  "concats-highlight",
  "concats-hooks",
  "concats-review",
@@ -705,6 +707,7 @@ dependencies = [
 name = "concats-core"
 version = "0.0.0"
 dependencies = [
+ "concats-fixture",
  "concats-message",
  "gix",
  "ignore",
@@ -721,6 +724,7 @@ dependencies = [
 name = "concats-diff"
 version = "0.0.0"
 dependencies = [
+ "concats-fixture",
  "concats-languages",
  "concats-sync",
  "concats-syntax",
@@ -731,6 +735,10 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.20",
 ]
+
+[[package]]
+name = "concats-fixture"
+version = "0.0.0"
 
 [[package]]
 name = "concats-highlight"
@@ -749,6 +757,7 @@ name = "concats-hooks"
 version = "0.0.0"
 dependencies = [
  "concats-core",
+ "concats-fixture",
  "concats-message",
  "dirs",
  "gix",
@@ -800,6 +809,7 @@ name = "concats-review"
 version = "0.0.0"
 dependencies = [
  "concats-diff",
+ "concats-fixture",
  "concats-message",
  "concats-sync",
  "gix",
