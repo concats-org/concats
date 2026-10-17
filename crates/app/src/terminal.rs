@@ -165,6 +165,12 @@ fn sessions() -> &'static Mutex<HashMap<Session, Shell>> {
     S.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+/// What `read` takes out of this session's shell. The map is unlocked again by
+/// the time the caller holds it, so whatever it locks next is not under it.
+fn shell<R>(session: Session, read: impl FnOnce(&Shell) -> R) -> Option<R> {
+    sessions().lock().unwrap().get(&session).map(read)
+}
+
 /// Sessions whose term changed since the UI last looked.
 fn dirty() -> &'static Mutex<HashSet<Session>> {
     static D: OnceLock<Mutex<HashSet<Session>>> = OnceLock::new();
@@ -191,22 +197,13 @@ pub fn count(window: LiveId) -> usize {
 /// The term this tab renders, or None while it has no live session. The `Arc`
 /// leaves the map behind: lock it only after this returns.
 pub fn term(session: Session) -> Option<SharedTerm> {
-    sessions()
-        .lock()
-        .unwrap()
-        .get(&session)
-        .map(|s| s.term.clone())
+    shell(session, |s| s.term.clone())
 }
 
 /// What this session's program reported since the last look, cleared as it is
 /// taken.
 pub fn take_report(session: Session) -> Report {
-    let report = sessions()
-        .lock()
-        .unwrap()
-        .get(&session)
-        .map(|shell| shell.report.clone());
-    report
+    shell(session, |s| s.report.clone())
         .map(|report| std::mem::take(&mut *report.lock().unwrap()))
         .unwrap_or_default()
 }
@@ -220,16 +217,18 @@ pub fn open(session: Session, cwd: &Path) {
         return;
     }
 
-    let mut environment: HashMap<String, String> = HashMap::new();
     // NOTE: alacritty's `tty::setup_env` sets these process-wide, which a GUI
     // app with other children must not do. Per child instead — and claim the
     // terminfo entry every system has, since the `alacritty` one ships with
     // alacritty, not with us.
-    environment.insert("TERM".to_string(), "xterm-256color".to_string());
-    environment.insert("COLORTERM".to_string(), "truecolor".to_string());
+    let mut environment = HashMap::from([
+        ("TERM".to_string(), "xterm-256color".to_string()),
+        ("COLORTERM".to_string(), "truecolor".to_string()),
+    ]);
     let fixture = crate::dev_hooks::var("CONCATS_APP_TERM_SCRIPT").ok();
     // NOTE: PTY and visual tests must not run personal shell startup files.
-    if cfg!(test) || fixture.is_some() {
+    let hermetic = cfg!(test) || fixture.is_some();
+    if hermetic {
         environment.extend([
             ("ENV".to_string(), "/dev/null".to_string()),
             ("PS1".to_string(), String::new()),
@@ -244,14 +243,12 @@ pub fn open(session: Session, cwd: &Path) {
         cell_height: 16,
     };
     let options = tty::Options {
-        shell: if cfg!(test) || fixture.is_some() {
-            Some(tty::Shell::new(
+        shell: hermetic.then(|| {
+            tty::Shell::new(
                 "/bin/sh".to_string(),
                 vec![fixture.unwrap_or_else(|| "-i".to_string())],
-            ))
-        } else {
-            None
-        },
+            )
+        }),
         working_directory: Some(cwd.to_path_buf()),
         drain_on_exit: false,
         env: environment,
@@ -322,12 +319,7 @@ pub fn input(session: Session, data: Vec<u8>) {
     if data.is_empty() {
         return;
     }
-    let Some(sender) = sessions()
-        .lock()
-        .unwrap()
-        .get(&session)
-        .map(|s| s.sender.clone())
-    else {
+    let Some(sender) = shell(session, |s| s.sender.clone()) else {
         return;
     };
     let _ = sender.send(Msg::Input(data.into()));
