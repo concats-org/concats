@@ -1831,7 +1831,6 @@ impl ReviewPane {
             }
             match wa.cast() {
                 TerminalViewAction::OpenFile(path) => self.open_file_tab(cx, &path),
-                TerminalViewAction::Input { session, data } => terminal::input(session, data),
                 TerminalViewAction::None => {}
             }
             // The file browser names a path; the pane owns the dock, so

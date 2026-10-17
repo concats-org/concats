@@ -11,6 +11,13 @@
 //! the draw path puts it where the display is, and a drag turns back into a
 //! `Scroll`.
 //!
+#![expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    reason = "Cell geometry crosses f64 pixels, f32 glyph positions and integer cells and lines; each conversion is rounded or floored, clamped, and bounded by the grid or its 100000-line history."
+)]
 
 use std::collections::HashMap;
 
@@ -34,11 +41,9 @@ use alacritty_terminal::{
     reason = "Makepad macros and derives expand against the widget prelude in this scope."
 )]
 use crate::{
-    makepad_widgets::{
-        text::{geom::Point as TextPoint, rasterizer::RasterizedGlyph},
-        *,
-    },
-    terminal::{Proxy, Session, Size, colors, keys, mouse},
+    makepad_widgets::{text::geom::Point as TextPoint, *},
+    terminal::{Proxy, Session, SharedTerm, Size, colors, keys, mouse},
+    window::WindowState,
 };
 
 script_mod! {
@@ -147,10 +152,6 @@ script_mod! {
 #[derive(Clone, Debug, Default)]
 pub enum TerminalViewAction {
     OpenFile(String),
-    Input {
-        session: Session,
-        data: Vec<u8>,
-    },
     #[default]
     None,
 }
@@ -177,21 +178,6 @@ struct DrawTerminalCursor {
     border_width: f32,
 }
 
-#[derive(Clone, Copy)]
-struct CachedTerminalGlyph {
-    rasterized: RasterizedGlyph,
-    font_size_in_lpxs: f32,
-    x_offset_in_lpxs: f32,
-    baseline_offset_in_lpxs: f32,
-}
-
-#[derive(Default, PartialEq, Eq)]
-enum TextInput {
-    #[default]
-    Absent,
-    Forwarded,
-}
-
 /// How thick an underline or strikeout is drawn, in logical pixels.
 const RULE_HEIGHT: f64 = 1.0;
 /// How wide a beam cursor is drawn.
@@ -203,20 +189,11 @@ const BEAM_WIDTH: f64 = 2.0;
 /// This and [`display_offset_for`] are inverses, and between them the only
 /// description of how the bar and the scrollback relate. Writing that mapping
 /// out twice is how it came to disagree with itself.
-#[expect(
-    clippy::cast_precision_loss,
-    reason = "Scrollback line counts are converted to approximate pixel positions."
-)]
 fn scroll_pos_for(offset: usize, max_scroll: f64, cell_height: f64) -> f64 {
     (max_scroll - offset as f64 * cell_height).max(0.0)
 }
 
 /// How far back the display is for a bar sitting at `scroll_y`.
-#[expect(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    reason = "The offset is rounded to whole lines and clamped nonnegative."
-)]
 fn display_offset_for(scroll_y: f64, max_scroll: f64, cell_height: f64) -> usize {
     ((max_scroll - scroll_y) / cell_height).round().max(0.0) as usize
 }
@@ -248,6 +225,10 @@ fn braille_dots(c: char) -> impl Iterator<Item = (usize, usize)> {
 }
 
 #[derive(Script, Widget)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "Find focus, the alt screen, a selection and forwarded text are independent."
+)]
 pub struct TerminalView {
     #[uid]
     uid: WidgetUid,
@@ -303,16 +284,18 @@ pub struct TerminalView {
     session: Option<Session>,
     #[rust]
     alternate_screen: bool,
+    /// Whether the platform's text for the pending key press already went
+    /// out, so the press must not type its character again.
     #[rust]
-    text_input: TextInput,
+    text_forwarded: bool,
+    /// Shaped cells by text and face (bold, italic). Every face is the one
+    /// font today.
     #[rust]
-    glyph_cache: HashMap<String, Vec<CachedTerminalGlyph>>,
+    glyph_cache: HashMap<(String, Flags), PreparedTextRun>,
+    /// The font size, font scale and DPI factor, as bits, that the cell and
+    /// the glyph cache were measured at.
     #[rust]
-    glyph_cache_font_size: f32,
-    #[rust]
-    glyph_cache_font_scale: f32,
-    #[rust]
-    glyph_cache_dpi_factor: f64,
+    metrics_for: Option<(u32, u32, u64)>,
     /// Whether the pointer is drawing a selection, and which button opened it,
     /// so motion can be reported to an application that asked for it.
     #[rust]
@@ -374,8 +357,7 @@ impl ScriptHook for TerminalView {
         _value: ScriptValue,
     ) {
         // NOTE: live edits can replace the font family without changing its size or DPI.
-        self.cell_width = 0.0;
-        self.glyph_cache.clear();
+        self.metrics_for = None;
     }
 }
 
@@ -416,8 +398,7 @@ impl TerminalView {
     /// same in every window, so without it this resolves to whichever window
     /// opened that tab first.
     fn session_for_widget(&mut self, cx: &Cx, window: LiveId) -> Option<Session> {
-        let previous = self.session;
-        self.session = self
+        let session = self
             .session
             .filter(|session| session.window == window)
             .or_else(|| {
@@ -428,21 +409,21 @@ impl TerminalView {
                     .map(|node| Session { window, tab: *node })
                     .find(|session| crate::terminal::is_open(*session))
             });
-        if self.session != previous {
+        if session != self.session {
             self.alternate_screen = false;
+            self.session = session;
         }
-        self.session
+        session
     }
 
     fn refresh_cell_metrics(&mut self, cx: &mut Cx2d) {
-        let font_size = self.draw_text.text_style.font_size;
         let font_scale = self.draw_text.font_scale;
-        let dpi_factor = cx.current_dpi_factor();
-        if self.cell_width > 0.0
-            && self.glyph_cache_font_size.to_bits() == font_size.to_bits()
-            && self.glyph_cache_font_scale.to_bits() == font_scale.to_bits()
-            && self.glyph_cache_dpi_factor.to_bits() == dpi_factor.to_bits()
-        {
+        let metrics_for = (
+            self.draw_text.text_style.font_size.to_bits(),
+            font_scale.to_bits(),
+            cx.current_dpi_factor().to_bits(),
+        );
+        if self.metrics_for == Some(metrics_for) {
             return;
         }
         let layout = self
@@ -458,17 +439,10 @@ impl TerminalView {
         self.cell_height = f64::from(glyph_height * self.draw_text.text_style.line_spacing);
         self.cell_offset_y = ((self.cell_height - f64::from(glyph_height)) * 0.5).max(0.0);
         self.glyph_cache.clear();
-        self.glyph_cache_font_size = font_size;
-        self.glyph_cache_font_scale = font_scale;
-        self.glyph_cache_dpi_factor = dpi_factor;
+        self.metrics_for = Some(metrics_for);
     }
 
     /// The widget's geometry in cells, for the term and the PTY.
-    #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "Pixel geometry is rounded, clamped positive, and saturated into PTY dimensions."
-    )]
     fn size(&self) -> Size {
         let (cell_width, cell_height) = (self.cell_width, self.cell_height);
         Size {
@@ -485,10 +459,6 @@ impl TerminalView {
 
     /// How far the scroll bar can travel over a grid of `total_lines`: the
     /// content it stands for, less the part already on screen.
-    #[expect(
-        clippy::cast_precision_loss,
-        reason = "Line counts are converted to approximate pixel heights."
-    )]
     fn max_scroll(&self, total_lines: usize) -> f64 {
         let (_, cell_height) = (self.cell_width, self.cell_height);
         let content_height =
@@ -504,34 +474,22 @@ impl TerminalView {
         )
     }
 
-    fn cache_terminal_glyphs(&mut self, cx: &mut Cx2d, text: &str) {
-        if self.glyph_cache.contains_key(text) {
+    fn cache_terminal_glyphs(&mut self, cx: &mut Cx2d, key: &(String, Flags)) {
+        if self.glyph_cache.contains_key(key) {
             return;
         }
-        let Some(run) = self.draw_text.prepare_single_line_run(cx, text) else {
+        let Some(run) = self.draw_text.prepare_single_line_run(cx, &key.0) else {
             return;
         };
-        let glyphs = run
-            .glyphs
-            .iter()
-            .map(|glyph| CachedTerminalGlyph {
-                rasterized: glyph.rasterized,
-                font_size_in_lpxs: glyph.font_size_in_lpxs,
-                x_offset_in_lpxs: glyph.pen_x_in_lpxs + glyph.offset_x_in_lpxs,
-                baseline_offset_in_lpxs: run.ascender_in_lpxs,
-            })
-            .collect();
-        self.glyph_cache.insert(text.to_owned(), glyphs);
+        self.glyph_cache.insert(key.clone(), run);
     }
 
     /// Walk the visible grid: a background where a cell asked for one, the
     /// glyph, whatever rules its flags call for, and the cursor on top.
     #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_precision_loss,
         clippy::cognitive_complexity,
         clippy::too_many_lines,
-        reason = "One locked grid snapshot is painted in background, cursor, and glyph order; the renderer uses f32 pixels."
+        reason = "One locked grid snapshot is painted in background, cursor, and glyph order."
     )]
     fn draw_grid(&mut self, cx: &mut Cx2d, term: &Term<Proxy>, focused: bool) {
         let theme = crate::theme::active_theme();
@@ -547,7 +505,9 @@ impl TerminalView {
         self.draw_text.new_draw_call(cx);
         self.draw_text.begin_many_instances(cx);
 
-        let mut text = String::new();
+        // NOTE: one buffer for every cell's cache key, so a lookup allocates
+        // nothing.
+        let mut key = (String::new(), Flags::empty());
         for indexed in content.display_iter {
             let flags = indexed.cell.flags;
             // The second half of a wide character is not drawn: the glyph in
@@ -609,20 +569,21 @@ impl TerminalView {
                 && !indexed.cell.c.is_control()
                 && !flags.contains(Flags::HIDDEN)
             {
-                text.clear();
-                text.push(indexed.cell.c);
+                key.0.clear();
+                key.0.push(indexed.cell.c);
                 if let Some(marks) = indexed.cell.zerowidth() {
-                    text.extend(marks);
+                    key.0.extend(marks);
                 }
-                self.cache_terminal_glyphs(cx, &text);
-                if let Some(glyphs) = self.glyph_cache.get(&text) {
-                    for glyph in glyphs {
-                        let baseline_y =
-                            y + self.cell_offset_y + f64::from(glyph.baseline_offset_in_lpxs);
+                key.1 = flags & Flags::BOLD_ITALIC;
+                self.cache_terminal_glyphs(cx, &key);
+                if let Some(run) = self.glyph_cache.get(&key) {
+                    let baseline_y = y + self.cell_offset_y + f64::from(run.ascender_in_lpxs);
+                    for glyph in &run.glyphs {
                         self.draw_text.draw_rasterized_glyph_abs(
                             cx,
                             TextPoint::new(
-                                (x + f64::from(glyph.x_offset_in_lpxs)) as f32,
+                                (x + f64::from(glyph.pen_x_in_lpxs + glyph.offset_x_in_lpxs))
+                                    as f32,
                                 baseline_y as f32,
                             ),
                             glyph.font_size_in_lpxs,
@@ -663,10 +624,6 @@ impl TerminalView {
     /// block, the one on this platform that does is a proportional symbol face
     /// whose dots do not line up between adjacent cells — and the pattern is
     /// already in the codepoint. Alacritty draws its own for the same reasons.
-    #[expect(
-        clippy::cast_precision_loss,
-        reason = "Braille row and column values are bounded to a four-by-two cell."
-    )]
     fn draw_braille(&mut self, cx: &mut Cx2d, c: char, x: f64, y: f64) {
         let (cell_width, cell_height) = (self.cell_width, self.cell_height);
         let (step_x, step_y) = (cell_width / 2.0, cell_height / 4.0);
@@ -685,10 +642,6 @@ impl TerminalView {
         }
     }
 
-    #[expect(
-        clippy::cast_precision_loss,
-        reason = "Viewport cell coordinates are converted to approximate pixel positions."
-    )]
     fn draw_cursor_at(
         &mut self,
         cx: &mut Cx2d,
@@ -737,12 +690,6 @@ impl TerminalView {
 
     /// The cell under the pointer, and which half of it — the side decides
     /// whether a selection takes the character or stops before it.
-    #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_precision_loss,
-        clippy::cast_sign_loss,
-        reason = "Pointer positions are clamped nonnegative, floored, and bounded to the visible grid."
-    )]
     fn point_at(&self, abs: Vec2d, term: &Term<Proxy>) -> (Point, Side) {
         let (cell_width, cell_height) = (self.cell_width, self.cell_height);
         let origin = self.origin();
@@ -762,6 +709,38 @@ impl TerminalView {
             ),
             side,
         )
+    }
+
+    /// Where the hyperlink under the pointer leads, unless the application is
+    /// tracking the pointer.
+    fn link_at(
+        &self,
+        shared: &SharedTerm,
+        abs: Vec2d,
+        modifiers: KeyModifiers,
+        state: Option<&WindowState>,
+    ) -> Option<crate::links::Target> {
+        let uri = {
+            let term = shared.lock();
+            let (point, _) = self.point_at(abs, &term);
+            (!mouse::wants_pointer(modifiers, *term.mode()))
+                .then(|| {
+                    term.grid()[point]
+                        .hyperlink()
+                        .map(|link| link.uri().to_owned())
+                })
+                .flatten()
+        };
+        uri.as_deref().and_then(|uri| {
+            state?.read(|d| {
+                crate::links::target(
+                    uri,
+                    d.workdir
+                        .as_deref()
+                        .unwrap_or_else(|| std::path::Path::new(&d.repo)),
+                )
+            })
+        })
     }
 
     /// One key press for the session, whichever way it reached this view.
@@ -784,7 +763,7 @@ impl TerminalView {
         {
             return;
         }
-        let typed = std::mem::take(&mut self.text_input) == TextInput::Forwarded;
+        let typed = std::mem::take(&mut self.text_forwarded);
         let Some(bytes) = keys::encode(e, true, mode).or_else(|| {
             (!typed)
                 .then(|| e.key_code.to_char(e.modifiers.shift))
@@ -794,15 +773,15 @@ impl TerminalView {
             return;
         };
         cx.set_key_focus(self.scroll_bars.area());
-        self.emit_input_bytes(cx, session, bytes);
+        crate::terminal::input(session, bytes);
         scroll_to_bottom(session);
         self.draw_bg.redraw(cx);
     }
 
     /// One key release. Only the kitty protocol asks to hear about these.
-    fn key_release(&mut self, cx: &mut Cx, session: Session, e: &KeyEvent, mode: TermMode) {
+    fn key_release(session: Session, e: &KeyEvent, mode: TermMode) {
         if let Some(bytes) = keys::encode(e, false, mode) {
-            self.emit_input_bytes(cx, session, bytes);
+            crate::terminal::input(session, bytes);
         }
     }
 
@@ -814,84 +793,52 @@ impl TerminalView {
         }
         cx.set_key_focus(self.scroll_bars.area());
         if e.was_paste {
-            self.text_input = TextInput::Forwarded;
-            self.emit_paste_text(
-                cx,
-                session,
-                &e.input,
-                mode.contains(TermMode::BRACKETED_PASTE),
-            );
+            self.text_forwarded = true;
+            Self::paste(session, &e.input, mode.contains(TermMode::BRACKETED_PASTE));
         } else if let Some(bytes) = keys::encode_text(&e.input, KeyModifiers::default(), mode) {
-            self.text_input = TextInput::Forwarded;
-            self.emit_input_bytes(cx, session, bytes);
+            self.text_forwarded = true;
+            crate::terminal::input(session, bytes);
         }
         scroll_to_bottom(session);
         self.draw_bg.redraw(cx);
     }
 
-    fn emit_input_bytes(&self, cx: &mut Cx, session: Session, data: Vec<u8>) {
-        if data.is_empty() {
-            return;
-        }
-        cx.widget_action(
-            self.widget_uid(),
-            TerminalViewAction::Input { session, data },
-        );
-    }
-
-    fn emit_paste_text(&mut self, cx: &mut Cx, session: Session, text: &str, bracketed: bool) {
+    fn paste(session: Session, text: &str, bracketed: bool) {
         if text.is_empty() {
             return;
         }
-        self.emit_input_bytes(cx, session, paste_bytes(text, bracketed));
+        crate::terminal::input(session, paste_bytes(text, bracketed));
     }
 
     fn shell_quote_path(path: &str) -> String {
-        let mut out = String::with_capacity(path.len() + 2);
-        out.push('\'');
-        for ch in path.chars() {
-            if ch == '\'' {
-                out.push_str("'\\''");
-            } else {
-                out.push(ch);
-            }
-        }
-        out.push('\'');
-        out
+        format!("'{}'", path.replace('\'', "'\\''"))
     }
 
     fn dropped_text_payload(items: &[DragItem]) -> Option<String> {
         if items.is_empty() {
             return None;
         }
-        let mut payload_parts = Vec::new();
-        let mut only_paths = true;
-        for item in items {
-            match item {
-                DragItem::String { value, .. } => {
-                    only_paths = false;
-                    payload_parts.push(value.clone());
-                }
-                DragItem::FilePath { path, .. } => {
-                    payload_parts.push(Self::shell_quote_path(path));
-                }
-            }
-        }
-        if payload_parts.is_empty() {
-            None
-        } else if only_paths {
-            Some(format!("{} ", payload_parts.join(" ")))
-        } else if payload_parts.len() == 1 {
-            payload_parts.into_iter().next()
+        let only_paths = items
+            .iter()
+            .all(|item| matches!(item, DragItem::FilePath { .. }));
+        let parts: Vec<String> = items
+            .iter()
+            .map(|item| match item {
+                DragItem::String { value, .. } => value.clone(),
+                DragItem::FilePath { path, .. } => Self::shell_quote_path(path),
+            })
+            .collect();
+        Some(if only_paths {
+            format!("{} ", parts.join(" "))
         } else {
-            Some(payload_parts.join("\n"))
-        }
+            parts.join("\n")
+        })
     }
 
     fn handle_drop(&mut self, cx: &mut Cx, session: Session, hit: DragHit, mode: TermMode) -> bool {
         match hit {
             DragHit::Drag(drag) => {
-                if Self::dropped_text_payload(drag.items.as_ref()).is_none() {
+                if drag.items.is_empty() {
                     return false;
                 }
                 *drag.response.lock().unwrap() = DragResponse::Copy;
@@ -901,8 +848,7 @@ impl TerminalView {
                 let Some(payload) = Self::dropped_text_payload(drop.items.as_ref()) else {
                     return false;
                 };
-                let bracketed = mode.contains(TermMode::BRACKETED_PASTE);
-                self.emit_paste_text(cx, session, &payload, bracketed);
+                Self::paste(session, &payload, mode.contains(TermMode::BRACKETED_PASTE));
                 self.draw_bg.redraw(cx);
                 true
             }
@@ -989,13 +935,9 @@ impl Widget for TerminalView {
     }
 
     #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_possible_wrap,
-        clippy::cast_precision_loss,
-        clippy::cast_sign_loss,
         clippy::cognitive_complexity,
         clippy::too_many_lines,
-        reason = "Focus, terminal modes, and scroll handling are ordered here; pixel deltas are approximate and history is bounded to 100000 lines."
+        reason = "Focus, terminal modes, and scroll handling are ordered here."
     )]
     fn handle_event(&mut self, cx: &mut Cx, event: &Event, scope: &mut Scope) {
         let input = self.find_bar.text_input(cx, ids!(find_input));
@@ -1076,7 +1018,7 @@ impl Widget for TerminalView {
                     return;
                 }
                 Event::KeyUp(e) => {
-                    self.key_release(cx, session, e, mode);
+                    Self::key_release(session, e, mode);
                     return;
                 }
                 Event::TextInput(e) => {
@@ -1109,7 +1051,7 @@ impl Widget for TerminalView {
 
         let mode = *shared.lock().mode();
         if self.find.is_some() {
-            self.text_input = TextInput::Absent;
+            self.text_forwarded = false;
         }
 
         if self.handle_drop(cx, session, drag, mode) {
@@ -1135,7 +1077,7 @@ impl Widget for TerminalView {
                     Some(bytes) => {
                         self.scroll_accum -=
                             self.scroll_accum.signum() * lines as f64 * cell_height;
-                        self.emit_input_bytes(cx, session, bytes);
+                        crate::terminal::input(session, bytes);
                         e.handled_y.set(true);
                         self.draw_bg.redraw(cx);
                         return;
@@ -1173,40 +1115,19 @@ impl Widget for TerminalView {
                     state.set_terminal_tab(Some(session.tab));
                 }
                 self.held = e.device.mouse_button();
-                if e.modifiers.logo {
-                    let uri = {
-                        let term = shared.lock();
-                        let (point, _) = self.point_at(e.abs, &term);
-                        (!mouse::wants_pointer(e.modifiers, *term.mode()))
-                            .then(|| {
-                                term.grid()[point]
-                                    .hyperlink()
-                                    .map(|link| link.uri().to_owned())
-                            })
-                            .flatten()
-                    };
-                    let target = uri.as_deref().and_then(|uri| {
-                        state.as_ref()?.read(|d| {
-                            crate::links::target(
-                                uri,
-                                d.workdir
-                                    .as_deref()
-                                    .unwrap_or_else(|| std::path::Path::new(&d.repo)),
-                            )
-                        })
-                    });
-                    if let Some(target) = target {
-                        match target {
-                            crate::links::Target::External(url) => {
-                                cx.open_url(url.as_str(), OpenUrlInPlace::No);
-                            }
-                            crate::links::Target::File(path) => cx.widget_action(
-                                self.widget_uid(),
-                                TerminalViewAction::OpenFile(path),
-                            ),
+                if e.modifiers.logo
+                    && let Some(target) =
+                        self.link_at(&shared, e.abs, e.modifiers, state.as_deref())
+                {
+                    match target {
+                        crate::links::Target::External(url) => {
+                            cx.open_url(url.as_str(), OpenUrlInPlace::No);
                         }
-                        return;
+                        crate::links::Target::File(path) => {
+                            cx.widget_action(self.widget_uid(), TerminalViewAction::OpenFile(path));
+                        }
                     }
+                    return;
                 }
 
                 let bytes = {
@@ -1234,7 +1155,7 @@ impl Widget for TerminalView {
                     }
                 };
                 if let Some(bytes) = bytes {
-                    self.emit_input_bytes(cx, session, bytes);
+                    crate::terminal::input(session, bytes);
                 }
                 self.draw_bg.redraw(cx);
             }
@@ -1256,7 +1177,7 @@ impl Widget for TerminalView {
                     self.draw_bg.redraw(cx);
                 }
                 if let Some(bytes) = bytes {
-                    self.emit_input_bytes(cx, session, bytes);
+                    crate::terminal::input(session, bytes);
                 }
             }
             Hit::FingerUp(e) => {
@@ -1269,33 +1190,13 @@ impl Widget for TerminalView {
                         .and_then(|button| mouse::report(button, false, e.modifiers, point, mode))
                 };
                 if let Some(bytes) = bytes {
-                    self.emit_input_bytes(cx, session, bytes);
+                    crate::terminal::input(session, bytes);
                 }
                 self.selecting = false;
                 self.held = None;
             }
             Hit::FingerHoverIn(e) | Hit::FingerHoverOver(e) => {
-                let uri = {
-                    let term = shared.lock();
-                    let (point, _) = self.point_at(e.abs, &term);
-                    (!mouse::wants_pointer(e.modifiers, *term.mode()))
-                        .then(|| {
-                            term.grid()[point]
-                                .hyperlink()
-                                .map(|link| link.uri().to_owned())
-                        })
-                        .flatten()
-                };
-                let target = uri.as_deref().and_then(|uri| {
-                    state.as_ref()?.read(|d| {
-                        crate::links::target(
-                            uri,
-                            d.workdir
-                                .as_deref()
-                                .unwrap_or_else(|| std::path::Path::new(&d.repo)),
-                        )
-                    })
-                });
+                let target = self.link_at(&shared, e.abs, e.modifiers, state.as_deref());
                 if let Some(target) = &target {
                     let label = match target {
                         crate::links::Target::External(url) => url.as_str(),
@@ -1331,7 +1232,7 @@ impl Widget for TerminalView {
                 self.draw_bg.redraw(cx);
             }
             Hit::KeyDown(e) => self.key_press(cx, session, &e, mode),
-            Hit::KeyUp(e) => self.key_release(cx, session, &e, mode),
+            Hit::KeyUp(e) => Self::key_release(session, &e, mode),
             Hit::TextInput(e) => self.text_typed(cx, session, &e, mode),
             Hit::TextCopy(e) => {
                 *e.response.borrow_mut() = shared.lock().selection_to_string();
