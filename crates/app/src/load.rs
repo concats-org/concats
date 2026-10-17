@@ -56,13 +56,14 @@ pub(crate) fn spawn_load(
             return;
         }
         // NOTE: The document lock also orders new load requests, so an older
-        // worker cannot publish its range after a newer one has started.
+        // worker cannot publish its range, or move the socket, after a newer
+        // one has started.
         let document = state.write();
-        if state.load_is_current(request)
-            && document.error.is_none()
-            && let Some(conn) = concats_state::open_app_db()
-        {
-            concats_state::publish_window_range(&conn, &state.key, &target);
+        if state.load_is_current(request) && document.error.is_none() {
+            if let Some(conn) = concats_state::open_app_db() {
+                concats_state::publish_window_range(&conn, &state.key, &target);
+            }
+            crate::socket::serve(&state, &document.repo);
         }
         drop(document);
         SignalToUI::set_ui_signal();

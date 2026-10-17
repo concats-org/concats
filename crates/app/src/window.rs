@@ -1,5 +1,6 @@
 //! One window's own state: the review document it renders, the load that
-//! produced it, and the identity its terminals carry.
+//! produced it, the identity its terminals carry, and the socket it answers
+//! on.
 //!
 //! All of this was process-wide while there was one window. What stayed global
 //! is what is genuinely shared — the worker threads, and the review store's
@@ -7,7 +8,7 @@
 //! should see one set of comments and ticks.
 
 use std::sync::{
-    Arc, OnceLock, RwLock,
+    Arc, Mutex, OnceLock, RwLock,
     atomic::{AtomicBool, AtomicU64, Ordering},
 };
 
@@ -45,6 +46,9 @@ pub(crate) struct WindowState {
     /// fallback target after a native window switch clears Makepad's global
     /// key-focus area.
     terminal_tab: AtomicU64,
+    /// Where this window answers for the checkout it shows, so a bare
+    /// `concats` command — or an agent's `curl` — there follows this window.
+    pub(crate) socket: Mutex<Option<crate::socket::Socket>>,
 }
 
 impl WindowState {
@@ -58,6 +62,7 @@ impl WindowState {
             load_request: AtomicU64::new(0),
             focused: AtomicBool::new(false),
             terminal_tab: AtomicU64::new(0),
+            socket: Mutex::new(None),
         })
     }
 

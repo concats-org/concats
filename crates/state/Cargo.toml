@@ -17,3 +17,4 @@ concats_config = { workspace = true }
 # Two processes that never hold the same row at once. WAL plus a busy timeout
 # covers that.
 rusqlite = { workspace = true }
+serde = { workspace = true }

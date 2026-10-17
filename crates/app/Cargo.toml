@@ -88,6 +88,10 @@ toml = { workspace = true }
 thiserror = { workspace = true }
 tempfile = { workspace = true }
 url = "2"
+# The socket each window answers on in its checkout (`concats_state::SOCKET`):
+# plain HTTP, so `curl --unix-socket` is a client. Blocking and thread-based,
+# like every other worker here.
+tiny_http = "0.12"
 regex = "1"
 
 # Native folder picker behind the header's repo name.

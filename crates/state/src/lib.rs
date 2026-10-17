@@ -13,12 +13,34 @@
 //! App state, not repo state: a window can switch repos, so this lives next to
 //! `config.toml` rather than under any `.git`. The recents list sits in the
 //! same file.
+//!
+//! Each window also answers on [`SOCKET`] in the root of the checkout it
+//! shows. Plain HTTP, so an agent sandboxed to the checkout can reach the app
+//! with nothing but `curl --unix-socket`.
+
+use serde::{Deserialize, Serialize};
+
+/// Where the app answers, relative to a checkout's root.
+///
+/// NOTE: macOS caps a socket path at 104 bytes; a checkout nested deeper than
+/// that gets no socket.
+pub const SOCKET: &str = ".concats/app.sock";
+
+/// `GET`: the window's [`Target`], as JSON.
+pub const RANGE: &str = "/range";
+
+/// `GET`: the threads the window shows, as an interchange document; `?all`
+/// for every thread in the store. `POST {COMMENTS}/{id}/{REPLIES}` answers
+/// one: the body is the reply, `?author=` who wrote it, and `?at=path:lines`
+/// where the code lives now.
+pub const COMMENTS: &str = "/comments";
+pub const REPLIES: &str = "replies";
 
 /// What a window reviews: a repo and the `base...head` range in it — the one
 /// value the load pipeline threads from the CLI flags or the picker down to
 /// the loader. `repo` is a path; `base`/`head` are whatever the loader
 /// resolves: revs, or the `INDEX`/`WORKTREE` sentinels.
-#[derive(Clone, Default)]
+#[derive(Clone, Default, Serialize, Deserialize)]
 pub struct Target {
     pub repo: String,
     pub base: String,

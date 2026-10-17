@@ -68,6 +68,7 @@ mod load;
 mod recents;
 mod review_doc;
 mod service;
+mod socket;
 /// The in-app terminal: PTY session + emulation (terminal.rs) and the
 /// renderer copied from makepad-studio (terminal_view.rs).
 mod terminal;
@@ -647,8 +648,12 @@ impl App {
     /// the widget; this drops what the App knew about it, so nothing keeps
     /// polling a document nobody can see.
     fn retire_window(&mut self, window_id: WindowId) {
-        self.windows
-            .retain(|w| w.window.as_window().window_id() != Some(window_id));
+        let closed = |w: &AppWindow| w.window.as_window().window_id() == Some(window_id);
+        if let Some(window) = self.windows.iter().find(|w| closed(w)) {
+            // NOTE: The pane may outlive the window; its socket must not.
+            window.state.socket.lock().unwrap().take();
+        }
+        self.windows.retain(|w| !closed(w));
     }
 
     // Per-window work lives on `AppWindow`.
