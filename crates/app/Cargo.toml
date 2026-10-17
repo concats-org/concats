@@ -50,7 +50,7 @@ before-each-package-command = """
 robius-packaging-commands before-each-package \
     --force-makepad \
     --binary-name concats-app \
-    --path-to-binary ../../target/release/concats-app
+    --path-to-binary "$(cargo metadata --no-deps --format-version 1 | jq -r .target_directory)/release/concats-app"
 """
 
 [package.metadata.packager.macos]
