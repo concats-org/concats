@@ -1608,25 +1608,6 @@ mod tests {
         // this range does not show. A comment on a line that has since been
         // fixed, and that is when it matters most that it is not lost.
         let blobs = vec![Blob::new(oid(7), "txt".into(), "a\n".into())];
-        let rows = || {
-            vec![
-                Row::FileHeader {
-                    path: "a.txt".into(),
-                    lang: "txt",
-                    adds: 1,
-                    dels: 0,
-                    from: None,
-                    similarity: None,
-                },
-                Row::Code {
-                    kind: concats_diff::LineKind::Add,
-                    old_no: None,
-                    new_no: Some(1),
-                    blob: 0,
-                    line: 0,
-                },
-            ]
-        };
         let comments = vec![
             Comment {
                 id: 1,
@@ -1641,11 +1622,11 @@ mod tests {
             },
         ];
 
-        let mut shut = rows();
+        let mut shut = card("a.txt", 0, 1);
         inject_comments(&mut shut, &blobs, &comments, &HashSet::new(), None);
         assert_eq!(shut.len(), 2, "an unplaceable thread stays hidden");
 
-        let mut shown = rows();
+        let mut shown = card("a.txt", 0, 1);
         let placed = inject_comments(
             &mut shown,
             &blobs,

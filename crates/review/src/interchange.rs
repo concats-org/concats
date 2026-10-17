@@ -719,22 +719,6 @@ mod tests {
         ObjectId::from_hex(format!("{n:040x}").as_bytes()).unwrap()
     }
 
-    fn entry_full(path: &str, side: Side, start: u32, end: u32) -> Entry {
-        Entry {
-            path: path.into(),
-            side,
-            start,
-            end,
-            body: String::new(),
-            author: None,
-            id: None,
-            reply_to: None,
-            external: None,
-            created_at: None,
-            line: 0,
-        }
-    }
-
     /// Everything but the source line, which parse assigns and render ignores.
     fn key(e: &Entry) -> impl PartialEq + std::fmt::Debug + '_ {
         (
@@ -758,21 +742,21 @@ mod tests {
             base: Some(oid(1).to_string()),
             head: Some(oid(2).to_string()),
         };
-        let mut a = entry_full("src/store.rs", Side::New, 12, 14);
+        let mut a = entry("src/store.rs".into(), Side::New, 12, 14, 0);
         a.body = "issue: [HIGH] off-by-one.\n\n```suggestion\nfor i in 0..n {\n```".into();
         a.author = Some("Ada \"L\"".into());
         a.id = Some(3);
         a.created_at = Some(1_721_234_567);
 
-        let mut b = entry_full("src/store.rs", Side::Old, 120, 120);
+        let mut b = entry("src/store.rs".into(), Side::Old, 120, 120, 0);
         // A fenced anchor stays verbatim; an unfenced one needs the escape.
         b.body = "```\n### L1\n---\n```\n\n### L12\n\n## `x`".into();
 
-        let mut c = entry_full("dir with space/a`b.rs", Side::New, 1, 2);
+        let mut c = entry("dir with space/a`b.rs".into(), Side::New, 1, 2, 0);
         c.body = "nit: naming — überschreiben?".into();
 
         // A reply repeats its root's anchor and names it by document id.
-        let mut r = entry_full("src/store.rs", Side::New, 12, 14);
+        let mut r = entry("src/store.rs".into(), Side::New, 12, 14, 0);
         r.body = "the database allocates them now.".into();
         r.id = Some(4);
         r.reply_to = Some(3);
@@ -791,10 +775,10 @@ mod tests {
 
     #[test]
     fn the_prompt_profile_nests_a_reply_without_touching_its_body() {
-        let mut root = entry_full("src/lib.rs", Side::New, 63, 68);
+        let mut root = entry("src/lib.rs".into(), Side::New, 63, 68, 0);
         root.body = "this leaks on the error path".into();
         root.id = Some(1);
-        let mut reply = entry_full("src/lib.rs", Side::New, 63, 68);
+        let mut reply = entry("src/lib.rs".into(), Side::New, 63, 68, 0);
         reply.body = "fixed — the early return drops it".into();
         reply.id = Some(2);
         reply.reply_to = Some(1);
@@ -875,13 +859,13 @@ mod tests {
 
     #[test]
     fn prompt_render_round_trips_through_the_lenient_profile() {
-        let mut a = entry_full("apps/web/lib/env.ts", Side::New, 229, 234);
+        let mut a = entry("apps/web/lib/env.ts".into(), Side::New, 229, 234, 0);
         a.body = "Require the URL and token when enabled.".into();
         a.author = Some("claude".into()); // dropped by design: prompt carries no metadata
         a.id = Some(9);
-        let mut b = entry_full("src/a.rs", Side::Old, 3, 3);
+        let mut b = entry("src/a.rs".into(), Side::Old, 3, 3, 0);
         b.body = "why was doomed() removed?".into();
-        let mut c = entry_full("src/a.rs", Side::New, 2, 3);
+        let mut c = entry("src/a.rs".into(), Side::New, 2, 3, 0);
         c.body = "suggestion: keep line2 stable.\n\n```suggestion\nline2\n```".into();
 
         let md = render_prompt(&[a.clone(), b.clone(), c.clone()]);
@@ -1004,14 +988,14 @@ mod tests {
     #[test]
     fn resolves_new_and_old_side_ranges() {
         let loaded = fixture();
-        let e = entry_full("a.rs", Side::New, 10, 12);
+        let e = entry("a.rs".into(), Side::New, 10, 12, 0);
         let r = resolve_entry(&loaded, &e).ok().unwrap();
         assert_eq!(
             (r.path.as_str(), r.blob, r.start, r.end),
             ("src/a.rs", oid(8), 9, 11)
         );
 
-        let o = entry_full("src/a.rs", Side::Old, 10, 10);
+        let o = entry("src/a.rs".into(), Side::Old, 10, 10, 0);
         let r = resolve_entry(&loaded, &o).ok().unwrap();
         assert_eq!((r.blob, r.start, r.end), (oid(7), 9, 9));
     }
@@ -1020,16 +1004,16 @@ mod tests {
     fn reports_unknown_paths_and_missing_lines() {
         let loaded = fixture();
         assert!(matches!(
-            resolve_entry(&loaded, &entry_full("nope.rs", Side::New, 1, 1)),
+            resolve_entry(&loaded, &entry("nope.rs".into(), Side::New, 1, 1, 0)),
             Err(ResolveError::UnknownPath)
         ));
-        match resolve_entry(&loaded, &entry_full("a.rs", Side::New, 11, 14)) {
+        match resolve_entry(&loaded, &entry("a.rs".into(), Side::New, 11, 14, 0)) {
             Err(ResolveError::MissingLines { missing, .. }) => assert_eq!(missing, vec![13, 14]),
             _ => panic!("expected MissingLines"),
         }
         // Old side addresses deletions only.
         assert!(matches!(
-            resolve_entry(&loaded, &entry_full("a.rs", Side::Old, 11, 11)),
+            resolve_entry(&loaded, &entry("a.rs".into(), Side::Old, 11, 11, 0)),
             Err(ResolveError::MissingLines { .. })
         ));
     }
@@ -1037,7 +1021,7 @@ mod tests {
     #[test]
     fn missing_line_diagnostics_stop_after_five_examples() {
         let loaded = fixture();
-        let entry = entry_full("a.rs", Side::New, 10, u32::MAX);
+        let entry = entry("a.rs".into(), Side::New, 10, u32::MAX, 0);
         match resolve_entry(&loaded, &entry) {
             Err(ResolveError::MissingLines { missing, .. }) => {
                 assert_eq!(missing, [13, 14, 15, 16, 17]);
@@ -1052,43 +1036,28 @@ mod tests {
         let rows: Vec<&Row> = loaded.files[0].hunks[0].rows.iter().collect();
         let (old, new) = blob_sides(rows.into_iter(), &loaded.blobs);
         let anchor = |blob, start, end| crate::store::Anchor { blob, start, end };
+        let comment = |id, path: &str, anchor, body: &str| Comment {
+            id,
+            path: path.into(),
+            anchor,
+            body: body.into(),
+            author: None,
+            created_at: 0,
+            parent: None,
+            external: None,
+            cursors: None,
+            quote: None,
+        };
         let comments = vec![
             Comment {
-                id: 1,
-                path: "src/a.rs".into(),
-                anchor: anchor(oid(8), 9, 10),
-                body: "boundary".into(),
                 author: Some("claude".into()),
-                created_at: 5,
-                parent: None,
-                external: None,
-                cursors: None,
-                quote: None,
+                ..comment(1, "src/a.rs", anchor(oid(8), 9, 10), "boundary")
             },
             Comment {
-                id: 2,
-                path: "src/a.rs".into(),
-                anchor: anchor(oid(7), 9, 9),
-                body: "old side".into(),
-                author: None,
-                created_at: 6,
                 parent: Some(1),
-                external: None,
-                cursors: None,
-                quote: None,
+                ..comment(2, "src/a.rs", anchor(oid(7), 9, 9), "old side")
             },
-            Comment {
-                id: 3,
-                path: "gone.rs".into(),
-                anchor: anchor(oid(9), 0, 0),
-                body: "stale".into(),
-                author: None,
-                created_at: 7,
-                parent: None,
-                external: None,
-                cursors: None,
-                quote: None,
-            },
+            comment(3, "gone.rs", anchor(oid(9), 0, 0), "stale"),
         ];
         let entries = entries_from(&comments, &old, &new);
         assert_eq!(

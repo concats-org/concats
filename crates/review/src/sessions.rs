@@ -917,8 +917,9 @@ fn turn_rows(
 
 #[cfg(test)]
 mod tests {
-    use std::{path::Path, process::Command, str::FromStr};
+    use std::str::FromStr;
 
+    use concats_fixture::git;
     use concats_message::{SessionId, TurnEntry};
 
     use super::*;
@@ -942,28 +943,6 @@ mod tests {
     /// git's well-known empty tree oid — turn commits carry no content.
     const EMPTY_TREE: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 
-    fn git(dir: &Path, args: &[&str]) -> String {
-        let out = Command::new("git")
-            .current_dir(dir)
-            .args(args)
-            .env("GIT_AUTHOR_NAME", "t")
-            .env("GIT_AUTHOR_EMAIL", "t@example.com")
-            .env("GIT_COMMITTER_NAME", "t")
-            .env("GIT_COMMITTER_EMAIL", "t@example.com")
-            // Hermetic: ignore user/system config — a global commit.gpgsign
-            // (e.g. via the 1Password agent) would otherwise hang the fixture.
-            .env("GIT_CONFIG_GLOBAL", "/dev/null")
-            .env("GIT_CONFIG_SYSTEM", "/dev/null")
-            .output()
-            .expect("run git");
-        assert!(
-            out.status.success(),
-            "git {args:?}: {}",
-            String::from_utf8_lossy(&out.stderr)
-        );
-        String::from_utf8_lossy(&out.stdout).trim().to_string()
-    }
-
     /// Build the turn message with the real grammar's writer, so the test can
     /// never diverge from what the capture layer actually commits.
     fn turn_message(subject: &str, prompt: &str, response: &str) -> String {
@@ -975,17 +954,38 @@ mod tests {
             .to_string()
     }
 
-    #[test]
-    fn reads_and_links_a_synthesized_session() {
+    /// A repo with `a.txt` committed on `main`, and that commit.
+    fn base_repo() -> (tempfile::TempDir, String) {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path();
-
-        // An ordinary history: base, then one commit changing a.txt.
         git(dir, &["init", "-q", "-b", "main"]);
         std::fs::write(dir.join("a.txt"), "one\n").unwrap();
         git(dir, &["add", "."]);
         git(dir, &["commit", "-qm", "base"]);
         let base = git(dir, &["rev-parse", "HEAD"]);
+        (tmp, base)
+    }
+
+    /// A `test-session` snapshot commit of `tree`.
+    fn snapshot(dir: &Path, tree: &str, parents: &[&str], reason: &str) -> String {
+        let message = format!("snapshot\n\nSession: test-session\nReason: {reason}");
+        let args: Vec<&str> = ["commit-tree", tree]
+            .into_iter()
+            .chain(parents.iter().flat_map(|parent| ["-p", parent]))
+            .chain(["-m", &message])
+            .collect();
+        git(dir, &args)
+    }
+
+    fn oid(hex: &str) -> ObjectId {
+        ObjectId::from_hex(hex.as_bytes()).unwrap()
+    }
+
+    #[test]
+    fn reads_and_links_a_synthesized_session() {
+        // An ordinary history: base, then one commit changing a.txt.
+        let (tmp, base) = base_repo();
+        let dir = tmp.path();
         std::fs::write(dir.join("a.txt"), "one\ntwo\n").unwrap();
         git(dir, &["add", "."]);
         git(dir, &["commit", "-qm", "feature"]);
@@ -1001,25 +1001,15 @@ mod tests {
             dir,
             &["update-ref", "refs/agent/sessions/test-session", &turn],
         );
-        let snap = git(
-            dir,
-            &[
-                "commit-tree",
-                &head_tree,
-                "-p",
-                &turn,
-                "-m",
-                "snapshot\n\nSession: test-session\nReason: turn_commit",
-            ],
-        );
+        let snap = snapshot(dir, &head_tree, &[&turn], "turn_commit");
         git(
             dir,
             &["update-ref", "refs/agent/snapshots/test-session", &snap],
         );
 
         let repo = gix::open(dir).unwrap();
-        let mb = ObjectId::from_hex(base.as_bytes()).unwrap();
-        let hd = ObjectId::from_hex(head.as_bytes()).unwrap();
+        let mb = oid(&base);
+        let hd = oid(&head);
         let range = range_diff(&repo, &mb, &hd);
         let turns = load_turns(&repo, &range);
         assert_eq!(turns.len(), 1);
@@ -1029,10 +1019,8 @@ mod tests {
             turns[0].touched,
             vec![Change::Modified {
                 path: "a.txt".to_string(),
-                old_oid: ObjectId::from_hex(git(dir, &["rev-parse", "HEAD~1:a.txt"]).as_bytes())
-                    .unwrap(),
-                new_oid: ObjectId::from_hex(git(dir, &["rev-parse", "HEAD:a.txt"]).as_bytes())
-                    .unwrap(),
+                old_oid: oid(&git(dir, &["rev-parse", "HEAD~1:a.txt"])),
+                new_oid: oid(&git(dir, &["rev-parse", "HEAD:a.txt"])),
             }]
         );
 
@@ -1073,14 +1061,8 @@ mod tests {
 
     #[test]
     fn commits_stream_organizes_the_range_by_commit_oldest_first() {
-        let tmp = tempfile::tempdir().unwrap();
+        let (tmp, base) = base_repo();
         let dir = tmp.path();
-
-        git(dir, &["init", "-q", "-b", "main"]);
-        std::fs::write(dir.join("a.txt"), "one\n").unwrap();
-        git(dir, &["add", "."]);
-        git(dir, &["commit", "-qm", "base"]);
-        let base = git(dir, &["rev-parse", "HEAD"]);
         std::fs::write(dir.join("a.txt"), "one\ntwo\n").unwrap();
         git(dir, &["add", "."]);
         git(dir, &["commit", "-qm", "add two"]);
@@ -1131,14 +1113,8 @@ mod tests {
     /// generations to the final turn, or the final turn shows no changes.
     #[test]
     fn attributes_changes_across_amended_turns() {
-        let tmp = tempfile::tempdir().unwrap();
+        let (tmp, base) = base_repo();
         let dir = tmp.path();
-
-        git(dir, &["init", "-q", "-b", "main"]);
-        std::fs::write(dir.join("a.txt"), "one\n").unwrap();
-        git(dir, &["add", "."]);
-        git(dir, &["commit", "-qm", "base"]);
-        let base = git(dir, &["rev-parse", "HEAD"]);
 
         // Turn v1 + a snapshot of its mid-turn state.
         let msg_v1 = turn_message("Add lines", "please add lines", "working");
@@ -1149,17 +1125,7 @@ mod tests {
         std::fs::write(dir.join("a.txt"), "one\ntwo\n").unwrap();
         git(dir, &["add", "."]);
         let tree1 = git(dir, &["write-tree"]);
-        let s1 = git(
-            dir,
-            &[
-                "commit-tree",
-                &tree1,
-                "-p",
-                &v1,
-                "-m",
-                "snapshot\n\nSession: test-session\nReason: tool_write",
-            ],
-        );
+        let s1 = snapshot(dir, &tree1, &[&v1], "tool_write");
 
         // The amend: same parents, updated message => new turn oid. The ref
         // moves to v2; v1 dangles, referenced only by s1.
@@ -1175,19 +1141,7 @@ mod tests {
         std::fs::write(dir.join("a.txt"), "one\ntwo\nthree\n").unwrap();
         git(dir, &["add", "."]);
         let tree2 = git(dir, &["write-tree"]);
-        let s2 = git(
-            dir,
-            &[
-                "commit-tree",
-                &tree2,
-                "-p",
-                &s1,
-                "-p",
-                &v2,
-                "-m",
-                "snapshot\n\nSession: test-session\nReason: turn_amend",
-            ],
-        );
+        let s2 = snapshot(dir, &tree2, &[&s1, &v2], "turn_amend");
         git(
             dir,
             &["update-ref", "refs/agent/snapshots/test-session", &s2],
@@ -1198,24 +1152,18 @@ mod tests {
         let head = git(dir, &["rev-parse", "HEAD"]);
 
         let repo = gix::open(dir).unwrap();
-        let range = range_diff(
-            &repo,
-            &ObjectId::from_hex(base.as_bytes()).unwrap(),
-            &ObjectId::from_hex(head.as_bytes()).unwrap(),
-        );
+        let range = range_diff(&repo, &oid(&base), &oid(&head));
         let turns = load_turns(&repo, &range);
         assert_eq!(turns.len(), 1);
-        assert_eq!(turns[0].oid, ObjectId::from_hex(v2.as_bytes()).unwrap());
+        assert_eq!(turns[0].oid, oid(&v2));
         // The full change (one -> one,two,three) lands on the final turn, even
         // though snapshot s1 points at the amended-away v1.
         assert_eq!(
             turns[0].touched,
             vec![Change::Modified {
                 path: "a.txt".to_string(),
-                old_oid: ObjectId::from_hex(git(dir, &["rev-parse", "HEAD~1:a.txt"]).as_bytes())
-                    .unwrap(),
-                new_oid: ObjectId::from_hex(git(dir, &["rev-parse", "HEAD:a.txt"]).as_bytes())
-                    .unwrap(),
+                old_oid: oid(&git(dir, &["rev-parse", "HEAD~1:a.txt"])),
+                new_oid: oid(&git(dir, &["rev-parse", "HEAD:a.txt"])),
             }]
         );
 
@@ -1229,14 +1177,8 @@ mod tests {
     /// to the turn that did.
     #[test]
     fn renders_every_turn_of_a_linked_session() {
-        let tmp = tempfile::tempdir().unwrap();
+        let (tmp, base) = base_repo();
         let dir = tmp.path();
-
-        git(dir, &["init", "-q", "-b", "main"]);
-        std::fs::write(dir.join("a.txt"), "one\n").unwrap();
-        git(dir, &["add", "."]);
-        git(dir, &["commit", "-qm", "base"]);
-        let base = git(dir, &["rev-parse", "HEAD"]);
 
         // Turn 1 only wrote a scratch file that never reaches the range.
         let msg1 = turn_message("Take notes", "think it through", "noted");
@@ -1244,17 +1186,7 @@ mod tests {
         std::fs::write(dir.join("b.txt"), "scratch\n").unwrap();
         git(dir, &["add", "."]);
         let tree1 = git(dir, &["write-tree"]);
-        let s1 = git(
-            dir,
-            &[
-                "commit-tree",
-                &tree1,
-                "-p",
-                &t1,
-                "-m",
-                "snapshot\n\nSession: test-session\nReason: tool_write",
-            ],
-        );
+        let s1 = snapshot(dir, &tree1, &[&t1], "tool_write");
 
         // Turn 2 wrote the content the range's commit carries.
         let msg2 = turn_message("Add two", "now add two", "added two");
@@ -1262,19 +1194,7 @@ mod tests {
         std::fs::write(dir.join("a.txt"), "one\ntwo\n").unwrap();
         git(dir, &["add", "."]);
         let tree2 = git(dir, &["write-tree"]);
-        let s2 = git(
-            dir,
-            &[
-                "commit-tree",
-                &tree2,
-                "-p",
-                &s1,
-                "-p",
-                &t2,
-                "-m",
-                "snapshot\n\nSession: test-session\nReason: turn_amend",
-            ],
-        );
+        let s2 = snapshot(dir, &tree2, &[&s1, &t2], "turn_amend");
         git(
             dir,
             &["update-ref", "refs/agent/sessions/test-session", &t2],
@@ -1291,11 +1211,7 @@ mod tests {
         let head = git(dir, &["rev-parse", "HEAD"]);
 
         let repo = gix::open(dir).unwrap();
-        let range = range_diff(
-            &repo,
-            &ObjectId::from_hex(base.as_bytes()).unwrap(),
-            &ObjectId::from_hex(head.as_bytes()).unwrap(),
-        );
+        let range = range_diff(&repo, &oid(&base), &oid(&head));
         let turns = load_turns(&repo, &range);
         assert_eq!(turns.len(), 2);
         assert_eq!(matching_turns(&range, &turns).len(), 1);
@@ -1346,15 +1262,11 @@ mod tests {
 
     #[test]
     fn ignores_repos_without_sessions() {
-        let tmp = tempfile::tempdir().unwrap();
+        let (tmp, base) = base_repo();
         let dir = tmp.path();
-        git(dir, &["init", "-q", "-b", "main"]);
-        std::fs::write(dir.join("a.txt"), "one\n").unwrap();
-        git(dir, &["add", "."]);
-        git(dir, &["commit", "-qm", "base"]);
 
         let repo = gix::open(dir).unwrap();
-        let head = ObjectId::from_hex(git(dir, &["rev-parse", "HEAD"]).as_bytes()).unwrap();
+        let head = oid(&base);
         let range = range_diff(&repo, &head, &head);
         assert!(load_turns(&repo, &range).is_empty());
     }
