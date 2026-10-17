@@ -48,30 +48,17 @@ impl Modifiers {
     }
 }
 
-/// How a sequence ends: the letter xterm gives the key, or `u` for kitty.
-#[derive(Clone, Copy)]
-enum Terminator {
-    Normal(char),
-    Kitty,
-}
-
-impl Terminator {
-    fn encode(self) -> char {
-        match self {
-            Terminator::Normal(c) => c,
-            Terminator::Kitty => 'u',
-        }
-    }
-}
+/// How a kitty sequence ends; an xterm one ends in the letter it gives the key.
+const KITTY: char = 'u';
 
 /// The number (and any kitty alternate) a sequence carries, with its ending.
 struct Base {
     payload: String,
-    terminator: Terminator,
+    terminator: char,
 }
 
 impl Base {
-    fn new(payload: impl Into<String>, terminator: Terminator) -> Self {
+    fn new(payload: impl Into<String>, terminator: char) -> Self {
         Self {
             payload: payload.into(),
             terminator,
@@ -144,18 +131,16 @@ fn legacy_binding(key: &KeyEvent, mode: TermMode) -> Option<Vec<u8>> {
         };
     }
 
-    if unmodified && mode.contains(TermMode::APP_CURSOR) {
+    // SS3 is the bare form of the keys xterm leaves unnumbered: the cursor
+    // keys once the application asks for it, F1-F4 until the kitty protocol
+    // takes over.
+    if unmodified && let Some(("", end)) = xterm(key.key_code) {
         let ss3 = match key.key_code {
-            KeyCode::Home => Some('H'),
-            KeyCode::End => Some('F'),
-            KeyCode::ArrowUp => Some('A'),
-            KeyCode::ArrowDown => Some('B'),
-            KeyCode::ArrowRight => Some('C'),
-            KeyCode::ArrowLeft => Some('D'),
-            _ => None,
+            KeyCode::F1 | KeyCode::F2 | KeyCode::F3 | KeyCode::F4 => !kitty,
+            _ => mode.contains(TermMode::APP_CURSOR),
         };
-        if let Some(ss3) = ss3 {
-            return Some(format!("\x1bO{ss3}").into_bytes());
+        if ss3 {
+            return Some(format!("\x1bO{end}").into_bytes());
         }
     }
 
@@ -163,20 +148,8 @@ fn legacy_binding(key: &KeyEvent, mode: TermMode) -> Option<Vec<u8>> {
         return None;
     }
 
-    if unmodified {
-        let ss3 = match key.key_code {
-            KeyCode::F1 => Some('P'),
-            KeyCode::F2 => Some('Q'),
-            KeyCode::F3 => Some('R'),
-            KeyCode::F4 => Some('S'),
-            _ => None,
-        };
-        if let Some(ss3) = ss3 {
-            return Some(format!("\x1bO{ss3}").into_bytes());
-        }
-        if key.key_code == KeyCode::NumpadEnter {
-            return Some(b"\n".to_vec());
-        }
+    if unmodified && key.key_code == KeyCode::NumpadEnter {
+        return Some(b"\n".to_vec());
     }
 
     // Backtab, with alt as meta in front of it.
@@ -215,34 +188,11 @@ fn should_build_sequence(key: &KeyEvent, mode: TermMode) -> bool {
 /// The functional keys that have no textual form, so they are always a
 /// sequence — arrows, function keys, navigation.
 fn named_without_text(key: KeyCode) -> bool {
-    matches!(
-        key,
-        KeyCode::ArrowUp
-            | KeyCode::ArrowDown
-            | KeyCode::ArrowLeft
-            | KeyCode::ArrowRight
-            | KeyCode::Home
-            | KeyCode::End
-            | KeyCode::PageUp
-            | KeyCode::PageDown
-            | KeyCode::Insert
-            | KeyCode::Delete
-            | KeyCode::F1
-            | KeyCode::F2
-            | KeyCode::F3
-            | KeyCode::F4
-            | KeyCode::F5
-            | KeyCode::F6
-            | KeyCode::F7
-            | KeyCode::F8
-            | KeyCode::F9
-            | KeyCode::F10
-            | KeyCode::F11
-            | KeyCode::F12
-            | KeyCode::PrintScreen
-            | KeyCode::ScrollLock
-            | KeyCode::Pause
-    )
+    xterm(key).is_some()
+        || matches!(
+            key,
+            KeyCode::PrintScreen | KeyCode::ScrollLock | KeyCode::Pause
+        )
 }
 
 fn build_sequence(key: &KeyEvent, pressed: bool, mode: TermMode) -> Option<Vec<u8>> {
@@ -297,7 +247,7 @@ fn build_sequence(key: &KeyEvent, pressed: bool, mode: TermMode) -> Option<Vec<u
     if let Some(text) = associated_text {
         let _ = write!(payload, ";{}", u32::from(text));
     }
-    payload.push(base.terminator.encode());
+    payload.push(base.terminator);
     Some(payload.into_bytes())
 }
 
@@ -330,7 +280,7 @@ fn numpad(key: &KeyEvent, mode: TermMode) -> Option<Base> {
     if !kitty_sequence(mode) {
         return None;
     }
-    Some(Base::new(numpad_code(key.key_code)?, Terminator::Kitty))
+    Some(Base::new(numpad_code(key.key_code)?, KITTY))
 }
 
 /// Functional keys the kitty protocol numbers differently from xterm.
@@ -340,43 +290,53 @@ fn named_kitty(key: &KeyEvent, mode: TermMode) -> Option<Base> {
     }
     let (payload, terminator) = match key.key_code {
         // F3 in the kitty protocol diverges from alacritty's terminfo.
-        KeyCode::F3 => ("13", Terminator::Normal('~')),
-        KeyCode::ScrollLock => ("57359", Terminator::Kitty),
-        KeyCode::PrintScreen => ("57361", Terminator::Kitty),
-        KeyCode::Pause => ("57362", Terminator::Kitty),
+        KeyCode::F3 => ("13", '~'),
+        KeyCode::ScrollLock => ("57359", KITTY),
+        KeyCode::PrintScreen => ("57361", KITTY),
+        KeyCode::Pause => ("57362", KITTY),
         _ => return None,
     };
     Some(Base::new(payload, terminator))
 }
 
-/// The xterm/DEC table every terminal has spoken for forty years. `has_params`
-/// says whether anything follows the number, which is left out otherwise.
-fn named_normal(key: &KeyEvent, has_params: bool) -> Option<Base> {
-    let one = if has_params { "1" } else { "" };
-    let (payload, terminator) = match key.key_code {
-        KeyCode::PageUp => ("5", Terminator::Normal('~')),
-        KeyCode::PageDown => ("6", Terminator::Normal('~')),
-        KeyCode::Insert => ("2", Terminator::Normal('~')),
-        KeyCode::Delete => ("3", Terminator::Normal('~')),
-        KeyCode::Home => (one, Terminator::Normal('H')),
-        KeyCode::End => (one, Terminator::Normal('F')),
-        KeyCode::ArrowLeft => (one, Terminator::Normal('D')),
-        KeyCode::ArrowRight => (one, Terminator::Normal('C')),
-        KeyCode::ArrowUp => (one, Terminator::Normal('A')),
-        KeyCode::ArrowDown => (one, Terminator::Normal('B')),
-        KeyCode::F1 => (one, Terminator::Normal('P')),
-        KeyCode::F2 => (one, Terminator::Normal('Q')),
-        KeyCode::F3 => (one, Terminator::Normal('R')),
-        KeyCode::F4 => (one, Terminator::Normal('S')),
-        KeyCode::F5 => ("15", Terminator::Normal('~')),
-        KeyCode::F6 => ("17", Terminator::Normal('~')),
-        KeyCode::F7 => ("18", Terminator::Normal('~')),
-        KeyCode::F8 => ("19", Terminator::Normal('~')),
-        KeyCode::F9 => ("20", Terminator::Normal('~')),
-        KeyCode::F10 => ("21", Terminator::Normal('~')),
-        KeyCode::F11 => ("23", Terminator::Normal('~')),
-        KeyCode::F12 => ("24", Terminator::Normal('~')),
+/// The xterm/DEC table every terminal has spoken for forty years: a key's
+/// number, empty for an implied 1, and the byte that ends it.
+fn xterm(key: KeyCode) -> Option<(&'static str, char)> {
+    Some(match key {
+        KeyCode::PageUp => ("5", '~'),
+        KeyCode::PageDown => ("6", '~'),
+        KeyCode::Insert => ("2", '~'),
+        KeyCode::Delete => ("3", '~'),
+        KeyCode::Home => ("", 'H'),
+        KeyCode::End => ("", 'F'),
+        KeyCode::ArrowLeft => ("", 'D'),
+        KeyCode::ArrowRight => ("", 'C'),
+        KeyCode::ArrowUp => ("", 'A'),
+        KeyCode::ArrowDown => ("", 'B'),
+        KeyCode::F1 => ("", 'P'),
+        KeyCode::F2 => ("", 'Q'),
+        KeyCode::F3 => ("", 'R'),
+        KeyCode::F4 => ("", 'S'),
+        KeyCode::F5 => ("15", '~'),
+        KeyCode::F6 => ("17", '~'),
+        KeyCode::F7 => ("18", '~'),
+        KeyCode::F8 => ("19", '~'),
+        KeyCode::F9 => ("20", '~'),
+        KeyCode::F10 => ("21", '~'),
+        KeyCode::F11 => ("23", '~'),
+        KeyCode::F12 => ("24", '~'),
         _ => return None,
+    })
+}
+
+/// A key from the [`xterm`] table, with its implied 1 written out when
+/// `has_params` says something follows it.
+fn named_normal(key: &KeyEvent, has_params: bool) -> Option<Base> {
+    let (number, terminator) = xterm(key.key_code)?;
+    let payload = if number.is_empty() && has_params {
+        "1"
+    } else {
+        number
     };
     Some(Base::new(payload, terminator))
 }
@@ -409,7 +369,7 @@ fn control_char_or_mod(key: &KeyEvent, mode: TermMode) -> Option<Base> {
         KeyCode::Numlock => "57360",
         _ => control,
     };
-    (!payload.is_empty()).then(|| Base::new(payload, Terminator::Kitty))
+    (!payload.is_empty()).then(|| Base::new(payload, KITTY))
 }
 
 /// A printing key under the kitty protocol, reported by its unshifted
@@ -426,7 +386,7 @@ fn textual(key: &KeyEvent, mode: TermMode) -> Option<Base> {
     } else {
         u32::from(unshifted).to_string()
     };
-    Some(Base::new(payload, Terminator::Kitty))
+    Some(Base::new(payload, KITTY))
 }
 
 /// The keys that carry their own byte with no sequence around it: the control
@@ -574,6 +534,21 @@ mod tests {
             "\x1b[1;5P"
         );
         assert_eq!(sent(&key(KeyCode::Delete), TermMode::empty()), "\x1b[3~");
+    }
+
+    #[test]
+    fn kitty_drops_ss3_for_function_keys_but_not_for_application_cursor_keys() {
+        assert_eq!(
+            sent(&key(KeyCode::F1), TermMode::DISAMBIGUATE_ESC_CODES),
+            "\x1b[P"
+        );
+        assert_eq!(
+            sent(
+                &key(KeyCode::Home),
+                TermMode::APP_CURSOR | TermMode::DISAMBIGUATE_ESC_CODES
+            ),
+            "\x1bOH"
+        );
     }
 
     /// The one an agent's line editor is waiting for: a newline that is not a

@@ -1250,18 +1250,13 @@ impl Widget for TerminalView {
                 let bytes = {
                     let mut term = shared.lock();
                     let (point, side) = self.point_at(e.abs, &term);
-                    let mode = *term.mode();
                     if self.selecting {
                         if let Some(selection) = term.selection.as_mut() {
                             selection.update(point, side);
                         }
                         None
-                    } else if mouse::wants_pointer(e.modifiers, mode)
-                        && mouse::wants_motion(self.held.is_some(), mode)
-                    {
-                        mouse::motion(self.held, e.modifiers, point, mode)
                     } else {
-                        None
+                        mouse::motion(self.held, e.modifiers, point, *term.mode())
                     }
                 };
                 if self.selecting {

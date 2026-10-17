@@ -4,9 +4,9 @@
 //! (`alacritty/src/input/mod.rs`). Which one an application gets is its own
 //! choice: SGR once it asks for 1006, the original packed form otherwise.
 //!
-//! Nothing here decides whether the pointer belongs to the application — ask
-//! [`wants_pointer`] first, and keep the event for the panel's own selection
-//! when it says no.
+//! [`report`] does not decide whether the pointer belongs to the application —
+//! ask [`wants_pointer`] first, and keep the event for the panel's own
+//! selection when it says no.
 
 use alacritty_terminal::{index::Point, term::TermMode};
 use makepad_widgets::{KeyModifiers, MouseButton};
@@ -32,7 +32,7 @@ pub fn wants_pointer(modifiers: KeyModifiers, mode: TermMode) -> bool {
 
 /// Whether motion should be reported: with a button held (1002), or with none
 /// (1003).
-pub fn wants_motion(held: bool, mode: TermMode) -> bool {
+fn wants_motion(held: bool, mode: TermMode) -> bool {
     mode.contains(TermMode::MOUSE_MOTION) || (held && mode.contains(TermMode::MOUSE_DRAG))
 }
 
@@ -52,13 +52,17 @@ pub fn report(
     )
 }
 
-/// The pointer moving, with whichever button is held.
+/// The pointer moving, with whichever button is held, while the application
+/// is tracking it.
 pub fn motion(
     held: Option<MouseButton>,
     modifiers: KeyModifiers,
     point: Point,
     mode: TermMode,
 ) -> Option<Vec<u8>> {
+    if !wants_pointer(modifiers, mode) || !wants_motion(held.is_some(), mode) {
+        return None;
+    }
     let button = held.and_then(code).unwrap_or(NONE);
     encode(
         button + modifier_bits(modifiers) + MOTION,
@@ -78,9 +82,6 @@ pub fn wheel(
     point: Point,
     mode: TermMode,
 ) -> Option<Vec<u8>> {
-    if lines == 0 {
-        return None;
-    }
     if wants_pointer(modifiers, mode) {
         let button = if up { WHEEL_UP } else { WHEEL_DOWN } + modifier_bits(modifiers);
         let mut out = Vec::new();
@@ -103,29 +104,19 @@ pub fn wheel(
 
 fn code(button: MouseButton) -> Option<u8> {
     // Beyond three there is no room in the packed encoding to say which.
-    if button.contains(MouseButton::PRIMARY) {
-        Some(0)
-    } else if button.contains(MouseButton::MIDDLE) {
-        Some(1)
-    } else if button.contains(MouseButton::SECONDARY) {
-        Some(2)
-    } else {
-        None
-    }
+    [
+        (MouseButton::PRIMARY, 0),
+        (MouseButton::MIDDLE, 1),
+        (MouseButton::SECONDARY, 2),
+    ]
+    .into_iter()
+    .find_map(|(flag, code)| button.contains(flag).then_some(code))
 }
 
 fn modifier_bits(modifiers: KeyModifiers) -> u8 {
-    let mut bits = 0;
-    if modifiers.shift {
-        bits += SHIFT;
-    }
-    if modifiers.alt {
-        bits += ALT;
-    }
-    if modifiers.control {
-        bits += CONTROL;
-    }
-    bits
+    u8::from(modifiers.shift) * SHIFT
+        + u8::from(modifiers.alt) * ALT
+        + u8::from(modifiers.control) * CONTROL
 }
 
 fn encode(button: u8, pressed: bool, point: Point, mode: TermMode) -> Option<Vec<u8>> {
@@ -271,12 +262,12 @@ mod tests {
 
     #[test]
     fn motion_marks_itself_and_says_which_button_is_down() {
-        let mode = TermMode::MOUSE_DRAG | TermMode::SGR_MOUSE;
-        assert!(wants_motion(true, mode));
-        assert!(!wants_motion(false, mode));
-        let moved = |held| text(motion(held, KeyModifiers::default(), point(1, 1), mode));
-        assert_eq!(moved(Some(MouseButton::PRIMARY)), "\x1b[<32;2;2M");
-        assert_eq!(moved(None), "\x1b[<35;2;2M");
+        let moved = |held, mode| text(motion(held, KeyModifiers::default(), point(1, 1), mode));
+        let drag = TermMode::MOUSE_DRAG | TermMode::SGR_MOUSE;
+        assert_eq!(moved(Some(MouseButton::PRIMARY), drag), "\x1b[<32;2;2M");
+        assert_eq!(moved(None, drag), "");
+        let any = TermMode::MOUSE_MOTION | TermMode::SGR_MOUSE;
+        assert_eq!(moved(None, any), "\x1b[<35;2;2M");
     }
 
     #[test]
