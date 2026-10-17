@@ -82,18 +82,11 @@ impl crate::Agent for ClaudeAgent {
     }
 
     fn uninstall(&self, scope: &InstallScope) -> Result<()> {
-        let path = settings_path(scope)?;
-        if !path.exists() {
-            return Ok(());
-        }
-        json_config::apply(&path, |v| Ok(remove_hooks(v)))
+        json_config::uninstall(&settings_path(scope)?, AGENT)
     }
 
     fn is_installed(&self, scope: &InstallScope) -> bool {
-        settings_path(scope).is_ok_and(|path| {
-            std::fs::read_to_string(path)
-                .is_ok_and(|data| data.contains(&format!("concats hook {AGENT}")))
-        })
+        settings_path(scope).is_ok_and(|path| json_config::is_installed(&path, AGENT))
     }
 }
 
@@ -139,74 +132,24 @@ fn settings_path(scope: &InstallScope) -> Result<PathBuf> {
     }
 }
 
-fn install_hooks(mut value: serde_json::Value, binary: &Path) -> Result<serde_json::Value> {
-    let root = value
-        .as_object_mut()
-        .ok_or_else(|| Error::session("claude config root is not an object"))?;
-
-    let command_prefix = format!("concats hook {AGENT}");
-    let hooks = root
-        .entry("hooks")
-        .or_insert_with(|| serde_json::json!({}))
-        .as_object_mut()
-        .ok_or_else(|| Error::session("claude hooks is not an object"))?;
-
-    for (event, matcher) in [
-        ("SessionStart", ""),
-        ("UserPromptSubmit", ""),
-        ("PostToolUse", "Write|Edit"),
-        ("Stop", ""),
-    ] {
-        let entries = hooks
-            .entry(event.to_string())
-            .or_insert_with(|| serde_json::json!([]))
-            .as_array_mut()
-            .ok_or_else(|| Error::session(format!("claude hooks.{event} is not an array")))?;
-        entries.retain(|entry| {
-            !entry
-                .get("hooks")
-                .and_then(|h| h.as_array())
-                .is_some_and(|hooks| {
-                    hooks.iter().any(|hook| {
-                        hook.get("command")
-                            .and_then(|c| c.as_str())
-                            .is_some_and(|c| c.contains(&command_prefix))
-                    })
-                })
-        });
-        entries.push(serde_json::json!({
-            "matcher": matcher,
-            "hooks": [{
-                "type": "command",
-                "command": format!("{} hook {AGENT} {event}", binary.display()),
-            }]
-        }));
-    }
-
-    Ok(value)
-}
-
-fn remove_hooks(mut value: serde_json::Value) -> serde_json::Value {
-    let command_prefix = format!("concats hook {AGENT}");
-    if let Some(hooks) = value.get_mut("hooks").and_then(|h| h.as_object_mut()) {
-        for entries in hooks.values_mut() {
-            if let Some(arr) = entries.as_array_mut() {
-                arr.retain(|entry| {
-                    !entry
-                        .get("hooks")
-                        .and_then(|h| h.as_array())
-                        .is_some_and(|hooks| {
-                            hooks.iter().any(|hook| {
-                                hook.get("command")
-                                    .and_then(|c| c.as_str())
-                                    .is_some_and(|c| c.contains(&command_prefix))
-                            })
-                        })
-                });
-            }
-        }
-    }
-    value
+fn install_hooks(value: serde_json::Value, binary: &Path) -> Result<serde_json::Value> {
+    json_config::install_hooks(
+        value,
+        AGENT,
+        &["SessionStart", "UserPromptSubmit", "PostToolUse", "Stop"],
+        |event, command| {
+            let matcher = if event == "PostToolUse" {
+                "Write|Edit"
+            } else {
+                ""
+            };
+            serde_json::json!({
+                "matcher": matcher,
+                "hooks": [{ "type": "command", "command": command }],
+            })
+        },
+        binary,
+    )
 }
 
 const APPROVED_PLAN_MARKER: &str = "\n## Approved Plan:";

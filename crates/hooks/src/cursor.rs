@@ -1,7 +1,4 @@
-use std::{
-    fs,
-    path::{Path, PathBuf},
-};
+use std::path::{Path, PathBuf};
 
 use concats_core::error::{Error, Result};
 
@@ -38,26 +35,16 @@ impl crate::Agent for CursorAgent {
         )
     }
 
-    fn install(&self, binary: &Path, scope: &InstallScope) -> Result<()> {
-        let _ = scope;
+    fn install(&self, binary: &Path, _: &InstallScope) -> Result<()> {
         json_config::apply(&config_path()?, |value| install_hooks(value, binary))
     }
 
-    fn uninstall(&self, scope: &InstallScope) -> Result<()> {
-        let _ = scope;
-        let path = config_path()?;
-        if !path.exists() {
-            return Ok(());
-        }
-        json_config::apply(&path, |v| Ok(remove_hooks(v)))
+    fn uninstall(&self, _: &InstallScope) -> Result<()> {
+        json_config::uninstall(&config_path()?, AGENT)
     }
 
-    fn is_installed(&self, scope: &InstallScope) -> bool {
-        let _ = scope;
-        config_path().is_ok_and(|path| {
-            fs::read_to_string(path)
-                .is_ok_and(|data| data.contains(&format!("concats hook {AGENT}")))
-        })
+    fn is_installed(&self, _: &InstallScope) -> bool {
+        config_path().is_ok_and(|path| json_config::is_installed(&path, AGENT))
     }
 }
 
@@ -68,53 +55,14 @@ fn config_path() -> Result<PathBuf> {
 }
 
 fn install_hooks(mut value: serde_json::Value, binary: &Path) -> Result<serde_json::Value> {
-    let root = value
-        .as_object_mut()
-        .ok_or_else(|| Error::session("cursor config root is not an object"))?;
-    root.insert("version".into(), serde_json::json!(1));
-
-    let command_prefix = format!("concats hook {AGENT}");
-    let hooks = root
-        .entry("hooks")
-        .or_insert_with(|| serde_json::json!({}))
-        .as_object_mut()
-        .ok_or_else(|| Error::session("cursor hooks is not an object"))?;
-
-    for event in ["beforeSubmitPrompt", "afterFileEdit"] {
-        let entries = hooks
-            .entry(event.to_string())
-            .or_insert_with(|| serde_json::json!([]))
-            .as_array_mut()
-            .ok_or_else(|| Error::session(format!("cursor hooks.{event} is not an array")))?;
-        entries.retain(|entry| {
-            entry
-                .get("command")
-                .and_then(|c| c.as_str())
-                .is_none_or(|c| !c.contains(&command_prefix))
-        });
-        entries.push(serde_json::json!({
-            "command": format!("{} hook {AGENT} {event}", binary.display()),
-        }));
-    }
-
-    Ok(value)
-}
-
-fn remove_hooks(mut value: serde_json::Value) -> serde_json::Value {
-    let command_prefix = format!("concats hook {AGENT}");
-    if let Some(hooks) = value.get_mut("hooks").and_then(|h| h.as_object_mut()) {
-        for entries in hooks.values_mut() {
-            if let Some(arr) = entries.as_array_mut() {
-                arr.retain(|entry| {
-                    entry
-                        .get("command")
-                        .and_then(|c| c.as_str())
-                        .is_none_or(|c| !c.contains(&command_prefix))
-                });
-            }
-        }
-    }
-    value
+    json_config::root(&mut value, AGENT)?.insert("version".into(), serde_json::json!(1));
+    json_config::install_hooks(
+        value,
+        AGENT,
+        &["beforeSubmitPrompt", "afterFileEdit"],
+        |_, command| serde_json::json!({ "command": command }),
+        binary,
+    )
 }
 
 #[cfg(test)]
@@ -143,28 +91,6 @@ mod tests {
             let data = serde_json::to_string(&config).unwrap();
             assert!(data.contains("other-tool hook"));
             assert!(data.contains("concats hook cursor afterFileEdit"));
-        }
-    }
-
-    mod remove_hooks {
-        use super::*;
-
-        #[test]
-        fn removes_only_concats_hooks() {
-            let config = serde_json::json!({
-                "hooks": {
-                    "afterFileEdit": [
-                        { "command": "other-tool hook" },
-                        { "command": "concats hook cursor afterFileEdit" }
-                    ]
-                }
-            });
-
-            let config = remove_hooks(config);
-
-            let data = serde_json::to_string(&config).unwrap();
-            assert!(data.contains("other-tool hook"));
-            assert!(!data.contains("concats hook cursor"));
         }
     }
 }

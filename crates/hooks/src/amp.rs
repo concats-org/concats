@@ -37,18 +37,15 @@ impl crate::Agent for AmpAgent {
         )
     }
 
-    fn install(&self, binary: &Path, scope: &InstallScope) -> Result<()> {
-        let _ = scope;
+    fn install(&self, binary: &Path, _: &InstallScope) -> Result<()> {
         plugin::write(&plugin_path()?, PLUGIN_TEMPLATE, binary)
     }
 
-    fn uninstall(&self, scope: &InstallScope) -> Result<()> {
-        let _ = scope;
+    fn uninstall(&self, _: &InstallScope) -> Result<()> {
         plugin::remove(&plugin_path()?)
     }
 
-    fn is_installed(&self, scope: &InstallScope) -> bool {
-        let _ = scope;
+    fn is_installed(&self, _: &InstallScope) -> bool {
         plugin_path().is_ok_and(|p| plugin::exists(&p))
     }
 }

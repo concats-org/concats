@@ -31,14 +31,12 @@ impl crate::Agent for CopilotAgent {
         })
     }
 
-    fn install(&self, binary: &Path, scope: &InstallScope) -> Result<()> {
-        let _ = scope;
+    fn install(&self, binary: &Path, _: &InstallScope) -> Result<()> {
         let path = config_path()?;
         write_config(&path, binary)
     }
 
-    fn uninstall(&self, scope: &InstallScope) -> Result<()> {
-        let _ = scope;
+    fn uninstall(&self, _: &InstallScope) -> Result<()> {
         let path = config_path()?;
         if path.exists() {
             std::fs::remove_file(&path)?;
@@ -46,8 +44,7 @@ impl crate::Agent for CopilotAgent {
         Ok(())
     }
 
-    fn is_installed(&self, scope: &InstallScope) -> bool {
-        let _ = scope;
+    fn is_installed(&self, _: &InstallScope) -> bool {
         config_path().is_ok_and(|p| p.exists())
     }
 }
