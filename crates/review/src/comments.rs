@@ -20,7 +20,7 @@ use gix::ObjectId;
 
 use crate::{
     Error, guide,
-    interchange::{self, Entry, Meta},
+    interchange::{self, Entry, Meta, ResolveError, Side},
     store::{self, Anchor, Comment},
 };
 
@@ -42,33 +42,19 @@ pub fn resolve_anchor(spec: &str, loaded: &Loaded, root: &str) -> Result<(String
     if start == 0 || end == 0 {
         return Err(Error::AnchorZero);
     }
-    let (start, end) = (start.min(end), start.max(end));
-
-    let file = guide::find_file(loaded, path_part.trim_end_matches('/'))
-        .ok_or_else(|| Error::NotInDiff(path_part.to_string()))?;
-    let (new_side, _) = interchange::line_maps(file);
-    let missing: Vec<String> = (start..=end)
-        .filter(|n| !new_side.contains_key(n))
-        .take(5)
-        .map(|n| n.to_string())
-        .collect();
-    if !missing.is_empty() {
-        return Err(Error::LinesNotInDiff {
-            lines: missing.join(", "),
+    let range = start.min(end)..=start.max(end);
+    interchange::resolve(loaded, path_part, Side::New, range).map_err(|error| match error {
+        ResolveError::UnknownPath => Error::NotInDiff(path_part.to_string()),
+        ResolveError::MissingLines { file, missing } => Error::LinesNotInDiff {
+            lines: missing
+                .iter()
+                .map(u32::to_string)
+                .collect::<Vec<_>>()
+                .join(", "),
             path: file.path.clone(),
             ranges: reviewable_ranges(file, root),
-        });
-    }
-    let (blob, line_start) = new_side[&start];
-    let (_, line_end) = new_side[&end];
-    Ok((
-        file.path.clone(),
-        Anchor {
-            blob: loaded.blobs[blob as usize].oid,
-            start: line_start,
-            end: line_end,
         },
-    ))
+    })
 }
 
 /// A file's hunks as ready-made links, so a caller fixing an anchor never does
@@ -116,42 +102,33 @@ fn worktree_buffer(loaded: &Loaded, path: &str) -> Option<Blob> {
     Some(buffer)
 }
 
-/// Where a comment sits for this export: its own lines when its blob is in the
-/// range, else — for a comment on a worktree file whose cursors the file's
-/// document reads — the lines those cursors cover in the file on disk. A
-/// comment the range cannot place either way exports as recorded.
+/// Where a comment sits for this export when its blob is not in the range: for
+/// a comment on a worktree file whose cursors the file's document reads, the
+/// lines those cursors cover in the file on disk. `None` when its blob is in
+/// the range, or when nothing places it — either way it exports as recorded.
 fn relocate(
     loaded: &Loaded,
     buffers: &mut HashMap<String, Option<Blob>>,
     in_range: &HashSet<ObjectId>,
     c: &Comment,
-) -> Comment {
-    let Some((from, to)) = &c.cursors else {
-        return c.clone();
-    };
+) -> Option<Anchor> {
+    let (from, to) = c.cursors.as_ref()?;
     if in_range.contains(&c.anchor.blob) {
-        return c.clone();
+        return None;
     }
     let buffer = buffers
         .entry(c.path.clone())
-        .or_insert_with(|| worktree_buffer(loaded, &c.path));
-    let Some(buffer) = buffer else {
-        return c.clone();
-    };
+        .or_insert_with(|| worktree_buffer(loaded, &c.path))
+        .as_mut()?;
     if !buffer.adopt(c.id, from, to) {
-        return c.clone();
+        return None;
     }
-    match buffer.held_lines_on_disk(c.id) {
-        Some((start, end)) => Comment {
-            anchor: Anchor {
-                blob: buffer.oid,
-                start,
-                end,
-            },
-            ..c.clone()
-        },
-        None => c.clone(),
-    }
+    let (start, end) = buffer.held_lines_on_disk(c.id)?;
+    Some(Anchor {
+        blob: buffer.oid,
+        start,
+        end,
+    })
 }
 
 /// `comments` as document entries, each where it sits now — a comment on a
@@ -175,7 +152,10 @@ pub fn entries(loaded: &Loaded, comments: &[Comment]) -> (Vec<Entry>, HashSet<u6
     let mut buffers = HashMap::new();
     let comments: Vec<Comment> = comments
         .iter()
-        .map(|c| relocate(loaded, &mut buffers, &in_range, c))
+        .map(|c| Comment {
+            anchor: relocate(loaded, &mut buffers, &in_range, c).unwrap_or(c.anchor),
+            ..c.clone()
+        })
         .collect();
     let anchored: HashSet<u64> = comments
         .iter()

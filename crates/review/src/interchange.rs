@@ -66,12 +66,18 @@
 //! Resolution against a [`Loaded`] diff is the only part that touches git
 //! state.
 
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    ops::RangeInclusive,
+};
 
 use concats_diff::{Blob, FileChange, LineKind, Row, load::Loaded};
 use gix::ObjectId;
 
-use crate::{Error, guide, store::Comment};
+use crate::{
+    Error, guide,
+    store::{Anchor, Comment},
+};
 
 pub const SCHEMA: &str = "concats-app/1";
 
@@ -574,14 +580,6 @@ fn backtick_span(path: &str) -> String {
 // Resolution — the import gate, shared with `comments add`
 // ---------------------------------------------------------------------------
 
-/// An entry mapped into store terms: content-addressed, 0-based.
-pub struct ResolvedEntry {
-    pub path: String,
-    pub blob: ObjectId,
-    pub start: u32,
-    pub end: u32,
-}
-
 pub enum ResolveError<'a> {
     UnknownPath,
     /// The range includes lines the diff does not show on that side.
@@ -592,12 +590,12 @@ pub enum ResolveError<'a> {
 }
 
 /// 1-based display line → `(blob idx, 0-based blob line)`.
-pub type LineMap = HashMap<u32, (u32, u32)>;
+type LineMap = HashMap<u32, (u32, u32)>;
 
 /// `(new_no → (blob idx, blob line), old_no → …)` for a file's hunks. The new
 /// side covers additions and context (the GUI allows commenting both); the
 /// old side covers deletions only — that is what `old L…` addresses.
-pub fn line_maps(file: &FileChange) -> (LineMap, LineMap) {
+fn line_maps(file: &FileChange) -> (LineMap, LineMap) {
     let mut new = HashMap::new();
     let mut old = HashMap::new();
     for r in file.hunks.iter().flat_map(|h| h.rows.iter()) {
@@ -622,32 +620,40 @@ pub fn line_maps(file: &FileChange) -> (LineMap, LineMap) {
     (new, old)
 }
 
-/// Re-anchor one entry against the loaded diff — the same validation
-/// `comments add` applies, batched: every line of the range must be shown by
-/// the diff on the entry's side.
-pub fn resolve_entry<'a>(loaded: &'a Loaded, e: &Entry) -> Result<ResolvedEntry, ResolveError<'a>> {
+/// Re-anchor 1-based `lines` on `side` of `path` against the loaded diff — the
+/// one check `comments add` and import share: every line of the range must be
+/// shown by the diff on that side.
+pub fn resolve<'a>(
+    loaded: &'a Loaded,
+    path: &str,
+    side: Side,
+    lines: RangeInclusive<u32>,
+) -> Result<(String, Anchor), ResolveError<'a>> {
     let file =
-        guide::find_file(loaded, e.path.trim_end_matches('/')).ok_or(ResolveError::UnknownPath)?;
+        guide::find_file(loaded, path.trim_end_matches('/')).ok_or(ResolveError::UnknownPath)?;
     let (new_map, old_map) = line_maps(file);
-    let map = match e.side {
+    let map = match side {
         Side::New => &new_map,
         Side::Old => &old_map,
     };
-    let missing: Vec<u32> = (e.start..=e.end)
+    let missing: Vec<u32> = lines
+        .clone()
         .filter(|n| !map.contains_key(n))
         .take(5)
         .collect();
     if !missing.is_empty() {
         return Err(ResolveError::MissingLines { file, missing });
     }
-    let (blob, line_s) = map[&e.start];
-    let (_, line_e) = map[&e.end];
-    Ok(ResolvedEntry {
-        path: file.path.clone(),
-        blob: loaded.blobs[blob as usize].oid,
-        start: line_s,
-        end: line_e,
-    })
+    let (blob, start) = map[lines.start()];
+    let (_, end) = map[lines.end()];
+    Ok((
+        file.path.clone(),
+        Anchor {
+            blob: loaded.blobs[blob as usize].oid,
+            start,
+            end,
+        },
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -964,32 +970,32 @@ mod tests {
     #[test]
     fn resolves_new_and_old_side_ranges() {
         let loaded = fixture();
-        let e = entry("a.rs".into(), Side::New, 10, 12, 0);
-        let r = resolve_entry(&loaded, &e).ok().unwrap();
+        let (path, at) = resolve(&loaded, "a.rs", Side::New, 10..=12).ok().unwrap();
         assert_eq!(
-            (r.path.as_str(), r.blob, r.start, r.end),
+            (path.as_str(), at.blob, at.start, at.end),
             ("src/a.rs", oid(8), 9, 11)
         );
 
-        let o = entry("src/a.rs".into(), Side::Old, 10, 10, 0);
-        let r = resolve_entry(&loaded, &o).ok().unwrap();
-        assert_eq!((r.blob, r.start, r.end), (oid(7), 9, 9));
+        let (_, at) = resolve(&loaded, "src/a.rs", Side::Old, 10..=10)
+            .ok()
+            .unwrap();
+        assert_eq!((at.blob, at.start, at.end), (oid(7), 9, 9));
     }
 
     #[test]
     fn reports_unknown_paths_and_missing_lines() {
         let loaded = fixture();
         assert!(matches!(
-            resolve_entry(&loaded, &entry("nope.rs".into(), Side::New, 1, 1, 0)),
+            resolve(&loaded, "nope.rs", Side::New, 1..=1),
             Err(ResolveError::UnknownPath)
         ));
-        match resolve_entry(&loaded, &entry("a.rs".into(), Side::New, 11, 14, 0)) {
+        match resolve(&loaded, "a.rs", Side::New, 11..=14) {
             Err(ResolveError::MissingLines { missing, .. }) => assert_eq!(missing, vec![13, 14]),
             _ => panic!("expected MissingLines"),
         }
         // Old side addresses deletions only.
         assert!(matches!(
-            resolve_entry(&loaded, &entry("a.rs".into(), Side::Old, 11, 11, 0)),
+            resolve(&loaded, "a.rs", Side::Old, 11..=11),
             Err(ResolveError::MissingLines { .. })
         ));
     }
@@ -997,8 +1003,7 @@ mod tests {
     #[test]
     fn missing_line_diagnostics_stop_after_five_examples() {
         let loaded = fixture();
-        let entry = entry("a.rs".into(), Side::New, 10, u32::MAX, 0);
-        match resolve_entry(&loaded, &entry) {
+        match resolve(&loaded, "a.rs", Side::New, 10..=u32::MAX) {
             Err(ResolveError::MissingLines { missing, .. }) => {
                 assert_eq!(missing, [13, 14, 15, 16, 17]);
             }

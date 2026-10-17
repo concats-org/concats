@@ -349,12 +349,15 @@ fn warn_on_range_mismatch(doc: &interchange::Document, loaded: &interchange::Met
     }
 }
 
+/// The root entries that anchor, each with its path and anchor in the diff.
+type Roots<'a> = Vec<(&'a interchange::Entry, (String, Anchor))>;
+
 fn resolve_document_roots<'a>(
     entries: &'a [interchange::Entry],
     loaded: &Loaded,
     input: &str,
     root: &str,
-) -> Result<Vec<(&'a interchange::Entry, interchange::ResolvedEntry)>, ExitCode> {
+) -> Result<Roots<'a>, ExitCode> {
     let (resolved, failed) = resolve_roots(entries, loaded, |entry, error| {
         print_resolution_error(entry, error, input, "error");
         if let interchange::ResolveError::MissingLines { file, .. } = error {
@@ -376,7 +379,7 @@ fn resolve_pull_request_roots<'a>(
     entries: &'a [interchange::Entry],
     loaded: &Loaded,
     input: &str,
-) -> Vec<(&'a interchange::Entry, interchange::ResolvedEntry)> {
+) -> Roots<'a> {
     let (resolved, failed) = resolve_roots(entries, loaded, |entry, error| {
         print_resolution_error(entry, error, input, "warning");
     });
@@ -390,20 +393,19 @@ fn resolve_roots<'a>(
     entries: &'a [interchange::Entry],
     loaded: &Loaded,
     mut on_error: impl FnMut(&interchange::Entry, &interchange::ResolveError<'_>),
-) -> (
-    Vec<(&'a interchange::Entry, interchange::ResolvedEntry)>,
-    usize,
-) {
+) -> (Roots<'a>, usize) {
     let mut failed = 0;
     let resolved = entries
         .iter()
         .filter(|e| e.reply_to.is_none())
-        .filter_map(|entry| match interchange::resolve_entry(loaded, entry) {
-            Ok(anchor) => Some((entry, anchor)),
-            Err(error) => {
-                failed += 1;
-                on_error(entry, &error);
-                None
+        .filter_map(|entry| {
+            match interchange::resolve(loaded, &entry.path, entry.side, entry.start..=entry.end) {
+                Ok(anchor) => Some((entry, anchor)),
+                Err(error) => {
+                    failed += 1;
+                    on_error(entry, &error);
+                    None
+                }
             }
         })
         .collect();
@@ -445,7 +447,7 @@ fn print_resolution_error(
 /// or its anchor and body, is skipped as a duplicate.
 fn write_entries(
     loaded: &concats_diff::load::Loaded,
-    resolved: &[(&interchange::Entry, interchange::ResolvedEntry)],
+    resolved: &[(&interchange::Entry, (String, Anchor))],
     replies: &[&interchange::Entry],
     fallback_author: Option<&str>,
     dry: bool,
@@ -456,9 +458,14 @@ fn write_entries(
     // wrote. Roots first, which is what the partition is for.
     let mut ids: HashMap<u64, u64> = HashMap::new();
 
-    let replies: Vec<(&interchange::Entry, Option<interchange::ResolvedEntry>)> = replies
+    let replies: Vec<(&interchange::Entry, Option<(String, Anchor)>)> = replies
         .iter()
-        .map(|e| (*e, interchange::resolve_entry(loaded, e).ok()))
+        .map(|e| {
+            (
+                *e,
+                interchange::resolve(loaded, &e.path, e.side, e.start..=e.end).ok(),
+            )
+        })
         .collect();
     for (entry, anchor) in resolved
         .iter()
@@ -568,12 +575,12 @@ fn store_entry(
     store: &mut Store,
     loaded: &concats_diff::load::Loaded,
     entry: &interchange::Entry,
-    anchor: Option<&interchange::ResolvedEntry>,
+    anchor: Option<&(String, Anchor)>,
     parent: Option<u64>,
     author: Option<String>,
 ) -> Option<u64> {
     let created_at = entry.created_at.unwrap_or_else(store::now);
-    let Some(r) = anchor else {
+    let Some((path, at)) = anchor else {
         let root = parent.expect("a reply without a thread was skipped above");
         return store.reply_comment(
             root,
@@ -583,21 +590,16 @@ fn store_entry(
             entry.external.clone(),
         );
     };
-    let at = Anchor {
-        blob: r.blob,
-        start: r.start,
-        end: r.end,
-    };
     Some(store.add_comment(Comment {
         id: 0,
-        path: r.path.clone(),
-        anchor: at,
+        path: path.clone(),
+        anchor: *at,
         body: entry.body.clone(),
         author,
         created_at,
         parent,
         external: entry.external.clone(),
-        cursors: document_cursors(loaded, &r.path, at),
+        cursors: document_cursors(loaded, path, *at),
         // NOTE: an imported entry names lines; a quote is the app's selection.
         quote: None,
     }))
@@ -630,7 +632,7 @@ fn thread_of(
 fn stored_match<'a>(
     store: &'a Store,
     entry: &interchange::Entry,
-    anchor: Option<&interchange::ResolvedEntry>,
+    anchor: Option<&(String, Anchor)>,
     parent: Option<u64>,
 ) -> Option<&'a Comment> {
     store.comments.iter().find(|c| {
@@ -638,12 +640,7 @@ fn stored_match<'a>(
             return have == want;
         }
         match anchor {
-            Some(r) => {
-                c.anchor.blob == r.blob
-                    && (c.anchor.start, c.anchor.end) == (r.start, r.end)
-                    && c.parent == parent
-                    && c.body == entry.body
-            }
+            Some((_, at)) => c.anchor == *at && c.parent == parent && c.body == entry.body,
             None => c.parent == parent && c.body == entry.body,
         }
     })
