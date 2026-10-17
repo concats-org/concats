@@ -173,7 +173,7 @@ pub enum CommentsAction {
         range: RangeArgs,
     },
 
-    /// The whole comment store as one interchange document.
+    /// The range's threads as one interchange document.
     ///
     /// You can paste it, diff it and import it back — importing an export is a
     /// no-op.
@@ -181,6 +181,10 @@ pub enum CommentsAction {
         /// Emit the terse bot-style prompt format instead of the canonical one.
         #[arg(long)]
         prompt: bool,
+        /// Every thread in the store, including those made against other
+        /// ranges and other worktrees.
+        #[arg(long)]
+        all: bool,
         /// Write here instead of to stdout.
         #[arg(short = 'o', long = "out", value_name = "FILE")]
         out: Option<String>,

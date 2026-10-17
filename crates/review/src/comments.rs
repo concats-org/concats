@@ -160,9 +160,11 @@ fn relocate(
 /// order, stale paths after, then by line, then by thread, each conversation
 /// kept whole.
 ///
-/// Also returns how many do not anchor in the range at all. Those are exported
-/// as recorded, and will not re-import against it.
-pub fn entries(loaded: &Loaded, comments: &[Comment]) -> (Vec<Entry>, usize) {
+/// Also returns the threads none of whose comments anchor in the range — made
+/// against another range, or another worktree's files, since the store is
+/// shared by every worktree. Those export as recorded and will not re-import
+/// against it.
+pub fn entries(loaded: &Loaded, comments: &[Comment]) -> (Vec<Entry>, HashSet<u64>) {
     let rows = loaded
         .files
         .iter()
@@ -175,10 +177,16 @@ pub fn entries(loaded: &Loaded, comments: &[Comment]) -> (Vec<Entry>, usize) {
         .iter()
         .map(|c| relocate(loaded, &mut buffers, &in_range, c))
         .collect();
-    let stale = comments
+    let anchored: HashSet<u64> = comments
         .iter()
-        .filter(|c| interchange::outside_range(c, &old, &new))
-        .count();
+        .filter(|c| !interchange::outside_range(c, &old, &new))
+        .map(store::thread_key)
+        .collect();
+    let elsewhere = comments
+        .iter()
+        .map(store::thread_key)
+        .filter(|t| !anchored.contains(t))
+        .collect();
 
     let mut entries = interchange::entries_from(&comments, &old, &new);
     let file_ix: HashMap<&str, usize> = loaded
@@ -192,7 +200,7 @@ pub fn entries(loaded: &Loaded, comments: &[Comment]) -> (Vec<Entry>, usize) {
         let ix = |e: &Entry| file_ix.get(e.path.as_str()).copied().unwrap_or(usize::MAX);
         (ix(x), &x.path, x.start, thread(x), x.id).cmp(&(ix(y), &y.path, y.start, thread(y), y.id))
     });
-    (entries, stale)
+    (entries, elsewhere)
 }
 
 /// The frontmatter a document carries: what repository, and which two oids the

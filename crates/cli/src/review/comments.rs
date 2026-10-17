@@ -35,9 +35,12 @@ pub(crate) fn run(
             author,
             range,
         }) => reply(&id, anchor.as_deref(), &body, author, &range),
-        Some(CommentsAction::Export { prompt, out, range }) => {
-            export(prompt, out.as_deref(), &range)
-        }
+        Some(CommentsAction::Export {
+            prompt,
+            all,
+            out,
+            range,
+        }) => export(prompt, all, out.as_deref(), &range),
         Some(CommentsAction::Import {
             input,
             author,
@@ -209,21 +212,33 @@ fn print_reviewable_ranges(file: &concats_diff::FileChange, root: &str) {
     eprintln!("\n{}", comments::reviewable_ranges(file, root));
 }
 
-/// The whole store as one interchange document. Canonical by default;
+/// The range's threads as one interchange document; `--all` for the whole
+/// store. Every worktree shares the store, so without narrowing an agent
+/// answers threads that belong to another checkout. Canonical by default;
 /// `--prompt` emits the terse bot-style format instead, for handing the review
 /// to an agent. Stdout by default so it pipes.
-fn export(prompt: bool, out: Option<&str>, range: &RangeArgs) -> Outcome {
+fn export(prompt: bool, all: bool, out: Option<&str>, range: &RangeArgs) -> Outcome {
     let target = range.resolve()?;
     let (loaded, root) = super::load(&target)?;
     let store = Store::open(&loaded.git_dir);
 
-    let (entries, stale) = comments::entries(&loaded, &store.comments);
-    if stale > 0 {
-        eprintln!(
-            "warning: {stale} comment(s) do not anchor in {}...{} — exported as recorded, \
-             they will not re-import against this range",
-            target.base, target.head
-        );
+    let (mut entries, elsewhere) = comments::entries(&loaded, &store.comments);
+    if !elsewhere.is_empty() {
+        let (base, head) = (&target.base, &target.head);
+        if all {
+            eprintln!(
+                "warning: {} thread(s) do not anchor in {base}...{head} — exported as recorded, \
+                 they will not re-import against this range",
+                elsewhere.len()
+            );
+        } else {
+            entries.retain(|e| e.reply_to.or(e.id).is_none_or(|t| !elsewhere.contains(&t)));
+            eprintln!(
+                "note: left out {} thread(s) that do not anchor in {base}...{head} — \
+                 `--all` exports the whole store",
+                elsewhere.len()
+            );
+        }
     }
 
     let markdown = if prompt {

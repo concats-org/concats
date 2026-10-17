@@ -90,9 +90,11 @@ curl -s --fail-with-body --unix-socket .concats/app.sock http://concats/comments
 concats comments export --base <BASE> --head <HEAD>
 ```
 
-The app's answer leaves out threads its window does not show — from other
-worktrees, or ranges reviewed before. `http://concats/comments?all` includes
-them; ask for that only when the user means them.
+Both leave out threads that belong elsewhere — other worktrees, or ranges
+reviewed before: the app's answer has the threads its window shows, the export
+the threads that anchor in its range. `http://concats/comments?all` and
+`concats comments export --all` include them; ask for those only when the user
+means them.
 
 That is the whole input: the threads, grouped by file, in thread order,
 each with its `id`, its author, and its lines. A reply repeats its root's
