@@ -1,6 +1,5 @@
 //! One window's own state: the review document it renders, the load that
-//! produced it, the identity its terminals carry, and the socket it answers
-//! on.
+//! produced it, and the socket it answers on.
 //!
 //! All of this was process-wide while there was one window. What stayed global
 //! is what is genuinely shared — the worker threads, and the review store's
@@ -23,9 +22,6 @@ pub(crate) struct WindowState {
     /// The id `Root` opened this window under, and what a worker's reply names
     /// to say which document it belongs to.
     pub id: LiveId,
-    /// This window's row in `app.db`, exported to its terminals as
-    /// `CONCATS_APP_WINDOW` so a bare `concats` command follows this window.
-    pub key: String,
     /// The platform's id for this window, which is what a pointer event names.
     pub platform: Option<WindowId>,
     /// The published document. A draw clones the `Arc` and releases the lock
@@ -55,7 +51,6 @@ impl WindowState {
     pub(crate) fn new(id: LiveId, platform: Option<WindowId>) -> Arc<Self> {
         Arc::new(Self {
             id,
-            key: concats_state::new_window_id(),
             platform,
             doc: RwLock::new(Arc::new(ReviewDoc::default())),
             compose_draft: RwLock::new(String::new()),

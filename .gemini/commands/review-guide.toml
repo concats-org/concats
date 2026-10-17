@@ -1,6 +1,6 @@
 # /review-guide — write a guided tour of a diff for the concats-app app.
 # The skill text is injected below so the model needs zero extra steps to
-# see it; inside the app's terminal the CONCATS_APP_* env picks the range.
+# see it; in a checkout the app has open, the app's socket picks the range.
 
 description = "Write a guided review tour of a diff (concats-app); args: [base] [head]"
 
@@ -8,8 +8,8 @@ prompt = """
 Follow the skill below exactly, especially its Hard rules. Arguments given
 to this command are `[base] [head]` overrides: "{{args}}". If they are
 empty, run every concats command WITHOUT --repo/--base/--head flags:
-while the review app is open, bare commands target the diff its pane shows
-(the app publishes its live range; the terminal env is the fallback), and
+while the review app has the checkout open, bare commands target the diff
+its window shows (the app answers on .concats/app.sock in the checkout), and
 anywhere else the CLI errors and tells you what to pass — relay that and
 ask; never invent a range.
 

@@ -65,25 +65,36 @@ here. That makes the rules different, not looser.
 
 ## Workflow
 
-Run from the repo under review. `<BASE> <HEAD>` is the range; pass the same
-values to every command. The CLI resolves the range itself — you only pass
-through what the user gave: (1) explicit arguments — e.g.
-`/address-comments INDEX WORKTREE` — go on every command as
-`--base`/`--head`; (2) no arguments — run every `concats` command
-**without any range flags**: when the review app is open, the bare commands
-target exactly the diff its pane shows (a running app publishes its live
-range, following the pane across switches; the terminal's `CONCATS_APP_*`
-env is the fallback); anywhere else the CLI errors and tells you what to
-pass — relay that and ask. Never invent a range.
+Run from the repo under review. Where the threads come from depends on what
+the user gave you:
+
+- **No arguments, and the review app has this checkout open** —
+  `.concats/app.sock` exists in the checkout's root. Ask the app: it answers
+  with exactly the threads its window shows, and stores your replies itself,
+  so this works from a sandbox that cannot write `.git`. Every `concats`
+  command runs **without range flags** and follows the window too.
+- **Explicit arguments** — e.g. `/address-comments INDEX WORKTREE` — go on
+  every `concats` command as `--base <BASE> --head <HEAD>`.
+- **Neither** — the CLI errors and says what to pass. Relay that and ask.
+  Never invent a range.
 
 ```sh
-# 0. The conversation. If this errors ("command not found", or a usage
-#    dump), the installed binary is missing or stale — report that verbatim
-#    and STOP. (`concats --help` lists every command it has.)
-concats comments export --repo . --base <BASE> --head <HEAD>
+# 0. The conversation. If curl cannot connect, report the error verbatim and
+#    STOP — a sandbox has to allow the socket (Claude Code:
+#    sandbox.network.allowUnixSockets).
+curl -s --fail-with-body --unix-socket .concats/app.sock http://concats/comments
+
+# With a range instead. If this errors ("command not found", or a usage
+# dump), the installed binary is missing or stale — report that verbatim and
+# STOP. (`concats --help` lists every command it has.)
+concats comments export --base <BASE> --head <HEAD>
 ```
 
-That is the whole input: every comment, grouped by file, in thread order,
+The app's answer leaves out threads its window does not show — from other
+worktrees, or ranges reviewed before. `http://concats/comments?all` includes
+them; ask for that only when the user means them.
+
+That is the whole input: the threads, grouped by file, in thread order,
 each with its `id`, its author, and its lines. A reply repeats its root's
 anchor and carries `reply-to=<id>` in the machine comment:
 
@@ -107,18 +118,21 @@ reads and answers exactly like a local one.
 ```sh
 # 1. For each OPEN thread, in file order. Read the anchored lines first —
 #    the manifest's links give you the current hunk around them.
-concats manifest --repo . --base <BASE> --head <HEAD>
+concats manifest [--base <BASE> --head <HEAD>]
 
 # 2. The intent behind the code being questioned, when it matters: the
 #    captured sessions say WHY the change was made.
-concats turns --repo . --base <BASE> --head <HEAD>
+concats turns [--base <BASE> --head <HEAD>]
 ```
 
 Then, per thread: verify → act → answer.
 
 ```sh
 # 3. Answer in the thread. <id> is any comment in it — replying to a reply
-#    answers the thread, like GitHub. --author is your agent name.
+#    answers the thread, like GitHub. The author is your agent name.
+curl -s --fail-with-body --unix-socket .concats/app.sock \
+    --data-binary "<what you did, or why not>" \
+    "http://concats/comments/<id>/replies?author=<your-name>"
 concats comments reply <id> -m "<what you did, or why not>" --author <your-name>
 
 # 3b. IF YOU CHANGED THE COMMENTED LINES, say where they are now. A comment is
@@ -128,6 +142,9 @@ concats comments reply <id> -m "<what you did, or why not>" --author <your-name>
 #     comment keeps the lines it was written on, and a thread renders under
 #     its newest comment the diff can place. Same grammar as `comments add`,
 #     and the lines are the manifest's, never computed by hand.
+curl -s --fail-with-body --unix-socket .concats/app.sock \
+    --data-binary "fixed: <what you changed>" \
+    "http://concats/comments/<id>/replies?author=<your-name>&at=<path>:<start>[-<end>]"
 concats comments reply <id> <path>:<start>[-<end>] \
     -m "fixed: <what you changed>" --author <your-name>
 ```
@@ -152,8 +169,8 @@ about error handling is not a licence to restructure the module — that is a
 new review, not this one.
 
 ```sh
-# 4. Close the loop: re-export and confirm every thread now ends on you.
-concats comments export --repo . --base <BASE> --head <HEAD>
+# 4. Close the loop: read the threads again (step 0) and confirm every one
+#    now ends on you.
 ```
 
 Then run the project's checks on what you changed (this repo:

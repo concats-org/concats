@@ -967,7 +967,7 @@ impl ReviewPane {
                 let session = terminal::Session { window, tab };
                 if terminal::is_open(session) {
                     terminal::close(session);
-                    self.open_terminal_for(cx, tab, &target);
+                    self.open_terminal_for(cx, tab, &target.repo);
                 }
             }
         }
@@ -1487,45 +1487,23 @@ impl ReviewPane {
     /// Spawn this tab's shell in the loaded repo. A running session is never
     /// restarted — opening is idempotent.
     ///
-    /// The shell gets `CONCATS_APP_WINDOW` — this window's identity — and the CLI
-    /// resolves the window's current range through it (the app republishes on
-    /// every load), so `concats manifest` (or an agent running the review-guide
-    /// skill) in this terminal targets the diff on screen with no flags, even
-    /// after the reviewer switches ranges. The spawn-time
-    /// `CONCATS_APP_REPO/BASE/HEAD` values ride along as the fallback for when
-    /// the app has exited.
+    /// The shell needs nothing else: the window answers on a socket in the
+    /// checkout's root, so `concats manifest` (or an agent running the
+    /// review-guide skill) anywhere in it targets the diff on screen with no
+    /// flags, even after the reviewer switches ranges.
     pub fn open_terminal(&mut self, cx: &mut Cx, tab: LiveId) {
-        let target = self.state().read(crate::review_doc::ReviewDoc::target);
-        self.open_terminal_for(cx, tab, &target);
+        let repo = self.state().read(|d| d.repo.clone());
+        self.open_terminal_for(cx, tab, &repo);
     }
 
-    fn open_terminal_for(&mut self, cx: &mut Cx, tab: LiveId, target: &concats_state::Target) {
-        let cwd = if target.repo.is_empty() {
-            ".".to_string()
-        } else {
-            target.repo.clone()
-        };
-        // Absolute, so the env stays right even after the user cd's away.
-        let cwd = std::fs::canonicalize(&cwd)
-            .map(|p| p.display().to_string())
-            .unwrap_or(cwd);
-        let mut env: Vec<(&str, &str)> = vec![
-            ("CONCATS_APP_WINDOW", self.state().key.as_str()),
-            ("CONCATS_APP_REPO", cwd.as_str()),
-        ];
-        if !target.base.is_empty() {
-            env.push(("CONCATS_APP_BASE", target.base.as_str()));
-        }
-        if !target.head.is_empty() {
-            env.push(("CONCATS_APP_HEAD", target.head.as_str()));
-        }
+    fn open_terminal_for(&mut self, cx: &mut Cx, tab: LiveId, repo: &str) {
+        let cwd = if repo.is_empty() { "." } else { repo };
         terminal::open(
             terminal::Session {
                 window: self.state().id,
                 tab,
             },
-            std::path::Path::new(&cwd),
-            &env,
+            std::path::Path::new(cwd),
         );
         self.view.redraw(cx);
     }

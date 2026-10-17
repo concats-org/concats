@@ -8,14 +8,13 @@
 //! ## Ranges
 //!
 //! Every command works on `base...head` and takes it the same way:
-//! `--repo`/`--base`/`--head`, falling back to the window this terminal belongs
-//! to. The app exports `CONCATS_APP_WINDOW` (an identity, so it cannot go
-//! stale) and republishes that window's range on every load. So an agent in the
-//! app's built-in terminal reviews the diff on screen with no flags at all,
-//! across range switches and without cross-talk between windows. The spawn-time
-//! `CONCATS_APP_*` values are the fallback for when the app has exited. Outside
-//! all of that the CLI does not guess: it exits 2 and names what to pass. Only
-//! `--repo` has a default — the cwd, like git.
+//! `--repo`/`--base`/`--head`, falling back to what the app shows for the repo.
+//! A window answers on a socket in the root of the checkout it shows
+//! ([`concats_state::SOCKET`]) and reads its range off the document at the
+//! moment it is asked. So an agent anywhere in that checkout reviews the diff on
+//! screen with no flags at all, across range switches, and a linked worktree
+//! never answers for another. Without an app the CLI does not guess: it exits 2
+//! and names what to pass. Only `--repo` has a default — the cwd, like git.
 //!
 //! ## Exit codes
 //!
@@ -26,7 +25,12 @@
 //! - `1` findings — broken links, coverage below the gate, nothing to act on;
 //! - `2` bad arguments, or no diff to load.
 
-use std::{path::Path, process::ExitCode};
+use std::{
+    io::{Read, Write},
+    os::unix::net::UnixStream,
+    path::Path,
+    process::ExitCode,
+};
 
 use clap::{Args, Subcommand, ValueEnum};
 use concats_diff::load::{self, Loaded};
@@ -242,29 +246,30 @@ pub struct GuideArgs {
 }
 
 impl RangeArgs {
-    /// The range to review: the flags, then the live window, then the
-    /// environment, then a loud error. The module docs say why the last step is
-    /// an error and not a guess.
+    /// The range to review: the flags, then the app's window on the repo, then
+    /// a loud error. The module docs say why the last step is an error and not
+    /// a guess.
     pub(crate) fn resolve(&self) -> Result<Target, ExitCode> {
-        let window = window_range();
-        let repo = repo_from(self.repo.as_deref(), window.as_ref());
+        let repo = self.repo.clone().unwrap_or_else(|| ".".to_string());
+        let shown = (self.base.is_none() || self.head.is_none())
+            .then(|| shown_range(&repo))
+            .flatten();
         let (Some(base), Some(head)) = (
             self.base
                 .clone()
-                .or_else(|| window.as_ref().map(|w| w.base.clone()))
-                .or_else(|| env("CONCATS_APP_BASE")),
+                .or_else(|| shown.as_ref().map(|t| t.base.clone())),
             self.head
                 .clone()
-                .or_else(|| window.as_ref().map(|w| w.head.clone()))
-                .or_else(|| env("CONCATS_APP_HEAD")),
+                .or_else(|| shown.as_ref().map(|t| t.head.clone())),
         ) else {
             eprintln!(
-                "error: no review range — pass --base <rev> --head <rev>, or run inside \
-                 the concats-app terminal (its CONCATS_APP_* environment names the open diff).\n\
+                "error: no review range — pass --base <rev> --head <rev>, or open the repo in \
+                 concats-app (it answers for the diff on screen on {}).\n\
                  Common ranges:\n  \
                  --base HEAD  --head WORKTREE   everything uncommitted\n  \
                  --base INDEX --head WORKTREE   unstaged changes only\n  \
-                 --base main  --head HEAD       a branch against its merge base"
+                 --base main  --head HEAD       a branch against its merge base",
+                concats_state::SOCKET
             );
             return Err(ExitCode::from(BAD_INPUT));
         };
@@ -272,17 +277,65 @@ impl RangeArgs {
     }
 }
 
-/// The repo alone — for the commands that never touch a range (listing or
-/// deleting stored comments works on the repo, whatever diff is open).
-pub(crate) fn repo_arg(repo: Option<&str>) -> String {
-    repo_from(repo, window_range().as_ref())
-}
-
-fn repo_from(repo: Option<&str>, window: Option<&Target>) -> String {
-    repo.map(str::to_string)
-        .or_else(|| window.map(|w| w.repo.clone()))
-        .or_else(|| env("CONCATS_APP_REPO"))
-        .unwrap_or_else(|| ".".to_string())
+/// What the app shows for `repo`, asked over the socket in its root. `None`
+/// when no app answers there.
+fn shown_range(repo: &str) -> Option<Target> {
+    let socket = load::discover(Path::new(repo))?.join(concats_state::SOCKET);
+    let mut stream = match UnixStream::connect(&socket) {
+        Ok(stream) => stream,
+        // NOTE: No socket, or one a crashed app left behind: no app open here.
+        Err(error)
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
+            ) =>
+        {
+            return None;
+        }
+        Err(error) => {
+            // A sandbox that does not allow the socket fails here; say so,
+            // or the missing range reads as a missing app.
+            eprintln!(
+                "warning: cannot reach concats-app on {}: {error}",
+                socket.display()
+            );
+            return None;
+        }
+    };
+    let mut response = Vec::new();
+    let asked = write!(
+        stream,
+        "GET {} HTTP/1.1\r\nHost: concats\r\nConnection: close\r\n\r\n",
+        concats_state::RANGE
+    )
+    .and_then(|()| stream.read_to_end(&mut response));
+    if let Err(error) = asked {
+        eprintln!(
+            "warning: concats-app on {} did not answer: {error}",
+            socket.display()
+        );
+        return None;
+    }
+    let mut headers = [httparse::EMPTY_HEADER; 16];
+    let mut head = httparse::Response::new(&mut headers);
+    let Ok(httparse::Status::Complete(body)) = head.parse(&response) else {
+        eprintln!(
+            "warning: concats-app on {} sent a malformed response",
+            socket.display()
+        );
+        return None;
+    };
+    if head.code != Some(200) {
+        eprintln!(
+            "warning: concats-app on {}: {}",
+            socket.display(),
+            String::from_utf8_lossy(&response[body..]).trim()
+        );
+        return None;
+    }
+    serde_json::from_slice(&response[body..])
+        .inspect_err(|error| eprintln!("warning: concats-app on {}: {error}", socket.display()))
+        .ok()
 }
 
 /// A count as a float, for arithmetic that only ever lands in printed text —
@@ -294,16 +347,6 @@ fn repo_from(repo: Option<&str>, window: Option<&Target>) -> String {
 #[allow(clippy::cast_precision_loss)]
 pub(crate) fn counted(n: usize) -> f64 {
     n as f64
-}
-
-fn env(key: &str) -> Option<String> {
-    std::env::var(key).ok().filter(|v| !v.trim().is_empty())
-}
-
-/// What the window this terminal belongs to has open.
-fn window_range() -> Option<Target> {
-    let window = env("CONCATS_APP_WINDOW")?;
-    concats_state::window_range(&concats_state::open_app_db()?, &window)
 }
 
 /// Load `target`'s diff, or say why not. Returns the repository root alongside
@@ -325,7 +368,7 @@ pub(crate) fn load(target: &Target) -> Result<(Loaded, String), ExitCode> {
 /// Open the repository at `repo` for a command that needs the review store but
 /// not a diff.
 pub(crate) fn open_store(repo: Option<&str>) -> Result<concats_review::store::Store, ExitCode> {
-    let repo = repo_arg(repo);
+    let repo = repo.unwrap_or(".");
     let Some(root) = load::discover(Path::new(&repo)) else {
         eprintln!("error: no git repository at {repo}");
         return Err(ExitCode::from(BAD_INPUT));

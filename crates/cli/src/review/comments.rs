@@ -64,7 +64,7 @@ fn list(repo: Option<&str>, delete: Option<u64>) -> Outcome {
     }
 
     if store.comments.is_empty() {
-        println!("no review comments recorded for {}", super::repo_arg(repo));
+        println!("no review comments recorded for {}", repo.unwrap_or("."));
         return Ok(());
     }
     // Threads read in order, replies indented under their root.

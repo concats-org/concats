@@ -80,8 +80,8 @@ alacritty_terminal = { workspace = true }
 gix = { workspace = true }
 bitflags = "2"
 
-# `app.db` next to the config: the range each window has open, and the recents
-# list. The per-repo review store is `concats_review`'s.
+# `app.db` next to the config: the recents list. The per-repo review store is
+# `concats_review`'s.
 rusqlite = { workspace = true }
 serde_json = { workspace = true }
 toml = { workspace = true }

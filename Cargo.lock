@@ -695,6 +695,7 @@ dependencies = [
  "concats-review",
  "concats-state",
  "gix",
+ "httparse",
  "miette",
  "serde_json",
  "tempfile",
@@ -834,8 +835,6 @@ dependencies = [
 name = "concats-state"
 version = "0.0.0"
 dependencies = [
- "concats-config",
- "rusqlite",
  "serde",
 ]
 
@@ -2556,6 +2555,12 @@ checksum = "cc627f471c528ff0c4a49e1d5e60450c8f6461dd6d10ba9dcd3a61d3dff7728d"
 dependencies = [
  "windows-sys 0.61.2",
 ]
+
+[[package]]
+name = "httparse"
+version = "1.10.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6dbf3de79e51f3d586ab4cb9d5c3e2c14aa28ed23d180cf89b4df0454a69cc87"
 
 [[package]]
 name = "httpdate"

@@ -75,17 +75,17 @@ the user gave you:
    `/review-guide HEAD~5 HEAD`), pass exactly those as `--base <BASE>
    --head <HEAD>` on every command.
 2. **No arguments.** Run every `concats` command **without any
-   `--repo`/`--base`/`--head` flags**. When the review app is open, the
-   bare commands target exactly the diff its pane shows (a running app
-   publishes its live range; the terminal's `CONCATS_APP_*` env is the
-   fallback); anywhere else the CLI errors and tells you what to pass. If
-   it errors: relay the message and ask the user for the range. Never
-   invent one.
+   `--repo`/`--base`/`--head` flags**, from inside the checkout. When the
+   review app has it open, the bare commands target exactly the diff its
+   window shows (the app answers on `.concats/app.sock` in the checkout's
+   root); anywhere else the CLI errors and tells you what to pass. If it
+   errors: relay the message and ask the user for the range. Never invent
+   one.
 
-This is the tightest loop: the reviewer opens the app's terminal, starts an
-agent there, and says `/review-guide` — the bare commands pick up the open
-range, and a `submit` lands in the app within a second. The running app
-republishes its open range on every load, so bare commands follow the pane
+This is the tightest loop: the reviewer opens the checkout in the app,
+starts an agent anywhere in it, and says `/review-guide` — the bare commands
+pick up the open range, and a `submit` lands in the app within a second. The
+app reads the range off its window when asked, so bare commands follow it
 even when the reviewer switches ranges mid-session.
 
 `<BASE>`/`<HEAD>` take any rev — plus two sentinels for work in progress:

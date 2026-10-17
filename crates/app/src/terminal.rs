@@ -213,19 +213,14 @@ pub fn take_report(session: Session) -> Report {
 
 /// Spawn the user's login shell in `cwd` for this tab, unless one is already
 /// running. Called from the terminal toggle, a tab press or `+`, never from the
-/// draw path, so a failing shell can't respawn in a loop. `env` goes into the
-/// shell: the app passes the window's identity and open range, so a CLI (or an
-/// agent) started here defaults to the diff on screen.
-pub fn open(session: Session, cwd: &Path, env: &[(&str, &str)]) {
+/// draw path, so a failing shell can't respawn in a loop.
+pub fn open(session: Session, cwd: &Path) {
     let mut guard = sessions().lock().unwrap();
     if guard.contains_key(&session) {
         return;
     }
 
-    let mut environment: HashMap<String, String> = env
-        .iter()
-        .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
-        .collect();
+    let mut environment: HashMap<String, String> = HashMap::new();
     // NOTE: alacritty's `tty::setup_env` sets these process-wide, which a GUI
     // app with other children must not do. Per child instead — and claim the
     // terminfo entry every system has, since the `alacritty` one ships with
@@ -422,30 +417,11 @@ mod tests {
     #[test]
     fn shell_output_reaches_the_grid() {
         let session = session(0xC0FF_EE01);
-        open(session, Path::new("."), &[]);
+        open(session, Path::new("."));
         assert!(is_open(session), "shell failed to spawn");
         input(session, b"printf 'concats_%s\\n' ok\r".to_vec());
 
         assert!(until(|| screen(session).contains("concats_ok")));
-        close(session);
-    }
-
-    /// The app exports the window's range into the shell, and now shares that
-    /// map with `TERM`/`COLORTERM`. A command must still see it.
-    #[test]
-    fn env_reaches_the_shell() {
-        let session = session(0xC0FF_EE02);
-        open(
-            session,
-            Path::new("."),
-            &[("CONCATS_APP_BASE", concats_diff::load::INDEX_REV)],
-        );
-        assert!(is_open(session), "shell failed to spawn");
-        // `base=$VAR`: the echoed command line shows the unexpanded form, so
-        // only the shell's own expansion can produce the needle.
-        input(session, b"echo base=$CONCATS_APP_BASE\r".to_vec());
-
-        assert!(until(|| screen(session).contains("base=INDEX")));
         close(session);
     }
 
@@ -454,7 +430,7 @@ mod tests {
     #[test]
     fn a_resize_reaches_the_term_and_the_shell() {
         let session = session(0xC0FF_EE03);
-        open(session, Path::new("."), &[]);
+        open(session, Path::new("."));
         assert!(is_open(session), "shell failed to spawn");
         resize(
             session,
@@ -484,7 +460,7 @@ mod tests {
     #[test]
     fn full_screen_program_returns_when_sent_the_view_keyboard_bytes() {
         let session = session(0xC0FF_EE09);
-        open(session, Path::new("."), &[]);
+        open(session, Path::new("."));
         assert!(is_open(session), "shell failed to spawn");
         input(
             session,
@@ -537,7 +513,7 @@ mod tests {
     #[test]
     fn an_exited_shell_is_reaped() {
         let session = session(0xC0FF_EE04);
-        open(session, Path::new("."), &[]);
+        open(session, Path::new("."));
         assert!(is_open(session), "shell failed to spawn");
         input(session, b"exit\r".to_vec());
 
@@ -553,7 +529,7 @@ mod tests {
     #[test]
     fn a_copy_request_reaches_the_report() {
         let session = session(0xC0FF_EE05);
-        open(session, Path::new("."), &[]);
+        open(session, Path::new("."));
         assert!(is_open(session), "shell failed to spawn");
         // base64 of "concats_copied", which the terminal decodes.
         input(
@@ -572,7 +548,7 @@ mod tests {
     #[test]
     fn a_flood_keeps_its_tail_and_caps_the_scrollback() {
         let session = session(0xC0FF_EE06);
-        open(session, Path::new("."), &[]);
+        open(session, Path::new("."));
         assert!(is_open(session), "shell failed to spawn");
         // The echoed command line already holds the count, so the needle has
         // to be something only running it can print.
