@@ -8,9 +8,8 @@
 use std::path::{Path, PathBuf};
 
 use concats_fixture::git;
-use gix::ObjectId;
 
-use crate::stage::{StageFile, stage_file};
+use crate::stage::stage_file;
 
 /// A fresh repo (no commits) in a temp dir.
 pub fn init_repo() -> (tempfile::TempDir, PathBuf) {
@@ -24,12 +23,7 @@ pub fn init_repo() -> (tempfile::TempDir, PathBuf) {
 pub fn add(root: &Path, path: &str, content: &str) {
     std::fs::write(root.join(path), content).unwrap();
     let repo = gix::open(root).unwrap();
-    let mut index = repo.open_index().unwrap_or_else(|_| {
-        gix::index::File::from_state(
-            gix::index::State::new(repo.object_hash()),
-            repo.index_path(),
-        )
-    });
+    let mut index = repo.index_or_empty().unwrap().into_owned_or_cloned();
     stage_file(&repo, root, &mut index, path).unwrap();
     index.write(gix::index::write::Options::default()).unwrap();
 }
@@ -37,21 +31,4 @@ pub fn add(root: &Path, path: &str, content: &str) {
 pub fn commit(root: &Path, message: &str) {
     git(root, &["add", "-A", "."]);
     git(root, &["commit", "-q", "-m", message]);
-}
-
-/// The seen keys of one hunk of a [`StageFile`] — what the GUI's tick writes.
-pub fn hunk_seen_keys(f: &StageFile, hunk: usize) -> Vec<(ObjectId, u32)> {
-    let (old_start, dels, new_start, adds) = f.hunks[hunk];
-    let mut v = Vec::new();
-    if let Some(o) = f.old {
-        for l in 0..dels as u32 {
-            v.push((o, old_start - 1 + l));
-        }
-    }
-    if let Some(n) = f.new {
-        for l in 0..adds as u32 {
-            v.push((n, new_start - 1 + l));
-        }
-    }
-    v
 }

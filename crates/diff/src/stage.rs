@@ -56,12 +56,12 @@ pub fn stage_seen(
     seen: &HashSet<(ObjectId, u32)>,
 ) -> Result<StageReport, Error> {
     let repo = open_repo(workdir)?;
-    let mut index = repo.open_index().unwrap_or_else(|_| {
-        gix::index::File::from_state(
-            gix::index::State::new(repo.object_hash()),
-            repo.index_path(),
-        )
-    });
+    // NOTE: only a missing index is empty. One that will not read is an error:
+    // writing an empty index back over it would drop everything staged.
+    let mut index = repo
+        .index_or_empty()
+        .map_err(|e| Error::git("index", e))?
+        .into_owned_or_cloned();
     let mut rep = StageReport::default();
     let mut touched = false;
 
@@ -73,19 +73,10 @@ pub fn stage_seen(
         // The unit is the hunk, like its tick box: it stages when every one of
         // its changed lines is seen, and not at all otherwise. Files do stage
         // partially — any subset of their hunks — see `blend`.
-        let take: Vec<bool> = f
-            .hunks
-            .iter()
-            .map(|&(old_start, dels, new_start, adds)| {
-                dels + adds > 0
-                    && (0..dels as u32).all(|l| {
-                        f.old
-                            .is_some_and(|o| seen.contains(&(o, old_start - 1 + l)))
-                    })
-                    && (0..adds as u32).all(|l| {
-                        f.new
-                            .is_some_and(|n| seen.contains(&(n, new_start - 1 + l)))
-                    })
+        let take: Vec<bool> = (0..f.hunks.len())
+            .map(|i| {
+                let (_, dels, _, adds) = f.hunks[i];
+                dels + adds > 0 && hunk_keys(f, i).all(|k| seen.contains(&k))
             })
             .collect();
         let picked = take.iter().filter(|t| **t).count();
@@ -129,12 +120,12 @@ pub fn stage_seen(
                         .push(format!("{} — index changed since load", f.path));
                     continue;
                 }
+                if let Some(from) = &f.from {
+                    unstage_file(&mut index, from);
+                }
                 if picked == f.hunks.len() {
                     // Everything seen — the entry becomes the worktree file
                     // as-is, with fresh stat, exactly like `git add`.
-                    if let Some(from) = &f.from {
-                        unstage_file(&mut index, from);
-                    }
                     stage_file(&repo, workdir, &mut index, &f.path)?;
                 } else {
                     let Some(old_oid) = f.old else {
@@ -151,9 +142,6 @@ pub fn stage_seen(
                         .write_blob(&blended)
                         .map_err(|e| Error::git("write blob", e))?
                         .detach();
-                    if let Some(from) = &f.from {
-                        unstage_file(&mut index, from);
-                    }
                     // Zeroed stat (as `git apply --cached` leaves it), so git
                     // re-verifies the entry by content.
                     let stat = gix::index::entry::Stat {
@@ -175,6 +163,18 @@ pub fn stage_seen(
             .map_err(|e| Error::git("write index", e))?;
     }
     Ok(rep)
+}
+
+/// The seen keys of hunk `i`, the ones its tick box writes: its deleted lines
+/// on the old blob and its added lines on the new one. A side without a blob
+/// has no lines in the hunk (the lowerer counts none), so it adds no keys.
+fn hunk_keys(f: &StageFile, i: usize) -> impl Iterator<Item = (ObjectId, u32)> {
+    let (old_start, dels, new_start, adds) = f.hunks[i];
+    let side = |blob: Option<ObjectId>, start: u32, lines: usize| {
+        blob.into_iter()
+            .flat_map(move |b| (0..lines as u32).map(move |l| (b, start - 1 + l)))
+    };
+    side(f.old, old_start, dels).chain(side(f.new, new_start, adds))
 }
 
 /// Rebuild a file's index content from the old side plus the taken hunks.
@@ -311,7 +311,7 @@ fn unstage_file(index: &mut gix::index::File, path: &str) {
 mod tests {
     use super::*;
     use crate::{
-        fixture::{add, hunk_seen_keys, init_repo},
+        fixture::{add, init_repo},
         load::{INDEX_REV, WORKTREE_REV, load},
     };
 
@@ -328,7 +328,7 @@ mod tests {
         assert_eq!(f.hunks.len(), 2, "two edits far apart = two hunks");
 
         // Tick only the first hunk.
-        let seen: HashSet<(ObjectId, u32)> = hunk_seen_keys(f, 0).into_iter().collect();
+        let seen: HashSet<(ObjectId, u32)> = hunk_keys(f, 0).collect();
         let rep = stage_seen(&root, &loaded.stage, &seen).unwrap();
         assert_eq!((rep.files, rep.hunks), (1, 1));
         assert!(rep.skipped.is_empty());
@@ -351,7 +351,7 @@ mod tests {
         assert_eq!(f2.hunks.len(), 1);
 
         // Tick the rest: the file stages whole, with fresh stat.
-        let seen: HashSet<(ObjectId, u32)> = hunk_seen_keys(f2, 0).into_iter().collect();
+        let seen: HashSet<(ObjectId, u32)> = hunk_keys(f2, 0).collect();
         let rep = stage_seen(&root, &reloaded.stage, &seen).unwrap();
         assert_eq!((rep.files, rep.hunks), (1, 1));
         let repo = gix::open(&root).unwrap();
@@ -378,7 +378,7 @@ mod tests {
         let mut seen: HashSet<(ObjectId, u32)> = HashSet::new();
         for f in &loaded.stage {
             for h in 0..f.hunks.len() {
-                seen.extend(hunk_seen_keys(f, h));
+                seen.extend(hunk_keys(f, h));
             }
         }
         let rep = stage_seen(&root, &loaded.stage, &seen).unwrap();
@@ -406,7 +406,7 @@ mod tests {
 
         let loaded = load(&root, INDEX_REV, WORKTREE_REV).unwrap();
         let f = loaded.stage.iter().find(|s| s.path == "a.txt").unwrap();
-        let seen: HashSet<(ObjectId, u32)> = hunk_seen_keys(f, 0).into_iter().collect();
+        let seen: HashSet<(ObjectId, u32)> = hunk_keys(f, 0).collect();
 
         // The file moves on after the review snapshot…
         std::fs::write(root.join("a.txt"), "three\n").unwrap();
@@ -419,6 +419,25 @@ mod tests {
         let index = repo.open_index().unwrap();
         let e = index.entry_by_path(BStr::new("a.txt")).unwrap();
         assert_eq!(e.id, hash_object(b"one\n"));
+    }
+
+    /// Only a missing index is an empty one. Writing an empty index back over
+    /// one that would not read drops everything the user had staged.
+    #[test]
+    fn stage_seen_refuses_an_index_it_cannot_read() {
+        let (_tmp, root) = init_repo();
+        add(&root, "a.txt", "one\n");
+        std::fs::write(root.join("a.txt"), "two\n").unwrap();
+        let loaded = load(&root, INDEX_REV, WORKTREE_REV).unwrap();
+        let f = loaded.stage.iter().find(|s| s.path == "a.txt").unwrap();
+        let seen: HashSet<(ObjectId, u32)> = hunk_keys(f, 0).collect();
+
+        let index = gix::open(&root).unwrap().index_path();
+        let corrupt = vec![0xab; 64];
+        std::fs::write(&index, &corrupt).unwrap();
+
+        assert!(stage_seen(&root, &loaded.stage, &seen).is_err());
+        assert_eq!(std::fs::read(&index).unwrap(), corrupt);
     }
 
     #[test]
