@@ -128,17 +128,9 @@ pub fn replacements(old: &str, new: &str) -> Vec<(Range<usize>, String)> {
 /// stable across Rust releases.
 #[must_use]
 pub fn fnv1a(bytes: &[u8]) -> u64 {
-    fnv1a_seed(0xcbf2_9ce4_8422_2325, bytes)
-}
-
-/// The chaining form, so a caller can fold several fields into one hash.
-#[must_use]
-pub fn fnv1a_seed(mut h: u64, bytes: &[u8]) -> u64 {
-    for b in bytes {
-        h ^= u64::from(*b);
-        h = h.wrapping_mul(0x100_0000_01b3);
-    }
-    h
+    bytes.iter().fold(0xcbf2_9ce4_8422_2325, |h, b| {
+        (h ^ u64::from(*b)).wrapping_mul(0x100_0000_01b3)
+    })
 }
 
 #[cfg(test)]
@@ -216,10 +208,5 @@ mod tests {
     fn the_stable_hash_stays_stable() {
         assert_eq!(fnv1a(b""), 0xcbf2_9ce4_8422_2325);
         assert_eq!(fnv1a(b"concats"), 0x3f09_03f6_bdbf_7b2a);
-        assert_eq!(
-            fnv1a(b"concats"),
-            fnv1a_seed(fnv1a(b"con"), b"cats"),
-            "chaining folds fields into the same hash as one call"
-        );
     }
 }

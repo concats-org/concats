@@ -50,13 +50,6 @@ impl Rgba {
         Self::new(r, g, b, 0xff)
     }
 
-    /// The same colour at another alpha — how one accent becomes a drag tint, a
-    /// focused selection and an unfocused one.
-    #[must_use]
-    pub const fn with_alpha(self, a: f32) -> Self {
-        Self { a, ..self }
-    }
-
     /// Scaled towards black, alpha untouched.
     #[must_use]
     pub fn darken(self, by: f32) -> Self {
@@ -307,11 +300,5 @@ mod tests {
         let t = Theme::concats();
         assert_eq!(t.syntax_color(None), t.text);
         assert_eq!(t.syntax_color(Some(Hl::Comment)), t.syntax[&Hl::Comment]);
-    }
-
-    #[test]
-    fn alpha_rides_on_a_colour_without_moving_it() {
-        let base = Rgba::opaque(0x40, 0x80, 0xc0);
-        assert_eq!(base.with_alpha(0.25), Rgba { a: 0.25, ..base });
     }
 }

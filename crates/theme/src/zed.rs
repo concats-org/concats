@@ -134,16 +134,10 @@ fn theme(zt: &Entry, base: &Theme) -> Theme {
     let names = [
         "black", "red", "green", "yellow", "blue", "magenta", "cyan", "white",
     ];
-    let mut ansi = base.ansi;
-    for (i, slot) in ansi.iter_mut().enumerate() {
-        let n = names[i % 8];
-        let key = if i < 8 {
-            format!("terminal.ansi.{n}")
-        } else {
-            format!("terminal.ansi.bright_{n}")
-        };
-        *slot = hex(&key).unwrap_or(base.ansi[i]);
-    }
+    let ansi = std::array::from_fn(|i| {
+        let bright = if i < 8 { "" } else { "bright_" };
+        hex(&format!("terminal.ansi.{bright}{}", names[i % 8])).unwrap_or(base.ansi[i])
+    });
 
     Theme {
         name: zt.name.clone(),
@@ -151,7 +145,10 @@ fn theme(zt: &Entry, base: &Theme) -> Theme {
         background,
         // No Zed key for this; derive it so imported themes get a shadow that
         // stays darker than their own page colour.
-        shadow: background.darken(0.72).with_alpha(1.0),
+        shadow: Rgba {
+            a: 1.0,
+            ..background.darken(0.72)
+        },
         surface,
         chrome: hex("toolbar.background")
             .or(hex("title_bar.background"))

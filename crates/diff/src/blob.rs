@@ -275,10 +275,7 @@ impl Blob {
 
     /// The line a byte offset falls on, clamped to the last line.
     pub fn line_of(&self, byte: usize) -> usize {
-        self.line_starts
-            .partition_point(|s| *s as usize <= byte)
-            .saturating_sub(1)
-            .min(self.line_count().saturating_sub(1))
+        clamped_line(&self.line_starts, byte)
     }
 
     fn line_range(&self, i: usize) -> Range<usize> {
@@ -440,10 +437,11 @@ impl Blob {
 
     /// The inclusive line range still held by a comment's live cursors.
     pub fn held_lines(&self, comment: u64) -> Option<(u32, u32)> {
-        let doc = self.doc.as_ref()?;
-        let (from, to) = self.held.get(&comment)?;
-        let (from, to) = (document::byte_of(doc, from)?, document::byte_of(doc, to)?);
-        (to > from).then(|| (self.line_of(from) as u32, self.line_of(to - 1) as u32))
+        held_in(
+            self.doc.as_ref()?,
+            &self.line_starts,
+            self.held.get(&comment)?,
+        )
     }
 
     /// The lines a held comment's run covers in the disk version — what the
@@ -451,22 +449,9 @@ impl Blob {
     /// run is empty there.
     pub fn held_lines_on_disk(&self, comment: u64) -> Option<(u32, u32)> {
         let doc = self.doc.as_ref()?;
-        let (from, to) = self.held.get(&comment)?;
+        let pair = self.held.get(&comment)?;
         let disk = doc.fork_at(&self.disk).ok()?;
-        let (from, to) = (
-            document::byte_of(&disk, from)?,
-            document::byte_of(&disk, to)?,
-        );
-        if to <= from {
-            return None;
-        }
-        let starts = line_starts(&document::text(&disk));
-        let line_of = |byte: usize| {
-            starts
-                .partition_point(|s| *s as usize <= byte)
-                .saturating_sub(1)
-        };
-        Some((line_of(from) as u32, line_of(to - 1) as u32))
+        held_in(&disk, &line_starts(&document::text(&disk)), pair)
     }
 
     /// This buffer's document and disk version, encoded for the between-runs
@@ -705,6 +690,20 @@ impl Blob {
     }
 }
 
+/// The line `byte` falls on in a text whose line table is `starts`, clamped to
+/// its last line.
+fn clamped_line(starts: &[u32], byte: usize) -> usize {
+    line_of(starts, byte).min(starts.len().saturating_sub(2))
+}
+
+/// The lines a held run covers in `doc`, whose line table is `starts`, as
+/// `(first, last)`. `None` once the run is empty there.
+fn held_in(doc: &LoroDoc, starts: &[u32], (from, to): &(Cursor, Cursor)) -> Option<(u32, u32)> {
+    let (from, to) = (document::byte_of(doc, from)?, document::byte_of(doc, to)?);
+    let line = |byte| clamped_line(starts, byte) as u32;
+    (to > from).then(|| (line(from), line(to - 1)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -799,24 +798,32 @@ mod tests {
         assert_eq!(b.undo.len(), 2);
     }
 
-    /// An anchor names a line of the text as it was read. These two edits look
-    /// the same in line numbers — both are "an edit at line 1" — and have
-    /// opposite effects on the line the anchor sits on.
+    /// An anchor names a line of the text as it was read, and typing above it
+    /// must carry it down. A prefixed line and a line pushed down look the same
+    /// in line numbers — both are "an edit at that line" — and have opposite
+    /// effects on where the anchor lands.
     #[test]
     fn an_anchor_tells_a_prefixed_line_from_a_line_pushed_down() {
-        let mut prefixed = blob("a\nb\nc\n");
-        prefixed.edit(2..2, "X");
-        assert_eq!(
-            prefixed.anchor_line(1),
-            Some(1),
-            "'b' became 'Xb', in place"
-        );
-        assert_eq!(prefixed.anchor_line(2), Some(2));
-
-        let mut pushed = blob("a\nb\nc\n");
-        pushed.edit(2..2, "\n");
-        assert_eq!(pushed.anchor_line(1), Some(2), "'b' moved down a line");
-        assert_eq!(pushed.anchor_line(2), Some(3));
+        let (abc, fns) = ("a\nb\nc\n", "fn a() {}\nfn b() {}\n");
+        // (text, insert at, inserted, anchor line, where it lands)
+        let cases = [
+            (abc, 2, "X", 1, Some(1)),
+            (abc, 2, "X", 2, Some(2)),
+            (abc, 2, "\n", 1, Some(2)),
+            (abc, 2, "\n", 2, Some(3)),
+            (fns, 0, "// one\n// two\n", 0, Some(2)),
+            (fns, 0, "// one\n// two\n", 1, Some(3)),
+            (fns, 10, "    ", 1, Some(1)),
+        ];
+        for (text, at, inserted, line, lands) in cases {
+            let mut b = blob(text);
+            b.edit(at..at, inserted);
+            assert_eq!(
+                b.anchor_line(line),
+                lands,
+                "{inserted:?} at {at} of {text:?}, line {line}"
+            );
+        }
     }
 
     #[test]
@@ -1074,21 +1081,6 @@ mod tests {
             "undo must not eat an agent's work"
         );
         assert!(!b.text.contains("// mine"), "the typed line went back out");
-    }
-
-    /// What the retired byte-shift log existed for: a stored anchor names a
-    /// line of the text as it was read, and typing above it must carry it down.
-    #[test]
-    fn a_disk_line_pushed_down_by_typing_resolves_to_its_new_number() {
-        let mut b = blob("fn a() {}\nfn b() {}\n");
-        b.edit(0..0, "// one\n// two\n");
-        assert_eq!(b.anchor_line(0), Some(2), "'fn a' moved down two");
-        assert_eq!(b.anchor_line(1), Some(3), "'fn b' moved down two");
-        // And a line merely prefixed stays where it is — indistinguishable from
-        // the above in line numbers, opposite in effect.
-        let mut prefixed = blob("fn a() {}\nfn b() {}\n");
-        prefixed.edit(10..10, "    ");
-        assert_eq!(prefixed.anchor_line(1), Some(1));
     }
 
     #[test]

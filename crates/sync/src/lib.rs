@@ -88,11 +88,7 @@ pub fn hash_object(bytes: &[u8]) -> ObjectId {
 ///   operations differ, and two different operations sharing an id corrupts
 ///   the log.
 fn import_peer(parent: &Frontiers, tag: &str) -> u64 {
-    let mut buf = Vec::new();
-    for id in parent.iter() {
-        buf.extend_from_slice(&id.peer.to_le_bytes());
-        buf.extend_from_slice(&id.counter.to_le_bytes());
-    }
+    let mut buf = encode_version(parent);
     // Not a byte any oid hex or counter can produce, so the parent list cannot
     // run into the tag and make two different identities hash the same.
     buf.push(0xff);
@@ -379,6 +375,18 @@ mod tests {
             import_peer(&two, "same-tag"),
             "distinct operations must never share a peer id"
         );
+    }
+
+    /// An import's operations are persisted under its peer id, so the id's
+    /// value is part of the format, not only its determinism.
+    #[test]
+    fn an_import_peer_id_stays_stable() {
+        let (_, v1) = open(V1);
+        assert_eq!(
+            import_peer(&Frontiers::default(), "tag"),
+            0x0034_ff62_f60c_4fee
+        );
+        assert_eq!(import_peer(&v1, "tag"), 0x007e_5f2b_3a2d_892e);
     }
 
     /// Q1 of the RFC: does cursor resolution hold against an older version?
