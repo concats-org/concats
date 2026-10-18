@@ -406,9 +406,8 @@ impl Store {
     }
 
     /// Tick-box semantics: if everything is seen, unsee it all; otherwise
-    /// mark it all seen. Returns the new state. Writes through, one
-    /// transaction per gesture.
-    pub fn toggle(&mut self, keys: &[LineKey]) -> bool {
+    /// mark it all seen. Writes through, one transaction per gesture.
+    pub fn toggle(&mut self, keys: &[LineKey]) {
         let all = seen_state(keys, &self.seen) == Seen::All;
         let sql = if all {
             "DELETE FROM seen WHERE blob = ?1 AND line = ?2"
@@ -431,7 +430,6 @@ impl Store {
         } else {
             self.seen.extend(keys);
         }
-        !all
     }
 
     /// Store a comment and return it as stored. `comment.id` is ignored: the
@@ -1486,9 +1484,9 @@ mod tests {
         // Partially seen -> toggling completes the set, not clears it.
         s.seen.insert(keys[0]);
         assert_eq!(seen_state(&keys, &s.seen), Seen::Partly);
-        assert!(s.toggle(&keys));
+        s.toggle(&keys);
         assert_eq!(seen_state(&keys, &s.seen), Seen::All);
-        assert!(!s.toggle(&keys));
+        s.toggle(&keys);
         assert_eq!(seen_state(&keys, &s.seen), Seen::Unseen);
     }
 
