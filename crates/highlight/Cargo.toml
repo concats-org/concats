@@ -15,22 +15,11 @@ path = "src/lib.rs"
 [dependencies]
 concats_syntax = { workspace = true }
 concats_text = { workspace = true }
-concats_languages = { workspace = true, optional = true }
+concats_languages = { workspace = true, features = ["grammars"] }
 # A retained tree is keyed by the oid of the content it describes, so this rides
 # with the engine that retains them. The workspace `gix` rather than `gix-hash`
 # alone, so the key is the same type the loader hands over and not one that has
 # to stay version-compatible.
-gix = { workspace = true, optional = true }
+gix = { workspace = true }
 
-tree-sitter = { workspace = true, optional = true }
-
-[features]
-# The native engine. Off, everything falls back to unstyled runs — the shape
-# the web target needs, where syntect slots in behind the same API.
-default = ["treesitter"]
-treesitter = [
-    "dep:gix",
-    "dep:tree-sitter",
-    "dep:concats_languages",
-    "concats_languages/grammars",
-]
+tree-sitter = { workspace = true }

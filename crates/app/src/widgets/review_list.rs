@@ -47,7 +47,6 @@ thread_local! {
 /// It is the only source for a buffer with unsaved edits too, and there it is
 /// the only correct one: the worker keys its trees by oid, typing does not
 /// change the oid, so its answer would colour the text from before the edit.
-#[cfg(feature = "treesitter")]
 fn draws_own_spans(blob: &Blob) -> bool {
     /// A file up to this size is parsed inline the first time it is drawn. A
     /// cold parse takes about 39 ms at this size and grows with it, so past
@@ -62,14 +61,8 @@ fn draws_own_spans(blob: &Blob) -> bool {
     blob.text.len() <= PARSE_UNDER
 }
 
-#[cfg(not(feature = "treesitter"))]
-fn draws_own_spans(_blob: &Blob) -> bool {
-    false
-}
-
 /// This row's colours, when the draw is the one colouring it.
 fn row_spans(blob: &Blob, line: usize) -> Option<Vec<concats_syntax::Span>> {
-    #[cfg(feature = "treesitter")]
     if draws_own_spans(blob) {
         return Some(DRAW_HIGHLIGHTER.with_borrow_mut(|hl| {
             hl.spans_for_line(
@@ -85,7 +78,6 @@ fn row_spans(blob: &Blob, line: usize) -> Option<Vec<concats_syntax::Span>> {
             )
         }));
     }
-    let _ = (blob, line);
     None
 }
 

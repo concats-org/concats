@@ -7,18 +7,10 @@
 //! a 40-line viewport 47.8 µs. The parse is worth keeping and the query is
 //! worth scoping, and together they let a frame be drawn already coloured
 //! instead of plain until a worker catches up.
-//!
-//! The backend is a seam, not a fact: with `treesitter` off the same API
-//! answers in unstyled runs, which is what the web target needs (the C grammars
-//! do not build for wasm32).
 
-#[cfg(feature = "treesitter")]
 use std::collections::HashMap;
 
-#[cfg(feature = "treesitter")]
-use concats_syntax::{Hl, capture_to_hl};
-use concats_syntax::{LineSpans, Span};
-#[cfg(feature = "treesitter")]
+use concats_syntax::{Hl, LineSpans, Span, capture_to_hl};
 use concats_text::{line_of, line_starts};
 
 /// What the highlighter needs to know about a buffer to colour it.
@@ -26,7 +18,6 @@ use concats_text::{line_of, line_starts};
 /// Borrowed fields rather than a blob: highlighting sits below the diff model,
 /// and reaching up for its types is the coupling that would stop this from
 /// being its own crate.
-#[cfg(feature = "treesitter")]
 #[derive(Clone, Copy)]
 pub struct Buffer<'a> {
     /// The content this buffer was read as. Stable while it is typed into (the
@@ -46,7 +37,6 @@ pub struct Buffer<'a> {
     pub starts: &'a [u32],
 }
 
-#[cfg(feature = "treesitter")]
 impl Buffer<'_> {
     fn key(&self) -> (gix::ObjectId, bool) {
         (self.oid, self.editable)
@@ -54,7 +44,6 @@ impl Buffer<'_> {
 }
 
 /// A parsed tree, with the text and revision it describes.
-#[cfg(feature = "treesitter")]
 struct Parsed {
     tree: tree_sitter::Tree,
     /// The text the tree was parsed from, kept so the next revision can be
@@ -63,7 +52,6 @@ struct Parsed {
     rev: u64,
 }
 
-#[cfg(feature = "treesitter")]
 impl Parsed {
     fn new(src: &str, rev: u64, language: &tree_sitter::Language) -> Option<Self> {
         let mut parser = tree_sitter::Parser::new();
@@ -140,14 +128,12 @@ impl Parsed {
 pub struct Highlighter {
     /// Each language's grammar and query, by language name, compiled the first
     /// time a file in it is coloured rather than all of them up front.
-    #[cfg(feature = "treesitter")]
     langs: HashMap<&'static str, (tree_sitter::Language, tree_sitter::Query)>,
     /// One parsed tree per buffer, with the text and revision it was parsed at.
     ///
     /// The revision is in the value, not the key. Keying by it would give each
     /// edit a cache entry of its own and put the previous tree out of reach,
     /// and that is the tree an incremental reparse needs.
-    #[cfg(feature = "treesitter")]
     parsed: HashMap<(gix::ObjectId, bool), Parsed>,
 }
 
@@ -161,9 +147,7 @@ impl Highlighter {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            #[cfg(feature = "treesitter")]
             langs: HashMap::new(),
-            #[cfg(feature = "treesitter")]
             parsed: HashMap::new(),
         }
     }
@@ -171,14 +155,7 @@ impl Highlighter {
     /// Number of languages compiled so far.
     #[must_use]
     pub fn grammar_count(&self) -> usize {
-        #[cfg(feature = "treesitter")]
-        {
-            self.langs.len()
-        }
-        #[cfg(not(feature = "treesitter"))]
-        {
-            0
-        }
+        self.langs.len()
     }
 
     /// One line's spans for `buffer`.
@@ -186,7 +163,6 @@ impl Highlighter {
     /// The per-row entry point: a row is drawn knowing its blob and its line,
     /// and this answers in microseconds once the tree is parsed. That is what
     /// lets a frame be painted already coloured instead of plain first.
-    #[cfg(feature = "treesitter")]
     pub fn spans_for_line(&mut self, buffer: Buffer<'_>, line: usize) -> Vec<Span> {
         // Bounded rather than clever: a tree is large, and a big review can put
         // hundreds of blobs on screen over a session. Dropping the lot when it
@@ -211,7 +187,6 @@ impl Highlighter {
     /// The returned table is the length of the file with only `lines` filled: a
     /// row indexes it by line number, and the rest waits until it is scrolled
     /// to.
-    #[cfg(feature = "treesitter")]
     pub fn spans_for_lines(
         &mut self,
         buffer: Buffer<'_>,
@@ -242,7 +217,6 @@ impl Highlighter {
     /// Every line's spans, off a fresh parse and through the same loop as
     /// [`Self::spans_for_lines`], so a file coloured whole looks as it would
     /// row by row.
-    #[cfg(feature = "treesitter")]
     pub fn compute(&mut self, ext: &str, src: &str) -> LineSpans {
         let Some((language, query)) = compiled(&mut self.langs, ext) else {
             return plain(src);
@@ -252,16 +226,9 @@ impl Highlighter {
             None => plain(src),
         }
     }
-
-    #[cfg(not(feature = "treesitter"))]
-    pub fn compute(&mut self, _ext: &str, src: &str) -> LineSpans {
-        // Web build: no C grammars. syntect/fancy-regex slots in here.
-        plain(src)
-    }
 }
 
 /// `ext`'s grammar and query, compiled on first use.
-#[cfg(feature = "treesitter")]
 fn compiled<'a>(
     langs: &'a mut HashMap<&'static str, (tree_sitter::Language, tree_sitter::Query)>,
     ext: &str,
@@ -275,7 +242,6 @@ fn compiled<'a>(
 
 /// The capture loop behind both entry points: `lines` of `src`, whose line
 /// table is `starts`, coloured off `tree`, in a table the length of the file.
-#[cfg(feature = "treesitter")]
 fn query_lines(
     query: &tree_sitter::Query,
     tree: &tree_sitter::Tree,
@@ -329,7 +295,6 @@ fn query_lines(
 
 /// How many columns a line has, not counting the newline that ends it — the
 /// width every span list has to add up to.
-#[cfg(feature = "treesitter")]
 fn width_of(starts: &[u32], line: usize) -> usize {
     starts
         .get(line + 1)
@@ -338,7 +303,6 @@ fn width_of(starts: &[u32], line: usize) -> usize {
 
 /// One capture, clipped to a line: its columns, its colour, and when the cursor
 /// reported it — which decides who wins when two patterns catch the same node.
-#[cfg(feature = "treesitter")]
 #[derive(Clone)]
 struct Caught {
     from: usize,
@@ -354,7 +318,6 @@ struct Caught {
 /// cut at the line boundaries, and the lines nobody asked for are dropped
 /// rather than filled. That keeps the cost proportional to the viewport, not
 /// the file.
-#[cfg(feature = "treesitter")]
 fn clip_to_lines(
     caught: &mut [Vec<Caught>],
     starts: &[u32],
@@ -387,7 +350,6 @@ fn clip_to_lines(
 /// text that never appears. And where captures overlap, the narrowest wins: a
 /// query reports the enclosing node as well as the identifier inside it, and
 /// the identifier's colour is the one to show.
-#[cfg(feature = "treesitter")]
 fn partition(mut caught: Vec<Caught>, width: usize) -> Vec<Span> {
     if width == 0 {
         return Vec::new();
@@ -432,7 +394,7 @@ fn plain(src: &str) -> LineSpans {
         .collect()
 }
 
-#[cfg(all(test, feature = "treesitter"))]
+#[cfg(test)]
 mod tests {
     use super::*;
 
