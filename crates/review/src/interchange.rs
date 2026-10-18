@@ -81,6 +81,21 @@ use crate::{
 
 pub const SCHEMA: &str = "concats-app/1";
 
+/// The document's wire spelling — its frontmatter keys, and the machine comment
+/// under an anchor, `<!-- concats-app id=3 … -->`, with its keys: one spelling
+/// for the parser and the writer.
+const SCHEMA_KEY: &str = "schema";
+const REPO: &str = "repo";
+const BASE: &str = "base";
+const HEAD: &str = "head";
+const MACHINE: &str = "<!-- concats-app";
+const MACHINE_END: &str = "-->";
+const ID: &str = "id";
+const AUTHOR: &str = "author";
+const AT: &str = "at";
+const REPLY_TO: &str = "reply-to";
+const REF: &str = "ref";
+
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Meta {
     pub repo: Option<String>,
@@ -120,6 +135,7 @@ pub struct Entry {
     pub line: usize,
 }
 
+#[derive(Default)]
 pub struct Document {
     pub meta: Meta,
     pub entries: Vec<Entry>,
@@ -139,8 +155,7 @@ pub fn parse(text: &str) -> Result<Document, Error> {
 
     let mut doc = Document {
         meta,
-        entries: Vec::new(),
-        warnings: Vec::new(),
+        ..Document::default()
     };
     let mut fence: Option<(char, usize)> = None;
     let mut path: Option<String> = None;
@@ -221,23 +236,23 @@ fn frontmatter(lines: &[&str]) -> Result<(Meta, usize), Error> {
         };
         let v = v.trim();
         match k.trim() {
-            "schema" => {
+            SCHEMA_KEY => {
                 if v != SCHEMA {
                     return Err(Error::UnsupportedSchema {
                         found: v.to_string(),
                     });
                 }
             }
-            "repo" => meta.repo = Some(v.to_string()),
-            "base" => meta.base = Some(v.to_string()),
-            "head" => meta.head = Some(v.to_string()),
+            REPO => meta.repo = Some(v.to_string()),
+            BASE => meta.base = Some(v.to_string()),
+            HEAD => meta.head = Some(v.to_string()),
             _ => {} // unknown keys are a later version's business
         }
     }
     Ok((meta, close + 2))
 }
 
-fn entry(path: String, side: Side, start: u32, end: u32, line: usize) -> Entry {
+pub(crate) fn entry(path: String, side: Side, start: u32, end: u32, line: usize) -> Entry {
     Entry {
         path,
         side,
@@ -363,18 +378,18 @@ fn bullet_anchor(line: &str) -> Option<(Side, u32, u32, String)> {
 fn machine_meta(line: &str, e: &mut Entry) -> bool {
     let t = line.trim();
     let Some(rest) = t
-        .strip_prefix("<!-- concats-app")
-        .and_then(|r| r.strip_suffix("-->"))
+        .strip_prefix(MACHINE)
+        .and_then(|r| r.strip_suffix(MACHINE_END))
     else {
         return false;
     };
     for (k, v) in parse_kv(rest) {
         match k.as_str() {
-            "id" => e.id = v.parse().ok(),
-            "author" => e.author = Some(v),
-            "at" => e.created_at = v.parse().ok(),
-            "reply-to" => e.reply_to = v.parse().ok(),
-            "ref" => e.external = Some(v),
+            ID => e.id = v.parse().ok(),
+            AUTHOR => e.author = Some(v),
+            AT => e.created_at = v.parse().ok(),
+            REPLY_TO => e.reply_to = v.parse().ok(),
+            REF => e.external = Some(v),
             _ => {}
         }
     }
@@ -449,12 +464,8 @@ fn unescape(line: &str) -> &str {
 /// The canonical document for a set of entries, grouped by path in the order
 /// given (callers sort). `parse` reads it back to the same entries.
 pub fn render(meta: &Meta, entries: &[Entry]) -> String {
-    let mut md = format!("---\nschema: {SCHEMA}\n");
-    for (k, v) in [
-        ("repo", &meta.repo),
-        ("base", &meta.base),
-        ("head", &meta.head),
-    ] {
+    let mut md = format!("---\n{SCHEMA_KEY}: {SCHEMA}\n");
+    for (k, v) in [(REPO, &meta.repo), (BASE, &meta.base), (HEAD, &meta.head)] {
         if let Some(v) = v {
             md.push_str(&format!("{k}: {v}\n"));
         }
@@ -476,29 +487,22 @@ pub fn render(meta: &Meta, entries: &[Entry]) -> String {
         } else {
             md.push_str(&format!("\n### {old}L{}-L{}\n", e.start, e.end));
         }
-        if e.id.is_some()
-            || e.author.is_some()
-            || e.created_at.is_some()
-            || e.reply_to.is_some()
-            || e.external.is_some()
-        {
-            md.push_str("<!-- concats-app");
-            if let Some(id) = e.id {
-                md.push_str(&format!(" id={id}"));
-            }
-            if let Some(a) = &e.author {
-                md.push_str(&format!(" author=\"{}\"", quoted(a)));
-            }
-            if let Some(at) = e.created_at {
-                md.push_str(&format!(" at={at}"));
-            }
-            if let Some(parent) = e.reply_to {
-                md.push_str(&format!(" reply-to={parent}"));
-            }
-            if let Some(source) = &e.external {
-                md.push_str(&format!(" ref=\"{}\"", quoted(source)));
-            }
-            md.push_str(" -->\n");
+        let machine: Vec<String> = [
+            e.id.map(|id| format!("{ID}={id}")),
+            e.author
+                .as_ref()
+                .map(|a| format!("{AUTHOR}=\"{}\"", quoted(a))),
+            e.created_at.map(|at| format!("{AT}={at}")),
+            e.reply_to.map(|parent| format!("{REPLY_TO}={parent}")),
+            e.external
+                .as_ref()
+                .map(|source| format!("{REF}=\"{}\"", quoted(source))),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        if !machine.is_empty() {
+            md.push_str(&format!("{MACHINE} {} {MACHINE_END}\n", machine.join(" ")));
         }
         md.push('\n');
         push_body(&mut md, &e.body);
@@ -553,7 +557,7 @@ fn push_body(md: &mut String, body: &str) {
         let structural = fence.is_none()
             && (file_heading(line).is_some()
                 || anchor_heading(line).is_some()
-                || line.starts_with("<!-- concats-app"));
+                || line.starts_with(MACHINE));
         if structural {
             md.push('\\');
         }

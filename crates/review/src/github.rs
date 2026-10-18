@@ -28,7 +28,7 @@ use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 
 use crate::{
     Error,
-    interchange::{Document, Entry, Meta, Side},
+    interchange::{self, Document, Entry, Side},
 };
 
 /// One item of `GET /repos/{owner}/{repo}/pulls/{n}/comments`. Only the fields
@@ -63,11 +63,7 @@ struct User {
 /// array per page and `--slurp` nests them. Both are what you actually type,
 /// and neither is a single flat array.
 pub fn parse(json: &str) -> Result<Document, Error> {
-    let mut doc = Document {
-        meta: Meta::default(),
-        entries: Vec::new(),
-        warnings: Vec::new(),
-    };
+    let mut doc = Document::default();
     let mut unanchored = 0usize;
 
     for value in serde_json::Deserializer::from_str(json).into_iter::<serde_json::Value>() {
@@ -144,17 +140,13 @@ fn entry(c: &ReviewComment) -> Result<Entry, Skip> {
         c.start_line.unwrap_or(end)
     };
     Ok(Entry {
-        path,
-        side,
-        start: start.min(end),
-        end: start.max(end),
         body: c.body.clone(),
         author: c.user.as_ref().map(|u| u.login.clone()),
         id: Some(c.id),
         reply_to: c.in_reply_to_id,
         external: Some(provenance(c.id)),
         created_at: c.created_at.as_deref().and_then(unix_seconds),
-        line: 0,
+        ..interchange::entry(path, side, start.min(end), start.max(end), 0)
     })
 }
 

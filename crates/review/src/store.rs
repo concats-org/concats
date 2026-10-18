@@ -174,6 +174,10 @@ pub struct Store {
     pub comments: Vec<Comment>,
 }
 
+/// A comment's columns, written and read back in this order.
+const COMMENT_COLUMNS: &str = "path, blob, start, end, body, author, created_at, parent, external, \
+                               quote, quote_from, quote_to";
+
 /// One schema, one location. The guides table lives here too, read and written
 /// through the same per-repo database.
 const SCHEMA: &str = "
@@ -353,11 +357,9 @@ impl Store {
         }
 
         let mut comments = Vec::new();
-        if let Ok(mut stmt) = self.conn.prepare(
-            "SELECT id, path, blob, start, end, body, author, created_at, parent, external,
-                    quote, quote_from, quote_to
-             FROM comments ORDER BY id",
-        ) {
+        if let Ok(mut stmt) = self.conn.prepare(&format!(
+            "SELECT id, {COMMENT_COLUMNS} FROM comments ORDER BY id"
+        )) {
             let rows = stmt.query_map([], |row| {
                 // NOTE: an oid that is not hex is corruption, not a query
                 // error — drop the row rather than abandon the read.
@@ -463,10 +465,10 @@ impl Store {
             ..comment
         };
         let write = self.conn.execute(
-            "INSERT INTO comments
-             (path, blob, start, end, body, author, created_at, parent, external,
-              quote, quote_from, quote_to)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
+            &format!(
+                "INSERT INTO comments ({COMMENT_COLUMNS})
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)"
+            ),
             (
                 &comment.path,
                 comment.anchor.blob.to_string(),
