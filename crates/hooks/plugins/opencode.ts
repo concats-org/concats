@@ -32,15 +32,6 @@ const plugin: Plugin = async (input) => ({
     }
   },
 
-  "tool.execute.before": async (inp, _out) => {
-    if (!FILE_TOOLS.includes(inp.tool.toLowerCase())) return;
-    fire("tool.execute.before", {
-      session_id: inp.sessionID,
-      tool: inp.tool,
-      cwd: input.worktree,
-    });
-  },
-
   "tool.execute.after": async (inp, _out) => {
     if (!FILE_TOOLS.includes(inp.tool.toLowerCase())) return;
     fire("tool.execute.after", {

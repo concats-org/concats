@@ -59,7 +59,7 @@ fn install_hooks(mut value: serde_json::Value, binary: &Path) -> Result<serde_js
     json_config::install_hooks(
         value,
         AGENT,
-        &["PreToolUse", "PostToolUse"],
+        &["PostToolUse"],
         |_, command| {
             serde_json::json!({
                 "matcher": MATCHER,
@@ -96,7 +96,7 @@ mod tests {
             let data = serde_json::to_string(&config).unwrap();
             assert!(data.contains("other-tool hook"));
             assert!(data.contains("concats hook droid PostToolUse"));
-            assert!(data.contains("concats hook droid PreToolUse"));
+            assert!(!data.contains("concats hook droid PreToolUse"));
             assert!(data.contains("\"claudeHooksImported\":true"));
         }
     }

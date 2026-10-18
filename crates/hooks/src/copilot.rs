@@ -54,7 +54,6 @@ impl crate::Agent for CopilotAgent {
 fn write_config(path: &Path, binary: &Path) -> Result<()> {
     let bin = binary.display();
     let config = serde_json::json!({
-        "PreToolUse": [format!("{bin} hook copilot PreToolUse")],
         "PostToolUse": [format!("{bin} hook copilot PostToolUse")]
     });
     json_config::write(path, &config)
@@ -83,7 +82,7 @@ mod tests {
             write_config(&path, Path::new("concats")).unwrap();
 
             let data = std::fs::read_to_string(&path).unwrap();
-            assert!(data.contains("concats hook copilot PreToolUse"));
+            assert!(!data.contains("concats hook copilot PreToolUse"));
             assert!(data.contains("concats hook copilot PostToolUse"));
         }
     }

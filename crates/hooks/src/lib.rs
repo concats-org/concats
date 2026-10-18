@@ -27,6 +27,10 @@ enum HandlerAction {
     PromptSubmitted,
     FilesChanged,
     Stop,
+    // NOTE: droid and copilot `PreToolUse`, amp `tool.call` and opencode
+    // `tool.execute.before` are no longer installed, but an older install
+    // still sends them: until reinstalled, and droid's until uninstalled, since
+    // a droid install rewrites only the events it hooks.
     Ignore,
 }
 

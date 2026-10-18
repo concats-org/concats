@@ -39,15 +39,6 @@ export default {
     });
   },
 
-  onToolCall(event: { sessionId: string; tool: string; input: unknown }) {
-    if (!FILE_TOOLS.includes(event.tool.toLowerCase())) return;
-    fire("tool.call", {
-      session_id: event.sessionId,
-      tool: event.tool,
-      cwd: process.cwd(),
-    });
-  },
-
   onToolResult(event: {
     sessionId: string;
     tool: string;
