@@ -20,11 +20,14 @@
 //!   `FIND=text` searches (`FIND_KEEP_FOCUS` leaves the focus alone),
 //!   `TYPE_AFTER_REFRESH=text` types again, `SHOT` captures again,
 //!   `STATE=path` writes what the tests assert on, and `EXIT_AFTER_SHOT` quits.
+use concats_diff::{Row, Side};
+
 #[allow(
     clippy::wildcard_imports,
     reason = "Makepad macros and derives expand against the widget prelude in this scope."
 )]
 use super::*;
+use crate::review_doc::{Compose, Composing, splice_composer};
 
 // NOTE: click_hook reads both the click and the drag-to point through it.
 // coland-ignore: @coland/single_caller_private_function
@@ -69,6 +72,51 @@ fn typed(text: &str) -> Event {
         input: text.replace("\\n", "\n"),
         ..Default::default()
     })
+}
+
+/// Dev affordance, pairs with `CONCATS_APP_SHOT`: `CONCATS_APP_COMPOSE=path:start:end`
+/// (0-based) pre-opens the composer on those lines, so the comment dialog can
+/// be screenshotted without a pointer.
+// NOTE: sets the compose the way a gesture does; splice_composer drops one it cannot place.
+// coland-ignore: @coland/mixed_abstraction_levels
+pub(crate) fn compose_from_env(d: &mut ReviewDoc) {
+    let Some(spec) = crate::dev_hooks::var("CONCATS_APP_COMPOSE") else {
+        return;
+    };
+    let mut it = spec.rsplitn(3, ':');
+    let e = it.next().and_then(|v| v.parse::<u32>().ok());
+    let s = it.next().and_then(|v| v.parse::<u32>().ok());
+    let (Some(path), Some(s), Some(e)) = (it.next(), s, e) else {
+        return;
+    };
+    // One path can be interned several times (file diff, session diffs, commit
+    // diffs). Anchor on the copy the active stream renders at the requested
+    // line, or `splice_composer` finds no row and drops the compose.
+    let candidates: Vec<u32> = d
+        .blob_paths
+        .iter()
+        .filter(|(_, p)| p.as_str() == path)
+        .map(|(b, _)| *b)
+        .collect();
+    let blob = d.active().iter().find_map(|r| match r {
+        Row::Code { blob: b, line, .. } if *line == s.max(e) && candidates.contains(b) => Some(*b),
+        _ => None,
+    });
+    let Some(b) = blob else {
+        return;
+    };
+    d.compose = Some(Composing::Lines(Compose {
+        old: None,
+        new: Some(Side {
+            blob: b,
+            start: s.min(e),
+            end: s.max(e),
+        }),
+        span: None,
+    }));
+    d.compose_anchor = 0;
+    splice_composer(d);
+    d.compose_focus = true;
 }
 
 impl App {
