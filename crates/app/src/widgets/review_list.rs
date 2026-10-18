@@ -149,6 +149,8 @@ fn anchor_entry(bands: &[Band]) -> Option<usize> {
 /// respectively). Pure, so the sticky design is testable without a widget:
 /// ride the real header while it is on screen, rest at [`STICKY_TOP_GAP`],
 /// slide out with the card's bottom edge, and ramp the shadow continuously.
+// NOTE: (push, lift), as the doc names them: the tested pure half of place_sticky.
+// coland-ignore: @coland/same_typed_tuple_return
 fn sticky_offsets(header_top: Option<f64>, end_top: Option<f64>) -> (f64, f64) {
     // Where the real header sits right now, unclamped.
     let natural = header_top.map(|top| top + FILE_HEADER_TOP_PADDING);
@@ -1047,6 +1049,8 @@ impl ReviewList {
     /// card keeps its header and its bottom cap; everything between them —
     /// hunks, comments, the composer — stops being an entry at all, so the
     /// list never walks (or measures) the rows it isn't drawing.
+    // NOTE: every row between a header and its cap is the card's body, a new kind too.
+    // coland-ignore: @coland/absorbing_default_branch
     fn map_folded(&mut self, rows: &[Row], folded: &HashSet<String>) {
         self.visible.clear();
         if folded.is_empty() {
@@ -1072,6 +1076,8 @@ impl ReviewList {
 
 /// Where a pointer event is, for the widgets that have to know whether it is
 /// over them before anyone handles it.
+// NOTE: one position per pointer event, for the chip's hit test in handle_event.
+// coland-ignore: @coland/single_caller_private_function
 fn pointer_at(event: &Event) -> Option<DVec2> {
     match event {
         Event::MouseDown(e) => Some(e.abs),
@@ -1127,12 +1133,16 @@ fn owns_gesture(pressed: &mut bool, event: &Event, rect: impl FnOnce() -> Rect) 
 /// rows it steps over draw nothing between the run and the code: the hunk
 /// anchor has no height, and the card's 10pt of air is the padding around the
 /// code itself.
+// NOTE: draw_row asks it for both ends of a run.
+// coland-ignore: @coland/single_caller_private_function
 fn reaches_code<'a>(mut rows: impl Iterator<Item = &'a Row>) -> bool {
     rows.find(|row| !matches!(row, Row::HunkBar { .. } | Row::Spacer))
         .is_some_and(|row| matches!(row, Row::Code { .. } | Row::Comment { .. } | Row::Composer))
 }
 
 /// The card header's right-hand stat, shared with the sticky copy.
+// NOTE: fill_header's stat line, for the card and its sticky copy alike.
+// coland-ignore: @coland/single_caller_private_function
 fn header_stat(adds: usize, dels: usize, similarity: Option<u8>, partially_viewed: bool) -> String {
     let stat = match similarity {
         // 100% similar: nothing to review, so say so instead of +59/-59.
@@ -1148,6 +1158,8 @@ fn header_stat(adds: usize, dels: usize, similarity: Option<u8>, partially_viewe
 }
 
 /// What the card header's toggle says: how much is hidden, or the way back.
+// NOTE: fill_header's toggle text, beside header_stat.
+// coland-ignore: @coland/single_caller_private_function
 fn outdated_label(hidden: usize, showing: bool) -> String {
     if showing {
         "hide outdated".to_string()
@@ -1212,6 +1224,8 @@ struct EntryRange {
 /// Give the list its range. `PortalList` caches heights by entry index, while
 /// folding changes which document row an entry index names, so a remap resets
 /// the old measurements with a one-entry shrink before growing the new range.
+// NOTE: PortalList's range protocol (shrink before a remap), apart from the draw.
+// coland-ignore: @coland/single_caller_private_function
 fn set_range(cx: &mut Cx2d, list: &mut PortalList, range: &EntryRange) {
     if range.remapped && range.previous != 0 && range.entries >= range.previous {
         list.set_item_range(cx, 0, range.previous - 1);
@@ -1410,6 +1424,8 @@ impl ReviewList {
     /// out the list's entry range and where the viewport starts in it. Folded
     /// cards drop their rows from the list; a new row mapping also invalidates
     /// `PortalList`'s index-keyed height cache, which [`set_range`] resets.
+    // NOTE: brings the row-keyed caches up to date on the way; the range is worked out, not read.
+    // coland-ignore: @coland/read_write_operation
     fn refresh_caches(&mut self, pass: &DrawPass, old_first_id: usize) -> EntryRange {
         let d = pass.doc;
         if self.mapped.0 != d.generation {
@@ -1469,6 +1485,8 @@ impl ReviewList {
         clippy::too_many_lines,
         reason = "The exhaustive row dispatch keeps each template beside its row data."
     )]
+    // NOTE: the inner match's row is already one of the three label rows.
+    // coland-ignore: @coland/absorbing_default_branch
     fn draw_row(&mut self, cx: &mut Cx2d, list: &mut PortalList, entry: usize, pass: &DrawPass) {
         let Some(r) = self.row_at(entry) else {
             return;

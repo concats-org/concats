@@ -119,6 +119,8 @@ pub(crate) fn move_caret(d: &mut ReviewDoc, tab: Stream, ke: &KeyEvent) -> bool 
     moved
 }
 
+// NOTE: Home, End and both arrows land the caret on a byte through it.
+// coland-ignore: @coland/single_caller_private_function
 fn set_byte(d: &mut ReviewDoc, caret: Caret, byte: usize) -> bool {
     d.caret = Some(Caret { byte, ..caret });
     true
@@ -177,6 +179,8 @@ fn undo_at(d: &mut ReviewDoc, redo: bool) -> bool {
 }
 
 /// The delimiter that closes `input`, when it is a lone opening one.
+// NOTE: the auto-pair table; steps_over reads its closing halves.
+// coland-ignore: @coland/single_caller_private_function
 fn closer_for(input: &str) -> Option<&'static str> {
     match input {
         "(" => Some(")"),
@@ -188,6 +192,8 @@ fn closer_for(input: &str) -> Option<&'static str> {
 
 /// Whether the caret already sits in front of exactly this text, in which case
 /// typing it should move past rather than write a second copy.
+// NOTE: the step-over rule, the other half of closer_for's pairs.
+// coland-ignore: @coland/single_caller_private_function
 fn steps_over(d: &ReviewDoc, input: &str) -> bool {
     if !matches!(input, ")" | "]" | "}") {
         return false;
