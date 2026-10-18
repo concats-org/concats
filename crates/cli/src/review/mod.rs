@@ -279,6 +279,8 @@ impl RangeArgs {
 /// Where HEAD left the default branch: its merge base with origin's HEAD,
 /// else `main`, else `master`. HEAD itself when there is none, or when the
 /// histories never met.
+// NOTE: names the default range's base; resolve reads it only when nothing else names one.
+// coland-ignore: @coland/single_caller_private_function
 fn branch_point(repo: &str) -> String {
     let point = || {
         let repo = gix::open(load::discover(Path::new(repo))?).ok()?;

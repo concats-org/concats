@@ -142,6 +142,8 @@ fn command_prefix(agent: &str) -> String {
 
 /// Whether a hook entry runs a command containing `prefix`, either its own
 /// `command` (flat) or one in its `hooks` list (nested).
+// NOTE: the one test for an entry being ours, across the flat and the nested shape.
+// coland-ignore: @coland/single_caller_private_function
 fn runs(entry: &Value, prefix: &str) -> bool {
     let command_runs = |hook: &Value| {
         hook.get("command")

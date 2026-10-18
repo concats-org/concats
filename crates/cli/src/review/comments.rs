@@ -62,6 +62,8 @@ pub(crate) fn run(
 
 /// Who leaves a comment when `--author` is not given: `git config user.name`,
 /// the name the app signs its comments with.
+// NOTE: the author rule add and reply share, signed the way the app signs.
+// coland-ignore: @coland/single_caller_private_function
 fn git_author(range: &RangeArgs) -> Option<String> {
     let root = concats_diff::load::discover(Path::new(range.repo.as_deref().unwrap_or(".")))?;
     store::git_user_name(&root)

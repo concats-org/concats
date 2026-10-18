@@ -248,6 +248,8 @@ impl TurnEntryKind {
     }
 }
 
+// NOTE: the reader's half of Display, one entry per pest rule; inlined, it nests in the parse loop.
+// coland-ignore: @coland/single_caller_private_function
 fn parse_entry(pair: Pair<'_, Rule>) -> Result<TurnEntry> {
     match pair.as_rule() {
         Rule::prompt => {
