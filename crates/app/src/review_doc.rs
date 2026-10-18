@@ -802,8 +802,9 @@ pub(crate) fn splice_comments(
     // The Comments tab is rebuilt here rather than patched: which threads
     // exist, where their content lives now and who answered last all change
     // with the comment list, and this is the one place that list arrives.
-    d.quote_spans = quote_spans(&d.blobs, &d.blob_paths, comments);
-    let (comments_rows, outdated_paths) = comments_stream(&d.blobs, &d.blob_paths, comments);
+    let of_name = blobs_by_name(&d.blobs, &d.blob_paths);
+    d.quote_spans = quote_spans(&d.blobs, &of_name, comments);
+    let (comments_rows, outdated_paths) = comments_stream(&d.blobs, &of_name, comments);
     d.comments_rows = comments_rows;
     // Union over the streams: every stream reads the same blob table, so a
     // thread that places in one places in every stream that shows its file.
@@ -871,10 +872,9 @@ fn blobs_by_name<'a>(
 )]
 fn quote_spans(
     blobs: &[Blob],
-    blob_paths: &std::collections::HashMap<u32, String>,
+    of_name: &std::collections::HashMap<&str, Vec<u32>>,
     comments: &[store::Comment],
 ) -> std::collections::HashMap<(u32, u32), Vec<(u32, u32)>> {
-    let of_name = blobs_by_name(blobs, blob_paths);
     let mut out: std::collections::HashMap<(u32, u32), Vec<(u32, u32)>> =
         std::collections::HashMap::new();
     for comment in comments {
@@ -961,66 +961,70 @@ const COMMENT_CONTEXT: u32 = 3;
 )]
 fn comments_stream(
     blobs: &[Blob],
-    blob_paths: &std::collections::HashMap<u32, String>,
+    of_name: &std::collections::HashMap<&str, Vec<u32>>,
     comments: &[store::Comment],
 ) -> (Vec<Row>, HashSet<String>) {
     let mut outdated_paths: HashSet<String> = HashSet::new();
     if comments.is_empty() {
         return (Vec::new(), outdated_paths);
     }
-    let mut rows = vec![Row::Title {
-        text: "# Comments".into(),
-    }];
-
-    let of_path = blobs_by_name(blobs, blob_paths);
-
-    // One meta line per thread: where it sits, and who has answered.
-    let meta = |root: &store::Comment| -> String {
-        let thread = store::thread_key(root);
-        let replies: Vec<&store::Comment> = comments
-            .iter()
-            .filter(|c| c.parent == Some(thread))
-            .collect();
-        let who = root.author.as_deref().unwrap_or("unattributed");
-        match replies.iter().max_by_key(|c| c.id) {
-            None => format!("**unanswered** — {who}"),
-            Some(last) => format!(
-                "{} repl{}, last by **{}**",
-                replies.len(),
-                if replies.len() == 1 { "y" } else { "ies" },
-                last.author.as_deref().unwrap_or("unattributed"),
-            ),
+    let mut replies: std::collections::HashMap<u64, Vec<&store::Comment>> =
+        std::collections::HashMap::new();
+    for reply in comments {
+        if let Some(parent) = reply.parent {
+            replies.entry(parent).or_default().push(reply);
         }
+    }
+
+    // One line per thread: where it sits, and who has answered.
+    let line = |root: &store::Comment, suffix: &str| -> String {
+        let meta = match replies.get(&root.id) {
+            None => format!(
+                "**unanswered** — {}",
+                root.author.as_deref().unwrap_or("unattributed")
+            ),
+            Some(answers) => format!(
+                "{} repl{}, last by **{}**",
+                answers.len(),
+                if answers.len() == 1 { "y" } else { "ies" },
+                answers
+                    .iter()
+                    .max_by_key(|c| c.id)
+                    .and_then(|c| c.author.as_deref())
+                    .unwrap_or("unattributed"),
+            ),
+        };
+        format!(
+            "`{}:{}–{}` · {meta}{suffix}",
+            root.path,
+            root.anchor.start + 1,
+            root.anchor.end + 1
+        )
     };
 
     // Roots in reading order: by path, then by where the anchor was left.
     let mut roots: Vec<&store::Comment> = comments.iter().filter(|c| c.parent.is_none()).collect();
     roots.sort_by_key(|c| (c.path.clone(), c.anchor.start, c.id));
+    let unanswered = roots
+        .iter()
+        .filter(|c| !replies.contains_key(&c.id))
+        .count();
 
-    let mut unanswered = 0usize;
     let mut outdated = 0usize;
     let mut cards: Vec<Row> = Vec::new();
-    let mut at = 0usize;
-    while at < roots.len() {
-        let path = roots[at].path.as_str();
-        let group_end = roots[at..]
-            .iter()
-            .position(|c| c.path != path)
-            .map_or(roots.len(), |n| at + n);
-        let group = &roots[at..group_end];
-        at = group_end;
-
-        let path_blobs: &[u32] = of_path.get(path).map_or(&[], Vec::as_slice);
-        // Locate each thread, then merge threads whose context overlaps into
-        // one card — the same line must not render in two cards, or the splice
-        // would attach every thread at both occurrences.
+    for group in roots.chunk_by(|a, b| a.path == b.path) {
+        let path = group[0].path.as_str();
+        let path_blobs: &[u32] = of_name.get(path).map_or(&[], Vec::as_slice);
+        // A thread sits where its newest placeable comment does.
         let mut located: Vec<(&store::Comment, Side)> = Vec::new();
         let mut unplaced: Vec<&store::Comment> = Vec::new();
-        for root in group {
-            // NOTE: Use the store's newest-placeable-comment order.
-            let mut members: Vec<&store::Comment> = comments
-                .iter()
-                .filter(|c| c.id == root.id || c.parent == Some(root.id))
+        for &root in group {
+            let mut members: Vec<&store::Comment> = replies
+                .get(&root.id)
+                .into_iter()
+                .flatten()
+                .copied()
+                .chain([root])
                 .collect();
             members.sort_by_key(|comment| std::cmp::Reverse(comment.id));
             match members
@@ -1032,67 +1036,45 @@ fn comments_stream(
             }
         }
         located.sort_by_key(|(c, run)| (run.blob, run.start, c.id));
-        unanswered += group
-            .iter()
-            .filter(|c| !comments.iter().any(|r| r.parent == Some(c.id)))
-            .count();
 
-        let mut i = 0usize;
-        while i < located.len() {
-            let (
-                _,
-                Side {
-                    blob,
-                    start: from,
-                    end: mut to,
-                },
-            ) = located[i];
-            let line_count = blobs[blob as usize].line_count() as u32;
-            let ctx_from = from.saturating_sub(COMMENT_CONTEXT);
-            let mut members = vec![located[i].0];
-            let mut j = i + 1;
-            while j < located.len() {
-                let (c, next) = located[j];
-                let joined = next.blob == blob
-                    && next.start.saturating_sub(COMMENT_CONTEXT) <= to + COMMENT_CONTEXT;
-                if !joined {
-                    break;
+        // Threads whose context overlaps share one card: the same line must not
+        // render in two cards, or the splice would attach every thread at both
+        // occurrences.
+        let mut merged: Vec<(Vec<&store::Comment>, Side)> = Vec::new();
+        for (root, run) in located {
+            match merged.last_mut() {
+                Some((members, card))
+                    if card.blob == run.blob
+                        && run.start.saturating_sub(COMMENT_CONTEXT)
+                            <= card.end + COMMENT_CONTEXT =>
+                {
+                    card.end = card.end.max(run.end);
+                    members.push(root);
                 }
-                to = to.max(next.end);
-                members.push(c);
-                j += 1;
+                _ => merged.push((vec![root], run)),
             }
-            i = j;
-            let ctx_to = (to + COMMENT_CONTEXT).min(line_count.saturating_sub(1));
-            let lines: Vec<String> = members
-                .iter()
-                .map(|c| {
-                    format!(
-                        "`{path}:{}–{}` · {}",
-                        c.anchor.start + 1,
-                        c.anchor.end + 1,
-                        meta(c)
-                    )
-                })
-                .collect();
+        }
+        for (members, card) in merged {
+            let lines: Vec<String> = members.iter().map(|c| line(c, "")).collect();
             cards.push(Row::Prose {
                 md: lines.join("  \n"),
             });
             // Authored text gets no card and no line numbers: it is not a
             // file, and framing a prompt as one would claim it is.
-            let prose = blobs[blob as usize].prose.is_some();
+            let prose = blobs[card.blob as usize].prose.is_some();
             if !prose {
                 cards.push(context_header(path));
             }
-            for line in ctx_from..=ctx_to {
-                cards.push(Row::Code {
-                    kind: LineKind::Context,
-                    old_no: None,
-                    new_no: (!prose).then_some(line + 1),
-                    blob,
-                    line,
-                });
-            }
+            let last = (blobs[card.blob as usize].line_count() as u32).saturating_sub(1);
+            let context =
+                card.start.saturating_sub(COMMENT_CONTEXT)..=(card.end + COMMENT_CONTEXT).min(last);
+            cards.extend(context.map(|line| Row::Code {
+                kind: LineKind::Context,
+                old_no: None,
+                new_no: (!prose).then_some(line + 1),
+                blob: card.blob,
+                line,
+            }));
         }
 
         if !unplaced.is_empty() {
@@ -1100,14 +1082,7 @@ fn comments_stream(
             outdated_paths.insert(path.to_string());
             let lines: Vec<String> = unplaced
                 .iter()
-                .map(|c| {
-                    format!(
-                        "`{path}:{}–{}` · {} · **content not in this range** — thread below",
-                        c.anchor.start + 1,
-                        c.anchor.end + 1,
-                        meta(c)
-                    )
-                })
+                .map(|c| line(c, " · **content not in this range** — thread below"))
                 .collect();
             cards.push(Row::Prose {
                 md: lines.join("  \n"),
@@ -1116,14 +1091,19 @@ fn comments_stream(
         }
     }
 
-    rows.push(Row::Prose {
-        md: format!(
-            "**{} thread(s)** · {} unanswered · {} with content not in this range. Reply from any card; a reply with a new location moves its whole thread.",
-            roots.len(),
-            unanswered,
-            outdated,
-        ),
-    });
+    let mut rows = vec![
+        Row::Title {
+            text: "# Comments".into(),
+        },
+        Row::Prose {
+            md: format!(
+                "**{} thread(s)** · {} unanswered · {} with content not in this range. Reply from any card; a reply with a new location moves its whole thread.",
+                roots.len(),
+                unanswered,
+                outdated,
+            ),
+        },
+    ];
     rows.extend(cards);
     (rows, outdated_paths)
 }
@@ -2245,13 +2225,13 @@ mod tests {
             quote,
             ..stored(1, "a.rs", oid(1), 0, 0)
         };
-        let paths = HashMap::from([(0u32, "a.rs".to_string())]);
+        let names = HashMap::from([("a.rs", vec![0])]);
 
         // Where it was written, and where a line that has grown by four bytes
         // in front of it puts it now.
-        let spans = quote_spans(&blobs, &paths, &[comment(quote(12, 24))]);
+        let spans = quote_spans(&blobs, &names, &[comment(quote(12, 24))]);
         assert_eq!(spans.get(&(0, 0)), Some(&vec![(12, 24)]));
-        let spans = quote_spans(&blobs, &paths, &[comment(quote(8, 20))]);
+        let spans = quote_spans(&blobs, &names, &[comment(quote(8, 20))]);
         assert_eq!(spans.get(&(0, 0)), Some(&vec![(12, 24)]));
 
         // Gone from the line: the thread keeps its line, and nothing is
@@ -2264,10 +2244,10 @@ mod tests {
             }),
             ..stored(1, "a.rs", oid(1), 0, 0)
         };
-        assert_eq!(quote_spans(&blobs, &paths, &[gone]).get(&(0, 0)), None);
+        assert_eq!(quote_spans(&blobs, &names, &[gone]).get(&(0, 0)), None);
 
         // A comment made on lines, not words, underlines nothing.
-        assert!(quote_spans(&blobs, &paths, &[comment(None)]).is_empty());
+        assert!(quote_spans(&blobs, &names, &[comment(None)]).is_empty());
     }
 
     /// A line that says the same thing twice underlines the half the thread is
@@ -2279,7 +2259,7 @@ mod tests {
             "rs".into(),
             "  total = cost(x) + cost(x);\n".into(),
         )];
-        let paths = HashMap::from([(0u32, "a.rs".to_string())]);
+        let names = HashMap::from([("a.rs", vec![0])]);
         let on = |from, to| {
             let comment = store::Comment {
                 quote: Some(store::Quote {
@@ -2289,7 +2269,7 @@ mod tests {
                 }),
                 ..stored(1, "a.rs", oid(1), 0, 0)
             };
-            quote_spans(&blobs, &paths, &[comment])
+            quote_spans(&blobs, &names, &[comment])
                 .get(&(0, 0))
                 .cloned()
         };
@@ -2310,7 +2290,7 @@ mod tests {
         blob.hold(1, 0, 0);
         blob.edit(0..0, "\n\n");
         let blobs = vec![blob];
-        let paths = HashMap::from([(0u32, "a.rs".to_string())]);
+        let names = HashMap::from([("a.rs", vec![0])]);
         let comment = store::Comment {
             quote: Some(store::Quote {
                 text: "resolve(key)".into(),
@@ -2321,7 +2301,7 @@ mod tests {
         };
 
         // Two lines above it: the underline came down with the line.
-        let spans = quote_spans(&blobs, &paths, &[comment]);
+        let spans = quote_spans(&blobs, &names, &[comment]);
         assert_eq!(spans.get(&(0, 0)), None);
         assert_eq!(spans.get(&(0, 2)), Some(&vec![(12, 24)]));
     }
@@ -2526,9 +2506,9 @@ mod tests {
     fn comments_tab_frames_a_thread_in_the_context_a_hunk_gets() {
         let text: String = (0..20).map(|n| format!("line {n}\n")).collect();
         let blobs = vec![Blob::new(oid(1), "rs".into(), text)];
-        let blob_paths = HashMap::from([(0u32, "a.rs".to_string())]);
+        let names = HashMap::from([("a.rs", vec![0])]);
         let comments = vec![stored(1, "a.rs", oid(1), 9, 10)];
-        let (rows, outdated) = comments_stream(&blobs, &blob_paths, &comments);
+        let (rows, outdated) = comments_stream(&blobs, &names, &comments);
         assert!(outdated.is_empty());
         assert!(matches!(&rows[0], Row::Title { .. }));
         let Row::Prose { md } = &rows[1] else {
@@ -2572,7 +2552,8 @@ mod tests {
         let name = "turn/8ce374d0a3/prompt/0";
         let blobs = vec![Blob::prose(name.into(), text)];
         let comments = vec![stored(1, name, blobs[0].oid, 1, 2)];
-        let (rows, outdated) = comments_stream(&blobs, &HashMap::new(), &comments);
+        let (rows, outdated) =
+            comments_stream(&blobs, &HashMap::from([(name, vec![0])]), &comments);
         assert!(outdated.is_empty());
         assert!(!rows.iter().any(|r| matches!(r, Row::FileHeader { .. })));
         let Row::Prose { md } = &rows[2] else {
@@ -2599,14 +2580,14 @@ mod tests {
     fn comment_context_uses_the_newest_anchor_regardless_of_input_order() {
         let text: String = (0..20).map(|n| format!("line {n}\n")).collect();
         let blobs = vec![Blob::new(oid(1), "rs".into(), text)];
-        let paths = HashMap::from([(0, "a.rs".to_string())]);
+        let names = HashMap::from([("a.rs", vec![0])]);
         let root = stored(1, "a.rs", oid(1), 0, 0);
         let reply = Comment {
             parent: Some(1),
             ..stored(2, "a.rs", oid(1), 8, 8)
         };
         for comments in [[root.clone(), reply.clone()], [reply, root]] {
-            let (rows, _) = comments_stream(&blobs, &paths, &comments);
+            let (rows, _) = comments_stream(&blobs, &names, &comments);
             let lines: Vec<u32> = rows
                 .iter()
                 .filter_map(|row| match row {
@@ -2626,7 +2607,7 @@ mod tests {
     fn threads_with_overlapping_context_share_a_card() {
         let text: String = (0..20).map(|n| format!("line {n}\n")).collect();
         let blobs = vec![Blob::new(oid(1), "rs".into(), text)];
-        let blob_paths = HashMap::from([(0u32, "a.rs".to_string())]);
+        let names = HashMap::from([("a.rs", vec![0])]);
         let reply = Comment {
             id: 3,
             parent: Some(2),
@@ -2638,7 +2619,7 @@ mod tests {
             stored(2, "a.rs", oid(1), 8, 8),
             reply,
         ];
-        let (rows, _) = comments_stream(&blobs, &blob_paths, &comments);
+        let (rows, _) = comments_stream(&blobs, &names, &comments);
         let headers = rows
             .iter()
             .filter(|r| matches!(r, Row::FileHeader { .. }))
