@@ -5,7 +5,7 @@
 //! [`concats_review::comments`]' — the app's socket answers through the same
 //! functions.
 
-use std::process::ExitCode;
+use std::{path::Path, process::ExitCode};
 
 use concats_diff::load::Loaded;
 use concats_review::{
@@ -28,14 +28,22 @@ pub(crate) fn run(
             body,
             author,
             range,
-        }) => add(&anchor, &body, author, &range),
+        }) => add(
+            &anchor,
+            &body,
+            author.or_else(|| git_author(&range)),
+            &range,
+        ),
         Some(CommentsAction::Reply {
             id,
             anchor,
             body,
             author,
             range,
-        }) => reply(&id, anchor.as_deref(), &body, author, &range),
+        }) => {
+            let author = author.or_else(|| git_author(&range));
+            reply(&id, anchor.as_deref(), &body, author, &range)
+        }
         Some(CommentsAction::Export {
             prompt,
             all,
@@ -50,6 +58,13 @@ pub(crate) fn run(
         }) => import(&input, author.as_deref(), dry_run, &range),
         None => list(repo, delete),
     }
+}
+
+/// Who leaves a comment when `--author` is not given: `git config user.name`,
+/// the name the app signs its comments with.
+fn git_author(range: &RangeArgs) -> Option<String> {
+    let root = concats_diff::load::discover(Path::new(range.repo.as_deref().unwrap_or(".")))?;
+    store::git_user_name(&root)
 }
 
 /// The stored comments, threads whole — the same shape the app renders.
@@ -99,7 +114,7 @@ fn list(repo: Option<&str>, delete: Option<u64>) -> Outcome {
 // NOTE: one function per `comments` subcommand, like reply, export and import.
 // coland-ignore: @coland/single_caller_private_function
 fn add(spec: &str, body: &str, author: Option<String>, range: &RangeArgs) -> Outcome {
-    let loaded = super::load(&range.resolve()?)?;
+    let loaded = super::load(&range.resolve())?;
     let mut store = Store::open(&loaded.git_dir);
     let c =
         comments::add(&mut store, &loaded, spec, body, author).map_err(|error| report(&error))?;
@@ -123,7 +138,7 @@ fn reply(
     // against it like `add`'s. A plain reply takes the root's place and stays
     // cheap: no range, no load.
     let loaded = match moved {
-        Some(_) => Some(super::load(&range.resolve()?)?),
+        Some(_) => Some(super::load(&range.resolve())?),
         None => None,
     };
     let mut store = match &loaded {
@@ -156,7 +171,7 @@ fn report(error: &Error) -> ExitCode {
 /// `--prompt` emits the terse bot-style format instead, for handing the review
 /// to an agent. Stdout by default so it pipes.
 fn export(prompt: bool, all: bool, out: Option<&str>, range: &RangeArgs) -> Outcome {
-    let target = range.resolve()?;
+    let target = range.resolve();
     let loaded = super::load(&target)?;
     let store = Store::open(&loaded.git_dir);
 
@@ -235,7 +250,7 @@ fn import(input: &str, author: Option<&str>, dry: bool, range: &RangeArgs) -> Ou
         return Err(ExitCode::from(FINDINGS));
     }
 
-    let loaded = super::load(&range.resolve()?)?;
+    let loaded = super::load(&range.resolve())?;
     warn_on_range_mismatch(&doc, &comments::meta(&loaded));
 
     let resolved = if from_pull_request {

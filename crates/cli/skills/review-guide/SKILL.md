@@ -78,9 +78,8 @@ the user gave you:
    `--repo`/`--base`/`--head` flags**, from inside the checkout. When the
    review app has it open, the bare commands target exactly the diff its
    window shows (the app answers on `.concats/app.sock` in the checkout's
-   root); anywhere else the CLI errors and tells you what to pass. If it
-   errors: relay the message and ask the user for the range. Never invent
-   one.
+   root); anywhere else they review the branch so far, from where HEAD left
+   the default branch to the working tree. Never invent a range.
 
 This is the tightest loop: the reviewer opens the checkout in the app,
 starts an agent anywhere in it, and says `/review-guide` — the bare commands
@@ -97,7 +96,7 @@ uncommitted (see "Uncommitted changes" below).
 Run from the repo under review. The commands below show explicit
 `--base <BASE> --head <HEAD>` for the with-arguments case; without
 arguments, drop the range flags entirely (per above) and let the CLI
-resolve or complain. If ANY step fails, apply Hard rule 4: stop, quote,
+resolve the range. If ANY step fails, apply Hard rule 4: stop, quote,
 ask.
 
 ```sh

@@ -13,7 +13,7 @@ use super::{Outcome, RangeArgs, counted};
 /// built from, printable, so the linking can be inspected (and driven from a
 /// hook) without opening a window.
 pub(crate) fn turns(range: &RangeArgs) -> Outcome {
-    let target = range.resolve()?;
+    let target = range.resolve();
     let loaded = super::load(&target)?;
     let Ok(repo) = gix::open(&loaded.root) else {
         eprintln!("error: cannot open {}", loaded.root.display());
@@ -69,7 +69,7 @@ pub(crate) fn turns(range: &RangeArgs) -> Outcome {
 
 /// Where the wall-clock goes on a cold load, per stage and per language.
 pub(crate) fn bench(no_hl: bool, range: &RangeArgs) -> Outcome {
-    let mut loaded = super::load(&range.resolve()?)?;
+    let mut loaded = super::load(&range.resolve())?;
     let stats = loaded.stats.clone();
     let rows: usize = loaded.files.iter().map(|f| f.default_rows().len()).sum();
 

@@ -75,8 +75,9 @@ the user gave you:
   command runs **without range flags** and follows the window too.
 - **Explicit arguments** — e.g. `/address-comments INDEX WORKTREE` — go on
   every `concats` command as `--base <BASE> --head <HEAD>`.
-- **Neither** — the CLI errors and says what to pass. Relay that and ask.
-  Never invent a range.
+- **Neither** — run the commands without range flags too: the CLI then
+  reviews the branch so far, from where HEAD left the default branch to the
+  working tree. Never invent a range.
 
 ```sh
 # 0. The conversation. If curl cannot connect, report the error verbatim and

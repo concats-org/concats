@@ -13,8 +13,9 @@
 //! ([`concats_state::SOCKET`]) and reads its range off the document at the
 //! moment it is asked. So an agent anywhere in that checkout reviews the diff on
 //! screen with no flags at all, across range switches, and a linked worktree
-//! never answers for another. Without an app the CLI does not guess: it exits 2
-//! and names what to pass. Only `--repo` has a default — the cwd, like git.
+//! never answers for another. Without an app, the review is the branch so far:
+//! from where HEAD left the default branch to the working tree, staged or not.
+//! `--repo` defaults to the cwd, like git.
 //!
 //! ## Exit codes
 //!
@@ -142,7 +143,7 @@ pub enum CommentsAction {
         /// The comment body.
         #[arg(short = 'm', long = "body", value_name = "TEXT")]
         body: String,
-        /// Who wrote it.
+        /// Who wrote it (default: `git config user.name`).
         #[arg(long, value_name = "NAME")]
         author: Option<String>,
         #[command(flatten)]
@@ -166,7 +167,7 @@ pub enum CommentsAction {
         /// The reply body.
         #[arg(short = 'm', long = "body", value_name = "TEXT")]
         body: String,
-        /// Who wrote it.
+        /// Who wrote it (default: `git config user.name`).
         #[arg(long, value_name = "NAME")]
         author: Option<String>,
         #[command(flatten)]
@@ -251,31 +252,44 @@ pub struct GuideArgs {
 
 impl RangeArgs {
     /// The range to review: the flags, then the app's window on the repo, then
-    /// a loud error. The module docs say why the last step is an error and not
-    /// a guess.
-    pub(crate) fn resolve(&self) -> Result<Target, ExitCode> {
+    /// the branch so far — see the module docs.
+    pub(crate) fn resolve(&self) -> Target {
         let repo = self.repo.clone().unwrap_or_else(|| ".".to_string());
         let shown = (self.base.is_none() || self.head.is_none())
             .then(|| shown_range(&repo))
             .flatten();
         let (shown_base, shown_head) = shown.map(|t| (t.base, t.head)).unzip();
-        let (Some(base), Some(head)) = (
-            self.base.clone().or(shown_base),
-            self.head.clone().or(shown_head),
-        ) else {
-            eprintln!(
-                "error: no review range — pass --base <rev> --head <rev>, or open the repo in \
-                 concats-app (it answers for the diff on screen on {}).\n\
-                 Common ranges:\n  \
-                 --base HEAD  --head WORKTREE   everything uncommitted\n  \
-                 --base INDEX --head WORKTREE   unstaged changes only\n  \
-                 --base main  --head HEAD       a branch against its merge base",
-                concats_state::SOCKET
-            );
-            return Err(ExitCode::from(BAD_INPUT));
-        };
-        Ok(Target { repo, base, head })
+        let head = self
+            .head
+            .clone()
+            .or(shown_head)
+            .unwrap_or_else(|| load::WORKTREE_REV.to_string());
+        let base = self
+            .base
+            .clone()
+            .or(shown_base)
+            .unwrap_or_else(|| branch_point(&repo));
+        Target { repo, base, head }
     }
+}
+
+/// Where HEAD left the default branch: its merge base with origin's HEAD,
+/// else `main`, else `master`. HEAD itself when there is none, or when the
+/// histories never met.
+fn branch_point(repo: &str) -> String {
+    let point = || {
+        let repo = gix::open(load::discover(Path::new(repo))?).ok()?;
+        let head = repo.head_id().ok()?;
+        let branch = [
+            "refs/remotes/origin/HEAD",
+            "refs/heads/main",
+            "refs/heads/master",
+        ]
+        .into_iter()
+        .find_map(|name| repo.find_reference(name).ok()?.into_fully_peeled_id().ok())?;
+        Some(repo.merge_base(branch, head).ok()?.to_string())
+    };
+    point().unwrap_or_else(|| "HEAD".to_string())
 }
 
 /// What the app shows for `repo`, asked over the socket in its root. `None`

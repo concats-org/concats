@@ -14,7 +14,7 @@ use concats_review::{guide, store};
 use super::{BAD_INPUT, FINDINGS, GuideArgs, Outcome, RangeArgs, counted};
 
 pub(crate) fn manifest(range: &RangeArgs) -> Outcome {
-    let loaded = super::load(&range.resolve()?)?;
+    let loaded = super::load(&range.resolve())?;
     print!("{}", guide::manifest(&loaded));
     Ok(())
 }
@@ -79,7 +79,7 @@ fn check(
     gate: &GuideArgs,
     range: &RangeArgs,
 ) -> Result<(bool, Loaded, String), ExitCode> {
-    let target = range.resolve()?;
+    let target = range.resolve();
     let Ok(markdown) = std::fs::read_to_string(path) else {
         eprintln!("error: cannot read {path}");
         return Err(ExitCode::from(BAD_INPUT));

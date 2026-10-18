@@ -48,6 +48,52 @@ fn manifest(repo: &Path) -> Output {
         .unwrap()
 }
 
+/// With no app, a bare command reviews the branch so far: from where HEAD
+/// left the default branch to the working tree.
+#[test]
+fn a_bare_command_without_an_app_reviews_the_branch_so_far() {
+    let sandbox = fixture();
+    let repo = sandbox.path();
+    git(repo, &["branch", "-M", "main"]);
+    git(repo, &["checkout", "-q", "-b", "feature"]);
+    fs::write(repo.join("other.rs"), "committed on the branch\n").unwrap();
+    git(repo, &["add", "other.rs"]);
+    git(repo, &["commit", "-qm", "branch work"]);
+
+    let alone = manifest(repo);
+    let stdout = String::from_utf8_lossy(&alone.stdout);
+    assert!(
+        alone.status.success(),
+        "{}",
+        String::from_utf8_lossy(&alone.stderr)
+    );
+    assert!(
+        stdout.contains("other.rs") && stdout.contains("file.rs"),
+        "{stdout}"
+    );
+}
+
+/// A comment left without `--author` is signed with `git config user.name`,
+/// the way the app signs its own.
+#[test]
+fn a_comment_without_an_author_takes_the_git_user_name() {
+    let sandbox = fixture();
+    let repo = sandbox.path();
+    git(repo, &["config", "user.name", "Ada Lovelace"]);
+    comments(repo, &["add", "file.rs:1", "-m", "why?"]);
+    let id = Store::open(&repo.join(".git")).comments[0].id.to_string();
+    comments(repo, &["reply", &id, "-m", "because"]);
+    let authors: Vec<Option<String>> = Store::open(&repo.join(".git"))
+        .comments
+        .into_iter()
+        .map(|c| c.author)
+        .collect();
+    assert_eq!(
+        authors,
+        [Some("Ada Lovelace".into()), Some("Ada Lovelace".into())]
+    );
+}
+
 /// Every worktree of a repository shares one store, so an export is narrowed
 /// to the threads its own range shows — another checkout's threads are not
 /// this agent's to answer unless asked for.
@@ -140,16 +186,11 @@ fn import_policies_preserve_atomicity_dry_runs_and_thread_identity() {
     assert_eq!(Store::open(&repo.join(".git")).comments.len(), 3);
 }
 
-/// A bare command takes its range from the app open on the checkout, and
-/// without one it says what to pass rather than guessing.
+/// A bare command takes its range from the app open on the checkout.
 #[test]
 fn a_bare_command_reviews_what_the_app_shows_for_the_checkout() {
     let sandbox = fixture();
     let repo = sandbox.path().canonicalize().unwrap();
-
-    let alone = manifest(&repo);
-    assert_eq!(alone.status.code(), Some(2));
-    assert!(String::from_utf8_lossy(&alone.stderr).contains(concats_state::SOCKET));
 
     // The app's side of it: one answer, the way it answers `GET /range`.
     let socket = repo.join(concats_state::SOCKET);
