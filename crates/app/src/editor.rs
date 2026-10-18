@@ -10,7 +10,8 @@ use concats_diff::Row;
 use crate::{
     makepad_widgets::{KeyCode, KeyEvent},
     review_doc::{
-        Caret, ReviewDoc, Step, Stream, caret_row, caret_to, replace_selection, step_row, type_at,
+        Caret, ReviewDoc, Step, Stream, caret_at_offset, caret_row, caret_to, offset_of,
+        replace_selection, step_row, type_at,
     },
 };
 
@@ -171,10 +172,6 @@ fn delete_forward(d: &mut ReviewDoc) -> bool {
     true
 }
 
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "The diff row model uses u32 line indices; a buffer cannot practically contain 2^32 lines."
-)]
 fn undo_at(d: &mut ReviewDoc, redo: bool) -> bool {
     let Some(caret) = d.caret else {
         return false;
@@ -183,12 +180,7 @@ fn undo_at(d: &mut ReviewDoc, redo: bool) -> bool {
     let Some(at) = (if redo { blob.redo() } else { blob.undo() }) else {
         return false;
     };
-    let line = blob.line_of(at);
-    d.caret = Some(Caret {
-        blob: caret.blob,
-        line: line as u32,
-        byte: at - blob.line_starts[line] as usize,
-    });
+    d.caret = Some(caret_at_offset(d, caret.blob, at));
     true
 }
 
@@ -282,11 +274,13 @@ pub(crate) fn replace_one(d: &mut ReviewDoc, tab: Stream, query: &str, insert: &
     if query.is_empty() || caret_row(d.stream(tab), caret).is_none() {
         return false;
     }
+    let Some(at) = offset_of(d, caret) else {
+        return false;
+    };
     let blob = &mut d.blobs[caret.blob as usize];
     if !blob.editable() {
         return false;
     }
-    let at = blob.line_starts[caret.line as usize] as usize + caret.byte;
     let hay = blob.text.to_ascii_lowercase();
     let query = query.to_ascii_lowercase();
     let Some((start, _)) = hay
@@ -307,13 +301,11 @@ pub(crate) fn replace_all(d: &mut ReviewDoc, tab: Stream, query: &str, insert: &
     let hits: std::collections::BTreeSet<_> = search_hits(d, tab, query)
         .into_iter()
         .filter_map(|(row, byte)| {
-            let Row::Code { blob, line, .. } = d.stream(tab).get(row)? else {
+            let &Row::Code { blob, line, .. } = d.stream(tab).get(row)? else {
                 return None;
             };
-            let buffer = &d.blobs[*blob as usize];
-            buffer
-                .editable()
-                .then_some((*blob, buffer.line_starts[*line as usize] as usize + byte))
+            let at = offset_of(d, Caret { blob, line, byte })?;
+            d.blobs[blob as usize].editable().then_some((blob, at))
         })
         .collect();
     let Some(&(first_blob, first_byte)) = hits.first() else {
@@ -386,6 +378,31 @@ mod tests {
             }),
             ..Default::default()
         }
+    }
+
+    /// Forward delete takes the character after the caret, a whole one, and at
+    /// the end of a line the line break, which joins the next line on.
+    #[test]
+    fn delete_forward_takes_the_next_character_or_line_break() {
+        let delete = |text: &str, line, byte| {
+            let mut d = document(text);
+            d.caret = Some(Caret {
+                blob: 0,
+                line,
+                byte,
+            });
+            let deleted = delete_forward(&mut d);
+            (deleted, d.blobs[0].text.clone())
+        };
+        assert_eq!(delete("ab\ncd\n", 0, 0), (true, "b\ncd\n".into()));
+        assert_eq!(delete("é!\n", 0, 0), (true, "!\n".into()));
+        assert_eq!(delete("ab\ncd\n", 0, 2), (true, "abcd\n".into()));
+        assert_eq!(delete("ab\ncd\n", 1, 2), (true, "ab\ncd".into()));
+        assert_eq!(delete("ab\ncd", 1, 2), (false, "ab\ncd".into()));
+        assert_eq!(
+            delete("ab\r\ncd\r\nef", 1, 2),
+            (true, "ab\r\ncd\nef".into())
+        );
     }
 
     #[test]

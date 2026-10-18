@@ -1779,7 +1779,7 @@ impl ReviewList {
             if pass.paint_selection {
                 match pass
                     .selected
-                    .and_then(|at| crate::review_doc::selection_on(d, at, r, *blob, *line))
+                    .and_then(|at| crate::review_doc::selection_on(at, r, text.len()))
                 {
                     Some((from, to)) => dl.selection_set(from, to),
                     None => dl.selection_clear(),

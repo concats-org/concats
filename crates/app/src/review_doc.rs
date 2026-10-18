@@ -333,9 +333,24 @@ pub struct FileView {
 // ---------------------------------------------------------------------------
 
 /// A caret as an absolute byte offset into its blob.
-fn offset_of(d: &ReviewDoc, at: Caret) -> Option<usize> {
+pub(crate) fn offset_of(d: &ReviewDoc, at: Caret) -> Option<usize> {
     let blob = d.blobs.get(at.blob as usize)?;
     Some(*blob.line_starts.get(at.line as usize)? as usize + at.byte)
+}
+
+/// The caret at an absolute byte offset into `blob`.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "The diff row model uses u32 line indices; a buffer cannot practically contain 2^32 lines."
+)]
+pub(crate) fn caret_at_offset(d: &ReviewDoc, blob: u32, at: usize) -> Caret {
+    let b = &d.blobs[blob as usize];
+    let line = b.line_of(at);
+    Caret {
+        blob,
+        line: line as u32,
+        byte: at.saturating_sub(b.line_starts[line] as usize),
+    }
 }
 
 /// The selected byte range, with `from < to`.
@@ -410,37 +425,21 @@ pub fn selected(rows: &[Row], caret: Option<Caret>, anchor: Option<Caret>) -> Op
 /// know nothing about the range spanning them. A row wholly inside the range
 /// reports its whole width, the first and last report a part, a row outside
 /// reports nothing.
-pub fn selection_on(
-    d: &ReviewDoc,
-    at: Selected,
-    row: usize,
-    blob: u32,
-    line: u32,
-) -> Option<(usize, usize)> {
+///
+/// `len` is the line's length without its newline: a row draws no more than
+/// that, and a range running past it paints to the end and stops.
+pub fn selection_on(at: Selected, row: usize, len: usize) -> Option<(usize, usize)> {
     if row < at.from_row || row > at.to_row {
         return None;
     }
-    // The line's text without its newline: a row draws no more than that, and a
-    // range running past it paints to the end and stops.
-    let end = d.blobs.get(blob as usize)?.line_text(line as usize).len();
     let from = if row == at.from_row { at.from } else { 0 };
-    let to = if row == at.to_row { at.to } else { end };
-    (from <= end).then(|| (from, to.min(end)))
+    let to = if row == at.to_row { at.to } else { len };
+    (from <= len).then(|| (from, to.min(len)))
 }
 
 /// Put the caret at an absolute byte offset in `blob`, with nothing selected.
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "The diff row model uses u32 line indices; a buffer cannot practically contain 2^32 lines."
-)]
 pub(crate) fn caret_to(d: &mut ReviewDoc, blob: u32, at: usize) {
-    let b = &d.blobs[blob as usize];
-    let line = b.line_of(at);
-    d.caret = Some(Caret {
-        blob,
-        line: line as u32,
-        byte: at.saturating_sub(b.line_starts[line] as usize),
-    });
+    d.caret = Some(caret_at_offset(d, blob, at));
     d.selection_anchor = None;
 }
 
@@ -478,11 +477,13 @@ pub fn type_at(d: &mut ReviewDoc, insert: &str, back: usize) -> bool {
     let Some(caret) = d.caret else {
         return false;
     };
+    let Some(start) = offset_of(d, caret) else {
+        return false;
+    };
     let blob = &mut d.blobs[caret.blob as usize];
     if !blob.editable() {
         return false;
     }
-    let start = blob.line_starts[caret.line as usize] as usize + caret.byte;
     // Backspace at column 0 joins this line onto the one above, so the range
     // reaches back past a newline rather than stopping at the line's edge.
     let from = blob.text.floor_char_boundary(start.saturating_sub(back));
@@ -650,15 +651,11 @@ pub(crate) fn quoted(
         let Some(Row::Code { blob, line, .. }) = rows.get(row) else {
             continue;
         };
-        let Some((start, end)) = selection_on(d, at, row, *blob, *line) else {
+        let text = d.blobs[*blob as usize].line_text(*line as usize);
+        let Some((start, end)) = selection_on(at, row, text.len()) else {
             continue;
         };
-        out.push_str(
-            d.blobs[*blob as usize]
-                .line_text(*line as usize)
-                .get(start..end)
-                .unwrap_or_default(),
-        );
+        out.push_str(text.get(start..end).unwrap_or_default());
         out.push(' ');
         if *blob == anchor.blob {
             if *line == anchor.start {
@@ -1162,15 +1159,9 @@ pub(crate) fn card_keys(
     near: usize,
     blobs: &[Blob],
 ) -> Vec<store::LineKey> {
-    let header_idx = rows
-        .iter()
-        .enumerate()
-        .filter(
-            |(_, row)| matches!(row, Row::FileHeader { path: candidate, .. } if candidate == path),
-        )
-        .min_by_key(|(index, _)| index.abs_diff(near))
-        .map(|(index, _)| index);
-    let Some(header_idx) = header_idx else {
+    let header =
+        |row: &Row| matches!(row, Row::FileHeader { path: candidate, .. } if candidate == path);
+    let Some(header_idx) = nearest_row(rows, near, header) else {
         return Vec::new();
     };
     let mut keys = Vec::new();
@@ -1204,18 +1195,20 @@ fn in_card_row(row: &Row, blobs: &[Blob]) -> bool {
     }
 }
 
-pub(crate) fn code_row_near(rows: &[Row], blob: u32, line: u32, near: usize) -> Option<usize> {
-    rows.iter()
-        .enumerate()
-        .filter_map(|(row, item)| match item {
-            Row::Code {
-                blob: current,
-                line: current_line,
-                ..
-            } if *current == blob && *current_line == line => Some(row),
-            _ => None,
-        })
+/// The row nearest `near` that `pick` accepts: when the same content renders in
+/// several places, the occurrence a gesture there means.
+fn nearest_row(rows: &[Row], near: usize, pick: impl Fn(&Row) -> bool) -> Option<usize> {
+    (0..rows.len())
+        .filter(|&row| pick(&rows[row]))
         .min_by_key(|row| row.abs_diff(near))
+}
+
+pub(crate) fn code_row_near(rows: &[Row], blob: u32, line: u32, near: usize) -> Option<usize> {
+    nearest_row(
+        rows,
+        near,
+        |row| matches!(row, Row::Code { blob: b, line: l, .. } if *b == blob && *l == line),
+    )
 }
 
 pub(crate) fn stream_has_composer(rows: &[Row]) -> bool {
@@ -1266,23 +1259,12 @@ pub(crate) fn splice_composer(d: &mut ReviewDoc) {
             at
         }
         Composing::Reply(root) => {
-            let Some(mut at) = d
-                .active()
-                .iter()
-                .enumerate()
-                .filter_map(|(row, item)| match item {
-                    Row::Comment { id, parent, .. } if parent.unwrap_or(*id) == root => Some(row),
-                    _ => None,
-                })
-                .min_by_key(|row| row.abs_diff(anchor))
-            else {
+            let in_thread = |row: &Row| matches!(row, Row::Comment { id, parent, .. } if parent.unwrap_or(*id) == root);
+            let Some(mut at) = nearest_row(d.active(), anchor, in_thread) else {
                 d.compose = None;
                 return;
             };
-            while matches!(
-                d.active().get(at + 1),
-                Some(Row::Comment { id, parent, .. }) if parent.unwrap_or(*id) == root
-            ) {
+            while d.active().get(at + 1).is_some_and(in_thread) {
                 at += 1;
             }
             at
@@ -1321,41 +1303,25 @@ pub(crate) fn expand_collapsed(d: &mut ReviewDoc, tab: Stream, row: usize, end: 
         EXPAND_STEP
     };
     let hidden = count - take;
-    // The head's lines come off the front of the run, the tail's off the back.
-    let first = match end {
-        CollapsedEnd::Head => 0,
-        CollapsedEnd::Tail => hidden,
+    // The head's lines come off the front of the run, the tail's off the back;
+    // what is left moves its start past them, or stays where it was.
+    let (first, skip) = match end {
+        CollapsedEnd::Head => (0, take),
+        CollapsedEnd::Tail => (hidden, 0),
     };
     let revealed = (first..first + take).map(|k| Row::context(blob, old_start + k, new_start + k));
-    // What is left of the run, if anything: taking from the head moves its
-    // start, taking from the tail only shortens it.
-    let rest = (hidden > 0).then(|| match end {
-        CollapsedEnd::Head => Row::Collapsed {
-            blob,
-            old_start: old_start + take,
-            new_start: new_start + take,
-            count: hidden,
-        },
-        CollapsedEnd::Tail => Row::Collapsed {
-            blob,
-            old_start,
-            new_start,
-            count: hidden,
-        },
+    let rest = (hidden > 0).then_some(Row::Collapsed {
+        blob,
+        old_start: old_start + skip,
+        new_start: new_start + skip,
+        count: hidden,
     });
     // Revealed lines sit on the side of the indicator they were taken from, so
     // the remaining run stays between the two blocks of code it separates.
-    let mut out = Vec::with_capacity(take as usize + 1);
-    match end {
-        CollapsedEnd::Head => {
-            out.extend(revealed);
-            out.extend(rest);
-        }
-        CollapsedEnd::Tail => {
-            out.extend(rest);
-            out.extend(revealed);
-        }
-    }
+    let out = match end {
+        CollapsedEnd::Head => revealed.chain(rest).collect(),
+        CollapsedEnd::Tail => rest.into_iter().chain(revealed).collect(),
+    };
     replace_row(d, tab, row, out);
 }
 
@@ -2178,7 +2144,13 @@ mod tests {
 
         // Painted: part of the row it starts on, all of the rows between, part
         // of the one it ends on.
-        let on = |row: usize, blob, line| selection_on(&d, at, row, blob, line);
+        let on = |row: usize, blob: u32, line: u32| {
+            selection_on(
+                at,
+                row,
+                d.blobs[blob as usize].line_text(line as usize).len(),
+            )
+        };
         assert_eq!(on(0, 0, 0), Some((4, 14)));
         assert_eq!(on(1, 0, 1), Some((0, 14)));
         assert_eq!(on(3, 1, 1), Some((0, 3)));

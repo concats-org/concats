@@ -17,8 +17,8 @@ use crate::{
     file_view::{open_file, open_settings, read_file_sides},
     makepad_widgets::makepad_platform::thread::SignalToUI,
     review_doc::{
-        Caret, Compose, Composing, ReviewDoc, Stream, changed_keys, splice_comments,
-        splice_composer,
+        Caret, Compose, Composing, ReviewDoc, Stream, caret_at_offset, changed_keys, offset_of,
+        splice_comments, splice_composer,
     },
     service::{ReviewCmd, review, review_state},
     window::WindowState,
@@ -190,10 +190,7 @@ fn reopen_files(d: &mut ReviewDoc, open: Vec<(u64, String)>, target: &Target) {
 fn carry_caret(d: &ReviewDoc, prev: &ReviewDoc, caret: Caret) -> Option<Caret> {
     let (oid, origin, cursor) = (|| {
         let blob = prev.blobs.get(caret.blob as usize)?;
-        let at = blob
-            .line_starts
-            .get(caret.line as usize)
-            .map(|start| *start as usize + caret.byte);
+        let at = offset_of(prev, caret);
         let cursor = blob
             .doc
             .as_ref()
@@ -215,18 +212,14 @@ fn carry_caret(d: &ReviewDoc, prev: &ReviewDoc, caret: Caret) -> Option<Caret> {
         .as_ref()
         .zip(blob.doc.as_ref())
         .and_then(|(cursor, doc)| concats_sync::byte_of(doc, cursor));
-    let (line, byte) = if let Some(at) = at {
-        let line = blob.line_of(at);
-        let column = at.saturating_sub(blob.line_starts[line] as usize);
-        (line as u32, column)
-    } else {
-        let line = caret.line.min(blob.line_count().saturating_sub(1) as u32);
-        (line, caret.byte.min(blob.line_text(line as usize).len()))
-    };
+    if let Some(at) = at {
+        return Some(caret_at_offset(d, i as u32, at));
+    }
+    let line = caret.line.min(blob.line_count().saturating_sub(1) as u32);
     Some(Caret {
         blob: i as u32,
         line,
-        byte,
+        byte: caret.byte.min(blob.line_text(line as usize).len()),
     })
 }
 
