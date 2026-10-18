@@ -208,27 +208,27 @@ fn mix4(a: Vec4f, b: Vec4f, t: f32) -> Vec4f {
     )
 }
 
-/// The row tint over the card background: additions greenish, deletions
-/// reddish, context transparent (the card shows through).
-fn row_bg(theme: &theme::Theme, kind: LineKind) -> Vec4f {
-    match kind {
+/// What one line of a stream sits on, shared by its rail and its text.
+///
+/// Code is tinted over the card background: additions greenish, deletions
+/// reddish, context transparent (the card shows through). Authored text sits on
+/// the page: a transcript entry is not in a card and never carries a change
+/// tint. A line inside the range being commented on mixes toward the accent
+/// over whatever it sits on, strong enough to read the moment a drag crosses a
+/// line: at 0.10 the shift was technically there and easy to miss, which made
+/// selecting feel unresponsive.
+fn line_bg(theme: &theme::Theme, kind: LineKind, prose: bool, selected: bool) -> Vec4f {
+    let under = match kind {
+        _ if prose => paint(theme.background),
         LineKind::Add => mix4(paint(theme.surface), paint(theme.added), 0.08),
         LineKind::Del => mix4(paint(theme.surface), paint(theme.deleted), 0.08),
         LineKind::Context => paint(theme.surface),
+    };
+    if selected {
+        mix4(under, paint(theme.accent), 0.22)
+    } else {
+        under
     }
-}
-
-/// What a line of authored text sits on: the page. A transcript entry is not in
-/// a card and never carries a change tint.
-fn prose_bg(theme: &theme::Theme) -> Vec4f {
-    paint(theme.background)
-}
-
-/// A row inside the range being commented on, over whatever it sits on. Wanted
-/// strong enough to read the moment a drag crosses a line: at 0.10 the shift was
-/// technically there and easy to miss, which made selecting feel unresponsive.
-fn selected_bg(theme: &theme::Theme, under: Vec4f) -> Vec4f {
-    mix4(under, paint(theme.accent), 0.22)
 }
 
 /// The 6px change marker at the card's left edge.

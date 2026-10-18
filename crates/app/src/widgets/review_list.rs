@@ -1026,6 +1026,16 @@ impl ReviewList {
         }
     }
 
+    /// The list entry a stream row renders as, the inverse of [`Self::row_at`].
+    /// `None` while the row's card is shut.
+    fn entry_of(&self, row: usize) -> Option<usize> {
+        if self.visible.is_empty() {
+            Some(row)
+        } else {
+            self.visible.binary_search(&row).ok()
+        }
+    }
+
     /// Rebuild the entry→row mapping for this stream's fold state. A folded
     /// card keeps its header and its bottom cap; everything between them —
     /// hunks, comments, the composer — stops being an entry at all, so the
@@ -1280,27 +1290,18 @@ impl Widget for ReviewList {
                     continue;
                 };
                 set_range(cx, &mut list, &range);
-                if pass.requested_composer
-                    && let Some(row) = pass
-                        .rows
-                        .iter()
-                        .position(|row| matches!(row, Row::Composer))
-                    && let Some(entry) = if self.visible.is_empty() {
-                        Some(row)
-                    } else {
-                        self.visible.binary_search(&row).ok()
+                let composer = pass
+                    .requested_composer
+                    .then(|| {
+                        pass.rows
+                            .iter()
+                            .position(|row| matches!(row, Row::Composer))
+                    })
+                    .flatten();
+                for row in [composer, self.seek_row.take()].into_iter().flatten() {
+                    if let Some(entry) = self.entry_of(row) {
+                        list.set_first_id_and_scroll(entry, 0.0);
                     }
-                {
-                    list.set_first_id_and_scroll(entry, 0.0);
-                }
-                if let Some(row) = self.seek_row.take()
-                    && let Some(entry) = if self.visible.is_empty() {
-                        Some(row)
-                    } else {
-                        self.visible.binary_search(&row).ok()
-                    }
-                {
-                    list.set_first_id_and_scroll(entry, 0.0);
                 }
                 let mut drawn = Vec::new();
                 while let Some(entry) = list.next_visible_item(cx) {
@@ -1902,13 +1903,6 @@ impl ReviewList {
         pass: &DrawPass,
     ) -> (f64, f64) {
         let item_rect = |entry: usize| Some((list.item_top(entry)?, list.item_height(entry)?));
-        let entry_of = |row: usize| {
-            if self.visible.is_empty() {
-                Some(row)
-            } else {
-                self.visible.binary_search(&row).ok()
-            }
-        };
         let bands: Vec<Band> = drawn
             .iter()
             .filter_map(|&entry| {
@@ -1926,7 +1920,7 @@ impl ReviewList {
             .unwrap_or(0);
         let card = self.cards.containing(first);
         let header_top = card
-            .and_then(|card| entry_of(card.header))
+            .and_then(|card| self.entry_of(card.header))
             .and_then(item_rect)
             .map(|(top, _)| top);
 
@@ -1949,7 +1943,7 @@ impl ReviewList {
         let end_top = self
             .sticky_idx
             .and_then(|header| self.cards.at(header))
-            .and_then(|card| entry_of(card.end))
+            .and_then(|card| self.entry_of(card.end))
             .and_then(item_rect)
             .map(|(top, _)| top);
         sticky_offsets(header_top, end_top)
@@ -2367,15 +2361,10 @@ fn hits_in(text: &str, query: Option<&str>) -> Vec<(usize, usize)> {
     let Some(query) = query.filter(|q| !q.is_empty()) else {
         return Vec::new();
     };
-    let (hay, needle) = (text.to_ascii_lowercase(), query.to_ascii_lowercase());
-    let mut hits = Vec::new();
-    let mut at = 0;
-    while let Some(found) = hay[at..].find(&needle) {
-        let start = at + found;
-        hits.push((start, start + needle.len()));
-        at = start + needle.len().max(1);
-    }
-    hits
+    text.to_ascii_lowercase()
+        .match_indices(&query.to_ascii_lowercase())
+        .map(|(start, hit)| (start, start + hit.len()))
+        .collect()
 }
 
 /// Which row a position falls on, over the bands a list drew. Pure so the

@@ -14,9 +14,7 @@ use concats_syntax::{Hl, Span};
     clippy::wildcard_imports,
     reason = "Makepad macros and derives expand against the widget prelude in this scope."
 )]
-use crate::{
-    ROW_PAD, frame_theme, makepad_widgets::*, prose_bg, row_bg, selected_bg, theme::paint,
-};
+use crate::{ROW_PAD, frame_theme, line_bg, makepad_widgets::*, theme::paint};
 
 script_mod! {
     use mod.prelude.widgets.*
@@ -359,16 +357,7 @@ impl Widget for DiffLine {
             return DrawStep::done();
         };
 
-        let under = if self.prose {
-            prose_bg(theme)
-        } else {
-            row_bg(theme, kind)
-        };
-        self.draw_bg.color = if self.selected {
-            selected_bg(theme, under)
-        } else {
-            under
-        };
+        self.draw_bg.color = line_bg(theme, kind, self.prose, self.selected);
 
         let walk = Walk {
             width: Size::fill(),

@@ -14,10 +14,7 @@ use crate::makepad_widgets::widget::WidgetActionData;
     clippy::wildcard_imports,
     reason = "Makepad macros and derives expand against the widget prelude in this scope."
 )]
-use crate::{
-    ROW_PAD, frame_theme, makepad_widgets::*, prose_bg, row_bg, row_marker, selected_bg,
-    theme::paint,
-};
+use crate::{ROW_PAD, frame_theme, line_bg, makepad_widgets::*, row_marker, theme::paint};
 
 script_mod! {
     use mod.prelude.widgets.*
@@ -255,16 +252,7 @@ impl Gutter {
         let Some(theme) = frame_theme(scope) else {
             return;
         };
-        let under = if self.prose {
-            prose_bg(theme)
-        } else {
-            row_bg(theme, kind)
-        };
-        self.draw_bg.color = if self.marks.selected {
-            selected_bg(theme, under)
-        } else {
-            under
-        };
+        self.draw_bg.color = line_bg(theme, kind, self.prose, self.marks.selected);
         let r = Rect {
             pos: self.rect.pos,
             size: dvec2(self.rect.size.x, height),

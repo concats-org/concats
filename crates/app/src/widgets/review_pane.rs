@@ -33,9 +33,9 @@ use crate::{
     load::{hold_minted, resplice_comments, spawn_load},
     makepad_widgets::*,
     review_doc::{
-        Compose, Composing, Stream, blob_label, card_keys, code_row_near, comment_anchor,
-        derive_compose, expand_collapsed, quoted, reveal_removed, seen_progress, selected,
-        splice_composer, stream_has_composer, strip_composer, widen_compose,
+        Compose, Composing, ReviewDoc, Stream, blob_label, card_keys, code_row_near,
+        comment_anchor, derive_compose, expand_collapsed, quoted, reveal_removed, seen_progress,
+        selected, splice_composer, stream_has_composer, strip_composer, widen_compose,
     },
     service::{self, ReviewCmd, review, review_state},
     terminal,
@@ -800,10 +800,7 @@ impl ReviewPane {
     fn close_file_tab(&mut self, cx: &mut Cx, tab_id: LiveId) {
         self.state().with(|d| {
             if d.composer_tab == Some(Stream::File(tab_id.0)) || d.tab == Stream::File(tab_id.0) {
-                strip_composer(d);
-                d.compose = None;
-                self.state().compose_draft.write().unwrap().clear();
-                d.compose_focus = false;
+                drop_composer(self.state(), d);
             }
             d.files_open.retain(|f| f.tab != tab_id.0);
             // The gesture cannot stay pointed at a stream that no longer
@@ -998,10 +995,7 @@ impl ReviewPane {
             if d.tab == tab {
                 return false;
             }
-            d.compose = None;
-            self.state().compose_draft.write().unwrap().clear();
-            strip_composer(d);
-            d.compose_focus = false;
+            drop_composer(self.state(), d);
             d.tab = tab;
             true
         });
@@ -1073,15 +1067,6 @@ impl ReviewPane {
             resplice_comments(d, &comments);
             d.rows_rev += 1;
         });
-        self.redraw_streams(cx);
-    }
-
-    /// Reveal part of a collapsed run of unchanged lines. Only this stream's
-    /// copy of the run opens: the same file is a card in several streams, and
-    /// each one is its own reading surface.
-    fn expand_run(&mut self, cx: &mut Cx, tab: Stream, item_id: usize, end: CollapsedEnd) {
-        self.state()
-            .with(|d| expand_collapsed(d, tab, item_id, end));
         self.redraw_streams(cx);
     }
 
@@ -1241,17 +1226,14 @@ impl ReviewPane {
                     start: line,
                     end: line,
                 });
-                d.compose = Some(Composing::Lines(match kind {
-                    LineKind::Del => Compose {
-                        old: side,
-                        new: None,
-                        span: None,
-                    },
-                    _ => Compose {
-                        old: None,
-                        new: side,
-                        span: None,
-                    },
+                let (old, new) = match kind {
+                    LineKind::Del => (side, None),
+                    _ => (None, side),
+                };
+                d.compose = Some(Composing::Lines(Compose {
+                    old,
+                    new,
+                    span: None,
                 }));
                 d.compose_anchor = item_id;
                 self.state().compose_draft.write().unwrap().clear();
@@ -1321,7 +1303,6 @@ impl ReviewPane {
             else {
                 return;
             };
-            strip_composer(d);
             d.compose = Some(Composing::Lines(Compose {
                 span: Some((head, tail)),
                 ..compose
@@ -1369,12 +1350,10 @@ impl ReviewPane {
             if body.is_empty() {
                 return;
             }
-            let Some(c) = d.compose.take() else {
+            let Some(c) = d.compose else {
                 return;
             };
-            self.state().compose_draft.write().unwrap().clear();
-            strip_composer(d);
-            d.compose_focus = false;
+            drop_composer(self.state(), d);
             let Some(git_dir) = d.git_dir.clone() else {
                 return;
             };
@@ -1428,12 +1407,7 @@ impl ReviewPane {
     }
 
     fn close_composer(&mut self, cx: &mut Cx) {
-        self.state().with(|d| {
-            d.compose = None;
-            self.state().compose_draft.write().unwrap().clear();
-            strip_composer(d);
-            d.compose_focus = false;
-        });
+        self.state().with(|d| drop_composer(self.state(), d));
         self.focus_active_list(cx);
         self.redraw_streams(cx);
     }
@@ -1662,10 +1636,6 @@ impl ReviewPane {
     /// The diff picker: chip toggles, typing filters, Enter accepts a typed
     /// ref (or an explicit base...head), a row click picks that ref as the
     /// base — both against HEAD.
-    #[expect(
-        clippy::cognitive_complexity,
-        reason = "Picker input and row actions are handled in their UI order."
-    )]
     fn handle_diff_picker(&mut self, cx: &mut Cx, actions: &Actions) {
         if self.view.button(cx, ids!(range_button)).clicked(actions) {
             if self.view.view(cx, ids!(combo_panel)).visible() {
@@ -1686,10 +1656,7 @@ impl ReviewPane {
             if text.is_empty() {
                 self.combo_close(cx);
             } else {
-                let (base, head) = match text.split_once("...").or_else(|| text.split_once("..")) {
-                    Some((b, h)) => (b.trim().to_string(), h.trim().to_string()),
-                    None => (text, "HEAD".to_string()),
-                };
+                let (base, head) = range_of(&text);
                 let repo = self.state().read(|d| d.repo.clone());
                 self.combo_load(cx, repo, base, head);
             }
@@ -1703,10 +1670,7 @@ impl ReviewPane {
                 if !text.is_empty() {
                     // A row is usually a base ref (diffed against HEAD), but
                     // the worktree presets are full `base...head` ranges.
-                    let (base, head) = match text.split_once("...") {
-                        Some((b, h)) => (b.to_string(), h.to_string()),
-                        None => (text, "HEAD".into()),
-                    };
+                    let (base, head) = range_of(&text);
                     let repo = self.state().read(|d| d.repo.clone());
                     self.combo_load(cx, repo, base, head);
                 }
@@ -1938,9 +1902,13 @@ impl ReviewPane {
                     _ => {}
                 },
                 // A chevron on a collapsed run: the band's action says which end.
+                // Only this stream's copy of the run opens: the same file is a
+                // card in several streams, and each one is its own reading
+                // surface.
                 ReviewItemAction::Expand { tab, row } => {
                     if let Some(end) = action.action.downcast_ref::<CollapsedEnd>() {
-                        self.expand_run(cx, *tab, *row, *end);
+                        self.state().with(|d| expand_collapsed(d, *tab, *row, *end));
+                        self.redraw_streams(cx);
                     }
                 }
                 // "N lines removed": put them back where they were taken from.
@@ -2036,6 +2004,24 @@ fn is_keyboard_input(event: &Event) -> bool {
             | Event::TextCut(_)
             | Event::ImeAction(_)
     )
+}
+
+/// Close the composer: no target, no draft, no row, no keyboard.
+fn drop_composer(state: &WindowState, d: &mut ReviewDoc) {
+    d.compose = None;
+    state.compose_draft.write().unwrap().clear();
+    strip_composer(d);
+    d.compose_focus = false;
+}
+
+/// A picked or typed range: `base...head` (or `base..head`), else a base ref
+/// diffed against HEAD. Git ref names cannot contain `..`, so a ref is never
+/// split.
+fn range_of(text: &str) -> (String, String) {
+    match text.split_once("...").or_else(|| text.split_once("..")) {
+        Some((base, head)) => (base.trim().to_string(), head.trim().to_string()),
+        None => (text.to_string(), "HEAD".to_string()),
+    }
 }
 
 impl Widget for ReviewPane {
