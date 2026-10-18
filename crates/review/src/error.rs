@@ -30,4 +30,8 @@ pub enum Error {
         path: String,
         ranges: String,
     },
+    #[error("empty comment body")]
+    EmptyBody,
+    #[error("no comment with id {0}")]
+    NoSuchComment(u64),
 }

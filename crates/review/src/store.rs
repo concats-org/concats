@@ -146,6 +146,24 @@ pub fn now() -> u64 {
         .unwrap_or(0)
 }
 
+/// A new comment on `anchor` in `path`, made now: what every comment starts
+/// from. Callers fill in the rest; the store allocates the id.
+pub fn comment(path: String, anchor: Anchor) -> Comment {
+    Comment {
+        id: 0,
+        path,
+        anchor,
+        body: String::new(),
+        author: None,
+        created_at: now(),
+        // NOTE: a quote comes from a selection, which only the app has.
+        quote: None,
+        parent: None,
+        external: None,
+        cursors: None,
+    }
+}
+
 pub struct Store {
     conn: Connection,
     /// SQLite's `data_version` as of our last look. It moves only when another
@@ -263,9 +281,24 @@ pub(crate) fn open_db(git_dir: &Path) -> rusqlite::Result<Connection> {
 }
 
 impl Store {
-    /// Persist a buffer using this store's existing database connection.
+    /// Keep `origin`'s document, so its comments' cursors and unsaved typing
+    /// outlive the process.
     pub fn save_buffer(&self, origin: &Path, saved: &concats_sync::Saved) {
-        save_buffer_on(&self.conn, origin, saved);
+        const MAX_SNAPSHOT_BYTES: usize = 64 << 20;
+        if saved.snapshot.len() > MAX_SNAPSHOT_BYTES {
+            eprintln!("warning: buffer cache exceeds 64 MiB: {}", origin.display());
+            return;
+        }
+        let key = origin.to_string_lossy();
+        let write = self.conn.execute(
+            "INSERT INTO buffers (origin, snapshot, disk, updated_at) VALUES (?1,?2,?3,?4)
+             ON CONFLICT(origin) DO UPDATE SET snapshot = ?2, disk = ?3, updated_at = ?4",
+            (&key, &saved.snapshot, &saved.disk, now()),
+        );
+        if let Err(error) = write {
+            // NOTE: a cache failure leaves the live buffer editable; the next snapshot retries.
+            eprintln!("warning: cannot cache {}: {error}", origin.display());
+        }
     }
 
     /// Open the store for a repo. Never fails: when the database cannot be
@@ -420,11 +453,11 @@ impl Store {
         }
     }
 
-    /// Store a comment and return its id. `comment.id` is ignored: the database
-    /// allocates ids, so concurrent writers cannot collide. Every other field
-    /// is taken as given, `created_at` included, because an import carries the
-    /// time the comment was really written.
-    pub fn add_comment(&mut self, comment: Comment) -> u64 {
+    /// Store a comment and return it as stored. `comment.id` is ignored: the
+    /// database allocates ids, so concurrent writers cannot collide. Every
+    /// other field is taken as given, `created_at` included, because an import
+    /// carries the time the comment was really written.
+    pub fn add_comment(&mut self, comment: Comment) -> Result<Comment, Error> {
         let comment = Comment {
             anchor: comment.anchor.normalized(),
             ..comment
@@ -449,20 +482,22 @@ impl Store {
                 comment.quote.as_ref().map(|quote| quote.to),
             ),
         );
-        if let Err(error) = &write {
-            eprintln!("warning: cannot save comment: {error}");
-        }
-        let id = self.conn.last_insert_rowid() as u64;
-        let minted = comment.cursors.clone();
-        self.comments.push(Comment {
-            id,
-            cursors: None,
+        write.map_err(|source| Error::Store {
+            op: "cannot save comment",
+            source,
+        })?;
+        let stored = Comment {
+            id: self.conn.last_insert_rowid() as u64,
             ..comment
+        };
+        self.comments.push(Comment {
+            cursors: None,
+            ..stored.clone()
         });
-        if let Some(pair) = minted {
-            self.set_cursors(&[(id, pair)]);
+        if let Some(pair) = stored.cursors.clone() {
+            self.set_cursors(&[(stored.id, pair)]);
         }
-        id
+        Ok(stored)
     }
 
     /// Give comments their cursor pairs: what a new comment was made with, or
@@ -489,7 +524,8 @@ impl Store {
     /// reply's content, so the thread never splits across two lines. A reply
     /// written elsewhere — on the lines a fix moved the
     /// conversation to — is an [`Store::add_comment`] under [`Store::root_of`]
-    /// with its own anchor. `None` when `parent` is not a stored comment.
+    /// with its own anchor. [`Error::NoSuchComment`] when `parent` is not a
+    /// stored comment.
     pub fn reply_comment(
         &mut self,
         parent: u64,
@@ -497,23 +533,20 @@ impl Store {
         author: Option<String>,
         created_at: u64,
         external: Option<String>,
-    ) -> Option<u64> {
-        let root = self.root_of(parent)?;
+    ) -> Result<Comment, Error> {
+        let root = self.root_of(parent).ok_or(Error::NoSuchComment(parent))?;
+        // A reply answers the thread, not a span of the code: the quote is the
+        // root's claim about what it is on.
         let reply = Comment {
-            id: 0,
-            path: root.path.clone(),
-            anchor: root.anchor,
             cursors: root.cursors.clone(),
             parent: Some(root.id),
             body,
             author,
             created_at,
             external,
-            // A reply answers the thread, not a span of the code: the quote is
-            // the root's claim about what it is on.
-            quote: None,
+            ..comment(root.path.clone(), root.anchor)
         };
-        Some(self.add_comment(reply))
+        self.add_comment(reply)
     }
 
     /// The root of the thread `id` is in — `id` itself when it is a root. The
@@ -883,38 +916,6 @@ pub fn latest_guide(git_dir: &Path, merge_base: &ObjectId, head: &ObjectId) -> O
 // NOTE: snapshots include unsaved typing as well as comment cursors. There
 // is no age-based pruning: an old snapshot may be the only copy of an edit.
 
-/// Keep `origin`'s document, so its comments' cursors and unsaved typing outlive
-/// the process.
-pub fn save_buffer(git_dir: &Path, origin: &Path, saved: &concats_sync::Saved) {
-    let conn = match open_db(git_dir) {
-        Ok(conn) => conn,
-        Err(error) => {
-            // NOTE: A cache failure must not interrupt editing.
-            eprintln!("warning: cannot open buffer cache: {error}");
-            return;
-        }
-    };
-    save_buffer_on(&conn, origin, saved);
-}
-
-fn save_buffer_on(conn: &Connection, origin: &Path, saved: &concats_sync::Saved) {
-    const MAX_SNAPSHOT_BYTES: usize = 64 << 20;
-    if saved.snapshot.len() > MAX_SNAPSHOT_BYTES {
-        eprintln!("warning: buffer cache exceeds 64 MiB: {}", origin.display());
-        return;
-    }
-    let key = origin.to_string_lossy();
-    let write = conn.execute(
-        "INSERT INTO buffers (origin, snapshot, disk, updated_at) VALUES (?1,?2,?3,?4)
-         ON CONFLICT(origin) DO UPDATE SET snapshot = ?2, disk = ?3, updated_at = ?4",
-        (&key, &saved.snapshot, &saved.disk, now()),
-    );
-    if let Err(error) = write {
-        // NOTE: a cache failure leaves the live buffer editable; the next snapshot retries.
-        eprintln!("warning: cannot cache {}: {error}", origin.display());
-    }
-}
-
 pub fn load_buffer(git_dir: &Path, origin: &Path) -> Option<concats_sync::Saved> {
     // NOTE: cache failures must not prevent opening the file itself.
     let conn = open_db(git_dir)
@@ -1094,20 +1095,25 @@ mod tests {
     fn a_quote_survives_the_store_and_reaches_the_thread() {
         let tmp = tempfile::tempdir().unwrap();
         let mut store = Store::open(tmp.path());
-        let id = store.add_comment(Comment {
-            quote: Some(Quote {
-                text: "resolve(&names, \"greeting\")".into(),
-                from: 8,
-                to: 35,
-            }),
-            ..comment(
-                "a.txt",
-                anchor(oid(7), 1, 1),
-                "does this handle the empty case?",
-            )
-        });
+        let id = store
+            .add_comment(Comment {
+                quote: Some(Quote {
+                    text: "resolve(&names, \"greeting\")".into(),
+                    from: 8,
+                    to: 35,
+                }),
+                ..comment(
+                    "a.txt",
+                    anchor(oid(7), 1, 1),
+                    "does this handle the empty case?",
+                )
+            })
+            .unwrap()
+            .id;
         // A reply answers the thread, not the span the root named.
-        store.reply_comment(id, "it does not".into(), None, 0, None);
+        store
+            .reply_comment(id, "it does not".into(), None, 0, None)
+            .unwrap();
 
         let reopened = Store::open(tmp.path());
         let quotes: Vec<Option<(&str, u32, u32)>> = reopened
@@ -1239,13 +1245,16 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let mut s = Store::open(tmp.path());
         s.toggle(&[(oid(1), 0), (oid(1), 1)]);
-        let id = s.add_comment(Comment {
-            author: Some("claude".into()),
-            created_at: 1_700_000_000,
-            external: Some("github:2181234567".into()),
-            cursors: None,
-            ..comment("a.txt", anchor(oid(2), 3, 5), "why though?")
-        });
+        let id = s
+            .add_comment(Comment {
+                author: Some("claude".into()),
+                created_at: 1_700_000_000,
+                external: Some("github:2181234567".into()),
+                cursors: None,
+                ..comment("a.txt", anchor(oid(2), 3, 5), "why though?")
+            })
+            .unwrap()
+            .id;
 
         let s2 = Store::open(tmp.path());
         assert_eq!(s2.seen, s.seen);
@@ -1273,8 +1282,14 @@ mod tests {
         let mut cli = Store::open(tmp.path());
 
         // Ids come from the database: two writers cannot collide.
-        let gui_id = gui.add_comment(comment("a.txt", anchor(oid(1), 0, 0), "mine"));
-        let cli_id = cli.add_comment(comment("b.txt", anchor(oid(2), 1, 1), "theirs"));
+        let gui_id = gui
+            .add_comment(comment("a.txt", anchor(oid(1), 0, 0), "mine"))
+            .unwrap()
+            .id;
+        let cli_id = cli
+            .add_comment(comment("b.txt", anchor(oid(2), 1, 1), "theirs"))
+            .unwrap()
+            .id;
         assert_ne!(gui_id, cli_id);
 
         // Each side sees the other's write as an external change to adopt.
@@ -1295,10 +1310,28 @@ mod tests {
     fn own_writes_are_not_an_external_change() {
         let tmp = tempfile::tempdir().unwrap();
         let mut s = Store::open(tmp.path());
-        s.add_comment(comment("a.txt", anchor(oid(1), 0, 0), "mine"));
+        s.add_comment(comment("a.txt", anchor(oid(1), 0, 0), "mine"))
+            .unwrap();
         assert!(!s.external_change());
         assert!(!s.refresh());
         assert_eq!(s.comments.len(), 1);
+    }
+
+    /// A write the database refuses is an error, and nothing in memory claims
+    /// it was saved.
+    #[test]
+    fn a_refused_write_is_an_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut s = Store::open(tmp.path());
+        s.conn
+            .execute_batch(
+                "CREATE TRIGGER refuse BEFORE INSERT ON comments
+                 BEGIN SELECT RAISE(ABORT, 'refused'); END;",
+            )
+            .unwrap();
+        let refused = s.add_comment(comment("a.txt", anchor(oid(1), 0, 0), "lost"));
+        assert!(matches!(refused, Err(Error::Store { .. })), "{refused:?}");
+        assert!(s.comments.is_empty());
     }
 
     #[test]
@@ -1350,8 +1383,7 @@ mod tests {
         assert_eq!(back.snapshot, saved.snapshot);
         assert_eq!(back.disk, saved.disk);
 
-        save_buffer(
-            tmp.path(),
+        store.save_buffer(
             origin,
             &concats_sync::Saved {
                 snapshot: vec![9],
@@ -1369,14 +1401,21 @@ mod tests {
     fn a_comments_cursors_travel_with_the_comment() {
         let tmp = tempfile::tempdir().unwrap();
         let mut s = Store::open(tmp.path());
-        let root = s.add_comment(Comment {
-            cursors: Some((vec![1, 2], vec![3, 4])),
-            ..comment("a.txt", anchor(oid(2), 3, 5), "here")
-        });
+        let root = s
+            .add_comment(Comment {
+                cursors: Some((vec![1, 2], vec![3, 4])),
+                ..comment("a.txt", anchor(oid(2), 3, 5), "here")
+            })
+            .unwrap()
+            .id;
         let reply = s
             .reply_comment(root, "and here".into(), None, 0, None)
-            .unwrap();
-        let bare = s.add_comment(comment("a.txt", anchor(oid(2), 9, 9), "no document"));
+            .unwrap()
+            .id;
+        let bare = s
+            .add_comment(comment("a.txt", anchor(oid(2), 9, 9), "no document"))
+            .unwrap()
+            .id;
 
         let stored = Store::open(tmp.path());
         let cursors = |id: u64| {
@@ -1422,7 +1461,10 @@ mod tests {
         std::fs::write(linked.join("commondir"), "../..\n").unwrap();
 
         let mut main = Store::open(&shared);
-        let id = main.add_comment(comment("a.rs", anchor(oid(7), 1, 1), "from main"));
+        let id = main
+            .add_comment(comment("a.rs", anchor(oid(7), 1, 1), "from main"))
+            .unwrap()
+            .id;
 
         let feature = Store::open(&linked);
         assert_eq!(
@@ -1648,14 +1690,19 @@ mod tests {
     fn a_reply_takes_its_roots_anchor_and_never_nests_deeper() {
         let tmp = tempfile::tempdir().unwrap();
         let mut s = Store::open(tmp.path());
-        let root = s.add_comment(comment("a.txt", anchor(oid(2), 3, 5), "this leaks"));
+        let root = s
+            .add_comment(comment("a.txt", anchor(oid(2), 3, 5), "this leaks"))
+            .unwrap()
+            .id;
         let reply = s
             .reply_comment(root, "fixed".into(), Some("claude".into()), 0, None)
-            .unwrap();
+            .unwrap()
+            .id;
         // A reply to a reply threads under the root, not under the reply.
         let deeper = s
             .reply_comment(reply, "thanks".into(), None, 0, None)
-            .unwrap();
+            .unwrap()
+            .id;
 
         let stored = Store::open(tmp.path());
         assert_eq!(stored.comments.len(), 3);
@@ -1674,7 +1721,10 @@ mod tests {
                 .author,
             None
         );
-        assert_eq!(s.reply_comment(9999, "nobody".into(), None, 0, None), None);
+        assert!(matches!(
+            s.reply_comment(9999, "nobody".into(), None, 0, None),
+            Err(Error::NoSuchComment(9999))
+        ));
         // `root_of` is what a reply written elsewhere threads with.
         assert_eq!(s.root_of(deeper).map(|c| c.id), Some(root));
         assert_eq!(s.root_of(root).map(|c| c.id), Some(root));
@@ -1749,9 +1799,16 @@ mod tests {
     fn deleting_a_root_deletes_its_thread() {
         let tmp = tempfile::tempdir().unwrap();
         let mut s = Store::open(tmp.path());
-        let root = s.add_comment(comment("a.txt", anchor(oid(2), 0, 0), "this leaks"));
-        s.reply_comment(root, "fixed".into(), None, 0, None);
-        let other = s.add_comment(comment("a.txt", anchor(oid(2), 0, 0), "unrelated"));
+        let root = s
+            .add_comment(comment("a.txt", anchor(oid(2), 0, 0), "this leaks"))
+            .unwrap()
+            .id;
+        s.reply_comment(root, "fixed".into(), None, 0, None)
+            .unwrap();
+        let other = s
+            .add_comment(comment("a.txt", anchor(oid(2), 0, 0), "unrelated"))
+            .unwrap()
+            .id;
 
         s.delete_comment(root);
         // In memory and on disk, so the GUI shows no ghosts before the next
@@ -1825,7 +1882,10 @@ mod tests {
         let mut s = Store::open(tmp.path());
         let (old, new) = (oid(1), oid(2));
 
-        let root = s.add_comment(comment("a.txt", anchor(old, 3, 3), "here"));
+        let root = s
+            .add_comment(comment("a.txt", anchor(old, 3, 3), "here"))
+            .unwrap()
+            .id;
         s.reply_comment(root, "and here".into(), None, 0, None)
             .unwrap();
         s.toggle(&[(old, 3), (old, 9)]);
@@ -1854,10 +1914,13 @@ mod tests {
 
         // A reply written on lines the save typed away stays behind, on its
         // own: comments move one by one, not as a thread.
-        let elsewhere = s.add_comment(Comment {
-            parent: Some(root),
-            ..comment("a.txt", anchor(old, 9, 9), "and this line")
-        });
+        let elsewhere = s
+            .add_comment(Comment {
+                parent: Some(root),
+                ..comment("a.txt", anchor(old, 9, 9), "and this line")
+            })
+            .unwrap()
+            .id;
         assert!(
             !s.rehome(old, new, &lines),
             "nothing to carry: the reply's line was typed away"

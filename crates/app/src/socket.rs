@@ -18,7 +18,7 @@ use std::{
 };
 
 use concats_review::{
-    comments, interchange,
+    Error, comments, interchange,
     store::{self, Comment, Store},
 };
 use concats_state::{COMMENTS, RANGE, REPLIES};
@@ -168,53 +168,28 @@ fn shown_comments(doc: &ReviewDoc, all: bool) -> Answer {
 /// Answer the thread `to` is in, the way `concats comments reply` does: by
 /// `?author=`, and at `?at=` — where its code lives now — when given.
 fn reply(doc: &ReviewDoc, to: u64, body: &str, url: &url::Url) -> Answer {
-    let author = query(url, "author");
-    if body.is_empty() {
-        return text(400, "empty reply body");
-    }
     let Some(git_dir) = &doc.git_dir else {
         return text(503, "this window has no repository open");
     };
-    let mut store = Store::open(git_dir);
-    let Some(thread) = store.root_of(to).map(|c| c.id) else {
-        return text(404, &format!("no comment with id {to}"));
-    };
-    let Some(spec) = query(url, "at") else {
-        let id = store.reply_comment(to, body.to_string(), author, store::now(), None);
-        return match id {
-            Some(id) => text(201, &format!("added comment #{id} replying to #{thread}")),
-            None => text(404, &format!("no comment with id {to}")),
-        };
-    };
-    let loaded = match load(doc) {
+    let at = query(url, "at");
+    let loaded = match at.as_ref().map(|_| load(doc)).transpose() {
         Ok(loaded) => loaded,
         Err(answer) => return answer,
     };
-    let (path, anchor) = match comments::resolve_anchor(&spec, &loaded) {
-        Ok(resolved) => resolved,
-        Err(error) => return text(422, &error.to_string()),
-    };
-    let id = store.add_comment(Comment {
-        id: 0,
-        path: path.clone(),
-        anchor,
-        body: body.to_string(),
-        author,
-        created_at: store::now(),
-        parent: Some(thread),
-        external: None,
-        cursors: comments::document_cursors(&loaded, &path, anchor),
-        // NOTE: a reply names lines; a quote is the app's selection.
-        quote: None,
-    });
-    text(
-        201,
-        &format!(
-            "added comment #{id} replying to #{thread}, on {path}:{}–{}",
-            anchor.start + 1,
-            anchor.end + 1
-        ),
-    )
+    let moved = loaded.as_ref().zip(at.as_deref());
+    let mut store = Store::open(git_dir);
+    match comments::reply(&mut store, to, body, query(url, "author"), moved) {
+        Ok(c) => text(201, &comments::added(&c, moved.is_some())),
+        Err(error) => {
+            let status = match error {
+                Error::EmptyBody => 400,
+                Error::NoSuchComment(_) => 404,
+                Error::Store { .. } => 500,
+                _ => 422,
+            };
+            text(status, &error.to_string())
+        }
+    }
 }
 
 /// The diff `doc` shows, loaded fresh the way the CLI loads it.
@@ -301,8 +276,14 @@ mod tests {
 
         let git_dir = root.join(".git");
         let mut store = Store::open(&git_dir);
-        let shown = store.add_comment(comment("file.rs", "new\n", "on screen"));
-        let elsewhere = store.add_comment(comment("file.rs", "gone\n", "another range"));
+        let shown = store
+            .add_comment(comment("file.rs", "new\n", "on screen"))
+            .unwrap()
+            .id;
+        let elsewhere = store
+            .add_comment(comment("file.rs", "gone\n", "another range"))
+            .unwrap()
+            .id;
         drop(store);
 
         let state = WindowState::new(LiveId(1), None);
@@ -349,6 +330,20 @@ mod tests {
         assert!(said.contains("not part of this diff"), "{said}");
         let (status, _) = ask(&socket, "POST", &format!("{COMMENTS}/999/{REPLIES}"), "x");
         assert_eq!(status, 404);
+        let (status, _) = ask(
+            &socket,
+            "POST",
+            &format!("{COMMENTS}/999/{REPLIES}?at=file.rs:1"),
+            "x",
+        );
+        assert_eq!(status, 404);
+        let (status, said) = ask(
+            &socket,
+            "POST",
+            &format!("{COMMENTS}/{shown}/{REPLIES}"),
+            " \n",
+        );
+        assert_eq!((status, said.as_str()), (400, "empty comment body\n"));
 
         let replies: Vec<Comment> = Store::open(&git_dir)
             .comments

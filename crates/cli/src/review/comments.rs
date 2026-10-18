@@ -9,6 +9,7 @@ use std::{collections::HashMap, process::ExitCode};
 
 use concats_diff::load::Loaded;
 use concats_review::{
+    Error,
     comments::{self, document_cursors},
     github, interchange,
     store::{self, Anchor, Comment, Store},
@@ -98,30 +99,11 @@ fn list(repo: Option<&str>, delete: Option<u64>) -> Outcome {
 }
 
 fn add(spec: &str, body: &str, author: Option<String>, range: &RangeArgs) -> Outcome {
-    let body = non_empty(body)?;
     let loaded = super::load(&range.resolve()?)?;
-    let (path, at) = resolve_anchor(spec, &loaded)?;
-
     let mut store = Store::open(&loaded.git_dir);
-    let id = store.add_comment(Comment {
-        id: 0,
-        path: path.clone(),
-        anchor: at,
-        body,
-        author,
-        created_at: store::now(),
-        parent: None,
-        external: None,
-        cursors: document_cursors(&loaded, &path, at),
-        // NOTE: the CLI comments on lines; a quote comes from a selection,
-        // which only the app has.
-        quote: None,
-    });
-    println!(
-        "added comment #{id} on {path}:{}–{}",
-        at.start + 1,
-        at.end + 1
-    );
+    let c =
+        comments::add(&mut store, &loaded, spec, body, author).map_err(|error| report(&error))?;
+    println!("{}", comments::added(&c, true));
     Ok(())
 }
 
@@ -136,80 +118,34 @@ fn reply(
         eprintln!("error: `{id}` is not a comment id — run `concats comments` for the stored ones");
         return Err(ExitCode::from(BAD_INPUT));
     };
-    let body = non_empty(body)?;
 
     // Only a reply written elsewhere needs the diff — its anchor is validated
     // against it like `add`'s. A plain reply takes the root's place and stays
     // cheap: no range, no load.
-    let diff = match moved {
+    let loaded = match moved {
         Some(_) => Some(super::load(&range.resolve()?)?),
         None => None,
     };
-    let mut store = match &diff {
+    let mut store = match &loaded {
         Some(loaded) => Store::open(&loaded.git_dir),
         None => super::open_store(range.repo.as_deref())?,
     };
-    // The root, not the id given: a reply to a reply threads under the root.
-    let Some(thread) = store.root_of(parent).map(|c| c.id) else {
-        return Err(no_such_comment(parent));
-    };
-
-    if let (Some(spec), Some(loaded)) = (moved, &diff) {
-        let (path, at) = resolve_anchor(spec, loaded)?;
-        let id = store.add_comment(Comment {
-            id: 0,
-            path: path.clone(),
-            anchor: at,
-            body,
-            author,
-            created_at: store::now(),
-            parent: Some(thread),
-            external: None,
-            cursors: document_cursors(loaded, &path, at),
-            quote: None,
-        });
-        println!(
-            "added comment #{id} replying to #{thread}, on {path}:{}–{}",
-            at.start + 1,
-            at.end + 1
-        );
-        return Ok(());
-    }
-
-    let Some(id) = store.reply_comment(parent, body, author, store::now(), None) else {
-        return Err(no_such_comment(parent));
-    };
-    println!("added comment #{id} replying to #{thread}");
+    let c = comments::reply(&mut store, parent, body, author, loaded.as_ref().zip(moved))
+        .map_err(|error| report(&error))?;
+    println!("{}", comments::added(&c, moved.is_some()));
     Ok(())
 }
 
-fn no_such_comment(id: u64) -> ExitCode {
-    eprintln!("no comment with id {id}");
-    eprintln!("       run `concats comments` for the stored comments");
-    ExitCode::from(FINDINGS)
-}
-
-/// A comment body, trimmed. Whitespace is not a comment.
-fn non_empty(body: &str) -> Result<String, ExitCode> {
-    let body = body.trim();
-    if body.is_empty() {
-        eprintln!("error: empty comment body");
-        return Err(ExitCode::from(FINDINGS));
+/// A comment `add` or `reply` could not leave, said on stderr.
+fn report(error: &Error) -> ExitCode {
+    match error {
+        Error::NoSuchComment(_) => {
+            eprintln!("{error}");
+            eprintln!("       run `concats comments` for the stored comments");
+        }
+        _ => eprintln!("error: {error}"),
     }
-    Ok(body.to_string())
-}
-
-/// [`comments::resolve_anchor`], with its diagnostics printed.
-fn resolve_anchor(spec: &str, loaded: &Loaded) -> Result<(String, Anchor), ExitCode> {
-    comments::resolve_anchor(spec, loaded).map_err(|error| {
-        eprintln!("error: {error}");
-        ExitCode::from(FINDINGS)
-    })
-}
-
-/// Ranges to copy, so a caller fixing an anchor never does line arithmetic.
-fn print_reviewable_ranges(loaded: &Loaded, file: &concats_diff::FileChange) {
-    eprintln!("\n{}", comments::reviewable_ranges(loaded, file));
+    ExitCode::from(FINDINGS)
 }
 
 /// The range's threads as one interchange document; `--all` for the whole
@@ -360,7 +296,7 @@ fn resolve_document_roots<'a>(
     let (resolved, failed) = resolve_roots(entries, loaded, |entry, error| {
         print_resolution_error(entry, error, input, "error");
         if let interchange::ResolveError::MissingLines { file, .. } = error {
-            print_reviewable_ranges(loaded, file);
+            eprintln!("\n{}", comments::reviewable_ranges(loaded, file));
         }
     });
     if failed > 0 {
@@ -568,8 +504,7 @@ fn remember(ids: &mut HashMap<u64, u64>, entry: &interchange::Entry, id: u64) {
 
 /// Write one entry: at its own anchor when it has one — a root, or a reply
 /// written on other lines than its root — else into `parent`'s thread at the
-/// root's place. `None` when the thread went away between resolving and
-/// writing.
+/// root's place. `None` when the write failed, said on stderr.
 fn store_entry(
     store: &mut Store,
     loaded: &concats_diff::load::Loaded,
@@ -579,29 +514,33 @@ fn store_entry(
     author: Option<String>,
 ) -> Option<u64> {
     let created_at = entry.created_at.unwrap_or_else(store::now);
-    let Some((path, at)) = anchor else {
+    let stored = if let Some((path, at)) = anchor {
+        let cursors = document_cursors(store, loaded, path, *at);
+        store.add_comment(Comment {
+            body: entry.body.clone(),
+            author,
+            created_at,
+            parent,
+            external: entry.external.clone(),
+            cursors,
+            ..store::comment(path.clone(), *at)
+        })
+    } else {
         let root = parent.expect("a reply without a thread was skipped above");
-        return store.reply_comment(
+        store.reply_comment(
             root,
             entry.body.clone(),
             author,
             created_at,
             entry.external.clone(),
-        );
+        )
     };
-    Some(store.add_comment(Comment {
-        id: 0,
-        path: path.clone(),
-        anchor: *at,
-        body: entry.body.clone(),
-        author,
-        created_at,
-        parent,
-        external: entry.external.clone(),
-        cursors: document_cursors(loaded, path, *at),
-        // NOTE: an imported entry names lines; a quote is the app's selection.
-        quote: None,
-    }))
+    // NOTE: a write the store refused is not imported; the batch goes on, and
+    // the tally counts only what landed.
+    stored
+        .inspect_err(|error| eprintln!("warning: {error}"))
+        .ok()
+        .map(|c| c.id)
 }
 
 /// The thread a reply joins, as its root's id: a comment this batch just wrote,

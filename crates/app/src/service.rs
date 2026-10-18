@@ -14,7 +14,10 @@ use std::{
 };
 
 use concats_highlight::Highlighter;
-use concats_review::store::{self, Anchor, Comment, LineKey, Store};
+use concats_review::{
+    comments,
+    store::{self, Anchor, Comment, LineKey, Store},
+};
 use concats_syntax::LineSpans;
 use gix::ObjectId;
 use makepad_service::{Service, Shared, Worker, notify};
@@ -435,18 +438,18 @@ impl Service for AppService {
                 // The author read hits git's config files, so it belongs here
                 // and not in the click handler.
                 let author = store::git_user_name(&git_dir);
-                self.store(&git_dir).add_comment(store::Comment {
-                    id: 0,
-                    path,
-                    anchor,
+                let added = self.store(&git_dir).add_comment(Comment {
                     body,
                     author,
-                    created_at: store::now(),
-                    parent: None,
-                    external: None,
                     cursors,
                     quote,
+                    ..store::comment(path, anchor)
                 });
+                // NOTE: the composer has closed; a refused write is said here
+                // and the thread does not appear.
+                if let Err(error) = added {
+                    eprintln!("warning: {error}");
+                }
                 self.publish_comments_changed(&git_dir);
             }
 
@@ -456,8 +459,11 @@ impl Service for AppService {
                 body,
             } => {
                 let author = store::git_user_name(&git_dir);
-                self.store(&git_dir)
-                    .reply_comment(parent, body, author, store::now(), None);
+                let replied = comments::reply(self.store(&git_dir), parent, &body, author, None);
+                // NOTE: as for a new comment: said here, and nothing appears.
+                if let Err(error) = replied {
+                    eprintln!("warning: {error}");
+                }
                 self.publish_comments_changed(&git_dir);
             }
             ReviewCmd::DeleteComment { git_dir, id } => {
@@ -828,22 +834,24 @@ mod tests {
 
         // Another connection — a CLI `comments add`, or a second window.
         let mut other = Store::open(&git_dir);
-        other.add_comment(store::Comment {
-            id: 0,
-            path: "a.rs".into(),
-            anchor: Anchor {
-                blob: oid(3),
-                start: 1,
-                end: 1,
-            },
-            body: "from the CLI".into(),
-            author: Some("agent".into()),
-            created_at: store::now(),
-            parent: None,
-            external: None,
-            cursors: None,
-            quote: None,
-        });
+        other
+            .add_comment(store::Comment {
+                id: 0,
+                path: "a.rs".into(),
+                anchor: Anchor {
+                    blob: oid(3),
+                    start: 1,
+                    end: 1,
+                },
+                body: "from the CLI".into(),
+                author: Some("agent".into()),
+                created_at: store::now(),
+                parent: None,
+                external: None,
+                cursors: None,
+                quote: None,
+            })
+            .unwrap();
 
         svc.handle(ReviewCmd::Poll {
             git_dir,

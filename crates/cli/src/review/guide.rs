@@ -6,10 +6,7 @@
 //! ready-made links for the hunks it missed. The fix is a copy, not more line
 //! arithmetic.
 
-use std::{
-    process::ExitCode,
-    time::{SystemTime, UNIX_EPOCH},
-};
+use std::process::ExitCode;
 
 use concats_diff::load::Loaded;
 use concats_review::{guide, store};
@@ -51,9 +48,7 @@ pub(crate) fn submit(
     let rec = store::Guide {
         base,
         head,
-        created_at: SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_or(0, |d| d.as_secs()),
+        created_at: store::now(),
         author,
         markdown,
     };

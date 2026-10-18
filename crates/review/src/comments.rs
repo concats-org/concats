@@ -18,7 +18,7 @@ use gix::ObjectId;
 use crate::{
     Error, guide,
     interchange::{self, Entry, Meta, ResolveError, Side},
-    store::{self, Anchor, Comment},
+    store::{self, Anchor, Comment, Store},
 };
 
 /// `<path>:<start>[-<end>]` resolved against the loaded diff. Everything that
@@ -68,17 +68,90 @@ pub fn reviewable_ranges(loaded: &Loaded, file: &FileChange) -> String {
     )
 }
 
+/// Leave a comment on the lines `spec` names in the loaded diff.
+pub fn add(
+    store: &mut Store,
+    loaded: &Loaded,
+    spec: &str,
+    body: &str,
+    author: Option<String>,
+) -> Result<Comment, Error> {
+    let body = non_empty(body)?;
+    let (path, at) = resolve_anchor(spec, loaded)?;
+    let cursors = document_cursors(store, loaded, &path, at);
+    store.add_comment(Comment {
+        body,
+        author,
+        cursors,
+        ..store::comment(path, at)
+    })
+}
+
+/// Answer the thread `to` is in. A plain reply takes its root's place; with
+/// `moved` it is anchored where that spec resolves in the loaded diff — where
+/// the code lives now — and brings the thread along.
+pub fn reply(
+    store: &mut Store,
+    to: u64,
+    body: &str,
+    author: Option<String>,
+    moved: Option<(&Loaded, &str)>,
+) -> Result<Comment, Error> {
+    let body = non_empty(body)?;
+    let Some((loaded, spec)) = moved else {
+        return store.reply_comment(to, body, author, store::now(), None);
+    };
+    // The root, not the id given: a reply to a reply threads under the root.
+    let thread = store.root_of(to).ok_or(Error::NoSuchComment(to))?.id;
+    let (path, at) = resolve_anchor(spec, loaded)?;
+    let cursors = document_cursors(store, loaded, &path, at);
+    store.add_comment(Comment {
+        body,
+        author,
+        parent: Some(thread),
+        cursors,
+        ..store::comment(path, at)
+    })
+}
+
+/// What the CLI and the socket answer a new comment with. A root always says
+/// where it went; a reply only when it was `moved` off its root's lines.
+pub fn added(c: &Comment, moved: bool) -> String {
+    let place = format!("{}:{}–{}", c.path, c.anchor.start + 1, c.anchor.end + 1);
+    match (c.parent, moved) {
+        (None, _) => format!("added comment #{} on {place}", c.id),
+        (Some(thread), true) => {
+            format!("added comment #{} replying to #{thread}, on {place}", c.id)
+        }
+        (Some(thread), false) => format!("added comment #{} replying to #{thread}", c.id),
+    }
+}
+
+/// A comment body, trimmed. Whitespace is not a comment.
+fn non_empty(body: &str) -> Result<String, Error> {
+    let body = body.trim();
+    if body.is_empty() {
+        return Err(Error::EmptyBody);
+    }
+    Ok(body.to_string())
+}
+
 /// The comment's lines as a cursor pair in its file's document, for a comment
 /// on a worktree file — minted where the app mints its own, so the comment
 /// rides edits from the start. The document is the app's cached one when there
 /// is one, else a fresh one on the bytes this load read; either way it is
 /// cached back, so the app and the next CLI run read the same history. `None`
 /// for a git blob, which never moves and needs none.
-pub fn document_cursors(loaded: &Loaded, path: &str, at: Anchor) -> Option<store::Cursors> {
+pub fn document_cursors(
+    store: &Store,
+    loaded: &Loaded,
+    path: &str,
+    at: Anchor,
+) -> Option<store::Cursors> {
     let mut buffer = worktree_buffer(loaded, path)?;
     let cursors = buffer.cursors_on_disk(at.start, at.end)?;
     if let Some(saved) = buffer.saved_state() {
-        store::save_buffer(&loaded.git_dir, buffer.origin.as_deref()?, &saved);
+        store.save_buffer(buffer.origin.as_deref()?, &saved);
     }
     Some(cursors)
 }
