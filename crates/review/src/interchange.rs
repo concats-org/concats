@@ -224,14 +224,16 @@ pub fn parse(json: &str) -> Result<Document, Error> {
     let mut unanchored = 0usize;
     for item in items {
         match item {
-            Ok(c) => match entry_of(&c) {
-                Ok(e) => doc.entries.push(e),
-                Err(Skip::NotLineAnchored) => unanchored += 1,
-                Err(Skip::Outdated) => doc.warnings.push(format!(
-                    "comment {} is outdated — GitHub no longer places it in the diff",
-                    c.id
-                )),
-            },
+            Ok(c) => {
+                let id = c.id;
+                match entry_of(c) {
+                    Ok(e) => doc.entries.push(e),
+                    Err(Skip::NotLineAnchored) => unanchored += 1,
+                    Err(Skip::Outdated) => doc.warnings.push(format!(
+                        "comment {id} is outdated — GitHub no longer places it in the diff"
+                    )),
+                }
+            }
             Err(e) => doc.warnings.push(format!("unrecognized comment: {e}")),
         }
     }
@@ -269,13 +271,15 @@ pub fn provenance(id: u64) -> String {
     format!("github:{id}")
 }
 
-fn entry_of(c: &ReviewComment) -> Result<Entry, Skip> {
-    let (Some(path), Some(end)) = (c.path.clone(), c.line) else {
-        // `subject_type: "file"` and issue comments both land here; only the
-        // second is a wrong endpoint, and only a null `line` on a real line
-        // comment is worth naming.
-        return Err(match (&c.path, c.subject_type.as_deref()) {
-            (Some(_), Some("file")) | (None, _) => Skip::NotLineAnchored,
+fn entry_of(c: ReviewComment) -> Result<Entry, Skip> {
+    // Issue comments have no path, file comments no line: neither anchors to
+    // lines. Only a null `line` on a real line comment is worth naming.
+    let Some(path) = c.path else {
+        return Err(Skip::NotLineAnchored);
+    };
+    let Some(end) = c.line else {
+        return Err(match c.subject_type.as_deref() {
+            Some("file") => Skip::NotLineAnchored,
             _ => Skip::Outdated,
         });
     };
@@ -290,11 +294,11 @@ fn entry_of(c: &ReviewComment) -> Result<Entry, Skip> {
         c.start_line.unwrap_or(end)
     };
     Ok(Entry {
-        body: c.body.clone(),
-        author: c.user.as_ref().map(|u| u.login.clone()),
+        body: c.body,
+        author: c.user.map(|u| u.login),
         id: c.id,
         reply_to: c.in_reply_to_id,
-        external: c.external.clone(),
+        external: c.external,
         created_at: c.created_at.as_deref().and_then(|stamp| {
             let at = OffsetDateTime::parse(stamp, &Rfc3339).ok()?;
             Some(at.unix_timestamp().max(0) as u64)
