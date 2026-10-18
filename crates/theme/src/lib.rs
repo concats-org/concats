@@ -238,14 +238,29 @@ const BUNDLED: &[&str] = &[
 /// The directory is a parameter, not a lookup: where a user's themes live is
 /// the application's rule, not the palette's. A CLI and a GUI answer it
 /// differently, and neither answer belongs here.
+///
+/// # Panics
+///
+/// When a bundled theme does not parse, which the tests rule out.
 #[must_use]
 pub fn registry(user_dir: Option<&Path>) -> Vec<Theme> {
     let mut themes = vec![Theme::concats()];
     for json in BUNDLED {
-        themes.extend(zed::import(json));
+        themes.extend(zed::import(json).expect("a bundled theme parses"));
     }
-    let Some(entries) = user_dir.and_then(|dir| std::fs::read_dir(dir).ok()) else {
+    let Some(dir) = user_dir else {
         return themes;
+    };
+    // NOTE: the built-in and bundled themes stand without the folder. No
+    // folder is the usual case; any other failure is worth a line.
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(error) => {
+            if error.kind() != std::io::ErrorKind::NotFound {
+                eprintln!("cannot read theme folder {}: {error}", dir.display());
+            }
+            return themes;
+        }
     };
     let mut files: Vec<_> = entries
         .flatten()
@@ -253,12 +268,17 @@ pub fn registry(user_dir: Option<&Path>) -> Vec<Theme> {
         .filter(|p| p.extension().is_some_and(|e| e == "json"))
         .collect();
     files.sort();
-    themes.extend(
-        files
-            .iter()
-            .filter_map(|path| std::fs::read_to_string(path).ok())
-            .flat_map(|json| zed::import(&json)),
-    );
+    themes.extend(files.iter().flat_map(|path| {
+        let import = || -> Result<Vec<Theme>, Box<dyn std::error::Error>> {
+            Ok(zed::import(&std::fs::read_to_string(path)?)?)
+        };
+        // NOTE: a user theme that does not load is left out of the picker
+        // rather than costing the others.
+        import().unwrap_or_else(|error| {
+            eprintln!("cannot load theme {}: {error}", path.display());
+            Vec::new()
+        })
+    }));
     themes
 }
 
@@ -268,13 +288,14 @@ mod tests {
 
     #[test]
     fn every_bundled_file_imports_and_light_means_light() {
-        // `zed::import` swallows a parse failure into an empty vec, so a
-        // bundled file that stopped parsing would otherwise vanish silently —
-        // count each one. And a light variant must come out genuinely light:
-        // a broken importer or dark-base leakage shows up as a dark
-        // background.
+        // `registry` expects every bundled file to parse, and each must bring
+        // a theme. And a light variant must come out genuinely light: a
+        // broken importer or dark-base leakage shows up as a dark background.
         for json in BUNDLED {
-            assert!(!zed::import(json).is_empty(), "a bundled file imports");
+            assert!(
+                !zed::import(json).unwrap().is_empty(),
+                "a bundled file imports"
+            );
         }
         let themes = registry(None);
         let light = themes

@@ -74,12 +74,11 @@ fn parse_color(spec: &str) -> Option<Rgba> {
     Some(Rgba::new(r, g, b, a))
 }
 
-/// Every theme in a Zed theme-family JSON. An unparseable file yields none.
-pub fn import(json: &str) -> Vec<Theme> {
+/// Every theme in a Zed theme-family JSON.
+pub fn import(json: &str) -> serde_json::Result<Vec<Theme>> {
     let base = Theme::concats();
-    serde_json::from_str::<File>(json)
-        .map(|file| file.themes.iter().map(|zt| theme(zt, &base)).collect())
-        .unwrap_or_default()
+    let file: File = serde_json::from_str(json)?;
+    Ok(file.themes.iter().map(|zt| theme(zt, &base)).collect())
 }
 
 fn theme(zt: &Entry, base: &Theme) -> Theme {
@@ -222,7 +221,7 @@ mod tests {
             "string.regex":{"color":"#070809"}
         }}}]}"##;
         for _ in 0..16 {
-            let themes = import(json);
+            let themes = import(json).unwrap();
             let syntax = &themes[0].syntax;
             assert_eq!(syntax[&concats_syntax::Hl::Comment], Rgba::opaque(1, 2, 3));
             assert_eq!(syntax[&concats_syntax::Hl::Keyword], Rgba::opaque(4, 5, 6));
@@ -240,14 +239,14 @@ mod tests {
             "character":{"color":"#aabbcc"},
             "string":{"color":"#040506"}
         }}}]}"##;
-        let syntax = &import(json)[0].syntax;
+        let syntax = &import(json).unwrap()[0].syntax;
         assert_eq!(syntax[&concats_syntax::Hl::Constant], Rgba::opaque(1, 2, 3));
         assert_eq!(syntax[&concats_syntax::Hl::String], Rgba::opaque(4, 5, 6));
     }
 
     #[test]
     fn a_file_that_is_not_a_theme_yields_none_rather_than_a_wrong_one() {
-        assert!(import("{ not json").is_empty());
-        assert!(import(r#"{"themes": []}"#).is_empty());
+        assert!(import("{ not json").is_err());
+        assert!(import(r#"{"themes": []}"#).unwrap().is_empty());
     }
 }
