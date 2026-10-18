@@ -317,7 +317,7 @@ impl App {
                         };
                         // NOTE: This fixture stays in memory; its cursors must
                         // not be published to the review worker.
-                        drop(review_doc::splice_comments(d, &[comment]));
+                        drop(comments::splice_comments(d, &[comment]));
                     });
                     content.redraw(cx);
                 }

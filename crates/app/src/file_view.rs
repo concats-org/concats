@@ -10,7 +10,10 @@
 use concats_diff::{Blob, Row, load};
 use concats_review::store::{self, Comment};
 
-use crate::review_doc::{FileView, ReviewDoc, hold_comments, splice_stream, strip_composer};
+use crate::{
+    comments::{hold_comments, splice_stream},
+    review_doc::{FileView, ReviewDoc, strip_composer},
+};
 
 /// Both sides of one file for the File tab: its content at the range's base
 /// (`None` when the range creates it) and at its head.

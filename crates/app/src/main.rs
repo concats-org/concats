@@ -48,6 +48,7 @@ use window::WindowState;
 
 use crate::theme::paint;
 
+mod comments;
 mod dev_hooks;
 mod dock;
 mod editor;
