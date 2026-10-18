@@ -347,45 +347,38 @@ impl Blob {
     /// The cursor pair for lines `from..=to` of the disk version, encoded for
     /// the store: what the CLI mints for a comment it makes on a worktree file,
     /// whose lines are the file's.
-    pub fn cursors_on_disk(&mut self, from: u32, to: u32) -> Option<(Vec<u8>, Vec<u8>)> {
+    pub fn cursors_on_disk(&mut self, from: u32, to: u32) -> Option<Range<Vec<u8>>> {
         let run = self.pair_on_disk(from, to)?;
-        Some((
-            document::encode_cursor(&run.start),
-            document::encode_cursor(&run.end),
-        ))
+        Some(document::encode_cursor(&run.start)..document::encode_cursor(&run.end))
     }
 
     /// The cursor pair for lines `from..=to` of the text as it is now, encoded
     /// for the store: what a comment made on this buffer carries from the start,
     /// so it never has to be re-found.
-    pub fn cursors_at(&mut self, from: u32, to: u32) -> Option<(Vec<u8>, Vec<u8>)> {
+    pub fn cursors_at(&mut self, from: u32, to: u32) -> Option<Range<Vec<u8>>> {
         let doc = self.open_doc();
         let run = Self::cursor_pair(&doc, from, to)?;
-        Some((
-            document::encode_cursor(&run.start),
-            document::encode_cursor(&run.end),
-        ))
+        Some(document::encode_cursor(&run.start)..document::encode_cursor(&run.end))
     }
 
     /// The held pair of `comment`, encoded for the store.
-    pub fn cursors_of(&self, comment: u64) -> Option<(Vec<u8>, Vec<u8>)> {
+    pub fn cursors_of(&self, comment: u64) -> Option<Range<Vec<u8>>> {
         let run = self.held.get(&comment)?;
-        Some((
-            document::encode_cursor(&run.start),
-            document::encode_cursor(&run.end),
-        ))
+        Some(document::encode_cursor(&run.start)..document::encode_cursor(&run.end))
     }
 
     /// Hold `comment` by a cursor pair minted elsewhere — in the app on another
     /// run, or by the CLI — in this same document. Refused when the pair does
     /// not resolve here: the cursors name operations this document does not
     /// have, so the comment's own lines are the better answer.
-    pub fn adopt(&mut self, comment: u64, from: &[u8], to: &[u8]) -> bool {
+    pub fn adopt(&mut self, comment: u64, cursors: &Range<Vec<u8>>) -> bool {
         let Some(doc) = self.doc.as_ref() else {
             return false;
         };
-        let (Some(from), Some(to)) = (document::decode_cursor(from), document::decode_cursor(to))
-        else {
+        let (Some(from), Some(to)) = (
+            document::decode_cursor(&cursors.start),
+            document::decode_cursor(&cursors.end),
+        ) else {
             return false;
         };
         if document::resolve(doc, &from).is_none() || document::resolve(doc, &to).is_none() {
@@ -931,14 +924,14 @@ mod tests {
     fn a_cached_buffer_carries_its_comments_through_an_edit_made_while_closed() {
         let mut before = blob("# Intro\n## Getting Started\nsome prose\n");
         before.hold(7, 1, 1);
-        let (from, to) = before.cursors_of(7).expect("held");
+        let cursors = before.cursors_of(7).expect("held");
         let saved = before.saved_state().expect("a document to cache");
 
         // A new process: the file is read fresh, already reworded.
         let mut after = blob("# Intro\n## Getting Started, Quickly\nsome prose\n");
         assert!(after.restore_state(&saved, oid(2)));
         assert!(
-            after.adopt(7, &from, &to),
+            after.adopt(7, &cursors),
             "the pair resolves in the restored document"
         );
         assert_eq!(
@@ -949,7 +942,7 @@ mod tests {
         // A document that never had those operations refuses the pair.
         let mut stranger = blob("# Intro\n## Getting Started, Quickly\nsome prose\n");
         stranger.open_doc();
-        assert!(!stranger.adopt(7, &from, &to));
+        assert!(!stranger.adopt(7, &cursors));
         assert_eq!(
             after.text,
             "# Intro\n## Getting Started, Quickly\nsome prose\n"

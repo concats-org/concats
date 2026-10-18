@@ -312,20 +312,6 @@ struct AppWindow {
     spliced_rev: u64,
 }
 
-impl AppWindow {
-    fn new(state: Arc<WindowState>, window: WidgetRef) -> Self {
-        Self {
-            state,
-            window,
-            seen: None,
-            cached_rev: 0,
-            worktree_fp: 0,
-            layout_git_dir: None,
-            spliced_rev: 0,
-        }
-    }
-}
-
 impl MatchEvent for App {
     /// Replies from the review service. The action only says that something
     /// changed; what it means for pixels is decided here.
@@ -387,10 +373,10 @@ impl MatchEvent for App {
                     rev,
                     spans,
                 }) => {
-                    let Some(state) = self.window_mut(*window).map(|w| w.state.clone()) else {
+                    let Some(w) = self.window_mut(*window) else {
                         continue;
                     };
-                    let landed = state.with(|document| {
+                    let landed = w.state.with(|document| {
                         if document.generation != *generation {
                             return false;
                         }
@@ -595,7 +581,15 @@ impl App {
             pane.adopt(state.clone());
         }
         self.focus_window(&state);
-        self.windows.push(AppWindow::new(state, window));
+        self.windows.push(AppWindow {
+            state,
+            window,
+            seen: None,
+            cached_rev: 0,
+            worktree_fp: 0,
+            layout_git_dir: None,
+            spliced_rev: 0,
+        });
         self.focused = Some(id);
     }
 
@@ -612,19 +606,15 @@ impl App {
         self.windows.iter_mut().find(|w| w.state.id == id)
     }
 
-    /// The window ⌘N copies from: whichever last had focus, else the newest.
-    fn focused_window(&self) -> Option<&AppWindow> {
-        self.focused
-            .and_then(|id| self.windows.iter().find(|w| w.state.id == id))
-            .or_else(|| self.windows.last())
-    }
-
     /// ⌘N: another window on the range the focused one is showing, in this
     /// process. Its document, its load and its terminals are its own; the
     /// review store underneath is shared, so a tick in one shows in the other.
     fn open_new_window(&mut self, cx: &mut Cx) {
+        // Copied from whichever window last had focus, else the newest.
         let target = self
-            .focused_window()
+            .focused
+            .and_then(|id| self.windows.iter().find(|w| w.state.id == id))
+            .or_else(|| self.windows.last())
             .map(|window| window.state.read(ReviewDoc::target))
             .filter(|t| !t.repo.is_empty())
             // Nothing loaded yet: the range the app was asked for is the same

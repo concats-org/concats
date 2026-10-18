@@ -766,11 +766,11 @@ pub(crate) fn hold_comments(
         for c in fresh {
             let blob = &mut d.blobs[index as usize];
             let adopted = match &c.cursors {
-                Some((from, to)) => blob.adopt(c.id, from, to),
+                Some(cursors) => blob.adopt(c.id, cursors),
                 None => false,
             };
-            if !adopted && let Some((from, to)) = store::run_in(blob, c) {
-                blob.hold(c.id, from, to);
+            if !adopted && let Some(lines) = store::run_in(blob, c) {
+                blob.hold(c.id, *lines.start(), *lines.end());
                 if c.cursors.is_none() {
                     minted.extend(blob.cursors_of(c.id).map(|pair| (c.id, pair)));
                 }
@@ -1303,24 +1303,24 @@ pub(crate) fn expand_collapsed(d: &mut ReviewDoc, tab: Stream, row: usize, end: 
         EXPAND_STEP
     };
     let hidden = count - take;
-    // The head's lines come off the front of the run, the tail's off the back;
-    // what is left moves its start past them, or stays where it was.
-    let (first, skip) = match end {
-        CollapsedEnd::Head => (0, take),
-        CollapsedEnd::Tail => (hidden, 0),
+    let revealed = |first: u32| {
+        (first..first + take).map(move |k| Row::context(blob, old_start + k, new_start + k))
     };
-    let revealed = (first..first + take).map(|k| Row::context(blob, old_start + k, new_start + k));
-    let rest = (hidden > 0).then_some(Row::Collapsed {
-        blob,
-        old_start: old_start + skip,
-        new_start: new_start + skip,
-        count: hidden,
-    });
-    // Revealed lines sit on the side of the indicator they were taken from, so
-    // the remaining run stays between the two blocks of code it separates.
+    let rest = |skip: u32| {
+        (hidden > 0).then_some(Row::Collapsed {
+            blob,
+            old_start: old_start + skip,
+            new_start: new_start + skip,
+            count: hidden,
+        })
+    };
+    // The head's lines come off the front of the run, the tail's off the back,
+    // and sit on the side of the indicator they were taken from, so the
+    // remaining run stays between the two blocks of code it separates. What is
+    // left moves its start past them, or stays where it was.
     let out = match end {
-        CollapsedEnd::Head => revealed.chain(rest).collect(),
-        CollapsedEnd::Tail => rest.into_iter().chain(revealed).collect(),
+        CollapsedEnd::Head => revealed(0).chain(rest(take)).collect(),
+        CollapsedEnd::Tail => rest(0).into_iter().chain(revealed(hidden)).collect(),
     };
     replace_row(d, tab, row, out);
 }

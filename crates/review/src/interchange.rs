@@ -66,10 +66,7 @@
 //! Resolution against a [`Loaded`] diff is the only part that touches git
 //! state.
 
-use std::{
-    collections::{HashMap, HashSet},
-    ops::RangeInclusive,
-};
+use std::{collections::HashMap, ops::RangeInclusive};
 
 use concats_diff::{Blob, FileChange, LineKind, Row, load::Loaded};
 use gix::ObjectId;
@@ -666,26 +663,28 @@ pub fn resolve<'a>(
 // Export — store comments back into entries
 // ---------------------------------------------------------------------------
 
-/// Which blob oids appear on which side of a row stream — how an exported
-/// comment knows whether its anchor is `L…` or `old L…`.
-// TODO: a blob → Side map would name the two sets; the app reads the pair too (review_pane).
-// coland-ignore: @coland/same_typed_tuple_return
+/// The side of a row stream each blob oid appears on — how an exported
+/// comment knows whether its anchor is `L…` or `old L…`. A blob on both sides
+/// is new.
 pub fn blob_sides<'a>(
     rows: impl Iterator<Item = &'a Row>,
     blobs: &[Blob],
-) -> (HashSet<ObjectId>, HashSet<ObjectId>) {
-    let mut old = HashSet::new();
-    let mut new = HashSet::new();
+) -> HashMap<ObjectId, Side> {
+    let mut sides = HashMap::new();
     for r in rows {
         if let Row::Code { kind, blob, .. } = r {
             let oid = blobs[*blob as usize].oid;
             match kind {
-                LineKind::Del => old.insert(oid),
-                _ => new.insert(oid),
-            };
+                LineKind::Del => {
+                    sides.entry(oid).or_insert(Side::Old);
+                }
+                _ => {
+                    sides.insert(oid, Side::New);
+                }
+            }
         }
     }
-    (old, new)
+    sides
 }
 
 /// Stored comments as document entries, 1-based. A comment whose blob is on
@@ -694,20 +693,12 @@ pub fn blob_sides<'a>(
 /// via `outside_range` and warn.
 // NOTE: projects borrowed store comments into owned entries; each clone is a field an entry owns.
 // coland-ignore: @coland/clone_heavy_function
-pub fn entries_from(
-    comments: &[Comment],
-    old: &HashSet<ObjectId>,
-    new: &HashSet<ObjectId>,
-) -> Vec<Entry> {
+pub fn entries_from(comments: &[Comment], sides: &HashMap<ObjectId, Side>) -> Vec<Entry> {
     comments
         .iter()
         .map(|c| Entry {
             path: c.path.clone(),
-            side: if !new.contains(&c.anchor.blob) && old.contains(&c.anchor.blob) {
-                Side::Old
-            } else {
-                Side::New
-            },
+            side: sides.get(&c.anchor.blob).copied().unwrap_or(Side::New),
             start: c.anchor.start + 1,
             end: c.anchor.end + 1,
             body: c.body.clone(),
@@ -721,8 +712,8 @@ pub fn entries_from(
         .collect()
 }
 
-pub fn outside_range(c: &Comment, old: &HashSet<ObjectId>, new: &HashSet<ObjectId>) -> bool {
-    !new.contains(&c.anchor.blob) && !old.contains(&c.anchor.blob)
+pub fn outside_range(c: &Comment, sides: &HashMap<ObjectId, Side>) -> bool {
+    !sides.contains_key(&c.anchor.blob)
 }
 
 #[cfg(test)]
@@ -1025,7 +1016,7 @@ mod tests {
     fn export_entries_carry_sides_and_one_based_lines() {
         let loaded = fixture();
         let rows: Vec<&Row> = loaded.files[0].hunks[0].rows.iter().collect();
-        let (old, new) = blob_sides(rows.into_iter(), &loaded.blobs);
+        let sides = blob_sides(rows.into_iter(), &loaded.blobs);
         let anchor = |blob, start, end| crate::store::Anchor { blob, start, end };
         let comment = |id, path: &str, anchor, body: &str| Comment {
             id,
@@ -1050,17 +1041,14 @@ mod tests {
             },
             comment(3, "gone.rs", anchor(oid(9), 0, 0), "stale"),
         ];
-        let entries = entries_from(&comments, &old, &new);
+        let entries = entries_from(&comments, &sides);
         assert_eq!(
             (entries[0].side, entries[0].start, entries[0].end),
             (Side::New, 10, 11)
         );
         assert_eq!(entries[1].side, Side::Old);
         assert_eq!(entries[2].side, Side::New); // best effort
-        let stale: Vec<bool> = comments
-            .iter()
-            .map(|c| outside_range(c, &old, &new))
-            .collect();
+        let stale: Vec<bool> = comments.iter().map(|c| outside_range(c, &sides)).collect();
         assert_eq!(stale, vec![false, false, true]);
     }
 }

@@ -185,18 +185,18 @@ fn worktree_buffer(loaded: &Loaded, path: &str) -> Option<Blob> {
 fn relocate(
     loaded: &Loaded,
     buffers: &mut HashMap<String, Option<Blob>>,
-    in_range: &HashSet<ObjectId>,
+    sides: &HashMap<ObjectId, Side>,
     c: &Comment,
 ) -> Option<Anchor> {
-    let (from, to) = c.cursors.as_ref()?;
-    if in_range.contains(&c.anchor.blob) {
+    let cursors = c.cursors.as_ref()?;
+    if sides.contains_key(&c.anchor.blob) {
         return None;
     }
     let buffer = buffers
         .entry(c.path.clone())
         .or_insert_with(|| worktree_buffer(loaded, &c.path))
         .as_mut()?;
-    if !buffer.adopt(c.id, from, to) {
+    if !buffer.adopt(c.id, cursors) {
         return None;
     }
     let lines = buffer.held_lines_on_disk(c.id)?;
@@ -234,8 +234,7 @@ pub fn entries(loaded: &Loaded, comments: &[Comment], scope: Scope) -> (Vec<Entr
         .iter()
         .flat_map(|f| f.hunks.iter())
         .flat_map(|h| h.rows.iter());
-    let (old, new) = interchange::blob_sides(rows, &loaded.blobs);
-    let in_range: HashSet<ObjectId> = old.union(&new).copied().collect();
+    let sides = interchange::blob_sides(rows, &loaded.blobs);
     let mut buffers = HashMap::new();
     let mut comments: Vec<Comment> = comments
         .iter()
@@ -244,13 +243,13 @@ pub fn entries(loaded: &Loaded, comments: &[Comment], scope: Scope) -> (Vec<Entr
             Scope::Range | Scope::All => true,
         })
         .map(|c| Comment {
-            anchor: relocate(loaded, &mut buffers, &in_range, c).unwrap_or(c.anchor),
+            anchor: relocate(loaded, &mut buffers, &sides, c).unwrap_or(c.anchor),
             ..c.clone()
         })
         .collect();
     let anchored: HashSet<u64> = comments
         .iter()
-        .filter(|c| !interchange::outside_range(c, &old, &new))
+        .filter(|c| !interchange::outside_range(c, &sides))
         .map(store::thread_key)
         .collect();
     let elsewhere: HashSet<u64> = comments
@@ -262,7 +261,7 @@ pub fn entries(loaded: &Loaded, comments: &[Comment], scope: Scope) -> (Vec<Entr
         comments.retain(|c| !elsewhere.contains(&store::thread_key(c)));
     }
 
-    let mut entries = interchange::entries_from(&comments, &old, &new);
+    let mut entries = interchange::entries_from(&comments, &sides);
     let file_ix: HashMap<&str, usize> = loaded
         .files
         .iter()

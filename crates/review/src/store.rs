@@ -21,6 +21,7 @@
 
 use std::{
     collections::{HashMap, HashSet},
+    ops::{Range, RangeInclusive},
     path::Path,
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -36,7 +37,7 @@ pub type LineKey = (ObjectId, u32);
 
 /// A comment's run in its file's document, as two encoded cursors: the start
 /// of its first line and the end of its last.
-pub type Cursors = (Vec<u8>, Vec<u8>);
+pub type Cursors = Range<Vec<u8>>;
 
 /// A comment's position: a contiguous, inclusive line range (`start..=end`,
 /// 0-based) on one blob, keyed by the blob's content oid so it survives reloads
@@ -381,7 +382,8 @@ impl Store {
                     },
                     cursors: row
                         .get::<_, Option<Vec<u8>>>(13)?
-                        .zip(row.get::<_, Option<Vec<u8>>>(14)?),
+                        .zip(row.get::<_, Option<Vec<u8>>>(14)?)
+                        .map(|(start, end)| start..end),
                 }))
             });
             comments.extend(rows.into_iter().flatten().flatten().flatten());
@@ -476,17 +478,17 @@ impl Store {
     // NOTE: one in-process SQLite statement per comment, no round trip; callers pass a handful.
     // coland-ignore: @coland/n_plus_one_query
     pub fn set_cursors(&mut self, cursors: &[(u64, Cursors)]) {
-        for (id, (from, to)) in cursors {
+        for (id, run) in cursors {
             let write = self.conn.execute(
                 "INSERT OR REPLACE INTO comment_cursors(comment, run_start, run_end)
                  VALUES (?1, ?2, ?3)",
-                (id, from, to),
+                (id, &run.start, &run.end),
             );
             if let Err(error) = write {
                 eprintln!("warning: cannot save the comment's cursors: {error}");
             }
             if let Some(c) = self.comments.iter_mut().find(|c| c.id == *id) {
-                c.cursors = Some((from.clone(), to.clone()));
+                c.cursors = Some(run.clone());
             }
         }
     }
@@ -955,11 +957,9 @@ pub fn place(comment: &Comment, blobs: &[Blob], path_blobs: &[u32]) -> Option<Si
 /// Where a comment's run sits in one blob: its own lines, when the blob is
 /// the one the comment names. This is how a thread gets its cursor pair; from
 /// then on the text carries it.
-// TODO: return the lines as a RangeInclusive; the app destructures this pair (review_doc).
-// coland-ignore: @coland/same_typed_tuple_return
-pub fn run_in(blob: &Blob, comment: &Comment) -> Option<(u32, u32)> {
+pub fn run_in(blob: &Blob, comment: &Comment) -> Option<RangeInclusive<u32>> {
     (comment.anchor.blob == blob.oid && (comment.anchor.end as usize) < blob.line_count())
-        .then_some((comment.anchor.start, comment.anchor.end))
+        .then_some(comment.anchor.start..=comment.anchor.end)
 }
 
 /// Append the threads recorded against `card` that this range could not place,
@@ -1371,7 +1371,7 @@ mod tests {
         let mut s = Store::open(tmp.path());
         let root = s
             .add_comment(Comment {
-                cursors: Some((vec![1, 2], vec![3, 4])),
+                cursors: Some(vec![1, 2]..vec![3, 4]),
                 ..comment("a.txt", anchor(oid(2), 3, 5), "here")
             })
             .unwrap()
@@ -1395,15 +1395,15 @@ mod tests {
                 .cursors
                 .clone()
         };
-        assert_eq!(cursors(root), Some((vec![1, 2], vec![3, 4])));
-        assert_eq!(cursors(reply), Some((vec![1, 2], vec![3, 4])));
+        assert_eq!(cursors(root), Some(vec![1, 2]..vec![3, 4]));
+        assert_eq!(cursors(reply), Some(vec![1, 2]..vec![3, 4]));
         assert_eq!(cursors(bare), None);
 
         // The app minted a pair for the bare one from its exact lines.
-        s.set_cursors(&[(bare, (vec![5], vec![6]))]);
+        s.set_cursors(&[(bare, vec![5]..vec![6])]);
         let held = Store::open(tmp.path());
         let bare_now = held.comments.iter().find(|c| c.id == bare).unwrap();
-        assert_eq!(bare_now.cursors, Some((vec![5], vec![6])));
+        assert_eq!(bare_now.cursors, Some(vec![5]..vec![6]));
 
         s.delete_comment(root);
         let rows: u32 = s

@@ -735,7 +735,7 @@ mod tests {
         });
         let after = out.load();
         assert_eq!(after.comments_rev, before.comments_rev);
-        assert_eq!(after.comments[0].cursors, Some(cursors.clone()));
+        assert_eq!(after.comments[0].cursors.as_ref(), Some(&cursors));
         assert_eq!(after.commented, before.commented);
         assert_eq!(Store::open(&git_dir).comments[0].cursors, Some(cursors));
     }

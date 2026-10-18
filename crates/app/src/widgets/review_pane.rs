@@ -942,26 +942,24 @@ impl ReviewPane {
     }
 
     /// Load `base…head` of `repo`, and close the diff picker.
-    fn combo_load(&mut self, cx: &mut Cx, repo: String, base: String, head: String) {
+    fn combo_load(&mut self, cx: &mut Cx, target: concats_state::Target) {
         self.combo_close(cx);
-        self.start_load(
-            cx,
-            concats_state::Target { repo, base, head },
-            None,
-            Some("loading…"),
-        );
+        self.start_load(cx, target, None, Some("loading…"));
     }
 
-    /// The range to (re)load with: whatever is open, else a sane default for a
-    /// repo the app hasn't diffed yet.
-    fn current_range(&self) -> (String, String) {
-        self.state().read(|d| {
-            if d.base.is_empty() {
-                ("HEAD~5".into(), "HEAD".into())
-            } else {
-                (d.base.clone(), d.head.clone())
+    /// What to (re)load: the open repo at the open range, else at a sane default
+    /// for a repo the app hasn't diffed yet.
+    fn current_target(&self) -> concats_state::Target {
+        let target = self.state().read(ReviewDoc::target);
+        if target.base.is_empty() {
+            concats_state::Target {
+                base: "HEAD~5".into(),
+                head: "HEAD".into(),
+                ..target
             }
-        })
+        } else {
+            target
+        }
     }
 
     /// Open a native folder dialog under the repo name and load whatever repo
@@ -983,8 +981,14 @@ impl ReviewPane {
         let Some(path) = picked else {
             return; // cancelled
         };
-        let (base, head) = self.current_range();
-        self.combo_load(cx, path.to_string_lossy().into_owned(), base, head);
+        let repo = path.to_string_lossy().into_owned();
+        self.combo_load(
+            cx,
+            concats_state::Target {
+                repo,
+                ..self.current_target()
+            },
+        );
     }
 
     /// Point the gesture/composer state at the given stream: pressing a dock
@@ -1099,8 +1103,8 @@ impl ReviewPane {
             let docs = self.state().snapshot();
             let d = &*docs;
             let st = self.review_snapshot(d.git_dir.as_deref());
-            let (old, new) = interchange::blob_sides(d.files_rows.iter(), &d.blobs);
-            let mut entries = interchange::entries_from(&st.comments, &old, &new);
+            let sides = interchange::blob_sides(d.files_rows.iter(), &d.blobs);
+            let mut entries = interchange::entries_from(&st.comments, &sides);
             entries.sort_by(|x, y| (&x.path, x.start, x.id).cmp(&(&y.path, y.start, y.id)));
             let meta = interchange::Meta {
                 repo: Some(d.repo.clone()).filter(|r| !r.is_empty()),
@@ -1621,9 +1625,8 @@ impl ReviewPane {
     fn handle_repo_picker(&mut self, cx: &mut Cx, actions: &Actions) {
         // The header Load button reloads the open repo at its current range.
         if self.view.button(cx, ids!(load_button)).clicked(actions) {
-            let (base, head) = self.current_range();
-            let repo = self.state().read(|d| d.repo.clone());
-            self.combo_load(cx, repo, base, head);
+            let target = self.current_target();
+            self.combo_load(cx, target);
         }
 
         if self.view.button(cx, ids!(repo_button)).clicked(actions) {
@@ -1637,9 +1640,12 @@ impl ReviewPane {
             if self.view.button(cx, ids).clicked(actions)
                 && let Some(repo) = self.recents.get(i).cloned()
             {
-                let (base, head) = self.current_range();
+                let target = concats_state::Target {
+                    repo,
+                    ..self.current_target()
+                };
                 self.repo_close(cx);
-                self.combo_load(cx, repo, base, head);
+                self.combo_load(cx, target);
             }
         }
         if self.view.button(cx, ids!(open_dir_row)).clicked(actions) {
@@ -1671,9 +1677,8 @@ impl ReviewPane {
             if text.is_empty() {
                 self.combo_close(cx);
             } else {
-                let (base, head) = range_of(&text);
-                let repo = self.state().read(|d| d.repo.clone());
-                self.combo_load(cx, repo, base, head);
+                let target = target_of(self.state().read(|d| d.repo.clone()), &text);
+                self.combo_load(cx, target);
             }
         }
         if self.view.text_input(cx, ids!(combo_input)).escaped(actions) {
@@ -1685,9 +1690,8 @@ impl ReviewPane {
                 if !text.is_empty() {
                     // A row is usually a base ref (diffed against HEAD), but
                     // the worktree presets are full `base...head` ranges.
-                    let (base, head) = range_of(&text);
-                    let repo = self.state().read(|d| d.repo.clone());
-                    self.combo_load(cx, repo, base, head);
+                    let target = target_of(self.state().read(|d| d.repo.clone()), &text);
+                    self.combo_load(cx, target);
                 }
             }
         }
@@ -1943,7 +1947,16 @@ impl ReviewPane {
                 ReviewItemAction::Cancel if clicked => {
                     self.close_composer(cx);
                 }
-                _ => {}
+                // The guard above did not hold: not a click, or not the tick.
+                ReviewItemAction::Seen { .. }
+                | ReviewItemAction::Fold { .. }
+                | ReviewItemAction::Delete { .. }
+                | ReviewItemAction::Reply { .. }
+                | ReviewItemAction::Quote { .. }
+                | ReviewItemAction::Outdated { .. }
+                | ReviewItemAction::Reveal { .. }
+                | ReviewItemAction::Post
+                | ReviewItemAction::Cancel => {}
             }
         }
     }
@@ -2026,14 +2039,15 @@ fn drop_composer(state: &WindowState, d: &mut ReviewDoc) {
     d.compose_focus = false;
 }
 
-/// A picked or typed range: `base...head` (or `base..head`), else a base ref
-/// diffed against HEAD. Git ref names cannot contain `..`, so a ref is never
-/// split.
-fn range_of(text: &str) -> (String, String) {
-    match text.split_once("...").or_else(|| text.split_once("..")) {
+/// `repo` at a picked or typed range: `base...head` (or `base..head`), else a
+/// base ref diffed against HEAD. Git ref names cannot contain `..`, so a ref is
+/// never split.
+fn target_of(repo: String, text: &str) -> concats_state::Target {
+    let (base, head) = match text.split_once("...").or_else(|| text.split_once("..")) {
         Some((base, head)) => (base.trim().to_string(), head.trim().to_string()),
         None => (text.to_string(), "HEAD".to_string()),
-    }
+    };
+    concats_state::Target { repo, base, head }
 }
 
 impl Widget for ReviewPane {
