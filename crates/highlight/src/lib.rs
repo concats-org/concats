@@ -41,6 +41,9 @@ pub struct Buffer<'a> {
     pub editable: bool,
     pub ext: &'a str,
     pub text: &'a str,
+    /// `text`'s line table, with the trailing sentinel — the one the blob
+    /// keeps. Handed in so a drawn row does not rebuild it from the whole file.
+    pub starts: &'a [u32],
 }
 
 #[cfg(feature = "treesitter")]
@@ -233,7 +236,7 @@ impl Highlighter {
                 &slot.insert(fresh).tree
             }
         };
-        query_lines(query, tree, src, lines)
+        query_lines(query, tree, src, buffer.starts, lines)
     }
 
     /// Every line's spans, off a fresh parse and through the same loop as
@@ -245,7 +248,7 @@ impl Highlighter {
             return plain(src);
         };
         match Parsed::new(src, 0, language) {
-            Some(parsed) => query_lines(query, &parsed.tree, src, 0..usize::MAX),
+            Some(parsed) => query_lines(query, &parsed.tree, src, &line_starts(src), 0..usize::MAX),
             None => plain(src),
         }
     }
@@ -270,18 +273,18 @@ fn compiled<'a>(
     }))
 }
 
-/// The capture loop behind both entry points: `lines` of `src`, coloured off
-/// `tree`, in a table the length of the file.
+/// The capture loop behind both entry points: `lines` of `src`, whose line
+/// table is `starts`, coloured off `tree`, in a table the length of the file.
 #[cfg(feature = "treesitter")]
 fn query_lines(
     query: &tree_sitter::Query,
     tree: &tree_sitter::Tree,
     src: &str,
+    starts: &[u32],
     lines: std::ops::Range<usize>,
 ) -> LineSpans {
     use tree_sitter::{QueryCursor, StreamingIterator};
 
-    let starts = line_starts(src);
     // Off the line table rather than off `src.lines()`, so this agrees with
     // the table a blob keeps — and so an empty file has no lines to fill
     // instead of one that is not there.
@@ -314,12 +317,12 @@ fn query_lines(
             };
             seq += 1;
             let node = capture.node.byte_range();
-            clip_to_lines(&mut caught, &starts, node, (hl, seq), &lines);
+            clip_to_lines(&mut caught, starts, node, (hl, seq), &lines);
         }
     }
     for (offset, runs) in caught.into_iter().enumerate() {
         let line = lines.start + offset;
-        out[line] = partition(runs, width_of(&starts, line));
+        out[line] = partition(runs, width_of(starts, line));
     }
     out
 }
@@ -460,6 +463,9 @@ fn main() {
             editable: true,
             ext,
             text,
+            // NOTE: a blob owns its table; a test has nothing to hang it on, and
+            // a few lines leaked per test is nothing.
+            starts: Box::leak(line_starts(text).into_boxed_slice()),
         }
     }
 

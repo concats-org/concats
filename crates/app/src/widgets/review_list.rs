@@ -79,6 +79,7 @@ fn row_spans(blob: &Blob, line: usize) -> Option<Vec<concats_syntax::Span>> {
                     editable: blob.editable(),
                     ext: &blob.ext,
                     text: &blob.text,
+                    starts: &blob.line_starts,
                 },
                 line,
             )
