@@ -5,7 +5,7 @@
 //! [`concats_review::comments`]' — the app's socket answers through the same
 //! functions.
 
-use std::{path::Path, process::ExitCode};
+use std::{collections::HashSet, path::Path, process::ExitCode};
 
 use concats_diff::load::Loaded;
 use concats_review::{
@@ -88,13 +88,25 @@ fn list(repo: Option<&str>, delete: Option<u64>) -> Outcome {
     }
     // The review's default range says which anchors are on deleted lines, so
     // those print as old-side anchors; the rest print as recorded.
-    let range = RangeArgs {
+    let target = RangeArgs {
         repo: repo.map(str::to_string),
         base: None,
         head: None,
-    };
-    let loaded = super::load(&range.resolve())?;
-    let (sides, old) = (comments::sides(&loaded), comments::old_rev(&loaded));
+    }
+    .resolve();
+    let (old, deleted) = comments::on_old_side(
+        Path::new(&target.repo),
+        &target.base,
+        &target.head,
+        &store.comments,
+    )
+    // NOTE: listing never needed the range; without it every anchor prints
+    // as recorded, new-side.
+    .unwrap_or_else(|error| {
+        let (base, head) = (&target.base, &target.head);
+        eprintln!("warning: {base}...{head}: {error} — anchors print new-side");
+        (String::new(), HashSet::new())
+    });
     // Threads read in order, replies indented under their root.
     let mut threaded: Vec<&Comment> = store.comments.iter().collect();
     threaded.sort_by_key(|c| (store::thread_key(c), c.id));
@@ -108,8 +120,7 @@ fn list(repo: Option<&str>, delete: Option<u64>) -> Outcome {
             .external
             .as_ref()
             .map_or_else(String::new, |e| format!("  [{e}]"));
-        let deleted = sides.get(&c.anchor.blob) == Some(&interchange::Side::Old);
-        let at = comments::anchor_spec(c, deleted.then_some(old.as_str()));
+        let at = comments::anchor_spec(c, deleted.contains(&c.id).then_some(old.as_str()));
         println!(
             "{lead}#{}  {at}  (blob {}){by}{from}\n{lead}    {}\n",
             c.id,

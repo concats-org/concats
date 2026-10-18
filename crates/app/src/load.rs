@@ -88,7 +88,7 @@ fn load_document(target: &Target, guide: Option<String>) -> ReviewDoc {
         Ok(loaded) => {
             next.merge_base_oid = loaded.merge_base;
             next.head_oid = loaded.head;
-            next.old_rev = comments::old_rev(&loaded);
+            next.old_rev = comments::old_rev(loaded.merge_base);
             next.workdir.clone_from(&loaded.workdir);
             next.stage.clone_from(&loaded.stage);
             next.refs = picker_refs(&loaded);

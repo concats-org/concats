@@ -7,11 +7,14 @@
 //! computed by hand), or as old-side ones for deleted lines, and every anchor
 //! is checked against the loaded diff before anything is stored.
 
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    path::Path,
+};
 
 use concats_diff::{
     Blob, FileChange,
-    load::{INDEX_REV, Loaded, WORKTREE_REV},
+    load::{self, INDEX_REV, Loaded, WORKTREE_REV},
 };
 use gix::ObjectId;
 
@@ -58,7 +61,7 @@ pub fn resolve_anchor(spec: &str, loaded: &Loaded) -> Result<(String, Anchor), E
             if !ours {
                 return Err(Error::AnchorOldSide {
                     named: rev.to_string(),
-                    old: old_rev(loaded),
+                    old: old_rev(loaded.merge_base),
                 });
             }
             (path, Side::Old)
@@ -88,12 +91,13 @@ pub fn anchor_spec(c: &Comment, old: Option<&str>) -> String {
     format!("{}{side}:{start}-{end}", c.path)
 }
 
-/// How an anchor names `loaded`'s old side: its commit's first seven hex
-/// digits, or `INDEX`. A fixed length rather than git's unique abbreviation:
-/// [`resolve_anchor`] only compares it with the loaded diff's own old side, so
-/// uniqueness in the object database never matters.
-pub fn old_rev(loaded: &Loaded) -> String {
-    loaded.merge_base.map_or_else(
+/// How an anchor names a diff's old side, its [`Loaded::merge_base`]: the
+/// commit's first seven hex digits, or `INDEX`. A fixed length rather than
+/// git's unique abbreviation: [`resolve_anchor`] only compares it with the
+/// loaded diff's own old side, so uniqueness in the object database never
+/// matters.
+pub fn old_rev(old: Option<ObjectId>) -> String {
+    old.map_or_else(
         || INDEX_REV.to_string(),
         |oid| oid.to_hex_with_len(7).to_string(),
     )
@@ -107,6 +111,74 @@ pub fn sides(loaded: &Loaded) -> HashMap<ObjectId, Side> {
         .flat_map(|f| f.hunks.iter())
         .flat_map(|h| h.rows.iter());
     interchange::blob_sides(rows, &loaded.blobs)
+}
+
+/// The ids of `comments` on the old side of `base...head`, and how an anchor
+/// names that side — what [`sides`] tells from a loaded diff, read off a tree
+/// or index lookup per path instead: a comment is there when its blob is the
+/// old side's at its path and not the head's.
+///
+/// A file renamed in the range has its old blob under its old path, so a
+/// comment on its deleted lines is not found here.
+pub fn on_old_side(
+    repo: &Path,
+    base: &str,
+    head: &str,
+    comments: &[Comment],
+) -> Result<(String, HashSet<u64>), concats_diff::Error> {
+    let root =
+        load::discover(repo).ok_or_else(|| concats_diff::Error::NoRepository(repo.into()))?;
+    let repo = load::open_repo(&root)?;
+    let head = (head.trim() != WORKTREE_REV)
+        .then(|| load::resolve(&repo, head))
+        .transpose()?;
+    // NOTE: the side `load` numbers deleted lines on: the index, the base
+    // itself against the worktree, else the merge base.
+    let old = match (base.trim() == INDEX_REV, head) {
+        (true, _) => None,
+        (false, None) => Some(load::resolve(&repo, base)?),
+        (false, Some(head)) => Some(
+            repo.merge_base(load::resolve(&repo, base)?, head)
+                .map_err(|e| concats_diff::Error::git("merge_base", e))?
+                .detach(),
+        ),
+    };
+
+    let mut old_at = HashMap::new();
+    for c in comments {
+        if !old_at.contains_key(c.path.as_str()) {
+            let oid = load::read_at_base(&repo, old, &c.path)?.map(|(oid, _)| oid);
+            old_at.insert(c.path.as_str(), oid);
+        }
+    }
+    let was_old: Vec<&Comment> = comments
+        .iter()
+        .filter(|c| old_at[c.path.as_str()] == Some(c.anchor.blob))
+        .collect();
+    // Only a path some comment's blob was old on is read at the head.
+    let mut changed = HashMap::new();
+    for c in &was_old {
+        if !changed.contains_key(c.path.as_str()) {
+            let now = match load::read_at_head(&repo, head, &c.path) {
+                Ok((oid, _)) => Some(oid),
+                // NOTE: not at the head — the range deleted the file.
+                Err(concats_diff::Error::NotInTree { .. }) => None,
+                Err(concats_diff::Error::Io { source, .. })
+                    if source.kind() == std::io::ErrorKind::NotFound =>
+                {
+                    None
+                }
+                Err(error) => return Err(error),
+            };
+            changed.insert(c.path.as_str(), now != Some(c.anchor.blob));
+        }
+    }
+    let ids = was_old
+        .iter()
+        .filter(|c| changed[c.path.as_str()])
+        .map(|c| c.id)
+        .collect();
+    Ok((old_rev(old), ids))
 }
 
 /// A file's hunks as ready-made links, so a caller fixing an anchor never does
@@ -176,7 +248,7 @@ pub fn reply(
 pub fn added(c: &Comment, anchored: Option<&Loaded>) -> String {
     let old = anchored
         .filter(|loaded| sides(loaded).get(&c.anchor.blob) == Some(&Side::Old))
-        .map(old_rev);
+        .map(|loaded| old_rev(loaded.merge_base));
     let place = anchor_spec(c, old.as_deref());
     match (c.parent, anchored) {
         (None, _) => format!("added comment #{} on {place}", c.id),
@@ -561,7 +633,7 @@ mod tests {
         std::fs::write(repo.join("init.txt"), "a\nb\n").unwrap();
         let loaded = load::load(repo, "HEAD", WORKTREE_REV).unwrap();
         let mut store = Store::open(&loaded.git_dir);
-        let rev = old_rev(&loaded);
+        let rev = old_rev(loaded.merge_base);
         assert_eq!(rev, loaded.merge_base.unwrap().to_string()[..7]);
 
         let deleted = format!("init.txt@{rev}:1");
@@ -598,6 +670,52 @@ mod tests {
         );
     }
 
+    /// The CLI list tells the old side by path lookups, without a diff; it
+    /// must agree with the loaded diff it stands in for — a modified file and
+    /// a deleted one, against a commit head, the worktree and the index.
+    #[test]
+    fn the_old_side_by_path_agrees_with_the_loaded_diff() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path();
+        init_repo_with_commit(repo);
+        let git = |args: &[&str]| concats_fixture::git(repo, args);
+        std::fs::write(repo.join("a.txt"), "a\nb\n").unwrap();
+        std::fs::write(repo.join("gone.txt"), "x\n").unwrap();
+        git(&["add", "-A"]);
+        git(&["commit", "-qm", "base"]);
+        std::fs::write(repo.join("a.txt"), "a\n").unwrap();
+        std::fs::remove_file(repo.join("gone.txt")).unwrap();
+        git(&["add", "-A"]);
+        git(&["commit", "-qm", "head"]);
+
+        let check = |base: &str, head: &str, specs: &[&str]| {
+            let loaded = load::load(repo, base, head).unwrap();
+            let mut store = Store::open(&loaded.git_dir);
+            let rev = old_rev(loaded.merge_base);
+            for spec in specs {
+                add(&mut store, &loaded, &spec.replace("{rev}", &rev), "c", None).unwrap();
+            }
+            let sides = sides(&loaded);
+            let want: HashSet<u64> = store
+                .comments
+                .iter()
+                .filter(|c| sides.get(&c.anchor.blob) == Some(&Side::Old))
+                .map(|c| c.id)
+                .collect();
+            let (named, ids) = on_old_side(repo, base, head, &store.comments).unwrap();
+            assert_eq!((named, &ids), (rev, &want), "{base}...{head}");
+            assert!(!ids.is_empty(), "{base}...{head}");
+        };
+        let changed = ["a.txt:1", "a.txt@{rev}:2", "gone.txt@{rev}:1"];
+        check("HEAD~1", "HEAD", &changed);
+        check("HEAD~1", WORKTREE_REV, &changed);
+
+        std::fs::write(repo.join("a.txt"), "staged\n").unwrap();
+        git(&["add", "a.txt"]);
+        std::fs::write(repo.join("a.txt"), "unstaged\n").unwrap();
+        check(INDEX_REV, WORKTREE_REV, &["a.txt:1", "a.txt@INDEX:1"]);
+    }
+
     /// An old-side anchor printed against another range is refused, saying
     /// what it named and what this diff's old side is. An `@` that names no rev
     /// is part of the path.
@@ -608,7 +726,7 @@ mod tests {
         init_repo_with_commit(repo);
         std::fs::write(repo.join("init.txt"), "a\n").unwrap();
         let loaded = load::load(repo, "HEAD", WORKTREE_REV).unwrap();
-        let rev = old_rev(&loaded);
+        let rev = old_rev(loaded.merge_base);
         let other = if rev.starts_with('0') { "1111" } else { "0000" };
 
         for named in [other, INDEX_REV] {
