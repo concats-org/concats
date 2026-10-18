@@ -16,7 +16,7 @@ use std::{
 use concats_highlight::Highlighter;
 use concats_review::{
     comments,
-    store::{self, Anchor, Comment, LineKey, Store},
+    store::{self, Comment, LineKey, Store},
 };
 use concats_syntax::LineSpans;
 use gix::ObjectId;
@@ -32,17 +32,10 @@ pub(crate) enum ReviewCmd {
         git_dir: PathBuf,
         keys: Vec<LineKey>,
     },
+    /// Leave a comment. The service fills in the author.
     AddComment {
         git_dir: PathBuf,
-        path: String,
-        anchor: Anchor,
-        body: String,
-        /// The words of those lines the comment is about, when it was made on
-        /// a selection. Read off the content at the click, where the text is.
-        quote: Option<store::Quote>,
-        /// Minted on the UI thread, where the buffer is, when the file is a
-        /// worktree file: the comment's lines as a cursor pair in its document.
-        cursors: Option<store::Cursors>,
+        comment: Comment,
     },
     /// Answer a comment. The reply takes its thread root's anchor, so unlike
     /// `AddComment` this needs no range and no loaded diff.
@@ -139,15 +132,6 @@ pub(crate) struct ReviewState {
     pub comments_rev: u64,
 }
 
-impl ReviewState {
-    /// (all seen, any seen) for a set of line keys — the tick box's state, and
-    /// the "partially viewed" hint next to it. One shared answer with the
-    /// store, so the optimistic overlay and the authoritative write agree.
-    pub fn state(&self, keys: &[LineKey]) -> (bool, bool) {
-        store::seen_state(keys, &self.seen)
-    }
-}
-
 /// Posted whenever the service publishes. The app reads the new snapshot in
 /// `handle_actions` — the action says *that* something changed, never what to
 /// draw with it.
@@ -190,19 +174,17 @@ pub(crate) enum ReviewUpdate {
     Recents(Vec<String>),
 }
 
-pub(crate) enum HighlightCmd {
-    Request {
-        /// The window whose document this blob belongs to; the reply carries
-        /// it back so the spans land in the document they were computed from.
-        window: LiveId,
-        /// The document as it stood when the request went out. Carried rather
-        /// than looked up: the worker has no window to look one up for, and an
-        /// `Arc` clone costs nothing.
-        doc: Arc<crate::review_doc::ReviewDoc>,
-        generation: u64,
-        blob: u32,
-        rev: u64,
-    },
+pub(crate) struct HighlightCmd {
+    /// The window whose document this blob belongs to; the reply carries it
+    /// back so the spans land in the document they were computed from.
+    pub window: LiveId,
+    /// The document as it stood when the request went out. Carried rather than
+    /// looked up: the worker has no window to look one up for, and an `Arc`
+    /// clone costs nothing.
+    pub doc: Arc<crate::review_doc::ReviewDoc>,
+    pub generation: u64,
+    pub blob: u32,
+    pub rev: u64,
 }
 
 pub(crate) fn highlight() -> &'static Worker<HighlightCmd> {
@@ -230,7 +212,7 @@ impl Service for HighlightService {
     type Cmd = HighlightCmd;
 
     fn handle(&mut self, cmd: HighlightCmd) {
-        let HighlightCmd::Request {
+        let HighlightCmd {
             window,
             doc,
             generation,
@@ -280,21 +262,14 @@ pub(crate) fn review_state(git_dir: Option<&Path>) -> Shared<ReviewState> {
 /// The handle every UI-side mutation goes through.
 pub(crate) fn review() -> &'static Worker<ReviewCmd> {
     static W: OnceLock<Worker<ReviewCmd>> = OnceLock::new();
-    W.get_or_init(|| {
-        Worker::spawn(AppService {
-            stores: HashMap::new(),
-            worktrees: HashMap::new(),
-            comments_rev: 0,
-        })
-    })
+    W.get_or_init(|| Worker::spawn(AppService::default()))
 }
 
 /// Flip a card's lines and show it immediately: the published state gets the
 /// change now, the service confirms it (and the write reaches disk) next.
-/// Returns the new state, so the caller can update anything derived from it.
 pub(crate) fn toggle_seen(git_dir: &Path, keys: Vec<LineKey>) {
     let out = review_state(Some(git_dir));
-    let (all, _) = out.load().state(&keys);
+    let (all, _) = store::seen_state(&keys, &out.load().seen);
     out.update(|s| {
         let mut next = s.clone();
         let seen = Arc::make_mut(&mut next.seen);
@@ -313,6 +288,7 @@ pub(crate) fn toggle_seen(git_dir: &Path, keys: Vec<LineKey>) {
     });
 }
 
+#[derive(Default)]
 struct AppService {
     /// One store per repo, opened once. The UI never sees these.
     stores: HashMap<PathBuf, Store>,
@@ -427,24 +403,13 @@ impl Service for AppService {
                 self.store(&git_dir).toggle(&keys);
                 self.publish(&git_dir);
             }
-            ReviewCmd::AddComment {
-                git_dir,
-                path,
-                anchor,
-                body,
-                quote,
-                cursors,
-            } => {
+            ReviewCmd::AddComment { git_dir, comment } => {
                 // The author read hits git's config files, so it belongs here
                 // and not in the click handler.
                 let author = store::git_user_name(&git_dir);
-                let added = self.store(&git_dir).add_comment(Comment {
-                    body,
-                    author,
-                    cursors,
-                    quote,
-                    ..store::comment(path, anchor)
-                });
+                let added = self
+                    .store(&git_dir)
+                    .add_comment(Comment { author, ..comment });
                 // NOTE: the composer has closed; a refused write is said here
                 // and the thread does not appear.
                 if let Err(error) = added {
@@ -499,15 +464,10 @@ impl Service for AppService {
                     self.comments_rev += 1;
                 }
                 self.publish(&git_dir);
+                let name = plan.path.file_name().unwrap_or(plan.path.as_os_str());
                 notify(ReviewUpdate::Status {
                     window,
-                    message: format!(
-                        "saved {}",
-                        plan.path.file_name().map_or_else(
-                            || plan.path.display().to_string(),
-                            |n| n.to_string_lossy().into_owned()
-                        )
-                    ),
+                    message: format!("saved {}", name.display()),
                 });
                 notify(ReviewUpdate::FileSaved {
                     window,
@@ -646,18 +606,21 @@ mod tests {
         ObjectId::from_hex(format!("{n:040x}").as_bytes()).unwrap()
     }
 
+    /// A comment on `a.rs`, as the composer sends it.
+    fn on_a_rs(blob: ObjectId, start: u32, end: u32, body: &str) -> Comment {
+        Comment {
+            body: body.into(),
+            ..store::comment("a.rs".into(), Anchor { blob, start, end })
+        }
+    }
+
     /// A service publishing into its own repo's slot — no `Cx`, no window, no
     /// frame to wait for. Each test gets a fresh tempdir, so each gets a slot
     /// of its own.
     fn service() -> (tempfile::TempDir, AppService, Shared<ReviewState>) {
         let tmp = tempfile::tempdir().unwrap();
         let out = review_state(Some(tmp.path()));
-        let svc = AppService {
-            stores: HashMap::new(),
-            worktrees: HashMap::new(),
-            comments_rev: 0,
-        };
-        (tmp, svc, out)
+        (tmp, AppService::default(), out)
     }
 
     #[test]
@@ -725,7 +688,7 @@ mod tests {
             git_dir: git_dir.clone(),
             keys: keys.clone(),
         });
-        assert_eq!(out.load().state(&keys), (true, true));
+        assert_eq!(store::seen_state(&keys, &out.load().seen), (true, true));
 
         svc.handle(ReviewCmd::ToggleSeen { git_dir, keys });
         assert_eq!(out.load().seen.len(), 0);
@@ -743,15 +706,7 @@ mod tests {
 
         svc.handle(ReviewCmd::AddComment {
             git_dir: git_dir.clone(),
-            path: "a.rs".into(),
-            anchor: Anchor {
-                blob: oid(1),
-                start: 0,
-                end: 0,
-            },
-            body: "keep this seen".into(),
-            cursors: None,
-            quote: None,
+            comment: on_a_rs(oid(1), 0, 0, "keep this seen"),
         });
         assert!(Arc::ptr_eq(&seen, &out.load().seen));
 
@@ -769,15 +724,7 @@ mod tests {
         let git_dir = tmp.path().to_path_buf();
         svc.handle(ReviewCmd::AddComment {
             git_dir: git_dir.clone(),
-            path: "a.rs".into(),
-            anchor: Anchor {
-                blob: oid(2),
-                start: 0,
-                end: 0,
-            },
-            body: "keep this line".into(),
-            cursors: None,
-            quote: None,
+            comment: on_a_rs(oid(2), 0, 0, "keep this line"),
         });
         let before = out.load();
         let mut blob = concats_diff::Blob::new(oid(2), "rs".into(), "line\n".into());
@@ -799,15 +746,7 @@ mod tests {
         let git_dir = tmp.path().to_path_buf();
         svc.handle(ReviewCmd::AddComment {
             git_dir: git_dir.clone(),
-            path: "a.rs".into(),
-            anchor: Anchor {
-                blob: oid(2),
-                start: 3,
-                end: 5,
-            },
-            body: "why though?".into(),
-            cursors: None,
-            quote: None,
+            comment: on_a_rs(oid(2), 3, 5, "why though?"),
         });
         let state = out.load();
         assert_eq!(state.comments.len(), 1);

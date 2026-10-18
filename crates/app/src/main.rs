@@ -13,11 +13,12 @@
 //! content don't exist, tabs close via their ✕ and come back via the status-bar
 //! view buttons, and they drag to reorder, split and merge (makepad-studio's
 //! dock, restyled). File cards carry a per-file viewed tick box. The status bar
-//! shows error/warning counts, the load stats, the view buttons, the terminal
-//! toggle and its `+` (more shell sessions as closable tabs), and a `{ }`
-//! button that opens a Settings tab (theme and font, as editable highlighted
-//! TOML). The chip opens an autocomplete over the repo's refs: pick one to diff
-//! it against HEAD, or type an explicit `base...head`.
+//! shows how much of the diff is ticked seen, a line of transient status, the
+//! view buttons, the terminal toggle and its `+` (more shell sessions as
+//! closable tabs), and a `{ }` button that opens a Settings tab (theme and
+//! font, as editable highlighted TOML). The chip opens an autocomplete over the
+//! repo's refs: pick one to diff it against HEAD, or type an explicit
+//! `base...head`.
 //!
 //! Perf: F3 toggles the live frame graph. Loading happens on a worker thread,
 //! so a huge diff slows the load, not the window.
@@ -255,7 +256,7 @@ pub struct App {
     #[rust]
     show_perf: bool,
     /// Every open window, in the order they were opened. The first is the one
-    /// the app started on; the dev hooks and the CLI both mean that one.
+    /// the app started on, and the one the dev hooks drive.
     #[rust]
     windows: Vec<AppWindow>,
     /// The window that last took focus — the one ⌘N copies its range from.
@@ -580,14 +581,14 @@ impl MatchEvent for App {
 }
 
 impl App {
-    /// Take a window into the App's care: mint its state, hand it to its pane
-    /// (the pane is what puts it in `Scope` for the rows below), and remember
-    /// it. Called for the declared window at startup and for each ⌘N window.
-    /// The window the dev hooks and the CLI mean: the one the app started on.
+    /// The window the dev hooks drive: the one the app started on.
     fn primary(&self) -> Option<&AppWindow> {
         self.windows.first()
     }
 
+    /// Take a window into the App's care: mint its state, hand it to its pane
+    /// (the pane is what puts it in `Scope` for the rows below), and remember
+    /// it. Called for the declared window at startup and for each ⌘N window.
     fn adopt_window(&mut self, cx: &mut Cx, id: LiveId, window: WidgetRef) {
         let state = WindowState::new(id, window.as_window().window_id());
         if let Some(mut pane) = window.widget(cx, ids!(pane_a)).borrow_mut::<ReviewPane>() {

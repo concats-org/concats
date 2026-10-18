@@ -5,13 +5,12 @@
 //! a pane has fixed streams of them, a caret, folded cards and a composer. The
 //! content comes from [`concats_diff`]; how it is laid out is decided here.
 //!
-//! Nothing here touches a widget or `Cx`. The widgets in `main.rs` call these
-//! functions, and they only touch document data and the process-wide
-//! `docs`/`stores` state.
+//! Nothing here touches a widget or `Cx`. The widgets call these functions, and
+//! they only touch the document and the review state they are handed.
 
 use std::collections::HashSet;
 
-use concats_diff::{Blob, CollapsedEnd, LineKind, LoadStats, Row, Side, stage::StageFile};
+use concats_diff::{Blob, CollapsedEnd, LineKind, Row, Side, stage::StageFile};
 use concats_review::store::{self, Comment};
 use gix::ObjectId;
 
@@ -196,7 +195,6 @@ pub struct ReviewDoc {
     /// the painting; this is what the gesture resolves to.
     pub selection_anchor: Option<Caret>,
     pub blobs: Vec<Blob>,
-    pub stats: LoadStats,
     pub generation: u64,
     /// Invalidates row-index caches after edits, comment splices, or expansion.
     /// NOTE: `generation` changes only when a load lands.

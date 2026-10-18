@@ -1394,11 +1394,12 @@ impl ReviewPane {
                     };
                     ReviewCmd::AddComment {
                         git_dir,
-                        path,
-                        anchor: side_anchor(primary),
-                        body,
-                        quote,
-                        cursors,
+                        comment: store::Comment {
+                            body,
+                            quote,
+                            cursors,
+                            ..store::comment(path, side_anchor(primary))
+                        },
                     }
                 }
             };

@@ -1624,7 +1624,7 @@ impl ReviewList {
             && b.spans_stale()
             && self.requested_highlights.insert((blob, b.edit_rev))
         {
-            highlight().send(HighlightCmd::Request {
+            highlight().send(HighlightCmd {
                 window: pass.window,
                 doc: pass.doc.clone(),
                 generation: pass.doc.generation,

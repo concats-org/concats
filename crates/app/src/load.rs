@@ -84,7 +84,6 @@ fn load_document(target: &Target, guide: Option<String>) -> ReviewDoc {
         &target.head,
     ) {
         Ok(loaded) => {
-            next.stats = loaded.stats.clone();
             next.merge_base_oid = loaded.merge_base;
             next.head_oid = loaded.head;
             next.workdir.clone_from(&loaded.workdir);
@@ -379,7 +378,6 @@ pub(crate) fn build_review(
     target: &Target,
     guide_md: Option<String>,
 ) {
-    let s = loaded.stats.clone();
     d.git_dir = Some(loaded.git_dir.clone());
 
     // The recorded agent sessions next to the diff: the Sessions and Commits
@@ -426,6 +424,7 @@ pub(crate) fn build_review(
     d.commits_rows = std::mem::take(&mut mined.commits);
 
     if let Some(md) = guide_md {
+        let s = &loaded.stats;
         d.guide_rows.push(Row::Title {
             text: format!("# `{}...{}`", target.base, target.head),
         });
@@ -479,8 +478,7 @@ pub(crate) fn build_review(
 ///
 /// Keyed by `origin`, the worktree path, because that is what identifies the
 /// file; the oid names one revision of it and changes under us.
-fn carry_live_buffers(d: &mut ReviewDoc, live: &[Blob]) -> bool {
-    let mut carried = false;
+fn carry_live_buffers(d: &mut ReviewDoc, live: &[Blob]) {
     for prev in live.iter().filter(|blob| blob.doc.is_some()) {
         let Some(origin) = prev.origin.as_deref() else {
             continue;
@@ -509,9 +507,7 @@ fn carry_live_buffers(d: &mut ReviewDoc, live: &[Blob]) -> bool {
             rehome_seen(d.git_dir.as_deref(), &buffer, was_oid, &was_disk);
         }
         d.blobs[at] = buffer;
-        carried = true;
     }
-    carried
 }
 
 /// The file moved on disk under an open buffer: carry the seen ticks of the
@@ -554,9 +550,9 @@ pub(crate) fn hold_minted(git_dir: Option<&std::path::Path>, cursors: Vec<(u64, 
 
 // NOTE: Restoring the CRDT history lets held comment cursors follow disk edits
 // made while the app was closed. A fresh document cannot resolve those cursors.
-fn restore_cached_buffers(d: &mut ReviewDoc) -> bool {
+fn restore_cached_buffers(d: &mut ReviewDoc) {
     let Some(git_dir) = d.git_dir.clone() else {
-        return false;
+        return;
     };
     let candidates: Vec<(usize, std::path::PathBuf)> = d
         .blobs
@@ -565,7 +561,6 @@ fn restore_cached_buffers(d: &mut ReviewDoc) -> bool {
         .filter(|(_, b)| b.doc.is_none())
         .filter_map(|(i, b)| Some((i, b.origin.clone()?)))
         .collect();
-    let mut restored = false;
     for (at, origin) in candidates {
         let Some(saved) = store::load_buffer(&git_dir, &origin) else {
             continue;
@@ -574,7 +569,6 @@ fn restore_cached_buffers(d: &mut ReviewDoc) -> bool {
         if !d.blobs[at].restore_state(&saved, oid) {
             continue;
         }
-        restored = true;
         // The file may have been written while the app was closed: the cached
         // disk version is where its ticks still sit.
         let buffer = &d.blobs[at];
@@ -588,7 +582,6 @@ fn restore_cached_buffers(d: &mut ReviewDoc) -> bool {
             rehome_seen(Some(&git_dir), buffer, was_oid, &was_disk);
         }
     }
-    restored
 }
 
 #[cfg(test)]
@@ -614,7 +607,7 @@ mod tests {
 
         // What a fresh load rebuilds after something else wrote the file.
         let mut d = loaded_with(origin, "fn a() {}\nfn NEW() {}\nfn b() {}\n", oid(2));
-        assert!(carry_live_buffers(&mut d, std::slice::from_ref(&buffer)));
+        carry_live_buffers(&mut d, std::slice::from_ref(&buffer));
         let head = &d.blobs[0];
         assert!(head.text.contains("// mine"), "the typing survived");
         assert!(head.text.contains("fn NEW"), "the external write survived");
@@ -642,7 +635,7 @@ mod tests {
         let mut d = loaded_with(origin, disk, disk_oid);
         assert!(d.blobs[0].restore_state(&cached, disk_oid));
         assert!(d.blobs[0].text.contains("cached"));
-        assert!(carry_live_buffers(&mut d, &[buffer]));
+        carry_live_buffers(&mut d, &[buffer]);
         let landed = &d.blobs[0];
         assert!(landed.text.contains("latest"));
         assert!(landed.text.contains("external"));
@@ -670,7 +663,7 @@ mod tests {
 
         // An agent rewords the very heading the thread is on.
         let mut d = loaded_with(origin, "# Project\n## Getting Started Quickly\n", oid(2));
-        assert!(carry_live_buffers(&mut d, std::slice::from_ref(&buffer)));
+        carry_live_buffers(&mut d, std::slice::from_ref(&buffer));
         assert_eq!(
             d.blobs[0].held_line(7),
             Some(1),
@@ -683,7 +676,7 @@ mod tests {
     fn a_reload_takes_the_fresh_read_when_no_buffer_was_open() {
         let origin = std::path::Path::new("/repo/src.rs");
         let mut d = loaded_with(origin, "fn a() {}\n", oid(2));
-        assert!(!carry_live_buffers(&mut d, &[]));
+        carry_live_buffers(&mut d, &[]);
         assert_eq!(d.blobs[0].text, "fn a() {}\n");
         assert!(!d.blobs[0].dirty());
     }
