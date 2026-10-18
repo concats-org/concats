@@ -10,8 +10,8 @@ use concats_diff::Row;
 use crate::{
     makepad_widgets::{KeyCode, KeyEvent},
     review_doc::{
-        Caret, ReviewDoc, Step, Stream, caret_at_offset, caret_row, caret_to, offset_of,
-        replace_selection, step_row, type_at,
+        Caret, ReviewDoc, Step, Stream, caret_at_offset, caret_row, caret_to, header_title,
+        offset_of, replace_selection, step_row, type_at,
     },
 };
 
@@ -239,12 +239,7 @@ pub(crate) fn search_hits(d: &ReviewDoc, stream: Stream, query: &str) -> Vec<(us
                 Row::Title { text } | Row::Warning { text } => text.as_str().into(),
                 Row::Prose { md } => md.as_str().into(),
                 Row::Comment { body, meta, .. } => format!("{meta}\n{body}").into(),
-                Row::FileHeader {
-                    path,
-                    from: Some(from),
-                    ..
-                } => format!("{from} → {path}").into(),
-                Row::FileHeader { path, .. } => path.as_str().into(),
+                Row::FileHeader { path, from, .. } => header_title(path, from.as_deref()),
                 Row::Code { blob, line, .. } => {
                     d.blobs[*blob as usize].line_text(*line as usize).into()
                 }
@@ -476,6 +471,29 @@ mod tests {
             search_hits(&d, Stream::Files, ""),
             [] as [(usize, usize); 0]
         );
+    }
+
+    /// Find searches a renamed card's title as it is drawn, so its offsets
+    /// land on the drawn text.
+    #[test]
+    fn search_finds_a_rename_where_its_title_draws_it() {
+        let mut d = document("x\n");
+        d.files_rows.insert(
+            0,
+            Row::FileHeader {
+                path: "new.rs".into(),
+                lang: "rust",
+                adds: 0,
+                dels: 0,
+                from: Some("old.rs".into()),
+                similarity: Some(100),
+            },
+        );
+        let title = header_title("new.rs", Some("old.rs"));
+        let hits = search_hits(&d, Stream::Files, "new.rs");
+        assert_eq!(hits, [(0, title.find("new.rs").unwrap())]);
+        assert_eq!(&title[hits[0].1..hits[0].1 + 6], "new.rs");
+        assert_eq!(search_hits(&d, Stream::Files, "old.rs  →  new").len(), 1);
     }
 
     #[test]

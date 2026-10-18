@@ -1126,14 +1126,6 @@ fn reaches_code<'a>(mut rows: impl Iterator<Item = &'a Row>) -> bool {
         .is_some_and(|row| matches!(row, Row::Code { .. } | Row::Comment { .. } | Row::Composer))
 }
 
-/// The card header's title: a rename shows as "old → new", not as two files.
-fn header_title(path: &str, from: Option<&str>) -> String {
-    match from {
-        Some(f) => format!("{f}  →  {path}"),
-        None => path.to_string(),
-    }
-}
-
 /// The card header's right-hand stat, shared with the sticky copy.
 fn header_stat(adds: usize, dels: usize, similarity: Option<u8>, partially_viewed: bool) -> String {
     let stat = match similarity {
@@ -1661,7 +1653,7 @@ impl ReviewList {
                 .set_action_data(ReviewItemAction::Fold { path: path.clone() });
         }
         root.label(cx, ids!(fh_path))
-            .set_text(cx, &header_title(path, from.as_deref()));
+            .set_text(cx, &crate::review_doc::header_title(path, from.as_deref()));
         // The viewed tick box covers every hunk of this card — all their
         // changed lines flip together.
         let (all, any) = self

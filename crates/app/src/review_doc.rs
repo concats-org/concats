@@ -680,6 +680,15 @@ pub(crate) fn quoted(
     })
 }
 
+/// A file card's title: a rename shows as "old → new", not as two files. Find
+/// searches this same text, so a match lands where it is drawn.
+pub(crate) fn header_title<'a>(path: &'a str, from: Option<&str>) -> std::borrow::Cow<'a, str> {
+    match from {
+        Some(f) => format!("{f}  →  {path}").into(),
+        None => path.into(),
+    }
+}
+
 pub(crate) fn blob_label(d: &ReviewDoc, blob: u32) -> String {
     blob_name(d, blob).map_or_else(
         || format!("blob {}", &d.blobs[blob as usize].oid.to_string()[..10]),
