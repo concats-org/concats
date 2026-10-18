@@ -916,20 +916,15 @@ pub struct ReviewList {
     #[rust]
     visible: Vec<usize>,
     #[rust]
-    highlight_generation: u64,
-    #[rust]
     requested_highlights: HashSet<(u32, u64)>,
+    /// The document generation, comments revision and row-stream revision
+    /// this instance's caches were built against. The row stream counts on its
+    /// own: splicing the composer inserts a row mid-stream, which shifts every
+    /// row index after it — so `cards` (card boundaries by row) and `visible`
+    /// (entry→row) are stale, and every card below the composer resolved to
+    /// the wrong geometry: its header stopped sticking.
     #[rust]
-    mapped_generation: u64,
-    #[rust]
-    mapped_comments_rev: u64,
-    /// The row-stream shape this instance's caches were built against. Splicing
-    /// the composer inserts a row mid-stream, which shifts every row index after
-    /// it — so `cards` (card boundaries by row) and `visible` (entry→row) are
-    /// stale, and every card below the composer resolved to the wrong geometry:
-    /// its header stopped sticking.
-    #[rust]
-    mapped_rows_rev: u64,
+    mapped: (u64, u64, u64),
     #[rust]
     mapped_folded: HashSet<String>,
     #[rust]
@@ -1276,8 +1271,8 @@ impl Widget for ReviewList {
         let tab = self.tab_of(cx, &frame.document.files_open);
         self.drawn_tab = Some(tab);
         if self.find.is_some()
-            && (self.mapped_generation != frame.document.generation
-                || self.mapped_rows_rev != frame.document.rows_rev)
+            && (self.mapped.0 != frame.document.generation
+                || self.mapped.2 != frame.document.rows_rev)
         {
             self.find_at = None;
             self.count_hits(cx);
@@ -1458,33 +1453,26 @@ impl ReviewList {
     /// `PortalList`'s index-keyed height cache, which [`set_range`] resets.
     fn refresh_caches(&mut self, pass: &DrawPass, old_first_id: usize) -> EntryRange {
         let d = pass.doc;
-        if self.highlight_generation != d.generation {
-            self.highlight_generation = d.generation;
+        if self.mapped.0 != d.generation {
             self.requested_highlights.clear();
         }
-        let document_changed = self.mapped_generation != d.generation;
-        let comments_changed = self.mapped_comments_rev != pass.review.comments_rev;
         // The composer moving is a change of the same kind as a comment landing:
         // a row appears or leaves mid-stream, so everything keyed by row index
         // has to be rebuilt.
-        let rows_changed = self.mapped_rows_rev != d.rows_rev;
-        let mapping_changed =
-            document_changed || comments_changed || rows_changed || self.mapped_folded != d.folded;
+        let key = (d.generation, pass.review.comments_rev, d.rows_rev);
+        let changed = self.mapped != key;
+        let mapping_changed = changed || self.mapped_folded != d.folded;
         let previous = self.mapped_entries;
         let old_first_row = self.row_at(old_first_id).unwrap_or(0);
         if mapping_changed {
             self.map_folded(pass.rows, &d.folded);
-            self.mapped_generation = d.generation;
-            self.mapped_comments_rev = pass.review.comments_rev;
-            self.mapped_rows_rev = d.rows_rev;
+            self.mapped = key;
             self.mapped_folded.clone_from(&d.folded);
         }
-        if document_changed || comments_changed || rows_changed {
+        if changed {
             self.cards.rebuild(pass.rows, &d.blobs);
         }
-        if document_changed
-            || comments_changed
-            || rows_changed
+        if changed
             || self
                 .mapped_seen
                 .as_ref()
@@ -1579,10 +1567,8 @@ impl ReviewList {
                     .widget(cx, ids!(collapsed))
                     .borrow_mut::<CollapsedRun>()
                 {
-                    s.set_ends(
-                        reaches_code(pass.rows[..r].iter().rev()),
-                        reaches_code(pass.rows[r + 1..].iter()),
-                    );
+                    s.head = reaches_code(pass.rows[..r].iter().rev());
+                    s.tail = reaches_code(pass.rows[r + 1..].iter());
                 }
                 item.draw_all(cx, &mut Scope::with_props(theme));
             }
@@ -1752,11 +1738,6 @@ impl ReviewList {
 
     /// A code row: the gutter's numbers and marks, the line's text and colours,
     /// and the caret when it is on this line.
-    #[expect(
-        clippy::cognitive_complexity,
-        clippy::too_many_lines,
-        reason = "One row's review state, colours, text, caret and rail are assembled in draw order."
-    )]
     fn draw_code(&mut self, cx: &mut Cx2d, item: &WidgetRef, r: usize, pass: &DrawPass) {
         let Some(
             row @ Row::Code {
@@ -1811,31 +1792,30 @@ impl ReviewList {
             .filter(|c| c.blob == *blob && c.line == *line)
             .map(|c| c.byte);
 
-        item.widget(cx, ids!(gut))
-            .set_action_data(ReviewItemAction::Gutter {
-                tab: pass.tab,
-                row: r,
-            });
-        if let Some(mut g) = item.widget(cx, ids!(gut)).borrow_mut::<Gutter>() {
+        let (gut_ref, dl_ref) = (item.widget(cx, ids!(gut)), item.widget(cx, ids!(dl)));
+        gut_ref.set_action_data(ReviewItemAction::Gutter {
+            tab: pass.tab,
+            row: r,
+        });
+        if let Some(mut g) = gut_ref.borrow_mut::<Gutter>() {
             g.set_row(row, marks);
         }
-        if let Some(mut dl) = item.widget(cx, ids!(dl)).borrow_mut::<DiffLine>() {
+        if let Some(mut dl) = dl_ref.borrow_mut::<DiffLine>() {
             dl.set_row(*kind, text, spans, selected, caret);
             // Prose wraps whatever the setting says: a prompt is one line per
             // paragraph, and truncating it would hide what is being reviewed.
             dl.wrap = pass.wrap || b.prose.is_some();
-            dl.set_hits(hits_in(text, self.find.as_deref()));
-            dl.set_quotes(
-                d.quote_spans
-                    .get(&(*blob, *line))
-                    .map(|spans| {
-                        spans
-                            .iter()
-                            .map(|(from, to)| (*from as usize, *to as usize))
-                            .collect()
-                    })
-                    .unwrap_or_default(),
-            );
+            dl.hits = hits_in(text, self.find.as_deref());
+            dl.quotes = d
+                .quote_spans
+                .get(&(*blob, *line))
+                .map(|spans| {
+                    spans
+                        .iter()
+                        .map(|(from, to)| (*from as usize, *to as usize))
+                        .collect()
+                })
+                .unwrap_or_default();
             if pass.paint_selection {
                 match pass
                     .selected
@@ -1848,43 +1828,33 @@ impl ReviewList {
         }
         item.draw_all(cx, &mut Scope::with_props(&pass.theme));
         let band = item.area().rect(cx);
-        // The rail is drawn before the line it belongs to, so it only learns
-        // how tall a soft-wrapped row is, and where the rows soft wrap added
-        // start, once the line has been laid out.
-        let wrapped = item
-            .widget(cx, ids!(dl))
-            .borrow::<DiffLine>()
-            .map(|dl| dl.wrapped_rows().to_vec())
-            .unwrap_or_default();
-        if let Some(mut g) = item.widget(cx, ids!(gut)).borrow_mut::<Gutter>() {
-            g.paint(
-                cx,
-                &mut Scope::with_props(&pass.theme),
-                band.size.y,
-                &wrapped,
-            );
-        }
         self.drawn_rows.push(DrawnRow {
             row: r,
             top: band.pos.y,
             bottom: band.pos.y + band.size.y,
         });
+        let (Some(mut g), Some(dl)) = (gut_ref.borrow_mut::<Gutter>(), dl_ref.borrow::<DiffLine>())
+        else {
+            return;
+        };
+        // The rail is drawn before the line it belongs to, so it only learns
+        // how tall a soft-wrapped row is, and where the rows soft wrap added
+        // start, once the line has been laid out.
+        g.paint(
+            cx,
+            &mut Scope::with_props(&pass.theme),
+            band.size.y,
+            dl.rows.get(1..).unwrap_or_default(),
+        );
         // Rows draw in order, so the last one carrying the selection is where
         // it ends — and that is where the chip goes.
-        if let Some(rect) = item
-            .widget(cx, ids!(dl))
-            .borrow::<DiffLine>()
-            .and_then(|dl| dl.selection_rect())
-        {
+        if let Some(rect) = dl.sel_rect {
             self.selection_end = Some((rect, r));
         }
         // Read back where the caret landed: the IME has to be told where
         // composed text will appear, and only the row that drew it knows.
         if caret.is_some() {
-            self.caret_rect = item
-                .widget(cx, ids!(dl))
-                .borrow::<DiffLine>()
-                .and_then(|dl| dl.caret_rect());
+            self.caret_rect = dl.caret_rect;
         }
     }
 

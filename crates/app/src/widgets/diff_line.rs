@@ -8,7 +8,7 @@
 //! selection API, and this row answers from the same laid-out text it draws.
 
 use concats_diff::LineKind;
-use concats_syntax::Span;
+use concats_syntax::{Hl, Span};
 
 #[allow(
     clippy::wildcard_imports,
@@ -115,27 +115,27 @@ pub struct DiffLine {
     /// Byte ranges of this row's find hits. Recomputed by the list each draw
     /// from the live text, so an edit can never leave a stale one behind.
     #[rust]
-    hits: Vec<(usize, usize)>,
+    pub hits: Vec<(usize, usize)>,
     /// Byte ranges of this row a comment was made on, from the document's
     /// reading of the comments against the content.
     #[rust]
-    quotes: Vec<(usize, usize)>,
+    pub quotes: Vec<(usize, usize)>,
     /// Where the caret was drawn, in window coordinates. The list reads it back
     /// after drawing to place the IME — which has to know where the text being
     /// composed will appear.
     #[rust]
-    caret_rect: Option<Rect>,
+    pub caret_rect: Option<Rect>,
     /// Where this row painted the last of the selection that runs through it,
     /// in window coordinates. The chip that offers to comment on a selection
     /// needs somewhere to sit, and only the row that drew it knows where that
     /// is — the same reason the caret's rect is read back for the IME.
     #[rust]
-    sel_rect: Option<Rect>,
+    pub sel_rect: Option<Rect>,
     /// The top of every visual row this line drew, in window coordinates and in
     /// order. One entry for a line that fits; the rest are what soft wrap
     /// produced, and the gutter marks them.
     #[rust]
-    rows: Vec<f64>,
+    pub rows: Vec<f64>,
 }
 
 impl DiffLine {
@@ -156,37 +156,6 @@ impl DiffLine {
         self.spans.extend_from_slice(spans);
         self.selected = selected;
         self.caret = caret;
-    }
-
-    /// Mark this row's find hits. Set beside `set_row` rather than through it:
-    /// what a row is and what a search found in it are two different things,
-    /// and only the second changes as you type in the find bar.
-    pub fn set_hits(&mut self, hits: Vec<(usize, usize)>) {
-        self.hits = hits;
-    }
-
-    /// Mark the words of this row a comment was made on, for the same reason:
-    /// what the line says and what has been said about it are two things.
-    pub fn set_quotes(&mut self, quotes: Vec<(usize, usize)>) {
-        self.quotes = quotes;
-    }
-
-    /// Where this row drew the caret, if it had one. Valid until the next draw.
-    pub fn caret_rect(&self) -> Option<Rect> {
-        self.caret_rect
-    }
-
-    /// Where this row painted the end of the selection, if any of it is here.
-    /// Valid until the next draw.
-    pub fn selection_rect(&self) -> Option<Rect> {
-        self.sel_rect
-    }
-
-    /// The tops of the rows soft wrap added, in window coordinates: every
-    /// visual row of this line except the one the line starts on. Empty when
-    /// the line fits. Valid until the next draw.
-    pub fn wrapped_rows(&self) -> &[f64] {
-        self.rows.get(1..).unwrap_or_default()
     }
 
     /// The caret as a thin quad, taken from the geometry of the character it
@@ -219,10 +188,6 @@ impl DiffLine {
     /// first, then the rest of the line, coloured run by coloured run, in a
     /// turtle that hangs under that indent. Returns the right edge of the last
     /// row it drew.
-    #[expect(
-        clippy::cognitive_complexity,
-        reason = "One line's indent, its coloured runs and the gaps between them are drawn in order."
-    )]
     fn draw_line(&mut self, cx: &mut Cx2d, theme: &crate::theme::Theme, flow: Layout) -> f64 {
         self.sel_track.clear();
         self.rows.clear();
@@ -236,7 +201,6 @@ impl DiffLine {
             .text
             .find(|c: char| c != ' ' && c != '\t')
             .unwrap_or(self.text.len());
-        let mut at = 0usize;
         let mut hanging = false;
         if indent > 0 {
             self.draw_text.color = paint(theme.syntax_color(None));
@@ -247,7 +211,6 @@ impl DiffLine {
                 &mut self.rows,
                 &self.text[..indent],
             );
-            at = indent;
             let inner = cx.turtle().inner_rect();
             // Unless the indent is deep enough that the hang would leave the
             // continuation less room than the indent itself.
@@ -263,38 +226,9 @@ impl DiffLine {
                 );
             }
         }
-        for sp in &self.spans {
-            let start = sp.start.min(bytes.len()).max(at);
-            let end = sp.end.min(bytes.len());
-            if start > at {
-                self.draw_text.color = paint(theme.syntax_color(None));
-                if let Ok(s) = std::str::from_utf8(&bytes[at..start]) {
-                    right = draw_run(
-                        cx,
-                        &mut self.draw_text,
-                        &mut self.sel_track,
-                        &mut self.rows,
-                        s,
-                    );
-                }
-            }
-            if end > start {
-                self.draw_text.color = paint(theme.syntax_color(sp.hl));
-                if let Ok(s) = std::str::from_utf8(&bytes[start..end]) {
-                    right = draw_run(
-                        cx,
-                        &mut self.draw_text,
-                        &mut self.sel_track,
-                        &mut self.rows,
-                        s,
-                    );
-                }
-            }
-            at = at.max(end);
-        }
-        if at < bytes.len() {
-            self.draw_text.color = paint(theme.syntax_color(None));
-            if let Ok(s) = std::str::from_utf8(&bytes[at..]) {
+        for (start, end, hl) in color_runs(&self.spans, indent, bytes.len()) {
+            self.draw_text.color = paint(theme.syntax_color(hl));
+            if let Ok(s) = std::str::from_utf8(&bytes[start..end]) {
                 right = draw_run(
                     cx,
                     &mut self.draw_text,
@@ -331,6 +265,33 @@ impl DiffLine {
             &self.text
         }
     }
+}
+
+/// The coloured runs of a line from byte `from` on, in draw order: each gap
+/// before a span uncoloured, then the span in its highlight, then whatever
+/// follows the last span. Spans are clipped to `len`, and one that overlaps a
+/// run already yielded starts where that run ended.
+fn color_runs(
+    spans: &[Span],
+    from: usize,
+    len: usize,
+) -> impl Iterator<Item = (usize, usize, Option<Hl>)> + '_ {
+    let mut at = from;
+    let tail = spans
+        .iter()
+        .map(|sp| sp.end.min(len))
+        .fold(from, usize::max);
+    spans
+        .iter()
+        .flat_map(move |sp| {
+            let start = sp.start.min(len).max(at);
+            let end = sp.end.min(len);
+            let gap = (start > at).then_some((at, start, None));
+            let run = (end > start).then_some((start, end, sp.hl));
+            at = at.max(end);
+            gap.into_iter().chain(run)
+        })
+        .chain((tail < len).then_some((tail, len, None)))
 }
 
 /// Draw one already-coloured run and record it for selection. Free-standing so
@@ -543,5 +504,63 @@ impl WidgetNode for DiffLine {
 
     fn selection_get_full_text(&self) -> String {
         self.sel_text().to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use concats_syntax::{Hl, Span};
+
+    use super::color_runs;
+
+    fn span(start: usize, end: usize, hl: Hl) -> Span {
+        Span {
+            start,
+            end,
+            hl: Some(hl),
+        }
+    }
+
+    #[test]
+    fn color_runs_fill_the_gaps_between_spans() {
+        let spans = [span(2, 5, Hl::Keyword), span(8, 10, Hl::String)];
+        let runs: Vec<_> = color_runs(&spans, 0, 12).collect();
+        assert_eq!(
+            runs,
+            [
+                (0, 2, None),
+                (2, 5, Some(Hl::Keyword)),
+                (5, 8, None),
+                (8, 10, Some(Hl::String)),
+                (10, 12, None),
+            ]
+        );
+    }
+
+    #[test]
+    fn color_runs_clip_to_the_indent_the_line_and_earlier_runs() {
+        // The first span starts inside the indent, the second overlaps it,
+        // and the third runs past the end of the line.
+        let spans = [
+            span(0, 6, Hl::Comment),
+            span(5, 8, Hl::Keyword),
+            span(9, 40, Hl::String),
+        ];
+        let runs: Vec<_> = color_runs(&spans, 4, 12).collect();
+        assert_eq!(
+            runs,
+            [
+                (4, 6, Some(Hl::Comment)),
+                (6, 8, Some(Hl::Keyword)),
+                (8, 9, None),
+                (9, 12, Some(Hl::String)),
+            ]
+        );
+    }
+
+    #[test]
+    fn color_runs_leave_a_line_without_spans_uncoloured() {
+        assert_eq!(color_runs(&[], 3, 7).collect::<Vec<_>>(), [(3, 7, None)]);
+        assert_eq!(color_runs(&[], 0, 0).count(), 0);
     }
 }

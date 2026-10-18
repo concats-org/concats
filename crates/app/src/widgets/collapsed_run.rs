@@ -119,23 +119,15 @@ pub struct CollapsedRun {
     /// Which ends of the run have code to grow, and so get a band. A run at the
     /// card's head has no code above it; one at its tail none below.
     #[rust(true)]
-    head: bool,
+    pub head: bool,
     #[rust(true)]
-    tail: bool,
+    pub tail: bool,
     /// Which band the pointer is over, if any.
     #[rust]
     hover: Option<CollapsedEnd>,
 }
 
 impl CollapsedRun {
-    /// Tell the band which ends of its run are reachable: `head` when there is
-    /// code above (its first hidden lines can join it), `tail` when there is code
-    /// below. (Called by `ReviewList` as it recycles list items.)
-    pub fn set_ends(&mut self, head: bool, tail: bool) {
-        self.head = head;
-        self.tail = tail;
-    }
-
     /// The band at `y` within the indicator, top first. Which end that names
     /// depends on how many bands there are: the down arrow reveals the run's
     /// head (it grows the code above), the up arrow its tail.

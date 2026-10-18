@@ -159,6 +159,10 @@ pub struct Gutter {
     new_no: Option<u32>,
     #[rust]
     number: String,
+    /// How wide `number` laid out this draw: the rail's width is built on it,
+    /// and [`Gutter::paint`] right-aligns the number by it.
+    #[rust]
+    number_width: f64,
     #[rust]
     blob: u32,
     #[rust]
@@ -224,15 +228,6 @@ impl Gutter {
         self.marks = marks;
     }
 
-    /// The rail's own width: the two marker slots, the air after them, and the
-    /// column the number sits in.
-    fn width(&mut self, cx: &mut Cx2d) -> f64 {
-        let number =
-            self.draw_text
-                .layout(cx, 0.0, 0.0, None, false, Align::default(), &self.number);
-        self.lead() + f64::from(number.size_in_lpxs.width * self.draw_text.font_scale) + self.pad()
-    }
-
     /// 6 (comment slot) + 6 (change slot) + 12 of air before the numbers, like
     /// the design. A prose line keeps the slots and skips the air its numbers
     /// would need.
@@ -243,15 +238,6 @@ impl Gutter {
     /// The air between the number column and the line.
     fn pad(&self) -> f64 {
         if self.prose { 4.0 } else { 10.0 }
-    }
-
-    /// One line of the rail: what the row is as tall as until the line beside
-    /// it wraps and makes it taller.
-    fn row_height(&mut self, cx: &mut Cx2d) -> f64 {
-        let number =
-            self.draw_text
-                .layout(cx, 0.0, 0.0, None, false, Align::default(), &self.number);
-        f64::from(number.size_in_lpxs.height * self.draw_text.font_scale) + ROW_PAD * 2.0
     }
 
     /// Paint the rail, now that the line beside it has been laid out: the row
@@ -293,12 +279,11 @@ impl Gutter {
         // right-aligned in the same column, so it reads as one.
         self.draw_text.color = paint(theme.text_faint);
         let right = r.pos.x + r.size.x - self.pad();
-        let number =
-            self.draw_text
-                .layout(cx, 0.0, 0.0, None, false, Align::default(), &self.number);
-        let width = f64::from(number.size_in_lpxs.width * self.draw_text.font_scale);
-        self.draw_text
-            .draw_abs(cx, dvec2(right - width, r.pos.y + ROW_PAD), &self.number);
+        self.draw_text.draw_abs(
+            cx,
+            dvec2(right - self.number_width, r.pos.y + ROW_PAD),
+            &self.number,
+        );
         let mark = self
             .draw_text
             .layout(cx, 0.0, 0.0, None, false, Align::default(), WRAPPED);
@@ -419,10 +404,18 @@ impl Widget for Gutter {
     /// Reserve the rail's column and remember it. The painting happens in
     /// [`Gutter::paint`], once the line beside it has decided the row's height.
     fn draw_walk(&mut self, cx: &mut Cx2d, _scope: &mut Scope, walk: Walk) -> DrawStep {
-        let (width, height) = (self.width(cx), self.row_height(cx));
+        let number =
+            self.draw_text
+                .layout(cx, 0.0, 0.0, None, false, Align::default(), &self.number);
+        self.number_width = f64::from(number.size_in_lpxs.width * self.draw_text.font_scale);
+        // The two marker slots, the air after them and the number's column
+        // wide; one line of the rail tall, until the line beside it wraps and
+        // makes the row taller.
         self.rect = cx.walk_turtle(Walk {
-            width: Size::Fixed(width),
-            height: Size::Fixed(height),
+            width: Size::Fixed(self.lead() + self.number_width + self.pad()),
+            height: Size::Fixed(
+                f64::from(number.size_in_lpxs.height * self.draw_text.font_scale) + ROW_PAD * 2.0,
+            ),
             ..walk
         });
         DrawStep::done()
