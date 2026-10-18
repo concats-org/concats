@@ -340,22 +340,7 @@ impl MatchEvent for App {
                         window.window.redraw(cx);
                     }
                 }
-                Some(ReviewUpdate::Shared {
-                    window,
-                    text,
-                    message,
-                }) => {
-                    if let Some(window) = self.window_mut(*window) {
-                        if let Some(text) = text {
-                            cx.copy_to_clipboard(text);
-                        }
-                        window
-                            .pane(cx)
-                            .label(cx, ids!(status_label))
-                            .set_text(cx, message);
-                        window.window.redraw(cx);
-                    }
-                }
+                Some(ReviewUpdate::Clipboard(text)) => cx.copy_to_clipboard(text),
                 Some(ReviewUpdate::FileSaved {
                     window,
                     path,

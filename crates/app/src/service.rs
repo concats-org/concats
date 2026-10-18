@@ -183,13 +183,9 @@ pub(crate) enum ReviewUpdate {
         spans: LineSpans,
     },
     Recents(Vec<String>),
-    /// A `Share` rendered: the text to copy, when there is any, and the line
-    /// for the status bar.
-    Shared {
-        window: LiveId,
-        text: Option<String>,
-        message: String,
-    },
+    /// Text for the clipboard: what a `Share` rendered. What it shared comes
+    /// as the window's `Status` line.
+    Clipboard(String),
 }
 
 pub(crate) struct HighlightCmd {
@@ -606,11 +602,10 @@ impl Service for AppService {
                 render,
             } => {
                 let (text, message) = self.share(&target, &shown, render);
-                notify(ReviewUpdate::Shared {
-                    window,
-                    text,
-                    message,
-                });
+                if let Some(text) = text {
+                    notify(ReviewUpdate::Clipboard(text));
+                }
+                notify(ReviewUpdate::Status { window, message });
             }
             ReviewCmd::StageSeen {
                 window,
