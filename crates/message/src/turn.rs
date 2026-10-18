@@ -342,6 +342,8 @@ fn parse_entry(pair: Pair<'_, Rule>) -> Result<TurnEntry> {
     }
 }
 
+// NOTE: the writer's half of unescape_entities, for each entry kind Display writes.
+// coland-ignore: @coland/single_caller_private_function
 fn escape_text(text: &str) -> String {
     text.replace('&', "&amp;")
         .replace('<', "&lt;")

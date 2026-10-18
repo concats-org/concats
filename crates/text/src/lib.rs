@@ -25,6 +25,8 @@ use imara_diff::{Algorithm, Diff, InternedInput};
 /// `u32` because this is also what every blob keeps, and one line table beats
 /// two that can disagree about the sentinel.
 #[must_use]
+// NOTE: the one line table every blob and checkout keeps; its fan-in is the point.
+// coland-ignore: @coland/high_call_degree
 pub fn line_starts(text: &str) -> Vec<u32> {
     let mut starts = vec![0u32];
     starts.extend(

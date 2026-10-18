@@ -75,6 +75,8 @@ pub fn list(session: &Session) -> Result<Vec<Snapshot>> {
 ///
 /// Returns an error if the session's snapshot ref is missing, or no snapshot
 /// in that chain points to the requested turn.
+// NOTE: the one lookup from a turn to its snapshot; its fan-in is the point.
+// coland-ignore: @coland/high_call_degree
 pub fn get(session: &Session, turn_oid: gix::ObjectId) -> Result<Snapshot> {
     chain(session)
         .find(|snapshot| {
@@ -97,6 +99,8 @@ pub fn get(session: &Session, turn_oid: gix::ObjectId) -> Result<Snapshot> {
 /// Returns an error if the target turn cannot be loaded, the target turn does
 /// not belong to the session, the worktree snapshot cannot be captured, or the
 /// snapshot commit cannot be written.
+// NOTE: the one way a worktree state is recorded, for the hooks and the tests that pin it.
+// coland-ignore: @coland/high_fan_in_complex_function, @coland/high_call_degree
 pub fn capture(
     session: &Session,
     turn_oid: gix::ObjectId,

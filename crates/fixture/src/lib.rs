@@ -11,6 +11,8 @@ use std::{path::Path, process::Command};
 /// Hermetic: user and system git config (signing, hooks) must not leak into
 /// fixtures. A global `commit.gpgsign` through the 1Password agent would hang
 /// them.
+// NOTE: the hermetic git every fixture runs; its fan-in is the point.
+// coland-ignore: @coland/high_call_degree
 pub fn git(dir: &Path, args: &[&str]) -> String {
     let out = Command::new("git")
         .current_dir(dir)

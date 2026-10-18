@@ -81,6 +81,8 @@ pub fn import(json: &str) -> serde_json::Result<Vec<Theme>> {
     Ok(file.themes.iter().map(|zt| theme(zt, &base)).collect())
 }
 
+// NOTE: one slot per line, each from its Zed keys and fallbacks; declarative, nothing to split.
+// coland-ignore: @coland/function_too_large
 fn theme(zt: &Entry, base: &Theme) -> Theme {
     let m = &zt.style.map;
     let hex = |k: &str| m.get(k).and_then(|v| v.as_str()).and_then(parse_color);

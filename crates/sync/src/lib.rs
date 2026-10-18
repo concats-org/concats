@@ -71,6 +71,8 @@ const TEXT: &str = "text";
 /// # Panics
 /// Panics if Git's SHA-1 collision detector rejects the content.
 #[must_use]
+// NOTE: git's blob hash, the name every version goes by; its fan-in is the point.
+// coland-ignore: @coland/high_call_degree
 pub fn hash_object(bytes: &[u8]) -> ObjectId {
     gix::objs::compute_hash(gix::hash::Kind::Sha1, gix::objs::Kind::Blob, bytes)
         .expect("SHA-1 collision attack detected")
@@ -99,6 +101,8 @@ fn import_peer(parent: &Frontiers, tag: &str) -> u64 {
 
 /// A document holding `bytes` as its first version.
 #[must_use]
+// NOTE: the one way a document is made; its fan-in is the point.
+// coland-ignore: @coland/high_call_degree
 pub fn open(bytes: &str) -> (LoroDoc, Frontiers) {
     let doc = LoroDoc::new();
     let version = import(&doc, &Frontiers::default(), bytes);
@@ -114,6 +118,8 @@ pub fn open(bytes: &str) -> (LoroDoc, Frontiers) {
     clippy::must_use_candidate,
     reason = "Import mutates the document even when the caller does not need its version"
 )]
+// NOTE: the one way outside bytes enter a document (see above); its fan-in is the point.
+// coland-ignore: @coland/high_fan_in_complex_function, @coland/high_call_degree
 pub fn import(doc: &LoroDoc, parent: &Frontiers, bytes: &str) -> Frontiers {
     // The tag is the content's git oid, computed here rather than passed in, so
     // a caller cannot label an import with bytes it does not have.

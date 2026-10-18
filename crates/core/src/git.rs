@@ -206,6 +206,8 @@ pub(crate) fn snapshot_workdir(repo: &gix::Repository) -> Result<gix::ObjectId> 
 /// worktree state differs from the index is a conflict — conflicts are
 /// collected and returned without changing anything. With `force`, dirty
 /// paths are overwritten and files absent from the target are removed.
+// NOTE: libgit2's checkout semantics in one pass, conflicts first; a split would only move lines.
+// coland-ignore: @coland/function_too_large
 pub(crate) fn checkout_tree(
     repo: &gix::Repository,
     tree_id: gix::ObjectId,

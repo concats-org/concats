@@ -159,6 +159,8 @@ pub fn contains(session: &Session, oid: gix::ObjectId) -> Result<bool> {
 ///
 /// Returns an error if the session ref is missing, the message does not belong
 /// to the session, or the turn commit cannot be written.
+// NOTE: the one way a turn is written, for the hooks and every test; its fan-in is the point.
+// coland-ignore: @coland/high_call_degree
 pub fn commit(session: &Session, message: &concats_message::Turn) -> Result<Turn> {
     let repo = session.repo();
     let tip = resolve_tip(session)?;
@@ -173,6 +175,8 @@ pub fn commit(session: &Session, message: &concats_message::Turn) -> Result<Turn
 /// Returns an error if the session ref is missing, the current tip is not a
 /// turn commit, the message does not belong to the session, or the rewritten
 /// turn commit cannot be written.
+// NOTE: the one way a tip turn is rewritten; its callees are the steps of that rewrite.
+// coland-ignore: @coland/high_call_degree
 pub fn amend(session: &Session, message: &concats_message::Turn) -> Result<Turn> {
     let repo = session.repo();
     let tip = resolve_tip(session)?;
