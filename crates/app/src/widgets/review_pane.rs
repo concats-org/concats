@@ -26,8 +26,8 @@ use super::{FileBrowserAction, GutterAction, ReviewList, SeenBar, review_list::R
 use crate::{
     FrameData, WindowScope,
     dock::{
-        TabSpec, drag_source_tab_id, file_tab_id, is_terminal_dock_tab, model_tab_of, open_tab,
-        settings_tab_spec, stream_tab_spec, stream_tabs, terminal_tab_spec,
+        TabSpec, drag_source_tab_id, file_tab_id, in_panel, model_tab_of, open_tab,
+        settings_tab_spec, stream_tab_spec, stream_tabs, terminal_tab_spec, terminal_tabs,
     },
     file_view::{open_file, read_file_sides},
     load::{hold_minted, resplice_comments, spawn_load},
@@ -1462,13 +1462,13 @@ impl ReviewPane {
                 title: &format!("Terminal {n}"),
                 ..terminal_tab_spec()
             },
-            &[terminal_tab_spec().id],
+            &terminal_tabs(&dock),
             id!(bottom_tabs),
         );
         dock.select_tab(cx, tab_id);
         self.open_terminal(cx, tab_id);
         self.state().set_terminal_tab(Some(tab_id));
-        self.reveal_panel(cx, Panel::Bottom);
+        self.reveal_panel(cx, Panel::Bottom, tab_id);
     }
 
     /// A status-bar view button: reopen the stream's tab if it was closed,
@@ -1508,11 +1508,11 @@ impl ReviewPane {
     pub fn reveal_terminal(&mut self, cx: &mut Cx) {
         let dock = self.view.dock(cx, ids!(dock));
         let spec = terminal_tab_spec();
-        open_tab(cx, &dock, spec, &[], id!(bottom_tabs));
+        open_tab(cx, &dock, spec, &terminal_tabs(&dock), id!(bottom_tabs));
         self.open_terminal(cx, spec.id);
         self.state().set_terminal_tab(Some(spec.id));
         dock.select_tab(cx, spec.id);
-        self.reveal_panel(cx, Panel::Bottom);
+        self.reveal_panel(cx, Panel::Bottom, spec.id);
     }
 
     /// A panel's current size: the dock's extent along its axis minus its
@@ -1600,8 +1600,15 @@ impl ReviewPane {
         self.start_slide(cx, panel, target);
     }
 
-    fn reveal_panel(&mut self, cx: &mut Cx, panel: Panel) {
-        if self.panel_size(cx, panel).is_none_or(|size| size <= 1.0) {
+    /// Slide `panel` open when `tab` sits in it: a terminal the user keeps
+    /// elsewhere does not need the bottom panel.
+    fn reveal_panel(&mut self, cx: &mut Cx, panel: Panel, tab: LiveId) {
+        let holds = self
+            .view
+            .dock(cx, ids!(dock))
+            .clone_state()
+            .is_some_and(|items| in_panel(&items, panel.splitter(), tab));
+        if holds && self.panel_size(cx, panel).is_none_or(|size| size <= 1.0) {
             self.start_slide(cx, panel, self.restore_size(panel));
         }
     }
@@ -1705,7 +1712,7 @@ impl ReviewPane {
                     self.state().set_terminal_tab(None);
                     if let Some(tab) = model_tab_of(tab_id, &open_files) {
                         self.set_gesture_tab(cx, tab);
-                    } else if is_terminal_dock_tab(&dock, tab_id) {
+                    } else if terminal_tabs(&dock).contains(&tab_id) {
                         // (Re)spawn that tab's shell — the recovery path
                         // after its previous one exited.
                         self.open_terminal(cx, tab_id);
@@ -1727,7 +1734,7 @@ impl ReviewPane {
                             self.user_closed.insert(tab_id);
                             dock.close_tab(cx, tab_id);
                         }
-                    } else if is_terminal_dock_tab(&dock, tab_id) {
+                    } else if terminal_tabs(&dock).contains(&tab_id) {
                         // Closing a terminal tab ends its shell.
                         if self.state().terminal_tab() == Some(tab_id) {
                             self.state().set_terminal_tab(None);

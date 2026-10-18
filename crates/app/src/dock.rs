@@ -102,6 +102,22 @@ pub(crate) fn stream_tabs() -> Vec<LiveId> {
         .collect()
 }
 
+/// The terminal tabs, the permanent one first. Judged by kind, so it holds for
+/// the permanent tab and every `+`-created session alike.
+pub(crate) fn terminal_tabs(dock: &DockRef) -> Vec<LiveId> {
+    let mut tabs: Vec<LiveId> = dock
+        .clone_state()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|(_, item)| {
+            matches!(item, DockItem::Tab { kind, .. } if *kind == terminal_tab_spec().kind)
+        })
+        .map(|(tab, _)| tab)
+        .collect();
+    tabs.sort_by_key(|tab| (*tab != terminal_tab_spec().id, tab.0));
+    tabs
+}
+
 /// Open `spec`'s tab unless it is open: in the bar of the first open sibling,
 /// else in `home`. Opening does not select it, because reconciling the
 /// streams opens tabs nobody asked to look at.
@@ -135,12 +151,17 @@ pub(crate) fn open_tab(
     );
 }
 
-/// Is this dock tab a terminal pane? Judged by its kind, so it holds for the
-/// permanent tab and every `+`-created session alike.
-pub(crate) fn is_terminal_dock_tab(dock: &DockRef, tab_id: LiveId) -> bool {
-    dock.clone_state().is_some_and(|items| {
-        matches!(items.get(&tab_id), Some(DockItem::Tab { kind, .. }) if *kind == id!(TerminalPane))
-    })
+/// Whether `tab` sits on the `b` side of `splitter`, the side a panel slides.
+pub(crate) fn in_panel(items: &HashMap<LiveId, DockItem>, splitter: LiveId, tab: LiveId) -> bool {
+    matches!(items.get(&splitter), Some(DockItem::Splitter { b, .. }) if holds(items, *b, tab))
+}
+
+fn holds(items: &HashMap<LiveId, DockItem>, item: LiveId, tab: LiveId) -> bool {
+    match items.get(&item) {
+        Some(DockItem::Splitter { a, b, .. }) => holds(items, *a, tab) || holds(items, *b, tab),
+        Some(DockItem::Tabs { tabs, .. }) => tabs.contains(&tab),
+        _ => false,
+    }
 }
 
 /// The dragged dock tab, recovered from the drag payload: the dock marks its
@@ -270,5 +291,32 @@ mod tests {
         save_layout(dir.path(), items, (220.0, 260.0)).unwrap();
         let layout = load_layout(dir.path()).expect("the saved layout loads");
         assert!(layout.dock_items.contains_key(&spec.id));
+    }
+
+    /// A panel is its splitter's `b` side, however the user has split it since.
+    #[test]
+    fn a_tab_in_a_split_of_the_panel_is_in_the_panel() {
+        let tabs = |tabs: Vec<LiveId>| DockItem::Tabs {
+            tabs,
+            selected: 0,
+            closable: false,
+            hide_tab_bar: false,
+        };
+        let splitter = |a, b| DockItem::Splitter {
+            axis: SplitterAxis::Horizontal,
+            align: SplitterAlign::FromB(0.0),
+            a,
+            b,
+        };
+        let items = HashMap::from([
+            (id!(body_split), splitter(id!(main_tabs), id!(lower))),
+            (id!(lower), splitter(id!(bottom_tabs), id!(more))),
+            (id!(main_tabs), tabs(vec![id!(files_tab), id!(moved)])),
+            (id!(bottom_tabs), tabs(vec![id!(terminal_tab)])),
+            (id!(more), tabs(vec![id!(split)])),
+        ]);
+        assert!(in_panel(&items, id!(body_split), id!(terminal_tab)));
+        assert!(in_panel(&items, id!(body_split), id!(split)));
+        assert!(!in_panel(&items, id!(body_split), id!(moved)));
     }
 }
