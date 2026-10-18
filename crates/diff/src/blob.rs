@@ -12,7 +12,11 @@
 //! writer — an agent, the terminal, `git checkout` — merges instead of
 //! overwriting, and every cursor into the text rides the edit.
 
-use std::{collections::HashMap, ops::Range, path::PathBuf};
+use std::{
+    collections::HashMap,
+    ops::{Range, RangeInclusive},
+    path::PathBuf,
+};
 
 use concats_sync as document;
 use concats_syntax::{LineSpans, Span};
@@ -94,7 +98,7 @@ pub struct Blob {
     /// newline. A single position would detach as soon as the character it
     /// named was deleted, so editing the front of a line would behave
     /// differently from editing its middle.
-    pub held: HashMap<u64, (Cursor, Cursor)>,
+    pub held: HashMap<u64, Range<Cursor>>,
     /// Whether the next insert may coalesce into the last undo entry.
     group_open: bool,
 }
@@ -278,9 +282,9 @@ impl Blob {
         clamped_line(&self.line_starts, byte)
     }
 
-    fn line_range(&self, i: usize) -> Range<usize> {
+    pub fn line_text(&self, i: usize) -> &str {
         if i + 1 >= self.line_starts.len() {
-            return 0..0;
+            return "";
         }
         let s = self.line_starts[i] as usize;
         let mut e = self.line_starts[i + 1] as usize;
@@ -291,12 +295,7 @@ impl Blob {
         if e > s && self.text.as_bytes()[e - 1] == b'\r' {
             e -= 1;
         }
-        s..e
-    }
-
-    pub fn line_text(&self, i: usize) -> &str {
-        let r = self.line_range(i);
-        self.text.get(r).unwrap_or("")
+        self.text.get(s..e).unwrap_or("")
     }
 
     pub fn line_spans(&self, i: usize) -> &[Span] {
@@ -314,17 +313,14 @@ impl Blob {
     /// buffer's document at some version. Through the trailing newline, so a
     /// blank line's run is not empty and a one-line run only collapses when the
     /// line itself is deleted.
-    fn cursor_pair(text: &LoroDoc, from: u32, to: u32) -> Option<(Cursor, Cursor)> {
+    fn cursor_pair(text: &LoroDoc, from: u32, to: u32) -> Option<Range<Cursor>> {
         let checkout = document::text(text);
         let starts = line_starts(&checkout);
         let start = *starts.get(from as usize)? as usize;
         let end = starts
             .get(to as usize + 1)
             .map_or(checkout.len(), |offset| *offset as usize);
-        Some((
-            document::cursor_at(text, start)?,
-            document::cursor_at(text, end)?,
-        ))
+        Some(document::cursor_at(text, start)?..document::cursor_at(text, end)?)
     }
 
     /// Take hold of the lines `from..=to` on behalf of `comment`, so that from
@@ -342,7 +338,7 @@ impl Blob {
     }
 
     /// A cursor pair over lines `from..=to` of the disk version.
-    fn pair_on_disk(&mut self, from: u32, to: u32) -> Option<(Cursor, Cursor)> {
+    fn pair_on_disk(&mut self, from: u32, to: u32) -> Option<Range<Cursor>> {
         let doc = self.open_doc();
         let disk = doc.fork_at(&self.disk).ok()?;
         Self::cursor_pair(&disk, from, to)
@@ -352,8 +348,11 @@ impl Blob {
     /// the store: what the CLI mints for a comment it makes on a worktree file,
     /// whose lines are the file's.
     pub fn cursors_on_disk(&mut self, from: u32, to: u32) -> Option<(Vec<u8>, Vec<u8>)> {
-        let (from, to) = self.pair_on_disk(from, to)?;
-        Some((document::encode_cursor(&from), document::encode_cursor(&to)))
+        let run = self.pair_on_disk(from, to)?;
+        Some((
+            document::encode_cursor(&run.start),
+            document::encode_cursor(&run.end),
+        ))
     }
 
     /// The cursor pair for lines `from..=to` of the text as it is now, encoded
@@ -361,14 +360,20 @@ impl Blob {
     /// so it never has to be re-found.
     pub fn cursors_at(&mut self, from: u32, to: u32) -> Option<(Vec<u8>, Vec<u8>)> {
         let doc = self.open_doc();
-        let (from, to) = Self::cursor_pair(&doc, from, to)?;
-        Some((document::encode_cursor(&from), document::encode_cursor(&to)))
+        let run = Self::cursor_pair(&doc, from, to)?;
+        Some((
+            document::encode_cursor(&run.start),
+            document::encode_cursor(&run.end),
+        ))
     }
 
     /// The held pair of `comment`, encoded for the store.
     pub fn cursors_of(&self, comment: u64) -> Option<(Vec<u8>, Vec<u8>)> {
-        let (from, to) = self.held.get(&comment)?;
-        Some((document::encode_cursor(from), document::encode_cursor(to)))
+        let run = self.held.get(&comment)?;
+        Some((
+            document::encode_cursor(&run.start),
+            document::encode_cursor(&run.end),
+        ))
     }
 
     /// Hold `comment` by a cursor pair minted elsewhere — in the app on another
@@ -386,7 +391,7 @@ impl Blob {
         if document::resolve(doc, &from).is_none() || document::resolve(doc, &to).is_none() {
             return false;
         }
-        self.held.insert(comment, (from, to));
+        self.held.insert(comment, from..to);
         true
     }
 
@@ -432,11 +437,11 @@ impl Blob {
     /// convention. `None` once the run is empty, which is the one thing that
     /// detaches a conversation — the text it was about is gone.
     pub fn held_line(&self, comment: u64) -> Option<u32> {
-        self.held_lines(comment).map(|(_, end)| end)
+        self.held_lines(comment).map(|lines| *lines.end())
     }
 
     /// The inclusive line range still held by a comment's live cursors.
-    pub fn held_lines(&self, comment: u64) -> Option<(u32, u32)> {
+    pub fn held_lines(&self, comment: u64) -> Option<RangeInclusive<u32>> {
         held_in(
             self.doc.as_ref()?,
             &self.line_starts,
@@ -445,13 +450,12 @@ impl Blob {
     }
 
     /// The lines a held comment's run covers in the disk version — what the
-    /// file has, not what is being typed — as `(first, last)`. `None` once the
-    /// run is empty there.
-    pub fn held_lines_on_disk(&self, comment: u64) -> Option<(u32, u32)> {
+    /// file has, not what is being typed. `None` once the run is empty there.
+    pub fn held_lines_on_disk(&self, comment: u64) -> Option<RangeInclusive<u32>> {
         let doc = self.doc.as_ref()?;
-        let pair = self.held.get(&comment)?;
+        let run = self.held.get(&comment)?;
         let disk = doc.fork_at(&self.disk).ok()?;
-        held_in(&disk, &line_starts(&document::text(&disk)), pair)
+        held_in(&disk, &line_starts(&document::text(&disk)), run)
     }
 
     /// This buffer's document and disk version, encoded for the between-runs
@@ -579,20 +583,25 @@ impl Blob {
     /// caller can put the caret back where the typing started.
     pub fn undo(&mut self) -> Option<usize> {
         let edit = self.undo.pop()?;
-        self.invert(edit, true)
+        let (end, back) = self.invert(edit)?;
+        self.redo.push(back);
+        Some(end)
     }
 
     pub fn redo(&mut self) -> Option<usize> {
         let edit = self.redo.pop()?;
-        self.invert(edit, false)
+        let (end, back) = self.invert(edit)?;
+        self.undo.push(back);
+        Some(end)
     }
 
-    /// Apply an entry backwards and file its inverse on the opposite stack.
+    /// Apply an entry backwards. Returns where the restored text ends and the
+    /// entry's inverse, for the opposite stack.
     ///
     /// The entry's own run is found by resolving its cursors, so an undo still
     /// lands on the right text after someone else's write moved it. `None` when
     /// that run is no longer there to undo.
-    fn invert(&mut self, edit: Edit, undoing: bool) -> Option<usize> {
+    fn invert(&mut self, edit: Edit) -> Option<(usize, Edit)> {
         let doc = self.doc.clone()?;
         let from = document::byte_of(&doc, &edit.from)?;
         let to = document::byte_of(&doc, &edit.to)?;
@@ -609,12 +618,7 @@ impl Blob {
             removed,
             inserted: edit.removed,
         };
-        if undoing {
-            self.redo.push(back);
-        } else {
-            self.undo.push(back);
-        }
-        Some(end)
+        Some((end, back))
     }
 
     /// The edit itself: splice the text, patch `line_starts` and `spans` around
@@ -696,12 +700,15 @@ fn clamped_line(starts: &[u32], byte: usize) -> usize {
     line_of(starts, byte).min(starts.len().saturating_sub(2))
 }
 
-/// The lines a held run covers in `doc`, whose line table is `starts`, as
-/// `(first, last)`. `None` once the run is empty there.
-fn held_in(doc: &LoroDoc, starts: &[u32], (from, to): &(Cursor, Cursor)) -> Option<(u32, u32)> {
-    let (from, to) = (document::byte_of(doc, from)?, document::byte_of(doc, to)?);
+/// The lines a held run covers in `doc`, whose line table is `starts`. `None`
+/// once the run is empty there.
+fn held_in(doc: &LoroDoc, starts: &[u32], run: &Range<Cursor>) -> Option<RangeInclusive<u32>> {
+    let (from, to) = (
+        document::byte_of(doc, &run.start)?,
+        document::byte_of(doc, &run.end)?,
+    );
     let line = |byte| clamped_line(starts, byte) as u32;
-    (to > from).then(|| (line(from), line(to - 1)))
+    (to > from).then(|| line(from)..=line(to - 1))
 }
 
 #[cfg(test)]

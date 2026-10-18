@@ -199,11 +199,11 @@ fn relocate(
     if !buffer.adopt(c.id, from, to) {
         return None;
     }
-    let (start, end) = buffer.held_lines_on_disk(c.id)?;
+    let lines = buffer.held_lines_on_disk(c.id)?;
     Some(Anchor {
         blob: buffer.oid,
-        start,
-        end,
+        start: *lines.start(),
+        end: *lines.end(),
     })
 }
 

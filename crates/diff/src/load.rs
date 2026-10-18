@@ -349,7 +349,7 @@ fn load_worktree(root: PathBuf, base_rev: &str) -> Result<Loaded, Error> {
         .filter_map(|c| match c {
             Change::Deleted { path, .. } => Some(path.as_str()),
             Change::Renamed { from, .. } => Some(from.as_str()),
-            _ => None,
+            Change::Added { .. } | Change::Modified { .. } => None,
         })
         .collect();
     let mut tree: Vec<String> = index_of
@@ -799,7 +799,7 @@ fn detect_renames(
         match ch {
             Change::Added { path, oid } => adds.push((path, oid)),
             Change::Deleted { path, oid } => dels.push((path, oid)),
-            other => out.push(other),
+            other @ (Change::Modified { .. } | Change::Renamed { .. }) => out.push(other),
         }
     }
 

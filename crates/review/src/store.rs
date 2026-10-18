@@ -934,11 +934,11 @@ pub fn place(comment: &Comment, blobs: &[Blob], path_blobs: &[u32]) -> Option<Si
         .iter()
         .find(|&&i| blobs[i as usize].holds(comment.id))
     {
-        let (start, end) = blobs[index as usize].held_lines(comment.id)?;
+        let lines = blobs[index as usize].held_lines(comment.id)?;
         return Some(Side {
             blob: index,
-            start,
-            end,
+            start: *lines.start(),
+            end: *lines.end(),
         });
     }
     let &index = path_blobs
