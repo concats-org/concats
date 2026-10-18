@@ -158,16 +158,16 @@ pub struct DockLayoutRon {
 pub(crate) fn load_layout(git_dir: &Path) -> Option<DockLayoutRon> {
     let text = std::fs::read_to_string(git_dir.join(LAYOUT_FILE)).ok()?;
     let mut state = DockLayoutRon::deserialize_ron(&text).ok()?;
-    let known = [
-        id!(GuidePane),
-        id!(SessionsPane),
-        id!(CommitsPane),
-        id!(FilesPane),
-        id!(FilePane),
-        id!(TerminalPane),
-        id!(SettingsPane),
-        id!(SidebarPane),
-    ];
+    let known: Vec<LiveId> = crate::review_doc::STREAMS
+        .into_iter()
+        .map(|stream| stream_tab_spec(stream).kind)
+        .chain([
+            id!(FilePane),
+            id!(TerminalPane),
+            id!(SettingsPane),
+            id!(SidebarPane),
+        ])
+        .collect();
     for item in state.dock_items.values() {
         if let DockItem::Tab { kind, .. } = item
             && !known.contains(kind)
@@ -216,4 +216,37 @@ pub(crate) fn save_layout(
         .persist(git_dir.join(LAYOUT_FILE))
         .map_err(|error| error.error)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_layout_with_a_comments_tab_comes_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let spec = stream_tab_spec(Stream::Comments);
+        let items = HashMap::from([
+            (
+                id!(root),
+                DockItem::Tabs {
+                    tabs: vec![spec.id],
+                    selected: 0,
+                    closable: false,
+                    hide_tab_bar: false,
+                },
+            ),
+            (
+                spec.id,
+                DockItem::Tab {
+                    name: spec.title.into(),
+                    template: spec.template,
+                    kind: spec.kind,
+                },
+            ),
+        ]);
+        save_layout(dir.path(), items, (220.0, 260.0)).unwrap();
+        let layout = load_layout(dir.path()).expect("the saved layout loads");
+        assert!(layout.dock_items.contains_key(&spec.id));
+    }
 }
