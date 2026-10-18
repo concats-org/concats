@@ -168,13 +168,6 @@ impl Drop for Running {
     }
 }
 
-/// Drive the app once and return the frames it captured: the state as the load
-/// left it, and the state after the hooks ran.
-fn capture_pair(name: &str, hooks: &[(&str, &str)]) -> (PathBuf, PathBuf) {
-    let after = capture(name, hooks, |_| {});
-    (after.with_file_name("before.png"), after)
-}
-
 /// Drive the app once and return the frame it captured.
 fn capture(name: &str, hooks: &[(&str, &str)], setup: impl FnOnce(&Path)) -> PathBuf {
     let _serial = ONE_AT_A_TIME
@@ -376,7 +369,9 @@ fn distance(a: &Path, b: &Path) -> usize {
 /// the interaction never fired still fails, because before and after are then
 /// identical.
 fn assert_interaction(name: &str, hooks: &[(&str, &str)], byte: usize, dirty_buffers: usize) {
-    let (before, after) = capture_pair(name, hooks);
+    let after = capture(name, hooks, |_| {});
+    // The same run wrote the frame as the load left it, before the hooks ran.
+    let before = after.with_file_name("before.png");
     let data = state(&after, "state.json");
     assert_eq!(data["caret"], serde_json::json!([1, 2, byte]), "{name}");
     assert_eq!(data["dirty_buffers"], dirty_buffers, "{name}");

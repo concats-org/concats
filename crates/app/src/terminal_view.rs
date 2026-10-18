@@ -810,10 +810,6 @@ impl TerminalView {
         crate::terminal::input(session, paste_bytes(text, bracketed));
     }
 
-    fn shell_quote_path(path: &str) -> String {
-        format!("'{}'", path.replace('\'', "'\\''"))
-    }
-
     fn dropped_text_payload(items: &[DragItem]) -> Option<String> {
         let items: Vec<_> = items.iter().filter(|item| from_outside(item)).collect();
         if items.is_empty() {
@@ -826,7 +822,8 @@ impl TerminalView {
             .iter()
             .map(|item| match item {
                 DragItem::String { value, .. } => value.clone(),
-                DragItem::FilePath { path, .. } => Self::shell_quote_path(path),
+                // Quoted, so the shell reads the path as one word.
+                DragItem::FilePath { path, .. } => format!("'{}'", path.replace('\'', "'\\''")),
             })
             .collect();
         Some(if only_paths {

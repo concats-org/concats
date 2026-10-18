@@ -59,11 +59,15 @@ pub(crate) fn serve(state: &Arc<WindowState>, repo: &str) {
     let window = Arc::downgrade(state);
     let serving = server.clone();
     std::thread::spawn(move || {
-        for request in serving.incoming_requests() {
+        for mut request in serving.incoming_requests() {
             let Some(state) = window.upgrade() else {
                 break;
             };
-            answer(&state, request);
+            let response = respond(&state.snapshot(), &mut request);
+            if let Err(error) = request.respond(response) {
+                // NOTE: The client hung up; there is no one left to tell.
+                eprintln!("concats-app: socket response not sent: {error}");
+            }
         }
     });
     *socket = Some(Socket { root, server });
@@ -83,21 +87,21 @@ fn bind(root: &Path) -> Option<Arc<tiny_http::Server>> {
     }
     // NOTE: Nothing answers, so the file is absent or left by a crash; bind
     // will not take the path while it exists.
-    let _ = std::fs::remove_file(&path);
+    if let Err(error) = std::fs::remove_file(&path)
+        && error.kind() != std::io::ErrorKind::NotFound
+    {
+        eprintln!(
+            "concats-app: cannot remove the stale socket {}: {error}",
+            path.display()
+        );
+        return None;
+    }
     tiny_http::Server::http_unix(&path)
         .map(Arc::new)
         .inspect_err(|error| {
             eprintln!("concats-app: cannot answer on {}: {error}", path.display());
         })
         .ok()
-}
-
-fn answer(state: &WindowState, mut request: Request) {
-    let response = respond(&state.snapshot(), &mut request);
-    if let Err(error) = request.respond(response) {
-        // NOTE: The client hung up; there is no one left to tell.
-        eprintln!("concats-app: socket response not sent: {error}");
-    }
 }
 
 type Answer = Response<Cursor<Vec<u8>>>;
@@ -185,7 +189,13 @@ fn reply(doc: &ReviewDoc, to: u64, body: &str, url: &url::Url) -> Answer {
                 Error::EmptyBody => 400,
                 Error::NoSuchComment(_) => 404,
                 Error::Store { .. } => 500,
-                _ => 422,
+                Error::AnchorSyntax
+                | Error::AnchorLines(_)
+                | Error::AnchorZero
+                | Error::NotInDiff(_)
+                | Error::LinesNotInDiff { .. }
+                | Error::UnsupportedSchema { .. }
+                | Error::Json(_) => 422,
             };
             text(status, &error.to_string())
         }

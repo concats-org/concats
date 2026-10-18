@@ -182,15 +182,12 @@ fn should_build_sequence(key: &KeyEvent, mode: TermMode) -> bool {
                         KeyCode::Tab | KeyCode::ReturnKey | KeyCode::Backspace
                     ))));
 
-    disambiguate || named_without_text(key.key_code)
-}
-
-/// The functional keys that have no textual form, so they are always a
-/// sequence — arrows, function keys, navigation.
-fn named_without_text(key: KeyCode) -> bool {
-    xterm(key).is_some()
+    // The functional keys that have no textual form are always a sequence —
+    // arrows, function keys, navigation.
+    disambiguate
+        || xterm(key.key_code).is_some()
         || matches!(
-            key,
+            key.key_code,
             KeyCode::PrintScreen | KeyCode::ScrollLock | KeyCode::Pause
         )
 }

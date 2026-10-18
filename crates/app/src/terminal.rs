@@ -120,18 +120,12 @@ impl EventListener for Proxy {
                 if let Some(sender) = self.sender.get() {
                     let _ = sender.send(Msg::Input(text.into_bytes().into()));
                 }
+                return;
             }
-            Event::ChildExit(_) => {
-                self.exited.store(true, Ordering::Relaxed);
-                self.wake();
-            }
-            Event::Title(title) => {
-                self.report.lock().unwrap().title = Some(title);
-                self.wake();
-            }
+            Event::ChildExit(_) => self.exited.store(true, Ordering::Relaxed),
+            Event::Title(title) => self.report.lock().unwrap().title = Some(title),
             Event::ClipboardStore(ClipboardType::Clipboard, text) => {
                 self.report.lock().unwrap().clipboard = Some(text);
-                self.wake();
             }
             // TODO: a bell should raise a desktop notification. It is how an
             // agent says it has finished while you are looking at another
@@ -139,14 +133,10 @@ impl EventListener for Proxy {
             // because the sequences that carry a message with it (OSC 9, OSC
             // 777) are not ones the library parses, and hand-rolling that is
             // more than this change should carry.
-            Event::Wakeup | Event::Bell => self.wake(),
-            _ => {}
+            Event::Wakeup | Event::Bell => {}
+            _ => return,
         }
-    }
-}
-
-impl Proxy {
-    fn wake(&self) {
+        // Every event that gets here changed what the view shows.
         dirty().lock().unwrap().insert(self.session);
         SignalToUI::set_ui_signal();
     }

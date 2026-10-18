@@ -5,9 +5,23 @@
 )]
 use super::*;
 
-fn pointer_position(spec: &str) -> Option<(f64, f64)> {
+fn pointer_position(spec: &str) -> Option<Vec2d> {
     let (x, y) = spec.split_once(',')?;
-    Some((x.trim().parse().ok()?, y.trim().parse().ok()?))
+    Some(dvec2(x.trim().parse().ok()?, y.trim().parse().ok()?))
+}
+
+/// Clear the frame last captured to `path`. The hooks hold until the file
+/// exists, so one left in place would let them through before this capture
+/// presents.
+fn remove_stale_capture(path: &std::path::Path) {
+    if let Err(error) = std::fs::remove_file(path)
+        && error.kind() != std::io::ErrorKind::NotFound
+    {
+        eprintln!(
+            "concats-app: cannot remove the last capture {}: {error}",
+            path.display()
+        );
+    }
 }
 
 pub(crate) fn var(name: &str) -> Result<String, std::env::VarError> {
@@ -253,7 +267,7 @@ impl App {
         // after-frame drain on the same present and come out byte-identical,
         // which reads as an interaction that never happened. So hold until the
         // file exists: that it does is the proof its frame presented.
-        if let Some(path) = self.shot_pending.clone() {
+        if let Some(path) = &self.shot_pending {
             if !path.exists() {
                 self.ui.redraw(cx);
                 return;
@@ -275,7 +289,7 @@ impl App {
                     && !path.is_empty()
                 {
                     let path = PathBuf::from(path);
-                    let _ = std::fs::remove_file(&path);
+                    remove_stale_capture(&path);
                     cx.capture_next_frame_to_file(path.clone());
                     self.shot_pending = Some(path);
                     // Guarantee the draw that writes it, and the tick after.
@@ -296,15 +310,11 @@ impl App {
                         .check_box(cx, ids!(sticky.seen_box))
                         .area();
                     let rect = area.rect(cx);
-                    (rect.size.x > 0.0 && rect.size.y > 0.0).then_some((
-                        rect.pos.x + rect.size.x * 0.5,
-                        rect.pos.y + rect.size.y * 0.5,
-                    ))
+                    (rect.size.x > 0.0 && rect.size.y > 0.0).then_some(rect.center())
                 });
-                let Some((x, y)) = at else {
+                let Some(abs) = at else {
                     return;
                 };
-                let abs = dvec2(x, y);
                 let window_id = CxWindowPool::id_zero();
                 // Move the pointer there before pressing, the way a real one
                 // arrives. Without this no hover state was reachable from a
@@ -339,11 +349,10 @@ impl App {
                 cx.begin_mouse_down(&down);
                 self.ui
                     .handle_event(cx, &Event::MouseDown(down), &mut Scope::empty());
-                let abs = if let Some((x, y)) = var("CONCATS_APP_DRAG_TO")
+                let abs = if let Some(end) = var("CONCATS_APP_DRAG_TO")
                     .ok()
                     .and_then(|spec| pointer_position(&spec))
                 {
-                    let end = dvec2(x, y);
                     self.ui.handle_event(
                         cx,
                         &Event::MouseMove(MouseMoveEvent {
@@ -444,7 +453,7 @@ impl App {
                     && !path.is_empty()
                 {
                     let path = PathBuf::from(path);
-                    let _ = std::fs::remove_file(&path);
+                    remove_stale_capture(&path);
                     cx.capture_next_frame_to_file(path.clone());
                     self.shot_pending = Some(path);
                 }

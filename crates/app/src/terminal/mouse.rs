@@ -30,12 +30,6 @@ pub fn wants_pointer(modifiers: KeyModifiers, mode: TermMode) -> bool {
     mode.intersects(TermMode::MOUSE_MODE) && !modifiers.shift
 }
 
-/// Whether motion should be reported: with a button held (1002), or with none
-/// (1003).
-fn wants_motion(held: bool, mode: TermMode) -> bool {
-    mode.contains(TermMode::MOUSE_MOTION) || (held && mode.contains(TermMode::MOUSE_DRAG))
-}
-
 /// A button going down or coming up.
 pub fn report(
     button: MouseButton,
@@ -60,7 +54,10 @@ pub fn motion(
     point: Point,
     mode: TermMode,
 ) -> Option<Vec<u8>> {
-    if !wants_pointer(modifiers, mode) || !wants_motion(held.is_some(), mode) {
+    // Motion is reported with a button held (1002), or with none (1003).
+    let reported = mode.contains(TermMode::MOUSE_MOTION)
+        || (held.is_some() && mode.contains(TermMode::MOUSE_DRAG));
+    if !wants_pointer(modifiers, mode) || !reported {
         return None;
     }
     let button = held.and_then(code).unwrap_or(NONE);
