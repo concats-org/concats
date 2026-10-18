@@ -271,7 +271,7 @@ pub(crate) fn review() -> &'static Worker<ReviewCmd> {
 /// change now, the service confirms it (and the write reaches disk) next.
 pub(crate) fn toggle_seen(git_dir: &Path, keys: Vec<LineKey>) {
     let out = review_state(Some(git_dir));
-    let (all, _) = store::seen_state(&keys, &out.load().seen);
+    let all = store::seen_state(&keys, &out.load().seen) == store::Seen::All;
     out.update(|s| {
         let mut next = s.clone();
         let seen = Arc::make_mut(&mut next.seen);
@@ -690,7 +690,7 @@ mod tests {
             git_dir: git_dir.clone(),
             keys: keys.clone(),
         });
-        assert_eq!(store::seen_state(&keys, &out.load().seen), (true, true));
+        assert_eq!(store::seen_state(&keys, &out.load().seen), store::Seen::All);
 
         svc.handle(ReviewCmd::ToggleSeen { git_dir, keys });
         assert_eq!(out.load().seen.len(), 0);

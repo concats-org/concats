@@ -243,7 +243,12 @@ pub(crate) fn search_hits(d: &ReviewDoc, stream: Stream, query: &str) -> Vec<(us
                 Row::Code { blob, line, .. } => {
                     d.blobs[*blob as usize].line_text(*line as usize).into()
                 }
-                _ => "".into(),
+                Row::Collapsed { .. }
+                | Row::Removed { .. }
+                | Row::HunkBar { .. }
+                | Row::Spacer
+                | Row::CardEnd
+                | Row::Composer => "".into(),
             };
             text.to_ascii_lowercase()
                 .match_indices(&query)

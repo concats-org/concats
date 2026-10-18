@@ -8,7 +8,7 @@
 use std::{cell::Cell, collections::HashSet, sync::Arc};
 
 use concats_diff::{Blob, LineKind, Row};
-use concats_review::store::{self, LineKey};
+use concats_review::store::{self, LineKey, Seen};
 
 use super::{
     DiffLine, Gutter, collapsed_run::CollapsedRun, drop_shadow::DropShadow, gutter::RowMarks,
@@ -21,7 +21,7 @@ use crate::{
     FrameData, FrameTheme, editor,
     file_view::{relower_edited, save_plan},
     makepad_widgets::{event::TouchState, *},
-    review_doc::{Composing, FileView, ReviewDoc, Stream, compose_title},
+    review_doc::{Composing, FileView, ReviewDoc, Stream, compose_title, header_title},
     service::{HighlightCmd, ReviewCmd, ReviewState, highlight, review},
 };
 
@@ -942,7 +942,7 @@ struct CardMeta {
     header: usize,
     end: usize,
     keys: Vec<LineKey>,
-    seen: Cell<Option<(bool, bool)>>,
+    seen: Cell<Option<Seen>>,
 }
 
 impl CardIndex {
@@ -966,7 +966,16 @@ impl CardIndex {
                         card.end = row;
                     }
                 }
-                _ => {}
+                // Neither a card boundary nor review keys.
+                Row::Title { .. }
+                | Row::Prose { .. }
+                | Row::Warning { .. }
+                | Row::Collapsed { .. }
+                | Row::Removed { .. }
+                | Row::Code { .. }
+                | Row::Comment { .. }
+                | Row::Spacer
+                | Row::Composer => {}
             }
         }
     }
@@ -995,14 +1004,11 @@ impl CardIndex {
 }
 
 impl CardMeta {
-    fn seen_state(&self, seen: &HashSet<LineKey>) -> (bool, bool) {
+    fn seen_state(&self, seen: &HashSet<LineKey>) -> Seen {
         if let Some(state) = self.seen.get() {
             return state;
         }
-        let state = (
-            !self.keys.is_empty() && self.keys.iter().all(|key| seen.contains(key)),
-            self.keys.iter().any(|key| seen.contains(key)),
-        );
+        let state = store::seen_state(&self.keys, seen);
         self.seen.set(Some(state));
         state
     }
@@ -1532,7 +1538,7 @@ impl ReviewList {
                 let seen = self
                     .cards
                     .containing(r)
-                    .is_some_and(|card| card.seen_state(&pass.review.seen).0);
+                    .is_some_and(|card| card.seen_state(&pass.review.seen) == Seen::All);
                 item.view(cx, ids!(sp_mark)).set_visible(cx, seen);
                 item.draw_all(cx, &mut Scope::with_props(theme));
             }
@@ -1653,18 +1659,19 @@ impl ReviewList {
                 .set_action_data(ReviewItemAction::Fold { path: path.clone() });
         }
         root.label(cx, ids!(fh_path))
-            .set_text(cx, &crate::review_doc::header_title(path, from.as_deref()));
+            .set_text(cx, &header_title(path, from.as_deref()));
         // The viewed tick box covers every hunk of this card — all their
         // changed lines flip together.
-        let (all, any) = self
+        let seen = self
             .cards
             .at(r)
-            .map(|card| card.seen_state(&pass.review.seen))
-            .unwrap_or_default();
+            .map_or(Seen::Unseen, |card| card.seen_state(&pass.review.seen));
         root.check_box(cx, ids!(seen_box))
-            .set_active(cx, all, Animate::No);
-        root.label(cx, ids!(fh_stat))
-            .set_text(cx, &header_stat(*adds, *dels, *similarity, any && !all));
+            .set_active(cx, seen == Seen::All, Animate::No);
+        root.label(cx, ids!(fh_stat)).set_text(
+            cx,
+            &header_stat(*adds, *dels, *similarity, seen == Seen::Partly),
+        );
         // Conversations recorded against this file that this range cannot
         // place. Offered only when there are some; the label says which way
         // the click goes. What the last comment splice managed to place is
@@ -1713,7 +1720,7 @@ impl ReviewList {
             || self
                 .cards
                 .containing(r)
-                .is_some_and(|c| c.seen_state(&pass.review.seen).0);
+                .is_some_and(|c| c.seen_state(&pass.review.seen) == Seen::All);
         // Inside the range being composed: marker + tint. Deleted rows check
         // the old side, everything else the new side. A reply selects no
         // lines — it holds its root's, which are already marked.
@@ -1774,7 +1781,7 @@ impl ReviewList {
                     .selected
                     .and_then(|at| crate::review_doc::selection_on(at, r, text.len()))
                 {
-                    Some((from, to)) => dl.selection_set(from, to),
+                    Some(bytes) => dl.selection_set(bytes.start, bytes.end),
                     None => dl.selection_clear(),
                 }
             }
@@ -2377,8 +2384,8 @@ fn row_at_y(drawn: &[DrawnRow], y: f64) -> Option<usize> {
 mod tests {
     use super::{
         Band, CARD_END_EDGE, CardIndex, CardMeta, Cell, DrawnRow, FILE_HEADER_TOP_PADDING, HashSet,
-        STICKY_FADE, STICKY_HEIGHT, STICKY_TOP_GAP, anchor_entry, hits_in, owns_gesture, row_at_y,
-        sticky_offsets,
+        STICKY_FADE, STICKY_HEIGHT, STICKY_TOP_GAP, Seen, anchor_entry, hits_in, owns_gesture,
+        row_at_y, sticky_offsets,
     };
     #[allow(
         clippy::wildcard_imports,
@@ -2503,18 +2510,18 @@ mod tests {
                 .collect(),
         };
         let mut seen = HashSet::new();
-        assert_eq!(index.at(0).unwrap().seen_state(&seen), (false, false));
+        assert_eq!(index.at(0).unwrap().seen_state(&seen), Seen::Unseen);
         assert_eq!(index.at(1).unwrap().seen.get(), None);
 
         seen.insert((oid, 0));
         index.invalidate_seen();
-        assert_eq!(index.at(0).unwrap().seen_state(&seen), (false, true));
+        assert_eq!(index.at(0).unwrap().seen_state(&seen), Seen::Partly);
         assert_eq!(index.at(1).unwrap().seen.get(), None);
 
         seen.insert((oid, 1));
         index.invalidate_seen();
-        assert_eq!(index.at(0).unwrap().seen_state(&seen), (true, true));
-        assert_eq!(index.at(1).unwrap().seen_state(&seen), (true, true));
+        assert_eq!(index.at(0).unwrap().seen_state(&seen), Seen::All);
+        assert_eq!(index.at(1).unwrap().seen_state(&seen), Seen::All);
     }
 
     fn band(entry: usize, top: f64, height: f64) -> Band {

@@ -113,16 +113,26 @@ pub struct Comment {
     pub cursors: Option<Cursors>,
 }
 
-/// (all seen, any seen) for a set of line keys against a seen set — one
-/// answer for the store and the app's published snapshot, so the two can
-/// never disagree about what a tick box shows.
-// TODO: name the two answers; the app reads this pair too (service, review_list).
-// coland-ignore: @coland/same_typed_tuple_return
-pub fn seen_state(keys: &[LineKey], seen: &HashSet<LineKey>) -> (bool, bool) {
-    (
-        !keys.is_empty() && keys.iter().all(|k| seen.contains(k)),
-        keys.iter().any(|k| seen.contains(k)),
-    )
+/// How much of a set of lines is ticked seen: what its tick box shows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Seen {
+    /// None of them, or there are none.
+    Unseen,
+    Partly,
+    All,
+}
+
+/// How much of `keys` is in `seen` — one answer for the store and the app's
+/// published snapshot, so the two can never disagree about what a tick box
+/// shows.
+pub fn seen_state(keys: &[LineKey], seen: &HashSet<LineKey>) -> Seen {
+    if !keys.is_empty() && keys.iter().all(|k| seen.contains(k)) {
+        Seen::All
+    } else if keys.iter().any(|k| seen.contains(k)) {
+        Seen::Partly
+    } else {
+        Seen::Unseen
+    }
 }
 
 /// The thread a comment belongs to: its root's id, itself if it is the root.
@@ -399,7 +409,7 @@ impl Store {
     /// mark it all seen. Returns the new state. Writes through, one
     /// transaction per gesture.
     pub fn toggle(&mut self, keys: &[LineKey]) -> bool {
-        let (all, _) = seen_state(keys, &self.seen);
+        let all = seen_state(keys, &self.seen) == Seen::All;
         let sql = if all {
             "DELETE FROM seen WHERE blob = ?1 AND line = ?2"
         } else {
@@ -1452,11 +1462,11 @@ mod tests {
         let keys = [(oid(1), 0), (oid(1), 1)];
         // Partially seen -> toggling completes the set, not clears it.
         s.seen.insert(keys[0]);
-        assert_eq!(seen_state(&keys, &s.seen), (false, true));
+        assert_eq!(seen_state(&keys, &s.seen), Seen::Partly);
         assert!(s.toggle(&keys));
-        assert_eq!(seen_state(&keys, &s.seen), (true, true));
+        assert_eq!(seen_state(&keys, &s.seen), Seen::All);
         assert!(!s.toggle(&keys));
-        assert_eq!(seen_state(&keys, &s.seen), (false, false));
+        assert_eq!(seen_state(&keys, &s.seen), Seen::Unseen);
     }
 
     #[test]

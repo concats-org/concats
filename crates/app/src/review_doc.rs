@@ -8,7 +8,7 @@
 //! Nothing here touches a widget or `Cx`. The widgets call these functions, and
 //! they only touch the document and the review state they are handed.
 
-use std::collections::HashSet;
+use std::{collections::HashSet, ops::Range};
 
 use concats_diff::{Blob, CollapsedEnd, LineKind, Row, Side, stage::StageFile};
 use concats_review::store::{self, Comment};
@@ -428,15 +428,13 @@ pub fn selected(rows: &[Row], caret: Option<Caret>, anchor: Option<Caret>) -> Op
 ///
 /// `len` is the line's length without its newline: a row draws no more than
 /// that, and a range running past it paints to the end and stops.
-// TODO: return the bytes as a Range; review_list destructures this pair.
-// coland-ignore: @coland/same_typed_tuple_return
-pub fn selection_on(at: Selected, row: usize, len: usize) -> Option<(usize, usize)> {
+pub fn selection_on(at: Selected, row: usize, len: usize) -> Option<Range<usize>> {
     if row < at.from_row || row > at.to_row {
         return None;
     }
     let from = if row == at.from_row { at.from } else { 0 };
     let to = if row == at.to_row { at.to } else { len };
-    (from <= len).then(|| (from, to.min(len)))
+    (from <= len).then(|| from..to.min(len))
 }
 
 /// Put the caret at an absolute byte offset in `blob`, with nothing selected.
@@ -658,17 +656,17 @@ pub(crate) fn quoted(
             continue;
         };
         let text = d.blobs[*blob as usize].line_text(*line as usize);
-        let Some((start, end)) = selection_on(at, row, text.len()) else {
+        let Some(bytes) = selection_on(at, row, text.len()) else {
             continue;
         };
-        out.push_str(text.get(start..end).unwrap_or_default());
+        out.push_str(text.get(bytes.start..bytes.end).unwrap_or_default());
         out.push(' ');
         if *blob == anchor.blob {
             if *line == anchor.start {
-                from = Some(start as u32);
+                from = Some(bytes.start as u32);
             }
             if *line == anchor.end {
-                to = Some(end as u32);
+                to = Some(bytes.end as u32);
             }
         }
     }
@@ -2176,9 +2174,9 @@ mod tests {
                 d.blobs[blob as usize].line_text(line as usize).len(),
             )
         };
-        assert_eq!(on(0, 0, 0), Some((4, 14)));
-        assert_eq!(on(1, 0, 1), Some((0, 14)));
-        assert_eq!(on(3, 1, 1), Some((0, 3)));
+        assert_eq!(on(0, 0, 0), Some(4..14));
+        assert_eq!(on(1, 0, 1), Some(0..14));
+        assert_eq!(on(3, 1, 1), Some(0..3));
 
         // Commented on both sides, deletions on the old blob and additions on
         // the new — what the gutter would have produced for the same rows.
