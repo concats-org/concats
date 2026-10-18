@@ -174,11 +174,14 @@ fn range_diff(repo: &Repository, merge_base: &ObjectId, head: &ObjectId) -> Rang
                 .or_default()
                 .insert(c.new_oid());
         }
-        let (subject, body) = split_message(&commit.message);
+        // Gix hands the message over as one string: the subject is its first
+        // line, the body the rest, both trimmed.
+        let message = commit.message.trim();
+        let (subject, body) = message.split_once('\n').unwrap_or((message, ""));
         by_commit.push(CommitDiff {
             oid: c,
-            subject,
-            body,
+            subject: subject.trim().to_string(),
+            body: body.trim().to_string(),
             parent_count: commit.parents.len(),
             changes,
             paths: m,
@@ -275,7 +278,10 @@ pub fn load_turns(repo: &Repository, range: &RangeDiff) -> Vec<Turn> {
                 .is_some_and(|p| range.commit_set.contains(p))
         });
         // The newest snapshot of the session, whichever turn it belongs to.
-        let snapshot = resolve_ref(repo, &format!("{SNAPSHOT_REF_PREFIX}{session_id}"));
+        let snapshot = repo
+            .find_reference(&format!("{SNAPSHOT_REF_PREFIX}{session_id}"))
+            .ok()
+            .and_then(|r| r.try_id().map(gix::Id::detach));
         let candidate = branch_link
             || match (base, snapshot.and_then(|tip| read_commit(repo, &tip).ok())) {
                 (Some(base), Some(tip)) => match read_commit(repo, &base).map(|c| c.tree) {
@@ -303,14 +309,6 @@ pub fn load_turns(repo: &Repository, range: &RangeDiff) -> Vec<Turn> {
         }
     }
     turns
-}
-
-/// A ref's target oid, if the ref exists.
-fn resolve_ref(repo: &Repository, name: &str) -> Option<ObjectId> {
-    repo.find_reference(name)
-        .ok()?
-        .try_id()
-        .map(gix::Id::detach)
 }
 
 /// final turn oid -> the boundary diff of that turn: its last snapshot tree
@@ -389,15 +387,6 @@ fn snapshot_diffs(
         base_tree = tree;
     }
     out
-}
-
-/// (subject, body): the first line, and the rest trimmed. Gix hands
-/// the message over as one string, so the split lives here.
-fn split_message(msg: &str) -> (String, String) {
-    match msg.trim().split_once('\n') {
-        Some((s, rest)) => (s.trim().to_string(), rest.trim().to_string()),
-        None => (msg.trim().to_string(), String::new()),
-    }
 }
 
 /// Header rows for one commit: the subject, then the body (when there is one)

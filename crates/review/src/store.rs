@@ -899,7 +899,18 @@ fn blobs_by_path<'a>(
                     }
                 }
             }
-            _ => {}
+            // NOTE: a collapsed or removed run names a blob too, but no
+            // comment is placed on lines that are not drawn.
+            Row::Title { .. }
+            | Row::Prose { .. }
+            | Row::Warning { .. }
+            | Row::Collapsed { .. }
+            | Row::Removed { .. }
+            | Row::HunkBar { .. }
+            | Row::Comment { .. }
+            | Row::Spacer
+            | Row::CardEnd
+            | Row::Composer => {}
         }
     }
     out

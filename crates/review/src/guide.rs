@@ -274,7 +274,7 @@ pub fn lint(guide: &str, loaded: &Loaded) -> Report {
             Some(r) if r.file.from.is_some() && r.file.hunks.is_empty() => {}
             Some(r) => broken.push(Problem {
                 line,
-                locator: locator.clone(),
+                locator,
                 message: format!(
                     "`{}` matched, but the line range hits none of its {} hunks",
                     r.file.path,
@@ -283,7 +283,7 @@ pub fn lint(guide: &str, loaded: &Loaded) -> Report {
             }),
             None => broken.push(Problem {
                 line,
-                locator: locator.clone(),
+                locator,
                 message: "no file in this diff matches that path".into(),
             }),
         }

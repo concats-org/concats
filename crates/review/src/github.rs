@@ -146,7 +146,7 @@ fn entry(c: &ReviewComment) -> Result<Entry, Skip> {
         reply_to: c.in_reply_to_id,
         external: Some(provenance(c.id)),
         created_at: c.created_at.as_deref().and_then(unix_seconds),
-        ..interchange::entry(path, side, start.min(end), start.max(end), 0)
+        ..interchange::entry(path, side, start.min(end)..=start.max(end), 0)
     })
 }
 

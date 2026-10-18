@@ -356,41 +356,48 @@ pub fn write_entries(
         }
 
         // Read the match out before writing: the store is borrowed to find it.
-        if let Some((id, same)) =
-            stored_match(&store, entry, anchor, parent).map(|c| (c.id, c.body == entry.body))
-        {
+        let matched =
+            stored_match(&store, entry, anchor, parent).map(|c| (c.id, c.body == entry.body));
+        let id = match matched {
             // Same text is a duplicate; different text was edited upstream
             // since the last import, so keep the anchor and the thread and
             // take the new words.
-            if same {
+            Some((id, true)) => {
                 tally.skipped += 1;
-            } else {
+                id
+            }
+            Some((id, false)) => {
                 tally.updated += 1;
                 if !dry {
                     store.set_body(id, entry.body.clone());
                 }
+                id
             }
-            remember(&mut ids, entry, id);
-            continue;
-        }
-
-        let author = entry
-            .author
-            .clone()
-            .or_else(|| fallback_author.map(str::to_string));
-        // A dry run still records what each entry would become, so a reply
-        // finds the root it would have threaded onto and the counts match a
-        // real run. The placeholder is never used as a parent: nothing writes.
-        let id = if dry {
-            0
-        } else if let Some(stored) = store_entry(&mut store, loaded, entry, anchor, parent, author)
-        {
-            stored
-        } else {
-            continue;
+            // A dry run still records what each entry would become, so a reply
+            // finds the root it would have threaded onto and the counts match a
+            // real run. The placeholder is never used as a parent: nothing writes.
+            None if dry => {
+                tally.added += 1;
+                0
+            }
+            None => {
+                let author = entry
+                    .author
+                    .clone()
+                    .or_else(|| fallback_author.map(str::to_string));
+                let Some(stored) = store_entry(&mut store, loaded, entry, anchor, parent, author)
+                else {
+                    continue;
+                };
+                tally.added += 1;
+                stored
+            }
         };
-        remember(&mut ids, entry, id);
-        tally.added += 1;
+        // Where the document id landed, so a reply later in the batch threads
+        // onto the root this run just wrote.
+        if let Some(doc_id) = entry.id {
+            ids.insert(doc_id, id);
+        }
     }
     tally
 }
@@ -405,14 +412,6 @@ pub struct Tally {
     pub orphaned: usize,
 }
 
-/// Note where a document id landed, so a reply later in the batch threads onto
-/// the root this run just wrote.
-fn remember(ids: &mut HashMap<u64, u64>, entry: &Entry, id: u64) {
-    if let Some(doc_id) = entry.id {
-        ids.insert(doc_id, id);
-    }
-}
-
 /// Write one entry: at its own anchor when it has one — a root, or a reply
 /// written on other lines than its root — else into `parent`'s thread at the
 /// root's place. `None` when the write failed, said on stderr.
@@ -425,26 +424,22 @@ fn store_entry(
     author: Option<String>,
 ) -> Option<u64> {
     let created_at = entry.created_at.unwrap_or_else(store::now);
+    let body = entry.body.clone();
+    let external = entry.external.clone();
     let stored = if let Some((path, at)) = anchor {
         let cursors = document_cursors(store, loaded, path, *at);
         store.add_comment(Comment {
-            body: entry.body.clone(),
+            body,
             author,
             created_at,
             parent,
-            external: entry.external.clone(),
+            external,
             cursors,
             ..store::comment(path.clone(), *at)
         })
     } else {
         let root = parent.expect("a reply without a thread was skipped above");
-        store.reply_comment(
-            root,
-            entry.body.clone(),
-            author,
-            created_at,
-            entry.external.clone(),
-        )
+        store.reply_comment(root, body, author, created_at, external)
     };
     // NOTE: a write the store refused is not imported; the batch goes on, and
     // the tally counts only what landed.

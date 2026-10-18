@@ -178,10 +178,10 @@ pub fn parse(text: &str) -> Result<Document, Error> {
                 lenient_section = false;
                 continue;
             }
-            if let Some((side, s, e)) = anchor_heading(line) {
+            if let Some((side, lines)) = anchor_heading(line) {
                 flush(&mut open, &mut doc);
                 match &path {
-                    Some(p) => open = Some(entry(p.clone(), side, s, e, lineno)),
+                    Some(p) => open = Some(entry(p.clone(), side, lines, lineno)),
                     None => doc.warnings.push(format!(
                         "line {lineno}: anchor before any file heading — skipped"
                     )),
@@ -195,10 +195,10 @@ pub fn parse(text: &str) -> Result<Document, Error> {
                     lenient_section = true;
                     continue;
                 }
-                if lenient_section && let Some((side, s, e, first)) = bullet_anchor(line) {
+                if lenient_section && let Some((side, lines, first)) = bullet_anchor(line) {
                     flush(&mut open, &mut doc);
                     let p = path.clone().expect("lenient_section implies a path");
-                    let mut b = entry(p, side, s, e, lineno);
+                    let mut b = entry(p, side, lines, lineno);
                     b.body = first;
                     open = Some(b);
                     continue;
@@ -252,12 +252,12 @@ fn frontmatter(lines: &[&str]) -> Result<(Meta, usize), Error> {
     Ok((meta, close + 2))
 }
 
-pub(crate) fn entry(path: String, side: Side, start: u32, end: u32, line: usize) -> Entry {
+pub(crate) fn entry(path: String, side: Side, lines: RangeInclusive<u32>, line: usize) -> Entry {
     Entry {
         path,
         side,
-        start,
-        end,
+        start: *lines.start(),
+        end: *lines.end(),
         body: String::new(),
         author: None,
         id: None,
@@ -303,7 +303,7 @@ fn code_span(s: &str) -> Option<String> {
 }
 
 /// `### L12`, `### L12-L14` (the `L` on the end is optional), `### old L…`.
-fn anchor_heading(line: &str) -> Option<(Side, u32, u32)> {
+fn anchor_heading(line: &str) -> Option<(Side, RangeInclusive<u32>)> {
     let rest = line.strip_prefix("### ")?.trim();
     let (side, rest) = match rest.strip_prefix("old ") {
         Some(r) => (Side::Old, r.trim_start()),
@@ -314,12 +314,12 @@ fn anchor_heading(line: &str) -> Option<(Side, u32, u32)> {
         Some((a, b)) => (a.trim(), b.trim().trim_start_matches('L')),
         None => (rest.trim(), rest.trim()),
     };
-    range(a, b).map(|(s, e)| (side, s, e))
+    range(a, b).map(|lines| (side, lines))
 }
 
-fn range(a: &str, b: &str) -> Option<(u32, u32)> {
+fn range(a: &str, b: &str) -> Option<RangeInclusive<u32>> {
     let (s, e) = (a.parse::<u32>().ok()?, b.parse::<u32>().ok()?);
-    (s != 0 && e != 0).then(|| (s.min(e), s.max(e)))
+    (s != 0 && e != 0).then(|| s.min(e)..=s.max(e))
 }
 
 /// `In `@path`:` / `In @path:` — the file opener review bots emit. The colon
@@ -342,7 +342,7 @@ fn lenient_file(line: &str) -> Option<String> {
 /// `- Around line 229-234: body…` and its variants (`lines`, bare `Line X:`).
 /// Bots only address the new side; our own prompt-style export additionally
 /// writes `- Around old line 3: …` so old-side comments survive the trip.
-fn bullet_anchor(line: &str) -> Option<(Side, u32, u32, String)> {
+fn bullet_anchor(line: &str) -> Option<(Side, RangeInclusive<u32>, String)> {
     let t = line.trim_start();
     let mut rest = t.strip_prefix("- ").or_else(|| t.strip_prefix("* "))?;
     let mut strip = |word: &str| -> bool {
@@ -364,12 +364,12 @@ fn bullet_anchor(line: &str) -> Option<(Side, u32, u32, String)> {
         Some((a, b)) => (a.trim(), b.trim()),
         None => (nums, nums),
     };
-    let (s, e) = range(a, b)?;
+    let lines = range(a, b)?;
     let mut body = body.trim_start().to_string();
     if !body.is_empty() {
         body.push('\n');
     }
-    Some((side, s, e, body))
+    Some((side, lines, body))
 }
 
 /// `<!-- concats-app id=3 author="Ada L" at=17… reply-to=1 ref="github:218…"
@@ -593,37 +593,6 @@ pub enum ResolveError<'a> {
     },
 }
 
-/// 1-based display line → `(blob idx, 0-based blob line)`.
-type LineMap = HashMap<u32, (u32, u32)>;
-
-/// `(new_no → (blob idx, blob line), old_no → …)` for a file's hunks. The new
-/// side covers additions and context (the GUI allows commenting both); the
-/// old side covers deletions only — that is what `old L…` addresses.
-fn line_maps(file: &FileChange) -> (LineMap, LineMap) {
-    let mut new = HashMap::new();
-    let mut old = HashMap::new();
-    for r in file.hunks.iter().flat_map(|h| h.rows.iter()) {
-        if let Row::Code {
-            kind,
-            old_no,
-            new_no,
-            blob,
-            line,
-        } = r
-        {
-            if let Some(n) = new_no {
-                new.insert(*n, (*blob, *line));
-            }
-            if *kind == LineKind::Del
-                && let Some(n) = old_no
-            {
-                old.insert(*n, (*blob, *line));
-            }
-        }
-    }
-    (new, old)
-}
-
 /// Re-anchor 1-based `lines` on `side` of `path` against the loaded diff — the
 /// one check `comments add` and import share: every line of the range must be
 /// shown by the diff on that side.
@@ -635,11 +604,31 @@ pub fn resolve<'a>(
 ) -> Result<(String, Anchor), ResolveError<'a>> {
     let file =
         guide::find_file(loaded, path.trim_end_matches('/')).ok_or(ResolveError::UnknownPath)?;
-    let (new_map, old_map) = line_maps(file);
-    let map = match side {
-        Side::New => &new_map,
-        Side::Old => &old_map,
-    };
+    // 1-based display line on `side` → (blob idx, 0-based blob line). The new
+    // side covers additions and context (the GUI allows commenting both); the
+    // old side covers deletions only — that is what `old L…` addresses.
+    let map: HashMap<u32, (u32, u32)> = file
+        .hunks
+        .iter()
+        .flat_map(|h| h.rows.iter())
+        .filter_map(|r| {
+            let Row::Code {
+                kind,
+                old_no,
+                new_no,
+                blob,
+                line,
+            } = r
+            else {
+                return None;
+            };
+            let n = match side {
+                Side::New => *new_no,
+                Side::Old => old_no.filter(|_| *kind == LineKind::Del),
+            };
+            Some((n?, (*blob, *line)))
+        })
+        .collect();
     let missing: Vec<u32> = lines
         .clone()
         .filter(|n| !map.contains_key(n))
@@ -752,43 +741,42 @@ mod tests {
             base: Some(oid(1).to_string()),
             head: Some(oid(2).to_string()),
         };
-        let mut a = entry("src/store.rs".into(), Side::New, 12, 14, 0);
+        let mut a = entry("src/store.rs".into(), Side::New, 12..=14, 0);
         a.body = "issue: [HIGH] off-by-one.\n\n```suggestion\nfor i in 0..n {\n```".into();
         a.author = Some("Ada \"L\"".into());
         a.id = Some(3);
         a.created_at = Some(1_721_234_567);
 
-        let mut b = entry("src/store.rs".into(), Side::Old, 120, 120, 0);
+        let mut b = entry("src/store.rs".into(), Side::Old, 120..=120, 0);
         // A fenced anchor stays verbatim; an unfenced one needs the escape.
         b.body = "```\n### L1\n---\n```\n\n### L12\n\n## `x`".into();
 
-        let mut c = entry("dir with space/a`b.rs".into(), Side::New, 1, 2, 0);
+        let mut c = entry("dir with space/a`b.rs".into(), Side::New, 1..=2, 0);
         c.body = "nit: naming — überschreiben?".into();
 
         // A reply repeats its root's anchor and names it by document id.
-        let mut r = entry("src/store.rs".into(), Side::New, 12, 14, 0);
+        let mut r = entry("src/store.rs".into(), Side::New, 12..=14, 0);
         r.body = "the database allocates them now.".into();
         r.id = Some(4);
         r.reply_to = Some(3);
         r.external = Some("github:2181234567".into());
 
-        let md = render(&meta, &[a.clone(), r.clone(), b.clone(), c.clone()]);
-        let doc = parse(&md).unwrap();
+        let entries = [a, r, b, c];
+        let doc = parse(&render(&meta, &entries)).unwrap();
         assert_eq!(doc.meta, meta);
         assert!(doc.warnings.is_empty(), "{:?}", doc.warnings);
-        assert_eq!(doc.entries.len(), 4);
-        assert_eq!(key(&doc.entries[0]), key(&a));
-        assert_eq!(key(&doc.entries[1]), key(&r));
-        assert_eq!(key(&doc.entries[2]), key(&b));
-        assert_eq!(key(&doc.entries[3]), key(&c));
+        assert_eq!(doc.entries.len(), entries.len());
+        for (got, want) in doc.entries.iter().zip(&entries) {
+            assert_eq!(key(got), key(want));
+        }
     }
 
     #[test]
     fn the_prompt_profile_nests_a_reply_without_touching_its_body() {
-        let mut root = entry("src/lib.rs".into(), Side::New, 63, 68, 0);
+        let mut root = entry("src/lib.rs".into(), Side::New, 63..=68, 0);
         root.body = "this leaks on the error path".into();
         root.id = Some(1);
-        let mut reply = entry("src/lib.rs".into(), Side::New, 63, 68, 0);
+        let mut reply = entry("src/lib.rs".into(), Side::New, 63..=68, 0);
         reply.body = "fixed — the early return drops it".into();
         reply.id = Some(2);
         reply.reply_to = Some(1);
@@ -869,13 +857,13 @@ mod tests {
 
     #[test]
     fn prompt_render_round_trips_through_the_lenient_profile() {
-        let mut a = entry("apps/web/lib/env.ts".into(), Side::New, 229, 234, 0);
+        let mut a = entry("apps/web/lib/env.ts".into(), Side::New, 229..=234, 0);
         a.body = "Require the URL and token when enabled.".into();
         a.author = Some("claude".into()); // dropped by design: prompt carries no metadata
         a.id = Some(9);
-        let mut b = entry("src/a.rs".into(), Side::Old, 3, 3, 0);
+        let mut b = entry("src/a.rs".into(), Side::Old, 3..=3, 0);
         b.body = "why was doomed() removed?".into();
-        let mut c = entry("src/a.rs".into(), Side::New, 2, 3, 0);
+        let mut c = entry("src/a.rs".into(), Side::New, 2..=3, 0);
         c.body = "suggestion: keep line2 stable.\n\n```suggestion\nline2\n```".into();
 
         let md = render_prompt(&[a.clone(), b.clone(), c.clone()]);
