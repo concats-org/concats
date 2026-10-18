@@ -1128,7 +1128,7 @@ pub fn open_repo(root: &Path) -> Result<Repository, Error> {
 }
 
 /// All blobs (and symlinks) of `tree`, as path -> oid.
-fn flatten_tree(repo: &Repository, tree: ObjectId) -> Result<HashMap<String, ObjectId>, Error> {
+pub fn flatten_tree(repo: &Repository, tree: ObjectId) -> Result<HashMap<String, ObjectId>, Error> {
     let tree = repo.find_tree(tree).map_err(|e| Error::git("tree", e))?;
     let mut recorder = gix::traverse::tree::Recorder::default();
     tree.traverse()
@@ -1142,7 +1142,7 @@ fn flatten_tree(repo: &Repository, tree: ObjectId) -> Result<HashMap<String, Obj
         .collect())
 }
 
-fn commit_tree(repo: &Repository, commit: ObjectId) -> Result<ObjectId, Error> {
+pub fn commit_tree(repo: &Repository, commit: ObjectId) -> Result<ObjectId, Error> {
     repo.find_commit(commit)
         .map_err(|error| Error::git("commit", error))?
         .tree_id()

@@ -114,12 +114,9 @@ pub fn sides(loaded: &Loaded) -> HashMap<ObjectId, Side> {
 }
 
 /// The ids of `comments` on the old side of `base...head`, and how an anchor
-/// names that side — what [`sides`] tells from a loaded diff, read off a tree
-/// or index lookup per path instead: a comment is there when its blob is the
-/// old side's at its path and not the head's.
-///
-/// A file renamed in the range has its old blob under its old path, so a
-/// comment on its deleted lines is not found here.
+/// names that side — what [`sides`] tells from a loaded diff, read off the old
+/// side's tree or index and a head lookup per path instead: a comment is there
+/// when its blob is one of the old side's and not the head's at its path.
 pub fn on_old_side(
     repo: &Path,
     base: &str,
@@ -144,16 +141,23 @@ pub fn on_old_side(
         ),
     };
 
-    let mut old_at = HashMap::new();
-    for c in comments {
-        if !old_at.contains_key(c.path.as_str()) {
-            let oid = load::read_at_base(&repo, old, &c.path)?.map(|(oid, _)| oid);
-            old_at.insert(c.path.as_str(), oid);
-        }
-    }
+    // NOTE: every blob of the old side, not the one at a comment's path: a file
+    // renamed in the range has its old blob under its old path.
+    let old_blobs: HashSet<ObjectId> = match old {
+        Some(commit) => load::flatten_tree(&repo, load::commit_tree(&repo, commit)?)?
+            .into_values()
+            .collect(),
+        None => repo
+            .index_or_empty()
+            .map_err(|e| concats_diff::Error::git("index", e))?
+            .entries()
+            .iter()
+            .map(|e| e.id)
+            .collect(),
+    };
     let was_old: Vec<&Comment> = comments
         .iter()
-        .filter(|c| old_at[c.path.as_str()] == Some(c.anchor.blob))
+        .filter(|c| old_blobs.contains(&c.anchor.blob))
         .collect();
     // Only a path some comment's blob was old on is read at the head.
     let mut changed = HashMap::new();
@@ -670,21 +674,30 @@ mod tests {
         );
     }
 
-    /// The CLI list tells the old side by path lookups, without a diff; it
-    /// must agree with the loaded diff it stands in for — a modified file and
-    /// a deleted one, against a commit head, the worktree and the index.
+    /// The CLI list tells the old side from the trees, without a diff; it
+    /// must agree with the loaded diff it stands in for — a modified file, a
+    /// deleted one and a renamed one, against a commit head, the worktree and
+    /// the index.
     #[test]
-    fn the_old_side_by_path_agrees_with_the_loaded_diff() {
+    fn the_old_side_from_the_trees_agrees_with_the_loaded_diff() {
         let tmp = tempfile::tempdir().unwrap();
         let repo = tmp.path();
         init_repo_with_commit(repo);
         let git = |args: &[&str]| concats_fixture::git(repo, args);
         std::fs::write(repo.join("a.txt"), "a\nb\n").unwrap();
         std::fs::write(repo.join("gone.txt"), "x\n").unwrap();
+        let lines: String = (1..=10).map(|n| format!("line {n}\n")).collect();
+        std::fs::write(repo.join("moved.txt"), &lines).unwrap();
         git(&["add", "-A"]);
         git(&["commit", "-qm", "base"]);
         std::fs::write(repo.join("a.txt"), "a\n").unwrap();
         std::fs::remove_file(repo.join("gone.txt")).unwrap();
+        git(&["mv", "moved.txt", "to.txt"]);
+        std::fs::write(
+            repo.join("to.txt"),
+            &lines[..lines.len() - "line 10\n".len()],
+        )
+        .unwrap();
         git(&["add", "-A"]);
         git(&["commit", "-qm", "head"]);
 
@@ -706,7 +719,12 @@ mod tests {
             assert_eq!((named, &ids), (rev, &want), "{base}...{head}");
             assert!(!ids.is_empty(), "{base}...{head}");
         };
-        let changed = ["a.txt:1", "a.txt@{rev}:2", "gone.txt@{rev}:1"];
+        let changed = [
+            "a.txt:1",
+            "a.txt@{rev}:2",
+            "gone.txt@{rev}:1",
+            "to.txt@{rev}:10",
+        ];
         check("HEAD~1", "HEAD", &changed);
         check("HEAD~1", WORKTREE_REV, &changed);
 
