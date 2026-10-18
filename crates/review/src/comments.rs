@@ -415,6 +415,8 @@ pub struct Tally {
 /// Write one entry: at its own anchor when it has one — a root, or a reply
 /// written on other lines than its root — else into `parent`'s thread at the
 /// root's place. `None` when the write failed, said on stderr.
+// NOTE: write_entries' write step: the entry plus the place, thread and author it resolved.
+// coland-ignore: @coland/excessive_positional_parameters
 fn store_entry(
     store: &mut Store,
     loaded: &Loaded,
@@ -453,6 +455,8 @@ fn store_entry(
 /// or one an earlier import stored under the same upstream id, normalized to
 /// the root so a reply to a reply threads like GitHub's. `None` for a root
 /// entry, and for a reply whose thread is not stored — that reply is orphaned.
+// NOTE: names the threading rule write_entries' loop applies to every reply.
+// coland-ignore: @coland/single_caller_private_function
 fn thread_of(entry: &Entry, store: &Store, written: &HashMap<u64, u64>) -> Option<u64> {
     let doc_id = entry.reply_to?;
     let id = written.get(&doc_id).copied().or_else(|| {
@@ -469,6 +473,8 @@ fn thread_of(entry: &Entry, store: &Store, written: &HashMap<u64, u64>) -> Optio
 /// The stored comment an entry would land on: the same comment upstream when
 /// both carry provenance — identity, not resemblance — and otherwise the same
 /// text in the same place: its anchor when it resolved to one, else its thread.
+// NOTE: names the duplicate rule import's convergence rests on.
+// coland-ignore: @coland/single_caller_private_function
 fn stored_match<'a>(
     store: &'a Store,
     entry: &Entry,

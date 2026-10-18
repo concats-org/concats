@@ -149,6 +149,9 @@ pub struct Document {
 /// Parse a document in either profile. `Err` only for a schema this version
 /// cannot honor; everything else degrades to a warning or a skipped entry.
 /// Resolution against the diff is the real gate.
+// NOTE: `comments import` and tests call it; it dispatches per line kind; flush fills its doc too.
+// coland-ignore: @coland/high_fan_in_complex_function, @coland/high_call_degree
+// coland-ignore: @coland/mixed_abstraction_levels
 pub fn parse(text: &str) -> Result<Document, Error> {
     let lines: Vec<&str> = text.lines().collect();
     let (meta, mut at) = frontmatter(&lines)?;
@@ -268,6 +271,8 @@ pub(crate) fn entry(path: String, side: Side, lines: RangeInclusive<u32>, line: 
     }
 }
 
+// NOTE: parse closes an entry at six places; this is what closing one means.
+// coland-ignore: @coland/single_caller_private_function
 fn flush(open: &mut Option<Entry>, doc: &mut Document) {
     let Some(mut e) = open.take() else { return };
     e.body = e.body.trim().to_string();
@@ -325,6 +330,8 @@ fn range(a: &str, b: &str) -> Option<RangeInclusive<u32>> {
 /// `In `@path`:` / `In @path:` — the file opener review bots emit. The colon
 /// is required; a bare path must look like one (no spaces), so prose starting
 /// with "In " stays prose.
+// NOTE: one parser per line kind, like file_heading and bullet_anchor; parse dispatches on them.
+// coland-ignore: @coland/single_caller_private_function
 fn lenient_file(line: &str) -> Option<String> {
     let t = line.trim().strip_suffix(':')?;
     let rest = t.strip_prefix("In ")?.trim();
@@ -450,6 +457,8 @@ fn fence_toggle(line: &str, fence: &mut Option<(char, usize)>) {
     }
 }
 
+// NOTE: the reader's half of push_body's `\` escape; named so the pair reads as one.
+// coland-ignore: @coland/single_caller_private_function
 fn unescape(line: &str) -> &str {
     match line.strip_prefix('\\') {
         Some(r) if r.starts_with("##") || r.starts_with("<!--") => r,
@@ -567,10 +576,14 @@ fn push_body(md: &mut String, body: &str) {
     }
 }
 
+// NOTE: the writer's half of parse_kv's quoting, for both quoted keys render writes.
+// coland-ignore: @coland/single_caller_private_function
 fn quoted(v: &str) -> String {
     v.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
+// NOTE: the writer's half of code_span; named so the pair reads as one.
+// coland-ignore: @coland/single_caller_private_function
 fn backtick_span(path: &str) -> String {
     let longest = path.split(|c| c != '`').map(str::len).max().unwrap_or(0);
     if longest == 0 {
@@ -655,6 +668,8 @@ pub fn resolve<'a>(
 
 /// Which blob oids appear on which side of a row stream — how an exported
 /// comment knows whether its anchor is `L…` or `old L…`.
+// TODO: a blob → Side map would name the two sets; the app reads the pair too (review_pane).
+// coland-ignore: @coland/same_typed_tuple_return
 pub fn blob_sides<'a>(
     rows: impl Iterator<Item = &'a Row>,
     blobs: &[Blob],
@@ -677,6 +692,8 @@ pub fn blob_sides<'a>(
 /// neither side is stale for this range: exported as recorded (new side, best
 /// effort), and it will not re-import against this diff. Callers count those
 /// via `outside_range` and warn.
+// NOTE: projects borrowed store comments into owned entries; each clone is a field an entry owns.
+// coland-ignore: @coland/clone_heavy_function
 pub fn entries_from(
     comments: &[Comment],
     old: &HashSet<ObjectId>,

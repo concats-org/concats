@@ -62,6 +62,8 @@ struct User {
 /// Accepts a stream of top-level values: `gh api --paginate` concatenates one
 /// array per page and `--slurp` nests them. Both are what you actually type,
 /// and neither is a single flat array.
+// NOTE: one production caller, `comments import`; the rest of its fan-in is tests.
+// coland-ignore: @coland/high_fan_in_complex_function
 pub fn parse(json: &str) -> Result<Document, Error> {
     let mut doc = Document::default();
     let mut unanchored = 0usize;
@@ -96,6 +98,8 @@ pub fn parse(json: &str) -> Result<Document, Error> {
 /// A top-level value as a flat sequence of comment objects. An array yields its
 /// elements, recursing so `--slurp`'s array of pages works; an object is
 /// itself.
+// NOTE: recursive, since `--slurp` nests pages, so it cannot fold into parse.
+// coland-ignore: @coland/single_caller_private_function
 fn flatten(value: serde_json::Value) -> Vec<serde_json::Value> {
     match value {
         serde_json::Value::Array(items) => items.into_iter().flat_map(flatten).collect(),

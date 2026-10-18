@@ -226,6 +226,8 @@ impl Report {
 }
 
 /// Check an agent's review guide against the diff it claims to describe.
+// NOTE: one pass per part of the Report it fills; a split would move lines, not remove any.
+// coland-ignore: @coland/function_too_large
 pub fn lint(guide: &str, loaded: &Loaded) -> Report {
     let mut broken = Vec::new();
     let mut duplicates = Vec::new();

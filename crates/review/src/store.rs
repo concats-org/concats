@@ -115,6 +115,8 @@ pub struct Comment {
 /// (all seen, any seen) for a set of line keys against a seen set — one
 /// answer for the store and the app's published snapshot, so the two can
 /// never disagree about what a tick box shows.
+// TODO: name the two answers; the app reads this pair too (service, review_list).
+// coland-ignore: @coland/same_typed_tuple_return
 pub fn seen_state(keys: &[LineKey], seen: &HashSet<LineKey>) -> (bool, bool) {
     (
         !keys.is_empty() && keys.iter().all(|k| seen.contains(k)),
@@ -139,6 +141,8 @@ pub fn now() -> u64 {
 
 /// A new comment on `anchor` in `path`, made now: what every comment starts
 /// from. Callers fill in the rest; the store allocates the id.
+// NOTE: what every new comment starts from; its fan-in is the point.
+// coland-ignore: @coland/high_call_degree
 pub fn comment(path: String, anchor: Anchor) -> Comment {
     Comment {
         id: 0,
@@ -469,6 +473,8 @@ impl Store {
     /// what the app minted for one that arrived without any — written before
     /// cursors existed, held by the buffer from its exact lines. From here on
     /// the document carries the comment, in the CLI too.
+    // NOTE: one in-process SQLite statement per comment, no round trip; callers pass a handful.
+    // coland-ignore: @coland/n_plus_one_query
     pub fn set_cursors(&mut self, cursors: &[(u64, Cursors)]) {
         for (id, (from, to)) in cursors {
             let write = self.conn.execute(
@@ -682,6 +688,8 @@ pub fn hunk_keys(old: Option<Side>, new: Option<Side>, blobs: &[Blob]) -> Vec<Li
 /// asking again — two answers to "can this thread be placed?" would drift, and a
 /// header offering to reveal a thread that is already inline is exactly the
 /// drift you would get.
+// NOTE: the one placement rule every view's threads go through; its tests are most of its fan-in.
+// coland-ignore: @coland/high_fan_in_complex_function, @coland/high_call_degree
 pub fn inject_comments(
     rows: &mut Vec<Row>,
     blobs: &[Blob],
@@ -814,6 +822,8 @@ pub fn any_guide(git_dir: &Path) -> bool {
 /// keeps changing as you work, so this match is a convention rather than exact:
 /// the newest worktree guide applies, and a link that no longer resolves shows
 /// up as a `Row::Warning` in the render, never silently.
+// NOTE: (merge base, head), the range's own order, as `base...head` and the guides table spell it.
+// coland-ignore: @coland/same_typed_tuple_return
 pub fn guide_key(merge_base: Option<ObjectId>, head: Option<ObjectId>) -> (ObjectId, ObjectId) {
     let zero = ObjectId::null(gix::hash::Kind::Sha1);
     (merge_base.unwrap_or(zero), head.unwrap_or(zero))
@@ -945,6 +955,8 @@ pub fn place(comment: &Comment, blobs: &[Blob], path_blobs: &[u32]) -> Option<Si
 /// Where a comment's run sits in one blob: its own lines, when the blob is
 /// the one the comment names. This is how a thread gets its cursor pair; from
 /// then on the text carries it.
+// TODO: return the lines as a RangeInclusive; the app destructures this pair (review_doc).
+// coland-ignore: @coland/same_typed_tuple_return
 pub fn run_in(blob: &Blob, comment: &Comment) -> Option<(u32, u32)> {
     (comment.anchor.blob == blob.oid && (comment.anchor.end as usize) < blob.line_count())
         .then_some((comment.anchor.start, comment.anchor.end))

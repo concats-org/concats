@@ -225,6 +225,8 @@ fn read_commit(repo: &Repository, oid: &ObjectId) -> Result<Commit, ()> {
 /// With a hundred recorded sessions that is the difference between a fast load
 /// and seconds of I/O. The prefilter can miss a turn whose change touched the
 /// range but was reverted by session end; for a linking aid that is acceptable.
+// NOTE: two production callers, mine and `concats turns`; the rest of its fan-in is tests.
+// coland-ignore: @coland/high_fan_in_complex_function
 pub fn load_turns(repo: &Repository, range: &RangeDiff) -> Vec<Turn> {
     let refs: Vec<(String, ObjectId)> = repo
         .references()
@@ -557,6 +559,8 @@ pub struct Mined {
 /// none (one refs directory listing), so the GUI just always calls it. Takes
 /// `loaded` mutably because the sessions tab lowers each turn's own diff into
 /// the same blob table the review uses.
+// NOTE: the pass's entry: the app's load is its one production caller, the rest tests.
+// coland-ignore: @coland/high_call_degree
 pub fn mine(loaded: &mut Loaded) -> Mined {
     // NOTE: the mining pass re-reads the same snapshot trees constantly; the
     // object cache `open_repo` sets collapses that to memory reads.
@@ -639,6 +643,8 @@ fn commits_stream(
 /// nothing of this diff is still what led to the turn that did — collapsing
 /// those to a count threw the reasoning away and left the transcript starting
 /// mid-thought.
+// NOTE: the pass's state, passed explicitly; AGENTS.md rules out a one-call-site carrier.
+// coland-ignore: @coland/excessive_positional_parameters
 fn sessions_rows(
     repo: &Repository,
     range: &RangeDiff,
@@ -735,6 +741,8 @@ fn sessions_rows(
 /// part of this diff. A commit already rendered under an earlier turn collapses
 /// to a cross-reference line.
 #[allow(clippy::too_many_arguments)]
+// NOTE: the pass's state, passed explicitly; AGENTS.md rules out a one-call-site carrier.
+// coland-ignore: @coland/excessive_positional_parameters
 fn turn_rows(
     rows: &mut Vec<Row>,
     t: &Turn,
