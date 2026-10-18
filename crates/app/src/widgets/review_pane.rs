@@ -14,8 +14,8 @@ use std::{
     sync::Arc,
 };
 
-use concats_diff::{CollapsedEnd, LineKind, Row, Side};
-use concats_review::{interchange, store};
+use concats_diff::{CollapsedEnd, LineKind, Loaded, Row, Side};
+use concats_review::{comments, interchange, store};
 use makepad_service::Shared;
 
 use super::{FileBrowserAction, GutterAction, ReviewList, SeenBar, review_list::ReviewItemAction};
@@ -1099,7 +1099,7 @@ impl ReviewPane {
     fn share_comments(
         &mut self,
         cx: &mut Cx,
-        render: fn(&interchange::Meta, &[interchange::Entry]) -> String,
+        render: fn(&Loaded, &[interchange::Entry]) -> String,
     ) {
         self.view.view(cx, ids!(share_panel)).set_visible(cx, false);
         let (target, shown) = self
@@ -1843,10 +1843,14 @@ impl ReviewPane {
             self.view.redraw(cx);
         }
         if self.view.button(cx, ids!(share_prompt)).clicked(actions) {
-            self.share_comments(cx, |_, entries| interchange::render_prompt(entries));
+            self.share_comments(cx, |loaded, entries| {
+                interchange::render_prompt(&comments::old_rev(loaded.merge_base), entries)
+            });
         }
         if self.view.button(cx, ids!(share_json)).clicked(actions) {
-            self.share_comments(cx, interchange::render);
+            self.share_comments(cx, |loaded, entries| {
+                interchange::render(&comments::meta(loaded), entries)
+            });
         }
         if self.view.button(cx, ids!(share_stage)).clicked(actions) {
             self.stage_seen_hunks(cx);

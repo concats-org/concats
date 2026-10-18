@@ -13,6 +13,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use concats_diff::Loaded;
 use concats_highlight::Highlighter;
 use concats_review::{
     comments::{self, Scope},
@@ -100,7 +101,7 @@ pub(crate) enum ReviewCmd {
         target: concats_state::Target,
         /// The threads the window places, `ReviewDoc::placed_threads`.
         shown: HashSet<u64>,
-        render: fn(&interchange::Meta, &[interchange::Entry]) -> String,
+        render: fn(&Loaded, &[interchange::Entry]) -> String,
     },
     /// Share → "Stage seen hunks": `git add -p` driven by the seen ticks.
     StageSeen {
@@ -364,7 +365,7 @@ impl AppService {
         &mut self,
         target: &concats_state::Target,
         shown: &HashSet<u64>,
-        render: fn(&interchange::Meta, &[interchange::Entry]) -> String,
+        render: fn(&Loaded, &[interchange::Entry]) -> String,
     ) -> (Option<String>, String) {
         let path = Path::new(&target.repo);
         let loaded = match concats_diff::load::load(path, &target.base, &target.head) {
@@ -379,7 +380,7 @@ impl AppService {
                 "no comments on screen to share — click a line number to leave one".into(),
             ),
             n => (
-                Some(render(&comments::meta(&loaded), &entries)),
+                Some(render(&loaded, &entries)),
                 format!("{n} comment(s) on screen copied to the clipboard"),
             ),
         }
@@ -848,7 +849,9 @@ mod tests {
             head: "WORKTREE".into(),
         };
 
-        let (text, message) = svc.share(&target, &HashSet::from([on_screen]), interchange::render);
+        let (text, message) = svc.share(&target, &HashSet::from([on_screen]), |loaded, entries| {
+            interchange::render(&comments::meta(loaded), entries)
+        });
         let text = text.expect("a document to copy");
         assert!(
             text.contains("on screen") && !text.contains("not shown"),
@@ -856,12 +859,14 @@ mod tests {
         );
         assert_eq!(message, "1 comment(s) on screen copied to the clipboard");
 
-        let (text, _) = svc.share(&target, &HashSet::from([on_screen]), |_, entries| {
-            interchange::render_prompt(entries)
+        let (text, _) = svc.share(&target, &HashSet::from([on_screen]), |loaded, entries| {
+            interchange::render_prompt(&comments::old_rev(loaded.merge_base), entries)
         });
         assert!(text.unwrap().contains("on screen"));
 
-        let (text, message) = svc.share(&target, &HashSet::new(), interchange::render);
+        let (text, message) = svc.share(&target, &HashSet::new(), |loaded, entries| {
+            interchange::render(&comments::meta(loaded), entries)
+        });
         assert_eq!(text, None);
         assert!(message.starts_with("no comments on screen"), "{message}");
     }
