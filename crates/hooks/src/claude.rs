@@ -155,6 +155,8 @@ const APPROVED_PLAN_MARKER: &str = "\n## Approved Plan:";
 // Resolve the transcript entries to append on a Claude Stop event.
 // Plan-mode cycles can include user feedback delivered as tool results, so
 // Claude may append both `Prompt` and `Response` entries for a single Stop.
+// NOTE: the Stop entry rule, tested on its own without a session or a payload.
+// coland-ignore: @coland/single_caller_private_function
 fn resolve_stop_entries(
     transcript: Option<&str>,
     last_assistant_message: Option<&str>,
@@ -259,6 +261,8 @@ fn collect_assistant_plan_entries(
     push_pending_text(&mut text, out);
 }
 
+// NOTE: flushes the gathered text before each plan and once at the end.
+// coland-ignore: @coland/single_caller_private_function
 fn push_pending_text(text: &mut Vec<&str>, out: &mut Vec<TurnEntry>) {
     if !text.is_empty() {
         out.push(TurnEntry::response_now(text.join("\n")));
@@ -344,6 +348,8 @@ fn tool_result_text(block: &serde_json::Value) -> Option<String> {
     }
 }
 
+// NOTE: what counts as a plan file, asked of a Write's path and of ExitPlanMode's.
+// coland-ignore: @coland/single_caller_private_function
 fn plan_file_path(path: &str) -> Option<String> {
     let is_md = Path::new(path)
         .extension()

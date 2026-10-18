@@ -32,6 +32,8 @@ fn hook(root: &Path, payload: &serde_json::Value) {
     assert_eq!(output.stdout, b"");
 }
 
+// NOTE: a recorded linked worktree takes git, the hook binary, core and review to build.
+// coland-ignore: @coland/cross_file_call_coupling
 fn recorded_worktree() -> tempfile::TempDir {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path();

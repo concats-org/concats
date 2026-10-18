@@ -135,6 +135,8 @@ fn run_init(path: Option<&Path>) -> miette::Result<()> {
     install_hooks(&detected, &InstallScope::Project { root }, &binary)
 }
 
+// NOTE: one function per `hooks` subcommand, like run_hooks_uninstall.
+// coland-ignore: @coland/single_caller_private_function
 fn run_hooks_install(agents: &[String], scope: &InstallScope) -> miette::Result<()> {
     let binary = std::env::current_exe().map_err(concats_core::error::Error::from)?;
     let targets = agents
@@ -195,6 +197,8 @@ fn run_hooks_uninstall(agents: &[String], scope: &InstallScope) -> miette::Resul
     Ok(())
 }
 
+// NOTE: one function per `hooks` subcommand, like run_hooks_uninstall.
+// coland-ignore: @coland/single_caller_private_function
 fn run_hooks_status(scope: &InstallScope) {
     eprintln!("{:<12} {:<10} Installed", "Agent", "Detected");
     eprintln!("{:<12} {:<10} ---------", "-----", "--------");
@@ -210,6 +214,8 @@ fn run_hooks_status(scope: &InstallScope) {
     }
 }
 
+// NOTE: all three `hooks` subcommands read --path and --global this one way.
+// coland-ignore: @coland/single_caller_private_function
 fn resolve_scope(path: Option<PathBuf>, global: bool) -> miette::Result<InstallScope> {
     if global {
         return Ok(InstallScope::User);
@@ -340,6 +346,8 @@ fn print_turn(session: &Session, turn: &Turn) {
 // concats checkout
 // ---------------------------------------------------------------------------
 
+// NOTE: --quiet drops only the confirmation; the checkout itself runs the same.
+// coland-ignore: @coland/selector_parameter
 fn run_checkout(
     session_ref: &str,
     force: bool,
@@ -455,6 +463,8 @@ fn resolve_session_ref(repo: &Rc<Repository>, input: &str) -> miette::Result<Res
 }
 
 /// Parse "session-a~3" → ("session-a", 3), "session-a~2~1" → ("session-a", 3).
+// NOTE: git's `~N` grammar, named and documented apart from the lookup that reads it.
+// coland-ignore: @coland/single_caller_private_function
 fn parse_tilde_suffix(input: &str) -> (&str, usize) {
     let mut total_offset = 0usize;
     let mut name = input;

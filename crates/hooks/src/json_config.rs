@@ -126,6 +126,8 @@ pub fn is_installed(path: &Path, agent: &str) -> bool {
     fs::read_to_string(path).is_ok_and(|data| data.contains(&command_prefix(agent)))
 }
 
+// NOTE: the config transform, tested on its own; uninstall adds the file around it.
+// coland-ignore: @coland/single_caller_private_function
 fn remove_hooks(mut value: Value, agent: &str) -> Value {
     let prefix = command_prefix(agent);
     if let Some(hooks) = value.get_mut("hooks").and_then(Value::as_object_mut) {

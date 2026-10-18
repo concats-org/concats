@@ -30,6 +30,8 @@ enum HandlerAction {
     Ignore,
 }
 
+// NOTE: the one dispatch every agent without its own payload shares; its spread is the point.
+// coland-ignore: @coland/cross_file_call_coupling, @coland/high_call_degree
 fn dispatch_simple(
     agent_name: &str,
     default_session_id: &str,

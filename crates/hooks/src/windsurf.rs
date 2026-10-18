@@ -54,6 +54,8 @@ fn config_path() -> Result<PathBuf> {
         .ok_or_else(|| Error::session("cannot determine home directory"))
 }
 
+// NOTE: the config transform, tested on its own; install only says where the file is.
+// coland-ignore: @coland/single_caller_private_function
 fn install_hooks(value: serde_json::Value, binary: &Path) -> Result<serde_json::Value> {
     json_config::install_hooks(
         value,

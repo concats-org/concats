@@ -49,6 +49,8 @@ impl crate::Agent for CopilotAgent {
     }
 }
 
+// NOTE: the config's content, tested at a temp path; install only says where it lives.
+// coland-ignore: @coland/single_caller_private_function
 fn write_config(path: &Path, binary: &Path) -> Result<()> {
     let bin = binary.display();
     let config = serde_json::json!({

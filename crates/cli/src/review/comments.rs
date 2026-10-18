@@ -96,6 +96,8 @@ fn list(repo: Option<&str>, delete: Option<u64>) -> Outcome {
     Ok(())
 }
 
+// NOTE: one function per `comments` subcommand, like reply, export and import.
+// coland-ignore: @coland/single_caller_private_function
 fn add(spec: &str, body: &str, author: Option<String>, range: &RangeArgs) -> Outcome {
     let loaded = super::load(&range.resolve()?)?;
     let mut store = Store::open(&loaded.git_dir);
@@ -135,6 +137,8 @@ fn reply(
 }
 
 /// A comment `add` or `reply` could not leave, said on stderr.
+// NOTE: both arms print the error; the match only adds the hint for a missing comment.
+// coland-ignore: @coland/selector_parameter
 fn report(error: &Error) -> ExitCode {
     match error {
         Error::NoSuchComment(_) => {
@@ -245,6 +249,8 @@ fn import(input: &str, author: Option<&str>, dry: bool, range: &RangeArgs) -> Ou
     Ok(())
 }
 
+// NOTE: the input contract, `-` for stdin or a path, with an error for each.
+// coland-ignore: @coland/single_caller_private_function
 fn read_input(input: &str) -> Result<String, ExitCode> {
     if input == "-" {
         return std::io::read_to_string(std::io::stdin()).map_err(|_| {
@@ -261,6 +267,8 @@ fn read_input(input: &str) -> Result<String, ExitCode> {
 /// A document that names endpoints is checked against the loaded ones — the
 /// anchors are validated against the diff either way, so this is a warning
 /// rather than a refusal.
+// NOTE: a check of its own, named for its documented contract: warn, never refuse.
+// coland-ignore: @coland/single_caller_private_function
 fn warn_on_range_mismatch(doc: &interchange::Document, loaded: &interchange::Meta) {
     for (name, have, want) in [
         ("base", &doc.meta.base, &loaded.base),
@@ -301,6 +309,8 @@ fn resolve_document_roots<'a>(
     Ok(resolved)
 }
 
+// NOTE: the pull-request twin of resolve_document_roots; import picks one per profile.
+// coland-ignore: @coland/single_caller_private_function
 fn resolve_pull_request_roots<'a>(
     entries: &'a [interchange::Entry],
     loaded: &'a Loaded,
@@ -349,6 +359,8 @@ fn print_resolution_error(
     }
 }
 
+// NOTE: both arms report the same tally, in the tense a dry or a real run earned.
+// coland-ignore: @coland/selector_parameter
 fn print_tally(tally: &Tally, dry: bool) {
     let Tally {
         added,

@@ -138,6 +138,8 @@ fn install_hooks(value: ::toml::Value, binary: &Path) -> Result<::toml::Value> {
     Ok(value)
 }
 
+// NOTE: is_installed passes it by name too, a use coland does not count.
+// coland-ignore: @coland/single_caller_private_function
 fn is_concats_hook(value: &::toml::Value) -> bool {
     value
         .get("command")
@@ -146,6 +148,8 @@ fn is_concats_hook(value: &::toml::Value) -> bool {
         .is_some_and(|args| args.len() == 3 && args[1] == "hook" && args[2] == AGENT)
 }
 
+// NOTE: `notify` sits at the top and under `hooks`; one removal for both.
+// coland-ignore: @coland/single_caller_private_function
 fn remove_notify(table: &mut ::toml::Table) {
     if table
         .get("notify")
