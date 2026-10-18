@@ -1908,6 +1908,8 @@ impl ReviewList {
     /// on scroll velocity, so the header being tracked would blink out of
     /// reach just when you scroll fast and the copy would pop instead of
     /// riding. This is defined for every entry, at any speed.
+    // NOTE: picks the pinned header and places it in one look at the cards; split, it looks twice.
+    // coland-ignore: @coland/read_write_operation
     fn place_sticky(
         &mut self,
         list: &PortalList,

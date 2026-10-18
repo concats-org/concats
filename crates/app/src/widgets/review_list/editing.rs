@@ -191,6 +191,8 @@ impl ReviewList {
         took
     }
 
+    // NOTE: says whether it took the key, as every key handler here does; Escape closes the bar.
+    // coland-ignore: @coland/read_write_operation
     pub(super) fn find_keys(&mut self, cx: &mut Cx, ke: &KeyEvent) -> bool {
         let Some(tab) = self.drawn_tab else {
             return false;

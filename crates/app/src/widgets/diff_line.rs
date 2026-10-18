@@ -186,6 +186,8 @@ impl DiffLine {
     /// first, then the rest of the line, coloured run by coloured run, in a
     /// turtle that hangs under that indent. Returns the right edge of the last
     /// row it drew.
+    // NOTE: draws through makepad's DrawText, whose state it is; returns where the draw ended.
+    // coland-ignore: @coland/read_write_operation
     fn draw_line(&mut self, cx: &mut Cx2d, theme: &crate::theme::Theme, flow: Layout) -> f64 {
         self.sel_track.clear();
         self.rows.clear();

@@ -248,9 +248,10 @@ fn carry_side(d: &ReviewDoc, prev: &ReviewDoc, side: Side) -> Option<Side> {
     })
 }
 
-// NOTE: the window state a load carries over; prev is borrowed, and prev's tabs decide which stay open.
+// NOTE: the window state a load carries over, from each module that holds some; prev is borrowed,
+// and prev's tabs decide which stay open.
 // coland-ignore: @coland/clone_heavy_function, @coland/high_call_degree
-// coland-ignore: @coland/mixed_abstraction_levels
+// coland-ignore: @coland/mixed_abstraction_levels, @coland/cross_file_call_coupling
 pub(crate) fn carry_forward(d: &mut ReviewDoc, prev: &ReviewDoc) {
     if d.repo == prev.repo {
         carry_live_buffers(d, &prev.blobs);

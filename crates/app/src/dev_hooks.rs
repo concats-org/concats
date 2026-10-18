@@ -36,8 +36,8 @@ fn pointer_position(spec: &str) -> Option<Vec2d> {
     Some(dvec2(x.trim().parse().ok()?, y.trim().parse().ok()?))
 }
 
-// NOTE: the one gate every hook reads its variable through; its fan-in is the point.
-// coland-ignore: @coland/high_call_degree
+// NOTE: the one gate every hook reads the environment through; its fan-in and input are the point.
+// coland-ignore: @coland/high_call_degree, @coland/implicit_global_input
 pub(crate) fn var(name: &str) -> Option<String> {
     cfg!(feature = "dev-hooks")
         .then(|| std::env::var(name).ok())
@@ -54,6 +54,8 @@ fn tab_item(window: &AppWindow, cx: &Cx, tab: Stream) -> WidgetRef {
 }
 
 /// Cmd plus `key_code`, the way a shortcut arrives.
+// NOTE: how a shortcut arrives, for each one a hook presses.
+// coland-ignore: @coland/single_caller_private_function
 fn shortcut(key_code: KeyCode) -> Event {
     Event::KeyDown(KeyEvent {
         key_code,
@@ -451,7 +453,6 @@ impl App {
     /// What a press in each window drags, asked the way macOS asks: in the
     /// middle of its header, of each of its buttons, and below it.
     // NOTE: split out of state_hook, which clippy holds to 100 lines.
-    // coland-ignore: @coland/single_caller_private_function
     fn captions(&self, cx: &Cx) -> Vec<serde_json::Value> {
         self.windows
             .iter()

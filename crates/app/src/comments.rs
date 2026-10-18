@@ -75,6 +75,8 @@ pub(crate) fn hold_comments(
 ///
 /// Pure: returns the cursor pairs the buffers minted along the way, for
 /// `load::resplice_comments` to store.
+// NOTE: the one pass a new comment list takes through the document; its callees are its steps.
+// coland-ignore: @coland/high_call_degree
 pub(crate) fn splice_comments(
     d: &mut ReviewDoc,
     comments: &[store::Comment],
