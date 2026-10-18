@@ -15,7 +15,8 @@ use std::{
 
 use concats_highlight::Highlighter;
 use concats_review::{
-    comments,
+    comments::{self, Scope},
+    interchange,
     store::{self, Comment, LineKey, Store},
 };
 use concats_syntax::LineSpans;
@@ -91,6 +92,15 @@ pub(crate) enum ReviewCmd {
         window: LiveId,
         workdir: PathBuf,
         last: u64,
+    },
+    /// Share → copy: the threads the window shows, exported the way the CLI
+    /// and the socket export them, for the pane to put on the clipboard.
+    Share {
+        window: LiveId,
+        target: concats_state::Target,
+        /// The threads the window places, `ReviewDoc::placed_threads`.
+        shown: HashSet<u64>,
+        render: fn(&interchange::Meta, &[interchange::Entry]) -> String,
     },
     /// Share → "Stage seen hunks": `git add -p` driven by the seen ticks.
     StageSeen {
@@ -172,6 +182,13 @@ pub(crate) enum ReviewUpdate {
         spans: LineSpans,
     },
     Recents(Vec<String>),
+    /// A `Share` rendered: the text to copy, when there is any, and the line
+    /// for the status bar.
+    Shared {
+        window: LiveId,
+        text: Option<String>,
+        message: String,
+    },
 }
 
 pub(crate) struct HighlightCmd {
@@ -338,6 +355,34 @@ impl AppService {
         self.stores
             .entry(git_dir.to_path_buf())
             .or_insert_with(|| Store::open(git_dir))
+    }
+
+    /// The threads in `shown`, loaded and exported the way `concats comments
+    /// export` and the socket export them: the text to copy, when there is
+    /// any, and what the status bar says.
+    fn share(
+        &mut self,
+        target: &concats_state::Target,
+        shown: &HashSet<u64>,
+        render: fn(&interchange::Meta, &[interchange::Entry]) -> String,
+    ) -> (Option<String>, String) {
+        let path = Path::new(&target.repo);
+        let loaded = match concats_diff::load::load(path, &target.base, &target.head) {
+            Ok(loaded) => loaded,
+            Err(error) => return (None, format!("cannot share: {error}")),
+        };
+        let store = self.store(&loaded.git_dir);
+        let (entries, _) = comments::entries(&loaded, &store.comments, Scope::Shown(shown));
+        match entries.len() {
+            0 => (
+                None,
+                "no comments on screen to share — click a line number to leave one".into(),
+            ),
+            n => (
+                Some(render(&comments::meta(&loaded), &entries)),
+                format!("{n} comment(s) on screen copied to the clipboard"),
+            ),
+        }
     }
 
     fn publish_comments_changed(&mut self, git_dir: &Path) {
@@ -553,6 +598,19 @@ impl Service for AppService {
                     }),
                 }
             }
+            ReviewCmd::Share {
+                window,
+                target,
+                shown,
+                render,
+            } => {
+                let (text, message) = self.share(&target, &shown, render);
+                notify(ReviewUpdate::Shared {
+                    window,
+                    text,
+                    message,
+                });
+            }
             ReviewCmd::StageSeen {
                 window,
                 git_dir,
@@ -764,6 +822,48 @@ mod tests {
         svc.handle(ReviewCmd::DeleteComment { git_dir, id });
         assert!(out.load().comments.is_empty());
         assert!(out.load().commented.is_empty());
+    }
+
+    /// Share exports the threads on screen and nothing else, the way the
+    /// socket does, in either text form.
+    #[test]
+    fn share_exports_the_threads_on_screen() {
+        let (tmp, mut svc, _) = service();
+        let root = tmp.path().canonicalize().unwrap();
+        concats_fixture::git(&root, &["init", "-q"]);
+        std::fs::write(root.join("a.rs"), "old\n").unwrap();
+        concats_fixture::git(&root, &["add", "a.rs"]);
+        concats_fixture::git(&root, &["commit", "-qm", "fixture"]);
+        std::fs::write(root.join("a.rs"), "new\n").unwrap();
+        let blob = concats_sync::hash_object(b"new\n");
+        let store = svc.store(&root.join(".git"));
+        let on_screen = store
+            .add_comment(on_a_rs(blob, 0, 0, "on screen"))
+            .unwrap()
+            .id;
+        store.add_comment(on_a_rs(blob, 0, 0, "not shown")).unwrap();
+        let target = concats_state::Target {
+            repo: root.display().to_string(),
+            base: "HEAD".into(),
+            head: "WORKTREE".into(),
+        };
+
+        let (text, message) = svc.share(&target, &HashSet::from([on_screen]), interchange::render);
+        let text = text.expect("a document to copy");
+        assert!(
+            text.contains("on screen") && !text.contains("not shown"),
+            "{text}"
+        );
+        assert_eq!(message, "1 comment(s) on screen copied to the clipboard");
+
+        let (text, _) = svc.share(&target, &HashSet::from([on_screen]), |_, entries| {
+            interchange::render_prompt(entries)
+        });
+        assert!(text.unwrap().contains("on screen"));
+
+        let (text, message) = svc.share(&target, &HashSet::new(), interchange::render);
+        assert_eq!(text, None);
+        assert!(message.starts_with("no comments on screen"), "{message}");
     }
 
     #[test]

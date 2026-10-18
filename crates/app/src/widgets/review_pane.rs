@@ -1092,46 +1092,26 @@ impl ReviewPane {
         }
     }
 
-    /// Share: the review comments as one interchange document, in whichever
+    /// Share: the threads on screen as one interchange document, in whichever
     /// form the dropdown row picked (canonical markdown, or the bot-style
     /// prompt) — pasteable anywhere, re-importable with `concats comments
-    /// import`. Lands on the clipboard and closes the dropdown.
+    /// import`. The service renders it the way the CLI and the socket export,
+    /// and the App puts it on the clipboard.
     fn share_comments(
         &mut self,
         cx: &mut Cx,
         render: fn(&interchange::Meta, &[interchange::Entry]) -> String,
     ) {
         self.view.view(cx, ids!(share_panel)).set_visible(cx, false);
-        let (md, n) = {
-            let docs = self.state().snapshot();
-            let d = &*docs;
-            let st = self.review_snapshot(d.git_dir.as_deref());
-            let sides = interchange::blob_sides(d.files_rows.iter(), &d.blobs);
-            let mut entries = interchange::entries_from(&st.comments, &sides);
-            entries.sort_by(|x, y| (&x.path, x.start, x.id).cmp(&(&y.path, y.start, y.id)));
-            let meta = interchange::Meta {
-                repo: Some(d.repo.clone()).filter(|r| !r.is_empty()),
-                base: d
-                    .merge_base_oid
-                    .map(|o| o.to_string())
-                    .or_else(|| Some(d.base.clone())),
-                head: d
-                    .head_oid
-                    .map(|o| o.to_string())
-                    .or_else(|| Some(d.head.clone())),
-            };
-            (render(&meta, &entries), st.comments.len())
-        };
-        let status = if n == 0 {
-            "no comments to share yet — click a line number to leave one".to_string()
-        } else {
-            cx.copy_to_clipboard(&md);
-            format!("{n} comment(s) copied to the clipboard")
-        };
-        self.view
-            .label(cx, ids!(status_label))
-            .set_text(cx, &status);
-        self.view.redraw(cx);
+        let (target, shown) = self
+            .state()
+            .read(|d| (d.target(), d.placed_threads.clone()));
+        review().send(ReviewCmd::Share {
+            window: self.state().id,
+            target,
+            shown,
+            render,
+        });
     }
 
     /// Share = stage: `git add -p` driven by the seen ticks. Every fully seen

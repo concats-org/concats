@@ -666,7 +666,7 @@ pub fn resolve<'a>(
 /// The side of a row stream each blob oid appears on — how an exported
 /// comment knows whether its anchor is `L…` or `old L…`. A blob on both sides
 /// is new.
-pub fn blob_sides<'a>(
+pub(crate) fn blob_sides<'a>(
     rows: impl Iterator<Item = &'a Row>,
     blobs: &[Blob],
 ) -> HashMap<ObjectId, Side> {
@@ -693,7 +693,7 @@ pub fn blob_sides<'a>(
 /// via `outside_range` and warn.
 // NOTE: projects borrowed store comments into owned entries; each clone is a field an entry owns.
 // coland-ignore: @coland/clone_heavy_function
-pub fn entries_from(comments: &[Comment], sides: &HashMap<ObjectId, Side>) -> Vec<Entry> {
+pub(crate) fn entries_from(comments: &[Comment], sides: &HashMap<ObjectId, Side>) -> Vec<Entry> {
     comments
         .iter()
         .map(|c| Entry {
