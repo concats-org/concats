@@ -16,7 +16,7 @@ use concats_diff::{
 use gix::ObjectId;
 
 use crate::{
-    Error, github, guide,
+    Error, guide,
     interchange::{self, Entry, Meta, ResolveError, Side},
     store::{self, Anchor, Comment, Store},
 };
@@ -317,7 +317,7 @@ pub fn entries(loaded: &Loaded, comments: &[Comment], scope: Scope) -> (Vec<Entr
         .enumerate()
         .map(|(i, f)| (f.path.as_str(), i))
         .collect();
-    let thread = |e: &Entry| e.reply_to.or(e.id);
+    let thread = |e: &Entry| e.reply_to.unwrap_or(e.id);
     entries.sort_by(|x, y| {
         let ix = |e: &Entry| file_ix.get(e.path.as_str()).copied().unwrap_or(usize::MAX);
         (ix(x), &x.path, x.start, thread(x), x.id).cmp(&(ix(y), &y.path, y.start, thread(y), y.id))
@@ -443,9 +443,7 @@ pub fn write_entries(
         };
         // Where the document id landed, so a reply later in the batch threads
         // onto the root this run just wrote.
-        if let Some(doc_id) = entry.id {
-            ids.insert(doc_id, id);
-        }
+        ids.insert(entry.id, id);
     }
     tally
 }
@@ -508,7 +506,7 @@ fn store_entry(
 fn thread_of(entry: &Entry, store: &Store, written: &HashMap<u64, u64>) -> Option<u64> {
     let doc_id = entry.reply_to?;
     let id = written.get(&doc_id).copied().or_else(|| {
-        let want = github::provenance(doc_id);
+        let want = interchange::provenance(doc_id);
         let stored = store
             .comments
             .iter()

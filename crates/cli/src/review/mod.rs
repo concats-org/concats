@@ -175,12 +175,14 @@ pub enum CommentsAction {
         range: RangeArgs,
     },
 
-    /// The range's threads as one interchange document.
+    /// The range's threads as one JSON document, each comment in GitHub's
+    /// review-comment shape.
     ///
     /// You can paste it, diff it and import it back — importing an export is a
     /// no-op.
     Export {
-        /// Emit the terse bot-style prompt format instead of the canonical one.
+        /// Emit text to paste into an agent session instead; it does not
+        /// import.
         #[arg(long)]
         prompt: bool,
         /// Every thread in the store, including those made against other
@@ -196,9 +198,9 @@ pub enum CommentsAction {
 
     /// Import comments from a document, or from a pull request.
     ///
-    /// Takes either markdown profile, or a pull request's review comments as
-    /// JSON — `gh api repos/{owner}/{repo}/pulls/{n}/comments --paginate` pipes
-    /// straight in. Re-importing is a no-op.
+    /// Takes what `export` writes, or a pull request's review comments as
+    /// `gh api repos/{owner}/{repo}/pulls/{n}/comments --paginate` prints
+    /// them. Re-importing is a no-op.
     Import {
         /// The document, or `-` for stdin.
         #[arg(value_name = "FILE|-")]

@@ -10,12 +10,11 @@
 //! - [`guide`] — the agent contract: a markdown document whose file links
 //!   are transclusions of the real diff;
 
-//! - [`interchange`] — a review's comments as one markdown file, in and
-//!   out;
+//! - [`interchange`] — a review's comments as one JSON document in GitHub's
+//!   review-comment shape, in and out, so a pull request's comments import
+//!   as they are;
 //! - [`comments`] — comments against a loaded diff: anchors, cursors, and
 //!   the export, shared by the CLI and the app's socket;
-//! - [`github`] — a pull request's review comments, mapped onto the same
-//!   entries;
 
 //! - [`sessions`] — concats sessions read natively, which is the "why"
 //!   column;
@@ -30,7 +29,6 @@
 
 pub mod comments;
 pub mod error;
-pub mod github;
 pub mod guide;
 pub mod interchange;
 pub mod sessions;

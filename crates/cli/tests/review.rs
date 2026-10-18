@@ -144,12 +144,13 @@ fn import_policies_preserve_atomicity_dry_runs_and_thread_identity() {
             .output()
             .unwrap()
     };
-    fs::write(
-        repo.join("review.md"),
-        "## `file.rs`\n\n### L1\nValid\n\n### L999\nInvalid\n",
-    )
-    .unwrap();
-    let rejected = import("review.md", &[]);
+    let document = |comments| serde_json::json!({"schema": "concats-app/2", "comments": comments});
+    let invalid = document(serde_json::json!([
+        {"id": 1, "path": "file.rs", "line": 1, "side": "RIGHT", "body": "Valid"},
+        {"id": 2, "path": "file.rs", "line": 999, "side": "RIGHT", "body": "Invalid"}
+    ]));
+    fs::write(repo.join("review.json"), invalid.to_string()).unwrap();
+    let rejected = import("review.json", &[]);
     assert_eq!(rejected.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&rejected.stderr).contains("nothing imported"));
     assert_eq!(Store::open(&repo.join(".git")).comments, [] as [Comment; 0]);
@@ -159,10 +160,10 @@ fn import_policies_preserve_atomicity_dry_runs_and_thread_identity() {
         {"id": 2, "in_reply_to_id": 1, "path": "file.rs", "line": 999, "side": "RIGHT", "body": "Reply"},
         {"id": 3, "path": "file.rs", "line": 999, "side": "RIGHT", "body": "Outdated"}
     ]);
-    fs::write(repo.join("review.json"), payload.to_string()).unwrap();
-    assert!(import("review.json", &["--dry-run"]).status.success());
+    fs::write(repo.join("pulls.json"), payload.to_string()).unwrap();
+    assert!(import("pulls.json", &["--dry-run"]).status.success());
     assert_eq!(Store::open(&repo.join(".git")).comments, [] as [Comment; 0]);
-    let accepted = import("review.json", &[]);
+    let accepted = import("pulls.json", &[]);
     assert!(
         accepted.status.success(),
         "{}",
@@ -172,17 +173,31 @@ fn import_policies_preserve_atomicity_dry_runs_and_thread_identity() {
         String::from_utf8_lossy(&accepted.stderr)
             .contains("1 thread(s) do not anchor in this range — skipped")
     );
-    let comments = Store::open(&repo.join(".git")).comments;
-    assert_eq!(comments.len(), 2);
-    let root = comments.iter().find(|c| c.body == "Root").unwrap();
-    let reply = comments.iter().find(|c| c.body == "Reply").unwrap();
+    let stored = Store::open(&repo.join(".git")).comments;
+    assert_eq!(stored.len(), 2);
+    let root = stored.iter().find(|c| c.body == "Root").unwrap();
+    let reply = stored.iter().find(|c| c.body == "Reply").unwrap();
     assert_eq!(reply.parent, Some(root.id));
     assert_eq!(root.author.as_deref(), Some("Fallback"));
-    assert!(import("review.json", &[]).status.success());
+    assert!(import("pulls.json", &[]).status.success());
     assert_eq!(Store::open(&repo.join(".git")).comments.len(), 2);
 
-    fs::write(repo.join("valid.md"), "## `file.rs`\n\n### L1\nMarkdown\n").unwrap();
-    assert!(import("valid.md", &[]).status.success());
+    let valid = document(serde_json::json!([
+        {"id": 1, "path": "file.rs", "line": 1, "side": "RIGHT", "body": "Document"}
+    ]));
+    fs::write(repo.join("valid.json"), valid.to_string()).unwrap();
+    assert!(import("valid.json", &[]).status.success());
+    assert_eq!(Store::open(&repo.join(".git")).comments.len(), 3);
+
+    // An export imports back as a no-op.
+    let export = comments(repo, &["export"]);
+    fs::write(repo.join("export.json"), &export.stdout).unwrap();
+    let again = import("export.json", &[]);
+    assert!(
+        String::from_utf8_lossy(&again.stdout).contains("imported 0 comment(s)"),
+        "{}",
+        String::from_utf8_lossy(&again.stderr)
+    );
     assert_eq!(Store::open(&repo.join(".git")).comments.len(), 3);
 }
 

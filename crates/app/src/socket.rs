@@ -164,7 +164,7 @@ fn shown_comments(doc: &ReviewDoc, all: bool) -> Answer {
     let (entries, _) = comments::entries(&loaded, &Store::open(&loaded.git_dir).comments, scope);
     typed(
         200,
-        "text/markdown; charset=utf-8",
+        "application/json",
         interchange::render(&comments::meta(&loaded), &entries),
     )
 }

@@ -11,7 +11,7 @@ use concats_diff::load::Loaded;
 use concats_review::{
     Error,
     comments::{self, Roots, Scope, Tally},
-    github, interchange,
+    interchange,
     store::{self, Comment, Store},
 };
 
@@ -177,9 +177,9 @@ fn report(error: &Error) -> ExitCode {
 
 /// The range's threads as one interchange document; `--all` for the whole
 /// store. Every worktree shares the store, so without narrowing an agent
-/// answers threads that belong to another checkout. Canonical by default;
-/// `--prompt` emits the terse bot-style format instead, for handing the review
-/// to an agent. Stdout by default so it pipes.
+/// answers threads that belong to another checkout. JSON by default;
+/// `--prompt` emits text to paste into an agent session instead. Stdout by
+/// default so it pipes.
 fn export(prompt: bool, all: bool, out: Option<&str>, range: &RangeArgs) -> Outcome {
     let target = range.resolve();
     let loaded = super::load(&target)?;
@@ -204,7 +204,7 @@ fn export(prompt: bool, all: bool, out: Option<&str>, range: &RangeArgs) -> Outc
         }
     }
 
-    let markdown = if prompt {
+    let text = if prompt {
         interchange::render_prompt(&entries)
     } else {
         interchange::render(&comments::meta(&loaded), &entries)
@@ -212,13 +212,13 @@ fn export(prompt: bool, all: bool, out: Option<&str>, range: &RangeArgs) -> Outc
 
     match out {
         Some(path) => {
-            if let Err(error) = std::fs::write(path, markdown) {
+            if let Err(error) = std::fs::write(path, text) {
                 eprintln!("error: cannot write {path}: {error}");
                 return Err(ExitCode::from(BAD_INPUT));
             }
             println!("exported {} comment(s) to {path}", entries.len());
         }
-        None => print!("{markdown}"),
+        None => print!("{text}"),
     }
     Ok(())
 }
@@ -226,34 +226,18 @@ fn export(prompt: bool, all: bool, out: Option<&str>, range: &RangeArgs) -> Outc
 /// Bulk import: parse, resolve every entry (collecting all failures, like
 /// lint), then write.
 ///
-/// The two input profiles differ in one place. An entry a hand-written document
-/// cannot anchor is a mistake worth stopping for. A pull request's outdated
-/// threads come with the source, so those are reported and skipped instead of
-/// failing the batch.
+/// A document and a pull request's payload differ in one place. An entry a
+/// document cannot anchor is a mistake worth stopping for. A pull request's
+/// outdated threads come with the source, so those are reported and skipped
+/// instead of failing the batch.
 fn import(input: &str, author: Option<&str>, dry: bool, range: &RangeArgs) -> Outcome {
     let text = read_input(input)?;
-    // A payload, not a document: `gh api` output starts with its array.
-    let from_pull_request = text.trim_start().starts_with(['[', '{']);
-    let parsed = if from_pull_request {
-        github::parse(&text)
-    } else {
-        interchange::parse(&text)
-    };
-    let doc = match parsed {
-        Ok(doc) => doc,
-        Err(error) => {
-            eprintln!("error: {error}");
-            return Err(ExitCode::from(FINDINGS));
-        }
-    };
+    let doc = interchange::parse(&text).map_err(|error| {
+        eprintln!("error: {input}: {error}");
+        ExitCode::from(FINDINGS)
+    })?;
     for warning in &doc.warnings {
-        // A markdown warning names its source line; a payload's names a comment
-        // id, and there is no `{input}` line to blame.
-        if from_pull_request {
-            eprintln!("warning: {warning}");
-        } else {
-            eprintln!("warning: {input}:{warning}");
-        }
+        eprintln!("warning: {input}: {warning}");
     }
     if doc.entries.is_empty() {
         eprintln!("error: no comment entries found in {input}");
@@ -261,12 +245,12 @@ fn import(input: &str, author: Option<&str>, dry: bool, range: &RangeArgs) -> Ou
     }
 
     let loaded = super::load(&range.resolve())?;
-    warn_on_range_mismatch(&doc, &comments::meta(&loaded));
-
-    let resolved = if from_pull_request {
-        resolve_pull_request_roots(&doc.entries, &loaded, input)
-    } else {
-        resolve_document_roots(&doc.entries, &loaded, input)?
+    let resolved = match &doc.meta {
+        Some(meta) => {
+            warn_on_range_mismatch(meta, &comments::meta(&loaded));
+            resolve_document_roots(&doc.entries, &loaded, input)?
+        }
+        None => resolve_pull_request_roots(&doc.entries, &loaded, input),
     };
 
     let tally = comments::write_entries(&loaded, &resolved, &doc.entries, author, dry);
@@ -294,10 +278,10 @@ fn read_input(input: &str) -> Result<String, ExitCode> {
 /// rather than a refusal.
 // NOTE: a check of its own, named for its documented contract: warn, never refuse.
 // coland-ignore: @coland/single_caller_private_function
-fn warn_on_range_mismatch(doc: &interchange::Document, loaded: &interchange::Meta) {
+fn warn_on_range_mismatch(doc: &interchange::Meta, loaded: &interchange::Meta) {
     for (name, have, want) in [
-        ("base", &doc.meta.base, &loaded.base),
-        ("head", &doc.meta.head, &loaded.head),
+        ("base", &doc.base, &loaded.base),
+        ("head", &doc.head, &loaded.head),
     ] {
         if let (Some(have), Some(want)) = (have, want)
             && have != want
@@ -334,7 +318,7 @@ fn resolve_document_roots<'a>(
     Ok(resolved)
 }
 
-// NOTE: the pull-request twin of resolve_document_roots; import picks one per profile.
+// NOTE: the pull-request twin of resolve_document_roots; import picks one per input.
 // coland-ignore: @coland/single_caller_private_function
 fn resolve_pull_request_roots<'a>(
     entries: &'a [interchange::Entry],
@@ -363,8 +347,8 @@ fn print_resolution_error(
     match error {
         interchange::ResolveError::UnknownPath => {
             eprintln!(
-                "{level}: {input}:{}: `{}` is not part of this diff",
-                entry.line, entry.path
+                "{level}: {input}: comment {}: `{}` is not part of this diff",
+                entry.id, entry.path
             );
         }
         interchange::ResolveError::MissingLines { file, missing } => {
@@ -375,8 +359,8 @@ fn print_resolution_error(
                 ""
             };
             eprintln!(
-                "{level}: {input}:{}: {side}line(s) {} of {} are not part of this diff",
-                entry.line,
+                "{level}: {input}: comment {}: {side}line(s) {} of {} are not part of this diff",
+                entry.id,
                 shown.join(", "),
                 file.path
             );

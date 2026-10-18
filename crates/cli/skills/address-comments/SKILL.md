@@ -97,25 +97,49 @@ the threads that anchor in its range. `http://concats/comments?all` and
 `concats comments export --all` include them; ask for those only when the user
 means them.
 
-That is the whole input: the threads, grouped by file, in thread order,
-each with its `id`, its author, and its lines. A reply repeats its root's
-anchor and carries `reply-to=<id>` in the machine comment:
+That is the whole input: one JSON document whose `comments` are the
+threads in file order, each conversation kept whole, every comment in
+GitHub's review-comment shape — its `id`, its author (`user.login`), and its
+lines (`start_line`…`line`, on `side` `RIGHT`, or `LEFT` for deleted lines).
+A reply repeats its root's anchor and names the comment it answers in
+`in_reply_to_id`:
 
-```markdown
-## `src/lib.rs`
-
-### L63-L68
-<!-- concats-app id=7 author="octocat" at=1785402900 ref="github:2181234567" -->
-this leaks on the error path
-
-### L63-L68
-<!-- concats-app id=12 author="claude" at=1785410000 reply-to=7 -->
-fixed — the early return drops the guard now
+```json
+{
+  "schema": "concats-app/2",
+  "repo": "concats",
+  "base": "8efed16af83da8f80198fdf996d5764bab5a5e77",
+  "head": "WORKTREE",
+  "comments": [
+    {
+      "id": 7,
+      "path": "src/lib.rs",
+      "side": "RIGHT",
+      "start_line": 63,
+      "line": 68,
+      "body": "this leaks on the error path",
+      "user": { "login": "octocat" },
+      "created_at": "2026-07-30T09:15:00Z",
+      "ref": "github:2181234567"
+    },
+    {
+      "id": 12,
+      "in_reply_to_id": 7,
+      "path": "src/lib.rs",
+      "side": "RIGHT",
+      "start_line": 63,
+      "line": 68,
+      "body": "fixed — the early return drops the guard now",
+      "user": { "login": "claude" },
+      "created_at": "2026-07-30T11:13:20Z"
+    }
+  ]
+}
 ```
 
 **Thread 7 is closed** (its last comment is the agent's). A thread with no
 reply, or whose last reply is not yours, is **open** — that is your work
-list. `ref="github:…"` marks a comment that came from a pull request; it
+list. `"ref": "github:…"` marks a comment that came from a pull request; it
 reads and answers exactly like a local one.
 
 ```sh
@@ -185,7 +209,8 @@ and report their real output. A fix that does not build is not a fix.
 ## Comments from a pull request
 
 Review comments living on GitHub come in through the same store, so they
-thread and answer like any other:
+thread and answer like any other. `gh api` prints them in the shape the
+export uses, so they pipe straight in:
 
 ```sh
 gh api repos/{owner}/{repo}/pulls/{n}/comments --paginate \

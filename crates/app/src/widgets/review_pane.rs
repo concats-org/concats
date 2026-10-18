@@ -513,7 +513,7 @@ script_mod! {
                 Dropdown {
                     width: 150
                     share_prompt := ComboRow { visible: true text: "Copy as prompt" }
-                    share_md := ComboRow { visible: true text: "Copy as markdown" }
+                    share_json := ComboRow { visible: true text: "Copy as JSON" }
                     // WORKTREE reviews only (toggled on open): `git add -p`
                     // driven by the seen ticks.
                     share_stage := ComboRow { visible: false text: "Stage seen hunks" }
@@ -1092,11 +1092,10 @@ impl ReviewPane {
         }
     }
 
-    /// Share: the threads on screen as one interchange document, in whichever
-    /// form the dropdown row picked (canonical markdown, or the bot-style
-    /// prompt) — pasteable anywhere, re-importable with `concats comments
-    /// import`. The service renders it the way the CLI and the socket export,
-    /// and the App puts it on the clipboard.
+    /// Share: the threads on screen in whichever form the dropdown row picked
+    /// — the JSON document `concats comments import` reads back, or text to
+    /// paste into an agent session. The service renders it the way the CLI and
+    /// the socket export, and the App puts it on the clipboard.
     fn share_comments(
         &mut self,
         cx: &mut Cx,
@@ -1846,7 +1845,7 @@ impl ReviewPane {
         if self.view.button(cx, ids!(share_prompt)).clicked(actions) {
             self.share_comments(cx, |_, entries| interchange::render_prompt(entries));
         }
-        if self.view.button(cx, ids!(share_md)).clicked(actions) {
+        if self.view.button(cx, ids!(share_json)).clicked(actions) {
             self.share_comments(cx, interchange::render);
         }
         if self.view.button(cx, ids!(share_stage)).clicked(actions) {
