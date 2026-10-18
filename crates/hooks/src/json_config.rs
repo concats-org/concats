@@ -77,21 +77,22 @@ pub fn object<'a>(
         .ok_or_else(|| Error::session(format!("{agent} {key} is not an object")))
 }
 
-/// Put one concats entry under `hooks.<event>` for each event, replacing ours
-/// from an earlier install and keeping everyone else's.
+/// Put one concats entry under `hooks.<event>` for each event, keeping
+/// everyone else's. Ours from an earlier install go first, under every event,
+/// so one this version no longer hooks stops firing on a reinstall.
 ///
 /// # Errors
 ///
 /// Returns an error if the root or `hooks` is not an object, or a
 /// `hooks.<event>` is not an array.
 pub fn install_hooks(
-    mut value: Value,
+    value: Value,
     agent: &str,
     events: &[&str],
     entry: impl Fn(&str, String) -> Value,
     binary: &Path,
 ) -> Result<Value> {
-    let prefix = command_prefix(agent);
+    let mut value = remove_hooks(value, agent);
     let hooks = object(&mut value, agent, "hooks")?;
     for &event in events {
         let entries = hooks
@@ -99,7 +100,6 @@ pub fn install_hooks(
             .or_insert_with(|| json!([]))
             .as_array_mut()
             .ok_or_else(|| Error::session(format!("{agent} hooks.{event} is not an array")))?;
-        entries.retain(|existing| !runs(existing, &prefix));
         entries.push(entry(
             event,
             format!("{} hook {agent} {event}", binary.display()),
@@ -126,8 +126,6 @@ pub fn is_installed(path: &Path, agent: &str) -> bool {
     fs::read_to_string(path).is_ok_and(|data| data.contains(&command_prefix(agent)))
 }
 
-// NOTE: the config transform, tested on its own; uninstall adds the file around it.
-// coland-ignore: @coland/single_caller_private_function
 fn remove_hooks(mut value: Value, agent: &str) -> Value {
     let prefix = command_prefix(agent);
     if let Some(hooks) = value.get_mut("hooks").and_then(Value::as_object_mut) {
@@ -205,6 +203,42 @@ mod tests {
             let data = serde_json::to_string(&config).unwrap();
             assert_eq!(data.matches("other-tool hook").count(), 2);
             assert!(!data.contains("concats hook droid"));
+        }
+    }
+
+    mod install_hooks {
+        use super::*;
+
+        #[test]
+        fn a_reinstall_drops_our_entries_for_events_no_longer_hooked() {
+            let config = json!({
+                "hooks": {
+                    "PreToolUse": [
+                        { "matcher": ".*", "hooks": [{ "type": "command", "command": "other-tool hook" }] },
+                        { "matcher": "Write", "hooks": [{ "type": "command", "command": "concats hook droid PreToolUse" }] }
+                    ],
+                    "PostToolUse": [
+                        { "matcher": "Write", "hooks": [{ "type": "command", "command": "concats hook droid PostToolUse" }] }
+                    ]
+                }
+            });
+
+            let config = install_hooks(
+                config,
+                "droid",
+                &["PostToolUse"],
+                |_, command| json!({ "matcher": "Write", "hooks": [{ "type": "command", "command": command }] }),
+                Path::new("concats"),
+            )
+            .unwrap();
+
+            assert_eq!(
+                config["hooks"]["PreToolUse"],
+                json!([{ "matcher": ".*", "hooks": [{ "type": "command", "command": "other-tool hook" }] }])
+            );
+            let data = serde_json::to_string(&config).unwrap();
+            assert!(!data.contains("concats hook droid PreToolUse"));
+            assert_eq!(data.matches("concats hook droid PostToolUse").count(), 1);
         }
     }
 }
