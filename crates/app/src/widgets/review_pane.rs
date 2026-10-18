@@ -737,8 +737,7 @@ impl ReviewPane {
     }
 
     /// Open the Settings dock tab — creating it next to the stream tabs if it
-    /// isn't open, else selecting it. Shared by the `{ }` toolbar button and the
-    /// `CONCATS_APP_SETTINGS` screenshot hook.
+    /// isn't open, else selecting it.
     pub fn open_settings_tab(&mut self, cx: &mut Cx) {
         self.state().with(crate::file_view::open_settings);
         let dock = self.view.dock(cx, ids!(dock));

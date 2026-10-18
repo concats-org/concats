@@ -44,46 +44,16 @@ pub(crate) fn var(name: &str) -> Result<String, std::env::VarError> {
 
 impl App {
     /// The dev/screenshot hooks
-    /// (`CONCATS_APP_COMBO/SHARE/TAB/SCROLL/TERM/SETTINGS/SHOT`) fire once per
-    /// run, after a load lands; `SHOT_EVERY` re-arms them on every load. Each
-    /// opens the UI a pointer would, so a headless test can capture it. Nothing
-    /// in production reads them.
+    /// (`CONCATS_APP_WINDOWS/SCROLL/TERM/FILE/TAB/SHOT`) fire once per run,
+    /// after a load lands. Each opens the UI a pointer would, so a headless test
+    /// can capture it. Nothing in production reads them.
     #[expect(
         clippy::cognitive_complexity,
-        clippy::too_many_lines,
         reason = "Screenshot setup follows the same ordered phases as native startup."
     )]
     pub(super) fn apply_screenshot_hooks(&mut self, cx: &mut Cx) {
-        let rearm = crate::dev_hooks::var("CONCATS_APP_SHOT_EVERY").is_ok_and(|v| !v.is_empty());
-        if self.shot_done && !rearm {
+        if self.shot_done {
             return;
-        }
-        // Companion to CONCATS_APP_SHOT: pre-open the diff picker
-        // so the dropdown can be screenshotted without a pointer.
-        if crate::dev_hooks::var("CONCATS_APP_COMBO").is_ok_and(|v| !v.is_empty()) {
-            let pane = self.ui.widget(cx, ids!(pane_a));
-            if let Some(mut p) = pane.borrow_mut::<ReviewPane>() {
-                p.combo_open(cx);
-            }
-        }
-        // CONCATS_APP_PICK_REPO=1: pre-open the repo picker (recent repos +
-        // "Open dir…") so its dropdown can be screenshotted without a pointer.
-        if crate::dev_hooks::var("CONCATS_APP_PICK_REPO").is_ok_and(|v| !v.is_empty()) {
-            let pane = self.ui.widget(cx, ids!(pane_a));
-            if let Some(mut p) = pane.borrow_mut::<ReviewPane>() {
-                p.repo_open(cx);
-            }
-        }
-        // CONCATS_APP_SHARE=1: likewise for the share dropdown —
-        // with the same worktree-only stage row the click path shows.
-        if crate::dev_hooks::var("CONCATS_APP_SHARE").is_ok_and(|v| !v.is_empty()) {
-            let worktree = self
-                .primary()
-                .is_some_and(|w| w.state.read(|d| d.workdir.is_some()));
-            self.ui
-                .button(cx, ids!(share_stage))
-                .set_visible(cx, worktree);
-            self.ui.view(cx, ids!(share_panel)).set_visible(cx, true);
         }
         // CONCATS_APP_WINDOWS=N: open N-1 more windows on the same range, the
         // way ⌘N does. A menu item cannot be driven headlessly, so this is how
@@ -103,20 +73,6 @@ impl App {
             if let Some(primary) = self.windows.first().map(|w| w.state.clone()) {
                 self.focus_window(&primary);
             }
-        }
-        // CONCATS_APP_FOLD=path[,path…]: shut those file cards, so the
-        // folded state can be screenshotted without a pointer.
-        if let (Ok(paths), Some(state)) = (
-            crate::dev_hooks::var("CONCATS_APP_FOLD"),
-            self.primary().map(|w| w.state.clone()),
-        ) {
-            state.with(|d| {
-                d.folded = paths
-                    .split(',')
-                    .filter(|p| !p.is_empty())
-                    .map(str::to_string)
-                    .collect();
-            });
         }
         // CONCATS_APP_SCROLL=N: start the list at row N — lets a
         // test screenshot the sticky header without a pointer.
@@ -139,14 +95,6 @@ impl App {
             let pane = self.ui.widget(cx, ids!(pane_a));
             if let Some(mut p) = pane.borrow_mut::<ReviewPane>() {
                 p.reveal_terminal(cx);
-            }
-        }
-        // CONCATS_APP_SETTINGS=1: pre-open the settings editor so it
-        // can be screenshotted without a pointer.
-        if crate::dev_hooks::var("CONCATS_APP_SETTINGS").is_ok_and(|v| !v.is_empty()) {
-            let pane = self.ui.widget(cx, ids!(pane_a));
-            if let Some(mut p) = pane.borrow_mut::<ReviewPane>() {
-                p.open_settings_tab(cx);
             }
         }
         // CONCATS_APP_FILE=path[,path…]: open those files of the head tree,
@@ -185,52 +133,12 @@ impl App {
                 }
             }
         }
-        // NOTE: Select after the tab, so the stream the selection is on is the
-        // one showing.
-        self.select_hook();
         if let Ok(path) = crate::dev_hooks::var("CONCATS_APP_SHOT")
             && !path.is_empty()
         {
             self.shot_done = true;
             cx.capture_next_frame_to_file(path.into());
         }
-    }
-
-    /// `CONCATS_APP_SELECT=row:byte:row:byte` (rows of the stream on screen,
-    /// byte offsets into their lines): select that run, so what a selection
-    /// offers — the chip, and the composer it opens — can be captured without a
-    /// pointer. A synthetic drag cannot stand in: the list tracks one over the
-    /// frames between the press and the release, and the hooks have none.
-    ///
-    /// Rows, not lines, so the two ends can be on the two sides of a hunk —
-    /// which is the case worth capturing, since those are two blobs.
-    fn select_hook(&mut self) {
-        let Ok(spec) = crate::dev_hooks::var("CONCATS_APP_SELECT") else {
-            return;
-        };
-        let at: Vec<usize> = spec.split(':').filter_map(|v| v.parse().ok()).collect();
-        let [from_row, from, to_row, to] = at[..] else {
-            return;
-        };
-        let Some(state) = self.primary().map(|window| window.state.clone()) else {
-            return;
-        };
-        state.with(|d| {
-            let caret = |rows: &[concats_diff::Row], row: usize, byte: usize| match rows.get(row) {
-                Some(concats_diff::Row::Code { blob, line, .. }) => Some(review_doc::Caret {
-                    blob: *blob,
-                    line: *line,
-                    byte,
-                }),
-                _ => None,
-            };
-            let (anchor, head) = {
-                let rows = d.active();
-                (caret(rows, from_row, from), caret(rows, to_row, to))
-            };
-            d.selection_anchor = anchor;
-            d.caret = head;
-        });
     }
 
     /// `CONCATS_APP_CLICK=x,y`: hover, press and release at those logical

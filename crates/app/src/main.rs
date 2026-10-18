@@ -25,10 +25,8 @@
 //!
 //! With `--features dev-hooks`: `CONCATS_APP_SHOT=/path.png` writes a PNG of the frame after the
 //! first load lands (no macOS screen-recording permission needed).
-//! `CONCATS_APP_COMPOSE=path:s:e` pre-opens the comment composer,
-//! `CONCATS_APP_COMBO=1` the diff picker, `CONCATS_APP_PICK_REPO=1` the repo picker,
-//! `CONCATS_APP_SHARE=1` the share dropdown, `CONCATS_APP_SETTINGS=1` the Settings
-//! tab. `CONCATS_APP_FILE=path[,path…]` opens a File tab per named file of the
+//! `CONCATS_APP_COMPOSE=path:s:e` pre-opens the comment composer.
+//! `CONCATS_APP_FILE=path[,path…]` opens a File tab per named file of the
 //! head tree, as picking them in the browser would. `CONCATS_APP_TYPE=text` types
 //! that text at the caret a tick after `CONCATS_APP_CLICK` placed one.
 //! `CONCATS_APP_SCROLL=N` starts the list at row N, which screenshots the sticky
