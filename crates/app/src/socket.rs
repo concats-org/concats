@@ -18,8 +18,10 @@ use std::{
 };
 
 use concats_review::{
-    Error, comments, interchange,
-    store::{self, Comment, Store},
+    Error,
+    comments::{self, Scope},
+    interchange,
+    store::Store,
 };
 use concats_state::{COMMENTS, RANGE, REPLIES};
 use tiny_http::{Header, Method, Request, Response};
@@ -150,14 +152,12 @@ fn shown_comments(doc: &ReviewDoc, all: bool) -> Answer {
         Ok(loaded) => loaded,
         Err(answer) => return answer,
     };
-    let store = Store::open(&loaded.git_dir);
-    let shown: Vec<Comment> = store
-        .comments
-        .iter()
-        .filter(|c| all || doc.placed_threads.contains(&store::thread_key(c)))
-        .cloned()
-        .collect();
-    let (entries, _) = comments::entries(&loaded, &shown);
+    let scope = if all {
+        Scope::All
+    } else {
+        Scope::Shown(&doc.placed_threads)
+    };
+    let (entries, _) = comments::entries(&loaded, &Store::open(&loaded.git_dir).comments, scope);
     typed(
         200,
         "text/markdown; charset=utf-8",
@@ -218,7 +218,7 @@ mod tests {
     };
 
     use concats_fixture::git;
-    use concats_review::store::Anchor;
+    use concats_review::store::{Anchor, Comment};
 
     use super::*;
     use crate::makepad_widgets::LiveId;

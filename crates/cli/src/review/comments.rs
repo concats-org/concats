@@ -10,7 +10,7 @@ use std::process::ExitCode;
 use concats_diff::load::Loaded;
 use concats_review::{
     Error,
-    comments::{self, Roots, Tally},
+    comments::{self, Roots, Scope, Tally},
     github, interchange,
     store::{self, Comment, Store},
 };
@@ -158,7 +158,8 @@ fn export(prompt: bool, all: bool, out: Option<&str>, range: &RangeArgs) -> Outc
     let loaded = super::load(&target)?;
     let store = Store::open(&loaded.git_dir);
 
-    let (mut entries, elsewhere) = comments::entries(&loaded, &store.comments);
+    let scope = if all { Scope::All } else { Scope::Range };
+    let (entries, elsewhere) = comments::entries(&loaded, &store.comments, scope);
     if !elsewhere.is_empty() {
         let (base, head) = (&target.base, &target.head);
         if all {
@@ -168,7 +169,6 @@ fn export(prompt: bool, all: bool, out: Option<&str>, range: &RangeArgs) -> Outc
                 elsewhere.len()
             );
         } else {
-            entries.retain(|e| e.reply_to.or(e.id).is_none_or(|t| !elsewhere.contains(&t)));
             eprintln!(
                 "note: left out {} thread(s) that do not anchor in {base}...{head} — \
                  `--all` exports the whole store",

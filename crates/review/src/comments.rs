@@ -201,17 +201,28 @@ fn relocate(
     })
 }
 
-/// `comments` as document entries, each where it sits now — a comment on a
-/// worktree file that changed since it was made reads where its cursors sit in
-/// the file, not where it was written — in the order a reviewer reads: diff
-/// order, stale paths after, then by line, then by thread, each conversation
-/// kept whole.
+/// Which threads an export covers.
+#[derive(Clone, Copy)]
+pub enum Scope<'a> {
+    /// The threads that anchor in the loaded range.
+    Range,
+    /// Every thread in the store.
+    All,
+    /// The threads a window places, whatever range they anchor in.
+    Shown(&'a HashSet<u64>),
+}
+
+/// The threads of `comments` that `scope` covers, as document entries, each
+/// where it sits now — a comment on a worktree file that changed since it was
+/// made reads where its cursors sit in the file, not where it was written — in
+/// the order a reviewer reads: diff order, stale paths after, then by line,
+/// then by thread, each conversation kept whole.
 ///
 /// Also returns the threads none of whose comments anchor in the range — made
 /// against another range, or another worktree's files, since the store is
 /// shared by every worktree. Those export as recorded and will not re-import
-/// against it.
-pub fn entries(loaded: &Loaded, comments: &[Comment]) -> (Vec<Entry>, HashSet<u64>) {
+/// against it; [`Scope::Range`] leaves them out.
+pub fn entries(loaded: &Loaded, comments: &[Comment], scope: Scope) -> (Vec<Entry>, HashSet<u64>) {
     let rows = loaded
         .files
         .iter()
@@ -220,8 +231,12 @@ pub fn entries(loaded: &Loaded, comments: &[Comment]) -> (Vec<Entry>, HashSet<u6
     let (old, new) = interchange::blob_sides(rows, &loaded.blobs);
     let in_range: HashSet<ObjectId> = old.union(&new).copied().collect();
     let mut buffers = HashMap::new();
-    let comments: Vec<Comment> = comments
+    let mut comments: Vec<Comment> = comments
         .iter()
+        .filter(|c| match scope {
+            Scope::Shown(threads) => threads.contains(&store::thread_key(c)),
+            Scope::Range | Scope::All => true,
+        })
         .map(|c| Comment {
             anchor: relocate(loaded, &mut buffers, &in_range, c).unwrap_or(c.anchor),
             ..c.clone()
@@ -232,11 +247,14 @@ pub fn entries(loaded: &Loaded, comments: &[Comment]) -> (Vec<Entry>, HashSet<u6
         .filter(|c| !interchange::outside_range(c, &old, &new))
         .map(store::thread_key)
         .collect();
-    let elsewhere = comments
+    let elsewhere: HashSet<u64> = comments
         .iter()
         .map(store::thread_key)
         .filter(|t| !anchored.contains(t))
         .collect();
+    if let Scope::Range = scope {
+        comments.retain(|c| !elsewhere.contains(&store::thread_key(c)));
+    }
 
     let mut entries = interchange::entries_from(&comments, &old, &new);
     let file_ix: HashMap<&str, usize> = loaded
