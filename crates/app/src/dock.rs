@@ -83,6 +83,17 @@ pub(crate) fn file_tab_id(path: &str) -> LiveId {
     LiveId::from_str(&format!("file:{path}"))
 }
 
+/// The file browser's tab. It starts in the right panel and moves like any
+/// other.
+pub(crate) fn browser_tab_spec() -> TabSpec<'static> {
+    TabSpec {
+        id: id!(browser_tab),
+        kind: id!(BrowserPane),
+        template: id!(BrowserTab),
+        title: "Files",
+    }
+}
+
 /// The permanent terminal tab, the one the `>_` button opens.
 pub(crate) fn terminal_tab_spec() -> TabSpec<'static> {
     TabSpec {
@@ -176,14 +187,13 @@ pub(crate) fn drag_source_tab_id(items: &[DragItem]) -> Option<LiveId> {
 /// The dock layout, persisted per repo next to the review store in `.git/`: tab
 /// arrangement, splits, terminal-panel height.
 ///
-/// The `-3` marks the shape of the dock tree and the tab templates it names.
-/// The file browser added an outer horizontal splitter, and a layout saved
-/// before that restores a `root` with no room for the browser. A saved tab also
-/// names its template, and one the tab bar no longer declares (the `+`
-/// terminals' `TerminalCloseTab`) restores as an unstyled tab. A layout from
-/// another version has a name we don't read, so it is ignored; one reset beats
-/// a dock missing a panel.
-const LAYOUT_FILE: &str = "concats-app-layout-3.ron";
+/// The `-4` marks the shape of the dock tree and the names it saves. A saved
+/// tab bar records whether it hides its strip, and the right panel's did until
+/// the browser became an ordinary tab. A saved tab names its template and kind,
+/// and one this version no longer declares restores as an unstyled tab or a
+/// dead pane. A layout from another version has a name we don't read, so it is
+/// ignored; one reset beats a dock missing a panel.
+const LAYOUT_FILE: &str = "concats-app-layout-4.ron";
 
 // NOTE: bare `pub`, not `pub(crate)`: makepad's hand-rolled SerRon/DeRon derive
 // parser does `eat_ident("pub")` then expects `struct`, so it accepts private
@@ -208,7 +218,7 @@ pub(crate) fn load_layout(git_dir: &Path) -> Option<DockLayoutRon> {
             id!(FilePane),
             id!(TerminalPane),
             id!(SettingsPane),
-            id!(SidebarPane),
+            id!(BrowserPane),
         ])
         .collect();
     for item in state.dock_items.values() {

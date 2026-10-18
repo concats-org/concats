@@ -506,7 +506,7 @@ impl App {
             })
             .unwrap_or_default();
         let dock = window.pane(cx).dock(cx, ids!(dock));
-        let browser = dock.item(id!(sidebar_tab));
+        let browser = dock.item(id!(browser_tab));
         let file_query = browser.text_input(cx, ids!(find_input)).text();
         let file_count = browser.label(cx, ids!(find_count)).text();
         let terminal_tab = dock.item(id!(terminal_tab));

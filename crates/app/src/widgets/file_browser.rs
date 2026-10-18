@@ -31,7 +31,6 @@ script_mod! {
     use mod.widgets.FONT
     use mod.widgets.FindBar
     use mod.widgets.C_CHROME
-    use mod.widgets.C_BORDER
     use mod.widgets.C_TEXT
     use mod.widgets.C_DIM
     use mod.widgets.C_FAINT
@@ -41,23 +40,6 @@ script_mod! {
         width: Fill
         height: Fill
         flow: Down
-
-        // Which revision everything below is at. Without it a listing of HEAD~3
-        // and one of the working copy look the same.
-        header := SolidView {
-            width: Fill height: 26
-            draw_bg.color: C_CHROME
-            flow: Right
-            align: Align{x: 0.0, y: 0.5}
-            padding: Inset{left: 12 right: 12}
-            rev_chip := Label {
-                width: Fill
-                text: ""
-                draw_text.color: C_DIM
-                draw_text.text_style: FONT{font_size: 8.25}
-            }
-        }
-        SolidView { width: Fill height: 1 draw_bg.color: C_BORDER }
 
         find_bar := FindBar {
             visible: false
@@ -364,14 +346,6 @@ impl Widget for FileBrowser {
                 &format!("{count} {}", if count == 1 { "file" } else { "files" }),
             );
         }
-        // The head as a rev and as an oid: a branch name moves, and a review
-        // that outlives a push should still say which commit it read.
-        let rev = match d.head_oid {
-            Some(oid) => format!("{} · {}", d.head, &oid.to_string()[..7]),
-            None => d.head.clone(),
-        };
-        self.view.label(cx, ids!(rev_chip)).set_text(cx, &rev);
-
         self.view
             .view(cx, ids!(find_bar))
             .set_visible(cx, self.find.is_some());

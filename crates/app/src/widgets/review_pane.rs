@@ -26,8 +26,9 @@ use super::{FileBrowserAction, GutterAction, ReviewList, SeenBar, review_list::R
 use crate::{
     FrameData, WindowScope,
     dock::{
-        TabSpec, drag_source_tab_id, file_tab_id, in_panel, model_tab_of, open_tab,
-        settings_tab_spec, stream_tab_spec, stream_tabs, terminal_tab_spec, terminal_tabs,
+        TabSpec, browser_tab_spec, drag_source_tab_id, file_tab_id, in_panel, model_tab_of,
+        open_tab, settings_tab_spec, stream_tab_spec, stream_tabs, terminal_tab_spec,
+        terminal_tabs,
     },
     file_view::{open_file, read_file_sides},
     load::{hold_minted, resplice_comments, spawn_load},
@@ -165,6 +166,9 @@ script_mod! {
     // terminal is a normal closable tab, recreated by the `>_` button.
     let TerminalTab = ReviewTab {
         draw_icon +: { color: C_DIM svg: crate_resource("self:resources/icons/terminal_fill.svg") }
+    }
+    let BrowserTab = ReviewTab {
+        draw_icon +: { color: C_DIM svg: crate_resource("self:resources/icons/folder_fill.svg") }
     }
 
     let ReviewDock = DockFlat {
@@ -373,6 +377,7 @@ script_mod! {
                     FileTab := FileTab{}
                     TerminalTab := TerminalTab{}
                     SettingsTab := SettingsTab{}
+                    BrowserTab := BrowserTab{}
                 }
 
                 // The browser hangs off the outermost splitter so it spans the
@@ -392,14 +397,10 @@ script_mod! {
                     a: @main_tabs
                     b: @bottom_tabs
                 }
-                // No tab strip: the browser carries its own header (the
-                // rev chip), and a one-tab bar over it would just be a
-                // second title.
                 sidebar_tabs := DockTabs {
-                    tabs: [@sidebar_tab]
+                    tabs: [@browser_tab]
                     selected: 0
                     closable: false
-                    hide_tab_bar: true
                 }
                 main_tabs := DockTabs {
                     tabs: [@guide_tab @sessions_tab @commits_tab @files_tab @comments_tab]
@@ -421,7 +422,7 @@ script_mod! {
                 // Predefined but not in the default tab list — opened on demand
                 // by the `{ }` button (mirrors how stream tabs re-open).
                 settings_tab := DockTab { name: "Settings" template: @SettingsTab kind: @SettingsPane }
-                sidebar_tab := DockTab { name: "Files" template: @FilesTab kind: @SidebarPane }
+                browser_tab := DockTab { name: "Files" template: @BrowserTab kind: @BrowserPane }
 
                 // One stream-pinned list per tab kind.
                 GuidePane := ReviewList { kind: @guide }
@@ -434,7 +435,7 @@ script_mod! {
                 // Opened on demand by the `{ }` status-bar button (not in the
                 // default tab list) — like the `+`-created terminal sessions.
                 SettingsPane := ReviewList { kind: @file }
-                SidebarPane := FileBrowser {}
+                BrowserPane := FileBrowser {}
             }
 
             loading_overlay := View {
@@ -1744,7 +1745,7 @@ impl ReviewPane {
                             tab: tab_id,
                         });
                         dock.close_tab(cx, tab_id);
-                    } else if tab_id == id!(settings_tab) {
+                    } else if [settings_tab_spec().id, browser_tab_spec().id].contains(&tab_id) {
                         dock.close_tab(cx, tab_id);
                     }
                 }
@@ -1807,7 +1808,19 @@ impl ReviewPane {
             }
         }
         if self.view.button(cx, ids!(sidebar_button)).clicked(actions) {
-            self.toggle_panel(cx, Panel::Sidebar);
+            let spec = browser_tab_spec();
+            let dock = self.view.dock(cx, ids!(dock));
+            if self
+                .panel_size(cx, Panel::Sidebar)
+                .is_some_and(|size| size <= 1.0)
+                && dock.find_tab_bar_of_tab(spec.id).is_none()
+            {
+                open_tab(cx, &dock, spec, &[], id!(sidebar_tabs));
+                dock.select_tab(cx, spec.id);
+                self.reveal_panel(cx, Panel::Sidebar, spec.id);
+            } else {
+                self.toggle_panel(cx, Panel::Sidebar);
+            }
         }
         if self
             .view
@@ -2048,6 +2061,21 @@ impl Widget for ReviewPane {
             }
             self.file_titles_generation = document.generation;
             self.file_titles_rows_rev = document.rows_rev;
+        }
+        // The browser's title names the revision of its tree, oid included:
+        // a branch name moves.
+        // NOTE: Every draw, because a restored layout brings back the title it
+        // was saved with.
+        if document.generation > 0 {
+            let rev = match document.head_oid {
+                Some(oid) => format!("{} · {}", document.head, &oid.to_string()[..7]),
+                None => document.head.clone(),
+            };
+            let spec = browser_tab_spec();
+            let title = format!("{} · {rev}", spec.title);
+            self.view
+                .dock(cx, ids!(dock))
+                .set_tab_title(cx, spec.id, title);
         }
         let compose_draft = state.compose_draft.read().unwrap().clone();
         let mut frame = FrameData {
