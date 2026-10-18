@@ -150,25 +150,17 @@ fn delete_forward(d: &mut ReviewDoc) -> bool {
     let Some(caret) = d.caret else {
         return false;
     };
-    let blob = &d.blobs[caret.blob as usize];
-    let line = blob.line_text(caret.line as usize);
-    let at = caret.byte;
-    // Off the end of the line, the character to delete is the newline itself,
-    // which joins the line below onto this one.
-    let width = match (at + 1..=line.len()).find(|i| line.is_char_boundary(*i)) {
-        Some(next) => next - at,
-        None if blob.line_of(blob.line_starts[caret.line as usize] as usize + at + 1) > 0 => 1,
-        None => return false,
+    let Some(start) = offset_of(d, caret) else {
+        return false;
     };
-    let start = blob.line_starts[caret.line as usize] as usize + at;
-    if start + width > blob.text.len() {
-        return false;
-    }
     let blob = &mut d.blobs[caret.blob as usize];
-    if !blob.editable() {
+    if start >= blob.text.len() || !blob.editable() {
         return false;
     }
-    blob.edit(start..start + width, "");
+    // Off the end of the line, the character to delete is the line break,
+    // which joins the line below onto this one.
+    let end = blob.text.ceil_char_boundary(start + 1);
+    blob.edit(start..end, "");
     true
 }
 
@@ -403,6 +395,9 @@ mod tests {
             delete("ab\r\ncd\r\nef", 1, 2),
             (true, "ab\r\ncd\nef".into())
         );
+        // The first line is no different.
+        assert_eq!(delete("ab\r\ncd", 0, 2), (true, "ab\ncd".into()));
+        assert_eq!(delete("ab\n", 0, 2), (true, "ab".into()));
     }
 
     #[test]
