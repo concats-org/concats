@@ -994,12 +994,8 @@ fn comments_stream(
                     .unwrap_or("unattributed"),
             ),
         };
-        format!(
-            "`{}:{}–{}` · {meta}{suffix}",
-            root.path,
-            root.anchor.start + 1,
-            root.anchor.end + 1
-        )
+        let at = concats_review::comments::anchor_spec(root);
+        format!("`{at}` · {meta}{suffix}")
     };
 
     // Roots in reading order: by path, then by where the anchor was left.
@@ -2518,7 +2514,7 @@ mod tests {
         let Row::Prose { md } = &rows[2] else {
             panic!("row 2 is not the thread meta");
         };
-        assert!(md.contains("`a.rs:10–11`"), "meta was: {md}");
+        assert!(md.contains("`a.rs:10-11`"), "meta was: {md}");
         assert!(md.contains("**unanswered** — ada"));
         assert!(matches!(&rows[3], Row::FileHeader { path, .. } if path == "a.rs"));
         // COMMENT_CONTEXT lines either side of the 9..=10 anchor: 6..=13.
@@ -2559,7 +2555,7 @@ mod tests {
         let Row::Prose { md } = &rows[2] else {
             panic!("row 2 is not the thread meta");
         };
-        assert!(md.contains("`turn/8ce374d0a3/prompt/0:2–3`"), "meta: {md}");
+        assert!(md.contains("`turn/8ce374d0a3/prompt/0:2-3`"), "meta: {md}");
         // Its own lines, numberless: the whole entry here, since three lines of
         // context either side of 1..=2 covers it.
         let lines: Vec<(u32, Option<u32>)> = rows[3..]
@@ -2628,8 +2624,8 @@ mod tests {
         let Row::Prose { md } = &rows[2] else {
             panic!("row 2 is not the thread meta");
         };
-        assert!(md.contains("`a.rs:6–6` · **unanswered** — ada"));
-        assert!(md.contains("`a.rs:9–9` · 1 reply, last by **bob**"));
+        assert!(md.contains("`a.rs:6-6` · **unanswered** — ada"));
+        assert!(md.contains("`a.rs:9-9` · 1 reply, last by **bob**"));
         // The merged card runs from 5-3 to 8+3, once.
         let lines: Vec<u32> = rows
             .iter()
