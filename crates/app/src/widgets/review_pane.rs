@@ -1928,51 +1928,42 @@ impl ReviewPane {
     }
 
     fn handle_composer_actions(&mut self, cx: &mut Cx, actions: &Actions) {
-        let dock = self.view.dock(cx, ids!(dock));
-        let open_files = self
-            .state()
-            .read(|d| d.files_open.iter().map(|f| f.tab).collect::<Vec<_>>());
-        for tab_id in crate::review_doc::STREAMS
-            .into_iter()
-            .map(|stream| stream_tab_spec(stream).id)
-            .chain(open_files.iter().map(|f| LiveId(*f)))
+        for action in actions
+            .iter()
+            .filter_map(|action| action.as_widget_action())
         {
-            let content = dock.item(tab_id);
-            if content.is_empty() {
+            let Some(
+                text @ (TextInputAction::Changed(draft) | TextInputAction::Returned(draft, _)),
+            ) = action.action.downcast_ref::<TextInputAction>()
+            else {
                 continue;
-            }
+            };
             // The composer's field, matched by uid rather than by the action
             // data every other control in a row carries — see
-            // `ReviewList::composer_input`. The draft is mirrored on every
-            // keystroke because the virtualized list can recycle the field out
-            // from under it; without that mirror, posting reads an empty body.
-            let input_uid = content
-                .borrow::<ReviewList>()
-                .and_then(|list| list.composer_input);
-            let keystrokes = actions
-                .iter()
-                .filter_map(|action| action.as_widget_action())
-                .filter(|action| Some(action.widget_uid) == input_uid)
-                .filter_map(|action| action.action.downcast_ref::<TextInputAction>());
-            for action in keystrokes {
-                match action {
-                    TextInputAction::Changed(draft) => {
-                        self.state()
-                            .compose_draft
-                            .write()
-                            .unwrap()
-                            .clone_from(draft);
-                    }
-                    TextInputAction::Returned(draft, _) => {
-                        self.state()
-                            .compose_draft
-                            .write()
-                            .unwrap()
-                            .clone_from(draft);
-                        self.post_comment(cx);
-                    }
-                    _ => {}
-                }
+            // `ReviewList::composer_input`. Only the stream holding the
+            // composer row has one, and it is asked per keystroke: once this
+            // batch has posted or closed the composer, what its field still
+            // reports is stale and must not refill the cleared draft.
+            let input = self.state().read(|d| d.composer_tab).and_then(|tab| {
+                self.view
+                    .dock(cx, ids!(dock))
+                    .item(stream_tab_spec(tab).id)
+                    .borrow::<ReviewList>()
+                    .and_then(|list| list.composer_input)
+            });
+            if input != Some(action.widget_uid) {
+                continue;
+            }
+            // The draft is mirrored on every keystroke because the virtualized
+            // list can recycle the field out from under it; without that
+            // mirror, posting reads an empty body.
+            self.state()
+                .compose_draft
+                .write()
+                .unwrap()
+                .clone_from(draft);
+            if let TextInputAction::Returned(..) = text {
+                self.post_comment(cx);
             }
         }
     }
