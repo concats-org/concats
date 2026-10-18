@@ -4,7 +4,7 @@ mod turn;
 
 pub use session_id::SessionId;
 pub use snapshot::{Snapshot, SnapshotReason};
-pub use turn::{Turn, TurnEntry, TurnEntryKind, TurnToolKind};
+pub use turn::{Turn, TurnEntry, TurnEntryKind};
 
 /// Git ref namespace for session (turn) refs: `refs/agent/sessions/<id>`.
 /// Part of the wire format, so it lives beside the turn/snapshot grammar

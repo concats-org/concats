@@ -764,7 +764,6 @@ fn turn_rows(
         md: format!("_turn `{}` · {link}_", &t.oid.to_string()[..10]),
     });
 
-    let mut tools: HashMap<&str, usize> = HashMap::new();
     for (i, e) in t.message.entries().iter().enumerate() {
         match &e.kind {
             TurnEntryKind::Prompt { text } => {
@@ -782,17 +781,7 @@ fn turn_rows(
                     format!("**Response**\n\n{}\n", text.trim()),
                 ));
             }
-            TurnEntryKind::ToolCall { kind } => {
-                *tools.entry(kind.as_str()).or_insert(0) += 1;
-            }
         }
-    }
-    if !tools.is_empty() {
-        let mut parts: Vec<String> = tools.iter().map(|(k, n)| format!("{n}× {k}")).collect();
-        parts.sort();
-        rows.push(Row::Prose {
-            md: format!("_tools: {}_", parts.join(" · ")),
-        });
     }
 
     // The commit(s) this turn produced, oldest first.

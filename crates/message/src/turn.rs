@@ -187,11 +187,6 @@ impl Display for Turn {
                     f.write_str(&escape_text(text))?;
                     f.write_str("</response>")?;
                 }
-                TurnEntryKind::ToolCall { kind } => {
-                    f.write_str("<tool kind=\"")?;
-                    f.write_str(&escape_text(kind.as_str()).replace('"', "&quot;"))?;
-                    f.write_str("\" />")?;
-                }
             }
         }
 
@@ -217,64 +212,6 @@ pub struct TurnEntry {
     pub kind: TurnEntryKind,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum TurnToolKind {
-    Read,
-    Edit,
-    Delete,
-    Move,
-    Search,
-    Execute,
-    Think,
-    Fetch,
-    SwitchMode,
-    Other,
-}
-
-impl TurnToolKind {
-    #[must_use]
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Read => "read",
-            Self::Edit => "edit",
-            Self::Delete => "delete",
-            Self::Move => "move",
-            Self::Search => "search",
-            Self::Execute => "execute",
-            Self::Think => "think",
-            Self::Fetch => "fetch",
-            Self::SwitchMode => "switch_mode",
-            Self::Other => "other",
-        }
-    }
-}
-
-impl Display for TurnToolKind {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.as_str())
-    }
-}
-
-impl FromStr for TurnToolKind {
-    type Err = Error;
-
-    fn from_str(value: &str) -> Result<Self> {
-        match value {
-            "read" => Ok(Self::Read),
-            "edit" => Ok(Self::Edit),
-            "delete" => Ok(Self::Delete),
-            "move" => Ok(Self::Move),
-            "search" => Ok(Self::Search),
-            "execute" => Ok(Self::Execute),
-            "think" => Ok(Self::Think),
-            "fetch" => Ok(Self::Fetch),
-            "switch_mode" => Ok(Self::SwitchMode),
-            "other" => Ok(Self::Other),
-            _ => Err(Error(format!("unsupported turn tool kind: {value}"))),
-        }
-    }
-}
-
 impl TurnEntry {
     #[must_use]
     pub fn prompt_now(text: impl Into<String>) -> Self {
@@ -290,13 +227,6 @@ impl TurnEntry {
         }
     }
 
-    #[must_use]
-    pub fn tool_call_now(kind: TurnToolKind) -> Self {
-        Self {
-            kind: TurnEntryKind::ToolCall { kind },
-        }
-    }
-
     fn summary(&self) -> String {
         self.kind.summary()
     }
@@ -306,7 +236,6 @@ impl TurnEntry {
 pub enum TurnEntryKind {
     Prompt { text: String },
     Response { text: String },
-    ToolCall { kind: TurnToolKind },
 }
 
 impl TurnEntryKind {
@@ -315,7 +244,6 @@ impl TurnEntryKind {
             Self::Prompt { text } | Self::Response { text } => {
                 text.split_whitespace().collect::<Vec<_>>().join(" ")
             }
-            Self::ToolCall { kind } => kind.to_string(),
         }
     }
 }
@@ -329,14 +257,6 @@ fn parse_entry(pair: Pair<'_, Rule>) -> Result<TurnEntry> {
         Rule::response => {
             let text = pair.into_inner().next().map_or("", |text| text.as_str());
             Ok(TurnEntry::response_now(unescape_entities(text)?))
-        }
-        Rule::tool => {
-            let kind = pair
-                .into_inner()
-                .next()
-                .map_or("", |kind| kind.as_str())
-                .parse()?;
-            Ok(TurnEntry::tool_call_now(kind))
         }
         _ => unreachable!("unexpected turn entry rule: {:?}", pair.as_rule()),
     }
@@ -443,20 +363,6 @@ mod tests {
     }
 
     #[test]
-    fn display_formats_tool_call_entries() {
-        let message = Turn::new(session_id("session-a"))
-            .with_agent_name("Claude")
-            .unwrap()
-            .with_entry(TurnEntry::prompt_now("hello"))
-            .with_entry(TurnEntry::tool_call_now(TurnToolKind::Read));
-
-        assert_eq!(
-            message.to_string(),
-            "turn\n\n<prompt>hello</prompt>\n<tool kind=\"read\" />\n\nSession: session-a\nAgent: Claude"
-        );
-    }
-
-    #[test]
     fn message_round_trip_preserves_entries() {
         let message = Turn::new(session_id("session-a"))
             .with_subject("custom subject")
@@ -464,8 +370,7 @@ mod tests {
             .with_agent_name("Claude")
             .unwrap()
             .with_entry(TurnEntry::prompt_now("hello"))
-            .with_entry(TurnEntry::response_now("done"))
-            .with_entry(TurnEntry::tool_call_now(TurnToolKind::Read));
+            .with_entry(TurnEntry::response_now("done"));
 
         let parsed: Turn = message.to_string().parse().unwrap();
 
@@ -491,14 +396,6 @@ mod tests {
             .with_entry(TurnEntry::response_now("done now"));
 
         assert_eq!(message.suggest_subject().as_deref(), Some("done now"));
-    }
-
-    #[test]
-    fn suggest_subject_falls_back_to_tool_kind() {
-        let message = Turn::new(session_id("session-a"))
-            .with_entry(TurnEntry::tool_call_now(TurnToolKind::Execute));
-
-        assert_eq!(message.suggest_subject().as_deref(), Some("execute"));
     }
 
     #[test]
@@ -540,30 +437,6 @@ mod tests {
         assert_eq!(parsed.session_id().as_ref(), "session-a");
         assert_eq!(parsed.agent_name(), None);
         assert_eq!(parsed.entries(), []);
-    }
-
-    #[test]
-    fn tool_kind_round_trips_through_strings() {
-        let kind: TurnToolKind = "read".parse().unwrap();
-
-        assert_eq!(kind, TurnToolKind::Read);
-        assert_eq!(kind.to_string(), "read");
-    }
-
-    #[test]
-    fn tool_kind_rejects_unknown_value() {
-        let error = "unknown".parse::<TurnToolKind>().unwrap_err();
-
-        assert!(error.to_string().contains("unsupported turn tool kind"));
-    }
-
-    #[test]
-    fn parsed_message_rejects_unknown_tool_kind() {
-        let error = "turn\n\n<tool kind=\"unknown\" />\n\nSession: session-a"
-            .parse::<Turn>()
-            .unwrap_err();
-
-        assert!(error.to_string().contains("unsupported turn tool kind"));
     }
 
     #[test]

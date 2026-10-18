@@ -69,7 +69,6 @@ blocks, and Git trailers:
 
 <prompt>{...}</prompt>
 <response>{...}</response>
-<tool kind="{kind}" />
 ...
 
 Session: {session-id}
@@ -87,7 +86,6 @@ The following requirements apply:
   session boundary detection.
 - The body consists of zero or more top-level tagged blocks.
 - `<prompt>` and `<response>` bodies are UTF-8 text.
-- `<tool>` entries record only the ACP tool kind.
 - `Session: <session-id>` MUST appear as a trailer and MUST match the ref name.
 - `Agent: <agent-name>` MAY appear as a trailer.
 

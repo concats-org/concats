@@ -9,7 +9,6 @@ const REASON_TRAILER_PREFIX: &str = "Reason: ";
 pub enum SnapshotReason {
     TurnCommit,
     TurnAmend,
-    ToolWrite,
     FilesChanged,
 }
 
@@ -19,7 +18,6 @@ impl SnapshotReason {
         match self {
             Self::TurnCommit => "turn_commit",
             Self::TurnAmend => "turn_amend",
-            Self::ToolWrite => "tool_write",
             Self::FilesChanged => "files_changed",
         }
     }
@@ -38,7 +36,6 @@ impl FromStr for SnapshotReason {
         match value {
             "turn_commit" => Ok(Self::TurnCommit),
             "turn_amend" => Ok(Self::TurnAmend),
-            "tool_write" => Ok(Self::ToolWrite),
             "files_changed" => Ok(Self::FilesChanged),
             _ => Err(Error(format!("unsupported snapshot reason: {value}"))),
         }
@@ -168,7 +165,6 @@ mod tests {
         for reason in [
             SnapshotReason::TurnCommit,
             SnapshotReason::TurnAmend,
-            SnapshotReason::ToolWrite,
             SnapshotReason::FilesChanged,
         ] {
             let parsed: SnapshotReason = reason.as_str().parse().unwrap();

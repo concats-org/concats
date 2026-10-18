@@ -319,9 +319,6 @@ fn print_turn(session: &Session, turn: &Turn) {
                     println!("  {line}");
                 }
             }
-            TurnEntryKind::ToolCall { kind } => {
-                println!("  tool {kind}");
-            }
         }
     }
 
