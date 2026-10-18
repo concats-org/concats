@@ -416,6 +416,8 @@ impl TerminalView {
         session
     }
 
+    // NOTE: draw_walk sets ime_pos from the fresh metrics right after this, every frame.
+    // coland-ignore: @coland/derived_state_drift
     fn refresh_cell_metrics(&mut self, cx: &mut Cx2d) {
         let font_scale = self.draw_text.font_scale;
         let metrics_for = (
@@ -1242,6 +1244,8 @@ impl Widget for TerminalView {
 
 /// Whether a dragged item comes from outside the app. A dock tab drags as an
 /// empty path carrying its id, and is not text for the shell.
+// NOTE: handle_drop passes it to any(), a use coland does not count.
+// coland-ignore: @coland/single_caller_private_function
 fn from_outside(item: &DragItem) -> bool {
     matches!(
         item,

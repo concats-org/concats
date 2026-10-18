@@ -119,6 +119,8 @@ pub(crate) fn intern(d: &mut ReviewDoc, path: &str, blob: Blob) -> u32 {
 /// and at its head. Both are interned: what the range removed only exists on
 /// the base blob, a `Row::Removed` marker names it there, and the reveal reads
 /// it from there.
+// NOTE: the one way a file tab opens; the tests pinning it are most of its fan-in.
+// coland-ignore: @coland/high_call_degree
 pub(crate) fn open_file(
     d: &mut ReviewDoc,
     path: &str,
@@ -198,6 +200,8 @@ fn file_rows(
 ///
 /// Only what saving means differs, and that lives at the keystroke: the text is
 /// applied as settings, not just written.
+// NOTE: the config file (theme), as a blob (diff, sync), in its dock tab (dock).
+// coland-ignore: @coland/cross_file_call_coupling
 pub(crate) fn open_settings(d: &mut ReviewDoc) {
     let Some(path) = crate::theme::config_file() else {
         d.error = Some("No platform configuration directory".into());
@@ -292,6 +296,8 @@ pub(crate) fn save_plan(d: &ReviewDoc, blob: u32) -> Option<SavePlan> {
 /// diff of base against the buffer, so a context line you type on becomes an
 /// addition and the line it replaced shows up as a removal marker. Nothing
 /// patches rows in place.
+// NOTE: rows_rev counts row changes; every one bumps it, strip_composer's included.
+// coland-ignore: @coland/mixed_abstraction_levels
 pub(crate) fn relower_edited(d: &mut ReviewDoc, comments: &[Comment]) {
     let edited: Vec<usize> = d
         .files_open

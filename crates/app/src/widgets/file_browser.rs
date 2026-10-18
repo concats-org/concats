@@ -210,6 +210,8 @@ fn insert(
 
 /// Fold `status` into a path's surviving ancestors without listing the path
 /// itself — what a deletion leaves behind at the head.
+// NOTE: insert's twin, for a path the head no longer lists.
+// coland-ignore: @coland/single_caller_private_function
 fn tint_ancestors(nodes: &mut HashMap<LiveId, Node>, path: &str, status: GitStatusDotKind) {
     for (at, _) in path.match_indices('/') {
         if let Some(node) = nodes.get_mut(&LiveId::from_str(&path[..at])) {
@@ -228,6 +230,8 @@ fn tint_ancestors(nodes: &mut HashMap<LiveId, Node>, path: &str, status: GitStat
 /// `status` covers every path the range touched, including ones absent from
 /// `paths`: a file deleted at the head has no blob to list, but a folder whose
 /// only change is that deletion should still show a dot.
+// NOTE: one production caller (draw_walk); the rest are the tests pinning it.
+// coland-ignore: @coland/high_fan_in_complex_function
 fn build(
     paths: &[String],
     status: &HashMap<String, GitStatusDotKind>,

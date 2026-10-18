@@ -23,6 +23,8 @@ use crate::theme::{Theme, paint};
 const DIM: f32 = 0.66;
 
 /// A cell's foreground, with bold and dim folded into the colour.
+// NOTE: every cell colour resolves through it; the tests pin each rule.
+// coland-ignore: @coland/high_call_degree
 pub fn foreground(color: Color, flags: Flags, colors: &Colors, theme: &Theme) -> Vec4f {
     paint(match color {
         // A true colour says exactly what it wants; only dim still touches it.
@@ -41,6 +43,8 @@ pub fn background(color: Color, colors: &Colors, theme: &Theme) -> Option<Vec4f>
 }
 
 /// The palette slot for a named colour once bold and dim have had their say.
+// NOTE: the bold/dim rule for named colours, apart from the slot lookup.
+// coland-ignore: @coland/single_caller_private_function
 fn shade(named: NamedColor, flags: Flags) -> NamedColor {
     match flags & (Flags::BOLD | Flags::DIM) {
         Flags::BOLD => named.to_bright(),
@@ -50,6 +54,8 @@ fn shade(named: NamedColor, flags: Flags) -> NamedColor {
 }
 
 /// The same for the indexed colours, where bright and dim are eight apart.
+// NOTE: the same rule for indexed colours, beside its named twin.
+// coland-ignore: @coland/single_caller_private_function
 fn shade_indexed(idx: u8, flags: Flags) -> usize {
     let idx = idx as usize;
     match (flags & (Flags::BOLD | Flags::DIM), idx) {

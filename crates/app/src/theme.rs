@@ -25,6 +25,8 @@ use makepad_widgets::Vec4f;
 ///
 /// Not called `vec4`: makepad has one, and this relabels channels rather than
 /// building a vector.
+// NOTE: the one place an Rgba becomes a makepad colour; its fan-in is the point.
+// coland-ignore: @coland/high_call_degree
 pub(crate) fn paint(c: Rgba) -> Vec4f {
     Vec4f {
         x: c.r,
@@ -300,6 +302,8 @@ pub fn active_font() -> Arc<FontSetting> {
     font_slot().read().unwrap().clone()
 }
 
+// NOTE: the font slot's writer beside active_font, as set_active_theme is the theme's.
+// coland-ignore: @coland/single_caller_private_function
 fn set_active_font(font: FontSetting) {
     *font_slot().write().unwrap() = Arc::new(font);
 }

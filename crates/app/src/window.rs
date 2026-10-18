@@ -95,6 +95,8 @@ impl WindowState {
 
     /// A write guard, for the handful of gestures that mutate the document
     /// across an early return and cannot be expressed as a closure.
+    // NOTE: hands back the write guard itself; taking the lock changes nothing.
+    // coland-ignore: @coland/read_write_operation
     pub(crate) fn write(&self) -> std::sync::RwLockWriteGuard<'_, Arc<ReviewDoc>> {
         self.doc.write().unwrap()
     }
@@ -107,6 +109,8 @@ impl WindowState {
 
     /// Claim the next load. The number comes back so the load can ask whether
     /// it is still the newest when it finishes.
+    // NOTE: claiming a load is one atomic step; split, two loads could take one number.
+    // coland-ignore: @coland/read_write_operation
     pub(crate) fn next_load(&self) -> u64 {
         // NOTE: Starting a load must not race with landing or publishing one.
         let _document = self.doc.read().unwrap();

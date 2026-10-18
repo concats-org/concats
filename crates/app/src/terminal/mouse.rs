@@ -99,6 +99,8 @@ pub fn wheel(
     None
 }
 
+// NOTE: motion passes it to and_then, a use coland does not count.
+// coland-ignore: @coland/single_caller_private_function
 fn code(button: MouseButton) -> Option<u8> {
     // Beyond three there is no room in the packed encoding to say which.
     [

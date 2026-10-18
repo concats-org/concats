@@ -5,6 +5,8 @@
 )]
 use super::*;
 
+// NOTE: click_hook reads both the click and the drag-to point through it.
+// coland-ignore: @coland/single_caller_private_function
 fn pointer_position(spec: &str) -> Option<Vec2d> {
     let (x, y) = spec.split_once(',')?;
     Some(dvec2(x.trim().parse().ok()?, y.trim().parse().ok()?))
@@ -13,6 +15,8 @@ fn pointer_position(spec: &str) -> Option<Vec2d> {
 /// Clear the frame last captured to `path`. The hooks hold until the file
 /// exists, so one left in place would let them through before this capture
 /// presents.
+// NOTE: click_hook clears both of its captures, before and after, through it.
+// coland-ignore: @coland/single_caller_private_function
 fn remove_stale_capture(path: &std::path::Path) {
     if let Err(error) = std::fs::remove_file(path)
         && error.kind() != std::io::ErrorKind::NotFound
@@ -24,6 +28,8 @@ fn remove_stale_capture(path: &std::path::Path) {
     }
 }
 
+// NOTE: the one gate every hook reads its variable through; its fan-in is the point.
+// coland-ignore: @coland/high_call_degree
 pub(crate) fn var(name: &str) -> Result<String, std::env::VarError> {
     #[cfg(feature = "dev-hooks")]
     {

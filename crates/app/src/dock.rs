@@ -32,6 +32,8 @@ pub(crate) struct TabSpec<'a> {
     pub title: &'a str,
 }
 
+// NOTE: the one tab↔stream table; every dock lookup goes through it.
+// coland-ignore: @coland/high_call_degree
 pub(crate) fn stream_tab_spec(tab: Stream) -> TabSpec<'static> {
     let (id, kind, template, title) = match tab {
         Stream::Guide => (id!(guide_tab), id!(GuidePane), id!(GuideTab), "Guide"),

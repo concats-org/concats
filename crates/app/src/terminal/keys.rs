@@ -71,6 +71,8 @@ impl Base {
 ///
 /// `pressed` is false for a key release, which only the kitty protocol asks to
 /// hear about.
+// NOTE: the encoder's entry: both of the view's key paths, and the tests that pin it.
+// coland-ignore: @coland/high_fan_in_complex_function
 pub fn encode(key: &KeyEvent, pressed: bool, mode: TermMode) -> Option<Vec<u8>> {
     if !pressed && !mode.contains(TermMode::REPORT_EVENT_TYPES) {
         return None;
@@ -273,6 +275,8 @@ fn numpad_code(key: KeyCode) -> Option<&'static str> {
     })
 }
 
+// NOTE: one builder per step of alacritty's SequenceBuilder, tried in its order.
+// coland-ignore: @coland/single_caller_private_function
 fn numpad(key: &KeyEvent, mode: TermMode) -> Option<Base> {
     if !kitty_sequence(mode) {
         return None;
@@ -281,6 +285,8 @@ fn numpad(key: &KeyEvent, mode: TermMode) -> Option<Base> {
 }
 
 /// Functional keys the kitty protocol numbers differently from xterm.
+// NOTE: one builder per step of alacritty's SequenceBuilder, tried in its order.
+// coland-ignore: @coland/single_caller_private_function
 fn named_kitty(key: &KeyEvent, mode: TermMode) -> Option<Base> {
     if !kitty_sequence(mode) {
         return None;
@@ -328,6 +334,8 @@ fn xterm(key: KeyCode) -> Option<(&'static str, char)> {
 
 /// A key from the [`xterm`] table, with its implied 1 written out when
 /// `has_params` says something follows it.
+// NOTE: one builder per step of alacritty's SequenceBuilder, tried in its order.
+// coland-ignore: @coland/single_caller_private_function
 fn named_normal(key: &KeyEvent, has_params: bool) -> Option<Base> {
     let (number, terminator) = xterm(key.key_code)?;
     let payload = if number.is_empty() && has_params {
@@ -371,6 +379,8 @@ fn control_char_or_mod(key: &KeyEvent, mode: TermMode) -> Option<Base> {
 
 /// A printing key under the kitty protocol, reported by its unshifted
 /// codepoint — and, when asked, the shifted one beside it.
+// NOTE: one builder per step of alacritty's SequenceBuilder, tried in its order.
+// coland-ignore: @coland/single_caller_private_function
 fn textual(key: &KeyEvent, mode: TermMode) -> Option<Base> {
     if !kitty_sequence(mode) {
         return None;
@@ -408,6 +418,8 @@ fn control_bytes(key: &KeyEvent) -> Option<Vec<u8>> {
 }
 
 /// `ctrl` folded into a character the way a terminal has always done it.
+// NOTE: the ctrl fold table, apart from which keys it applies to.
+// coland-ignore: @coland/single_caller_private_function
 fn control_char(c: char) -> Option<u8> {
     match c.to_ascii_uppercase() {
         c @ 'A'..='Z' => Some(c as u8 - 0x40),

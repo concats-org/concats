@@ -201,6 +201,9 @@ pub fn take_report(session: Session) -> Report {
 /// Spawn the user's login shell in `cwd` for this tab, unless one is already
 /// running. Called from the terminal toggle, a tab press or `+`, never from the
 /// draw path, so a failing shell can't respawn in a loop.
+// NOTE: the one way a shell starts (the tests are most of its fan-in); its clones are shared handles.
+// coland-ignore: @coland/clone_heavy_function, @coland/high_fan_in_complex_function
+// coland-ignore: @coland/cross_file_call_coupling, @coland/high_call_degree
 pub fn open(session: Session, cwd: &Path) {
     let mut guard = sessions().lock().unwrap();
     if guard.contains_key(&session) {
@@ -305,6 +308,8 @@ pub fn close(session: Session) {
 }
 
 /// Keystrokes/paste from the view, already encoded to terminal bytes.
+// NOTE: every byte the view sends a shell goes through it.
+// coland-ignore: @coland/high_call_degree
 pub fn input(session: Session, data: Vec<u8>) {
     if data.is_empty() {
         return;
