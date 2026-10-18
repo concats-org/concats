@@ -16,7 +16,7 @@ use concats_diff::{
 use gix::ObjectId;
 
 use crate::{
-    Error, guide,
+    Error, github, guide,
     interchange::{self, Entry, Meta, ResolveError, Side},
     store::{self, Anchor, Comment, Store},
 };
@@ -267,4 +267,202 @@ pub fn meta(loaded: &Loaded) -> Meta {
         base: Some(endpoint(loaded.merge_base, INDEX_REV)),
         head: Some(endpoint(loaded.head, WORKTREE_REV)),
     }
+}
+
+/// The root entries that anchor, each with its path and anchor in the diff.
+pub type Roots<'a> = Vec<(&'a Entry, (String, Anchor))>;
+
+/// Resolve every root entry against the loaded diff, collecting all failures
+/// (like lint) instead of stopping at the first. Replies are left for
+/// [`write_entries`], which anchors them where it can.
+pub fn resolve_roots<'a>(
+    entries: &'a [Entry],
+    loaded: &'a Loaded,
+) -> (Roots<'a>, Vec<(&'a Entry, ResolveError<'a>)>) {
+    let mut resolved = Vec::new();
+    let mut failed = Vec::new();
+    for entry in entries.iter().filter(|e| e.reply_to.is_none()) {
+        match interchange::resolve(loaded, &entry.path, entry.side, entry.start..=entry.end) {
+            Ok(anchor) => resolved.push((entry, anchor)),
+            Err(error) => failed.push((entry, error)),
+        }
+    }
+    (resolved, failed)
+}
+
+/// Write the batch, roots first so a reply threads onto the root this run just
+/// stored. Re-importing converges: an entry matching a stored comment's `ref`,
+/// or its anchor and body, is skipped as a duplicate.
+pub fn write_entries(
+    loaded: &Loaded,
+    resolved: &[(&Entry, (String, Anchor))],
+    entries: &[Entry],
+    fallback_author: Option<&str>,
+    dry: bool,
+) -> Tally {
+    let mut store = Store::open(&loaded.git_dir);
+    let mut tally = Tally::default();
+    // Document id → store id, so a reply threads onto the root this batch just
+    // wrote. Roots first, which is what the partition is for.
+    let mut ids: HashMap<u64, u64> = HashMap::new();
+
+    // Roots must anchor; a reply anchors where it can and otherwise takes its
+    // root's place, so an outdated line number in a reply cannot fail a batch.
+    let replies: Vec<(&Entry, Option<(String, Anchor)>)> = entries
+        .iter()
+        .filter(|e| e.reply_to.is_some())
+        .map(|e| {
+            (
+                e,
+                interchange::resolve(loaded, &e.path, e.side, e.start..=e.end).ok(),
+            )
+        })
+        .collect();
+    for (entry, anchor) in resolved
+        .iter()
+        .map(|(e, r)| (*e, Some(r)))
+        .chain(replies.iter().map(|(e, r)| (*e, r.as_ref())))
+    {
+        // A reply's thread first: it decides where the reply goes and, for a
+        // document that carries no provenance, whether it is already there.
+        let parent = thread_of(entry, &store, &ids);
+        if entry.reply_to.is_some() && parent.is_none() {
+            tally.orphaned += 1;
+            continue;
+        }
+
+        // Read the match out before writing: the store is borrowed to find it.
+        if let Some((id, same)) =
+            stored_match(&store, entry, anchor, parent).map(|c| (c.id, c.body == entry.body))
+        {
+            // Same text is a duplicate; different text was edited upstream
+            // since the last import, so keep the anchor and the thread and
+            // take the new words.
+            if same {
+                tally.skipped += 1;
+            } else {
+                tally.updated += 1;
+                if !dry {
+                    store.set_body(id, entry.body.clone());
+                }
+            }
+            remember(&mut ids, entry, id);
+            continue;
+        }
+
+        let author = entry
+            .author
+            .clone()
+            .or_else(|| fallback_author.map(str::to_string));
+        // A dry run still records what each entry would become, so a reply
+        // finds the root it would have threaded onto and the counts match a
+        // real run. The placeholder is never used as a parent: nothing writes.
+        let id = if dry {
+            0
+        } else if let Some(stored) = store_entry(&mut store, loaded, entry, anchor, parent, author)
+        {
+            stored
+        } else {
+            continue;
+        };
+        remember(&mut ids, entry, id);
+        tally.added += 1;
+    }
+    tally
+}
+
+/// What a batch did, so the pass that does it can stay one pass.
+#[derive(Default)]
+pub struct Tally {
+    pub added: usize,
+    pub updated: usize,
+    pub skipped: usize,
+    /// Replies whose thread is not in this range — nothing to attach them to.
+    pub orphaned: usize,
+}
+
+/// Note where a document id landed, so a reply later in the batch threads onto
+/// the root this run just wrote.
+fn remember(ids: &mut HashMap<u64, u64>, entry: &Entry, id: u64) {
+    if let Some(doc_id) = entry.id {
+        ids.insert(doc_id, id);
+    }
+}
+
+/// Write one entry: at its own anchor when it has one — a root, or a reply
+/// written on other lines than its root — else into `parent`'s thread at the
+/// root's place. `None` when the write failed, said on stderr.
+fn store_entry(
+    store: &mut Store,
+    loaded: &Loaded,
+    entry: &Entry,
+    anchor: Option<&(String, Anchor)>,
+    parent: Option<u64>,
+    author: Option<String>,
+) -> Option<u64> {
+    let created_at = entry.created_at.unwrap_or_else(store::now);
+    let stored = if let Some((path, at)) = anchor {
+        let cursors = document_cursors(store, loaded, path, *at);
+        store.add_comment(Comment {
+            body: entry.body.clone(),
+            author,
+            created_at,
+            parent,
+            external: entry.external.clone(),
+            cursors,
+            ..store::comment(path.clone(), *at)
+        })
+    } else {
+        let root = parent.expect("a reply without a thread was skipped above");
+        store.reply_comment(
+            root,
+            entry.body.clone(),
+            author,
+            created_at,
+            entry.external.clone(),
+        )
+    };
+    // NOTE: a write the store refused is not imported; the batch goes on, and
+    // the tally counts only what landed.
+    stored
+        .inspect_err(|error| eprintln!("warning: {error}"))
+        .ok()
+        .map(|c| c.id)
+}
+
+/// The thread a reply joins, as its root's id: a comment this batch just wrote,
+/// or one an earlier import stored under the same upstream id, normalized to
+/// the root so a reply to a reply threads like GitHub's. `None` for a root
+/// entry, and for a reply whose thread is not stored — that reply is orphaned.
+fn thread_of(entry: &Entry, store: &Store, written: &HashMap<u64, u64>) -> Option<u64> {
+    let doc_id = entry.reply_to?;
+    let id = written.get(&doc_id).copied().or_else(|| {
+        let want = github::provenance(doc_id);
+        let stored = store
+            .comments
+            .iter()
+            .find(|c| c.external.as_deref() == Some(&want))?;
+        Some(stored.id)
+    })?;
+    store.root_of(id).map(|c| c.id)
+}
+
+/// The stored comment an entry would land on: the same comment upstream when
+/// both carry provenance — identity, not resemblance — and otherwise the same
+/// text in the same place: its anchor when it resolved to one, else its thread.
+fn stored_match<'a>(
+    store: &'a Store,
+    entry: &Entry,
+    anchor: Option<&(String, Anchor)>,
+    parent: Option<u64>,
+) -> Option<&'a Comment> {
+    store.comments.iter().find(|c| {
+        if let (Some(have), Some(want)) = (&c.external, &entry.external) {
+            return have == want;
+        }
+        match anchor {
+            Some((_, at)) => c.anchor == *at && c.parent == parent && c.body == entry.body,
+            None => c.parent == parent && c.body == entry.body,
+        }
+    })
 }
