@@ -8,10 +8,11 @@
 //!   the theme, and `TERM_SCRIPT=text` runs that script where a shell would
 //!   start.
 //! - On each load: `COMPOSE=path:start:end` opens the composer on those lines.
-//! - Once the first load lands, in this order: `WINDOWS=N` opens N windows,
-//!   `SCROLL=N` starts the list at row N, `TERM` opens the terminal,
-//!   `FILE=path[,path…]` opens a File tab each, `TAB=name` (or `file:path`)
-//!   selects a tab, and `SHOT=path.png` captures the frame.
+//! - Once the first load lands, in this order: `WINDOWS=N` opens N windows
+//!   (`WINDOWS_SIZE=WxH` sizes the ones it adds), `SCROLL=N` starts the list
+//!   at row N, `TERM` opens the terminal, `FILE=path[,path…]` opens a File tab
+//!   each, `TAB=name` (or `file:path`) selects a tab, and `SHOT=path.png`
+//!   captures the frame.
 //! - Then one step per poll tick: `SHOT_BEFORE=path.png` captures the frame
 //!   before any input, `CLICK=x,y` presses there (`HOVER=x,y` only moves,
 //!   `DRAG_TO=x,y` drags, `CLICK_SEEN` presses the pinned tick box), `TYPE=text`
@@ -89,6 +90,15 @@ impl App {
                 self.open_new_window(cx);
                 if self.windows.len() == before {
                     break;
+                }
+            }
+            let size = var("CONCATS_APP_WINDOWS_SIZE").and_then(|spec| {
+                let (w, h) = spec.split_once('x')?;
+                Some(dvec2(w.parse().ok()?, h.parse().ok()?))
+            });
+            if let Some(size) = size {
+                for window in self.windows.iter().skip(1) {
+                    window.window.as_window().resize(cx, size);
                 }
             }
             // Opening took the keyboard, and every other hook drives the
@@ -390,6 +400,37 @@ impl App {
         }
     }
 
+    /// What a press in each window drags, asked the way macOS asks: in the
+    /// middle of its header, of each of its buttons, and below it.
+    // NOTE: split out of state_hook, which clippy holds to 100 lines.
+    // coland-ignore: @coland/single_caller_private_function
+    fn captions(&self, cx: &Cx) -> Vec<serde_json::Value> {
+        self.windows
+            .iter()
+            .map(|window| {
+                let pane = window.pane(cx);
+                let id = window.window.as_window().window_id();
+                let drags = |at: Vec2d| id.is_some_and(|id| self.caption_at(cx, id, at));
+                let middle = |r: Rect| dvec2(r.pos.x + r.size.x / 2.0, r.pos.y + r.size.y / 2.0);
+                let header = middle(pane.view(cx, ids!(header)).area().rect(cx));
+                let buttons: Vec<_> = [
+                    ids!(repo_button),
+                    ids!(range_button),
+                    ids!(load_button),
+                    ids!(share_button),
+                ]
+                .into_iter()
+                .map(|button| drags(middle(pane.widget(cx, button).area().rect(cx))))
+                .collect();
+                serde_json::json!({
+                    "header": drags(header),
+                    "buttons": buttons,
+                    "below": drags(header + dvec2(0.0, 200.0)),
+                })
+            })
+            .collect()
+    }
+
     fn state_hook(&self, cx: &mut Cx, name: &str) {
         let (Some(path), Some(window)) = (var("CONCATS_APP_STATE"), self.primary()) else {
             return;
@@ -443,9 +484,11 @@ impl App {
         let windows: Vec<_> = self.windows.iter().map(|window| window.state.read(|d| {
             serde_json::json!({"loaded": d.generation > 0, "dirty_buffers": d.blobs.iter().filter(|blob| blob.dirty()).count()})
         })).collect();
+        let captions = self.captions(cx);
         let data = state.read(|d| {
             serde_json::json!({
                 "windows": windows,
+                "captions": captions,
                 "terminal_cursor": terminal_cursor,
                 "terminal_find_query": terminal_query,
                 "terminal_selection": terminal_selection,

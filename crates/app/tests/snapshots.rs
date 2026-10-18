@@ -712,6 +712,31 @@ fn loading_another_window_keeps_typing_in_the_clicked_window() {
     );
 }
 
+/// macOS asks the app whether a press drags the window, and every window
+/// answers from its own header: one narrower than the first still drags by
+/// its header, and its buttons still take their clicks.
+#[test]
+#[ignore = "needs a macOS window server"]
+fn every_window_drags_by_its_own_header() {
+    let shot = capture(
+        "window_captions",
+        &[
+            ("CONCATS_APP_WINDOWS", "2"),
+            ("CONCATS_APP_WINDOWS_SIZE", "900x700"),
+        ],
+        |_| {},
+    );
+    let caption = serde_json::json!({
+        "header": true,
+        "buttons": [false, false, false, false],
+        "below": false,
+    });
+    assert_eq!(
+        state(&shot, "state.json")["captions"],
+        serde_json::json!([caption, caption])
+    );
+}
+
 #[test]
 #[ignore = "needs a macOS window server"]
 fn restoring_the_sidebar_does_not_start_a_hidden_shell() {

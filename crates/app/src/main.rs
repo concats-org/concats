@@ -569,6 +569,34 @@ impl App {
         self.windows.first()
     }
 
+    /// The pane's header band doubles as the window caption (the native
+    /// caption bar is hidden; macOS traffic lights float over the header's
+    /// left edge): any press in that band drags the window — except on the
+    /// repo name, the diff-picker chip, and the Load/share buttons, which
+    /// need their clicks. Asked per window, and each window has its own
+    /// header: another's buttons sit elsewhere once the two differ in width.
+    fn caption_at(&self, cx: &Cx, window_id: WindowId, abs: Vec2d) -> bool {
+        let Some(window) = self
+            .windows
+            .iter()
+            .find(|w| w.window.as_window().window_id() == Some(window_id))
+        else {
+            return false;
+        };
+        let pane = window.pane(cx);
+        let r = pane.view(cx, ids!(header)).area().rect(cx);
+        let buttons = [
+            id!(repo_button),
+            id!(range_button),
+            id!(load_button),
+            id!(share_button),
+        ];
+        let on_button = buttons
+            .iter()
+            .any(|id| pane.widget(cx, &[*id]).area().rect(cx).contains(abs));
+        r.size.y > 0.0 && abs.y >= r.pos.y && abs.y <= r.pos.y + r.size.y && !on_button
+    }
+
     /// Take a window into the App's care: mint its state, hand it to its pane
     /// (the pane is what puts it in `Scope` for the rows below), and remember
     /// it. Called for the declared window at startup and for each ⌘N window.
@@ -1013,27 +1041,10 @@ impl AppMain for App {
         self::script_mod(vm)
     }
     fn handle_event(&mut self, cx: &mut Cx, event: &Event) {
-        // The pane's header band doubles as the window caption (the native
-        // caption bar is hidden; macOS traffic lights float over the header's
-        // left edge): any press in that band drags the window — except on the
-        // repo name, the diff-picker chip, and the Load/share buttons, which
-        // need their clicks.
-        if let Event::WindowDragQuery(dq) = event {
-            let pane = self.ui.widget(cx, ids!(pane_a));
-            let r = pane.view(cx, ids!(header)).area().rect(cx);
-            let buttons = [
-                id!(repo_button),
-                id!(range_button),
-                id!(load_button),
-                id!(share_button),
-            ];
-            let on_button = buttons
-                .iter()
-                .any(|id| pane.widget(cx, &[*id]).area().rect(cx).contains(dq.abs));
-            if r.size.y > 0.0 && dq.abs.y >= r.pos.y && dq.abs.y <= r.pos.y + r.size.y && !on_button
-            {
-                dq.response.set(WindowDragQueryResponse::Caption);
-            }
+        if let Event::WindowDragQuery(dq) = event
+            && self.caption_at(cx, dq.window_id, dq.abs)
+        {
+            dq.response.set(WindowDragQueryResponse::Caption);
         }
         if let Event::MacosMenuCommand(command) = event
             && *command == live_id!(new_window)
