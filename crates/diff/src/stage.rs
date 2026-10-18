@@ -50,6 +50,9 @@ pub struct StageReport {
 /// index entry is still the old side the hunks were diffed against. A partly
 /// seen file is rebuilt from the old blob plus its seen hunks and gets zeroed
 /// stat fields, like `git apply --cached`, so git re-verifies it by content.
+// NOTE: one guarded pass per file; the index is the accumulator it and stage_file both fill.
+// coland-ignore: @coland/function_too_large, @coland/high_fan_in_complex_function
+// coland-ignore: @coland/high_call_degree, @coland/mixed_abstraction_levels
 pub fn stage_seen(
     workdir: &Path,
     files: &[StageFile],
@@ -303,6 +306,8 @@ fn update_index_entry(
 }
 
 /// Drop `path`'s entry from the index, if present.
+// NOTE: stage_file's twin, used where a file leaves the index: deleted, or renamed away.
+// coland-ignore: @coland/single_caller_private_function
 fn unstage_file(index: &mut gix::index::File, path: &str) {
     index.remove_entries(|_, entry_path, _| entry_path == BStr::new(path));
 }

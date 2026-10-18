@@ -12,6 +12,8 @@ use concats_fixture::git;
 use crate::stage::stage_file;
 
 /// A fresh repo (no commits) in a temp dir.
+// NOTE: the shared fixture every load and stage test starts from; its fan-in is the point.
+// coland-ignore: @coland/high_call_degree
 pub fn init_repo() -> (tempfile::TempDir, PathBuf) {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().canonicalize().unwrap();

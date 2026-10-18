@@ -30,6 +30,8 @@ const MAX_FILE_BYTES: u64 = 16 << 20;
 ///
 /// # Errors
 /// Returns an error for paths outside the root, symlinks, non-files, or failed metadata reads.
+// NOTE: the one path-safety check every worktree read and write goes through; fan-in is the point.
+// coland-ignore: @coland/high_fan_in_complex_function
 pub fn worktree_file(root: &Path, path: &str) -> Result<PathBuf, Error> {
     let relative = Path::new(path);
     if path.is_empty()
@@ -144,6 +146,8 @@ pub fn discover(start: &Path) -> Option<PathBuf> {
     }
 }
 
+// NOTE: the loader's entry for the CLI, the app, the socket and tests; its callees are its steps.
+// coland-ignore: @coland/high_fan_in_complex_function, @coland/high_call_degree
 pub fn load(repo_path: &Path, base_rev: &str, head_rev: &str) -> Result<Loaded, Error> {
     let root = discover(repo_path).ok_or_else(|| Error::NoRepository(repo_path.to_path_buf()))?;
     if head_rev.trim() == WORKTREE_REV {
@@ -212,6 +216,9 @@ pub fn load(repo_path: &Path, base_rev: &str, head_rev: &str) -> Result<Loaded, 
 /// go into an overlay keyed by their real git blob hash, so everything
 /// downstream — lowering, seen state, comments — works on content-addressed
 /// oids, the same as in a commit review.
+// NOTE: one pass from status to Loaded, its steps in order; each clone is an owned field it builds.
+// coland-ignore: @coland/function_too_large, @coland/high_call_degree
+// coland-ignore: @coland/clone_heavy_function
 fn load_worktree(root: PathBuf, base_rev: &str) -> Result<Loaded, Error> {
     let t_total = Instant::now();
     let mut st = LoadStats::default();
@@ -697,6 +704,8 @@ impl<'a> FileLowerer<'a> {
 /// at `old_start`/`new_start` (0-based, one per side). `None` for an empty run —
 /// and for a file with no new side, which cannot have unchanged lines to collapse
 /// in the first place.
+// NOTE: the gap before a hunk and the file's tail collapse alike; one spelling for both.
+// coland-ignore: @coland/single_caller_private_function
 fn collapsed_run(
     new_b: Option<u32>,
     old_start: usize,
@@ -785,6 +794,8 @@ const RENAME_LIMIT: usize = 1000;
 ///      chunks ("spanhash"); we hash whole lines, which is simpler and close
 ///      enough for a review — a moved-and-edited file still scores well above
 ///      50%.
+// NOTE: git's two passes in one place, each reading the other's taken flags.
+// coland-ignore: @coland/function_too_large
 fn detect_renames(
     repo: &Repository,
     changes: Vec<Change>,
@@ -900,6 +911,8 @@ fn detect_renames(
 
 /// Multiset containment: shared lines / larger file. Same shape as git's
 /// similarity index, and it lands in the same ballpark for review purposes.
+// NOTE: the similarity index is a calculation of its own; detect_renames is long already.
+// coland-ignore: @coland/single_caller_private_function
 fn similarity(a: &HashMap<u64, u32>, b: &HashMap<u64, u32>) -> u8 {
     let total_a: u32 = a.values().sum();
     let total_b: u32 = b.values().sum();
