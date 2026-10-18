@@ -54,6 +54,12 @@ pub fn resolve_anchor(spec: &str, loaded: &Loaded) -> Result<(String, Anchor), E
     })
 }
 
+/// `c`'s lines in the grammar [`resolve_anchor`] reads, so a printed anchor
+/// can be passed back.
+pub fn anchor_spec(c: &Comment) -> String {
+    format!("{}:{}-{}", c.path, c.anchor.start + 1, c.anchor.end + 1)
+}
+
 /// A file's hunks as ready-made links, so a caller fixing an anchor never does
 /// line arithmetic.
 pub fn reviewable_ranges(loaded: &Loaded, file: &FileChange) -> String {
@@ -117,7 +123,7 @@ pub fn reply(
 /// What the CLI and the socket answer a new comment with. A root always says
 /// where it went; a reply only when it was `moved` off its root's lines.
 pub fn added(c: &Comment, moved: bool) -> String {
-    let place = format!("{}:{}–{}", c.path, c.anchor.start + 1, c.anchor.end + 1);
+    let place = anchor_spec(c);
     match (c.parent, moved) {
         (None, _) => format!("added comment #{} on {place}", c.id),
         (Some(thread), true) => {
@@ -483,4 +489,28 @@ fn stored_match<'a>(
             None => c.parent == parent && c.body == entry.body,
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use concats_diff::load;
+    use concats_fixture::init_repo_with_commit;
+
+    use super::*;
+
+    /// An anchor copied from what `add` answers is one `add` takes back.
+    #[test]
+    fn a_printed_anchor_resolves_to_the_lines_it_names() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path();
+        init_repo_with_commit(repo);
+        std::fs::write(repo.join("init.txt"), "a\nb\n").unwrap();
+        let loaded = load::load(repo, "HEAD", WORKTREE_REV).unwrap();
+        let mut store = Store::open(&loaded.git_dir);
+        let c = add(&mut store, &loaded, "init.txt:1-2", "both lines", None).unwrap();
+
+        let printed = added(&c, false);
+        let (_, spec) = printed.rsplit_once(" on ").unwrap();
+        assert_eq!(resolve_anchor(spec, &loaded).unwrap(), (c.path, c.anchor));
+    }
 }

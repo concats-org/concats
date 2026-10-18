@@ -85,11 +85,9 @@ fn list(repo: Option<&str>, delete: Option<u64>) -> Outcome {
             .as_ref()
             .map_or_else(String::new, |e| format!("  [{e}]"));
         println!(
-            "{lead}#{}  {}:{}–{}  (blob {}){by}{from}\n{lead}    {}\n",
+            "{lead}#{}  {}  (blob {}){by}{from}\n{lead}    {}\n",
             c.id,
-            c.path,
-            c.anchor.start + 1,
-            c.anchor.end + 1,
+            comments::anchor_spec(c),
             &c.anchor.blob.to_string()[..10],
             c.body.replace('\n', &format!("\n{lead}    "))
         );
