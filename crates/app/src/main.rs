@@ -41,7 +41,7 @@ use clap::Parser;
 use concats_diff::LineKind;
 use concats_review::store;
 use concats_state::Target;
-use dock::{load_layout, stream_tab_spec, sync_stream_tab};
+use dock::{load_layout, stream_tab_spec};
 use load::resplice_comments;
 pub use makepad_widgets;
 #[allow(
@@ -747,34 +747,9 @@ impl AppWindow {
                     }
                 }
             }
-            // Tabs that have nothing to show don't exist — and tabs the user
-            // closed stay closed. Reconcile the dock against this load:
-            // close absent streams, (re)create the ones that appeared, keep
-            // the user's layout otherwise.
-            let closed = pane
-                .borrow::<ReviewPane>()
-                .map(|p| p.user_closed.clone())
-                .unwrap_or_default();
-            for (t, available) in [
-                (Stream::Guide, s.has_guide),
-                (Stream::Sessions, s.has_sessions),
-                (Stream::Commits, s.has_commits),
-                (Stream::Comments, s.has_comments),
-                (Stream::Files, true),
-            ] {
-                let tab_id = stream_tab_spec(t).id;
-                let want = available && !closed.contains(&tab_id);
-                sync_stream_tab(cx, &dock, t, want);
+            if let Some(mut p) = pane.borrow_mut::<ReviewPane>() {
+                p.sync_stream_tabs(cx, &s);
             }
-            // The view buttons mirror stream availability, like the tabs.
-            pane.button(cx, ids!(guide_button))
-                .set_visible(cx, s.has_guide);
-            pane.button(cx, ids!(sessions_button))
-                .set_visible(cx, s.has_sessions);
-            pane.button(cx, ids!(commits_button))
-                .set_visible(cx, s.has_commits);
-            pane.button(cx, ids!(comments_button))
-                .set_visible(cx, s.has_comments);
             // The default tab for this load: the guide when one exists, the
             // plain diff otherwise (build_review set d.tab accordingly).
             dock.select_tab(cx, stream_tab_spec(s.tab).id);
@@ -901,7 +876,7 @@ impl AppWindow {
 
     /// A guide was submitted for the open range: reload, which is the one
     /// path that applies one (the loader re-resolves the newest itself, and
-    /// `has_guide` flipping true is what makes the Guide tab appear).
+    /// the rows it builds from it are what make the Guide tab appear).
     fn guide_ready(&mut self, cx: &mut Cx) {
         let Some(target) = ({
             let d = self.state.snapshot();
@@ -919,37 +894,23 @@ impl AppWindow {
     /// else's write): splice the comments into this window's document,
     /// re-tally the progress bar, redraw. Windows on another repo no-op.
     fn review_state_changed(&mut self, cx: &mut Cx) {
-        let mut has_comments = None;
-        {
-            let git_dir = self.state.read(|d| d.git_dir.clone());
-            let state = review_state(git_dir.as_deref()).load();
-            // A publish for a repo this window no longer shows (the user
-            // switched mid-flight) is not ours to splice.
-            if state.git_dir.is_some() && state.git_dir != git_dir {
-                return;
-            }
-            if self.spliced_rev != state.comments_rev {
-                self.spliced_rev = state.comments_rev;
-                has_comments = Some(self.state.with(|doc| {
-                    resplice_comments(doc, &state.comments);
-                    doc.has_comments
-                }));
-            }
+        let git_dir = self.state.read(|d| d.git_dir.clone());
+        let state = review_state(git_dir.as_deref()).load();
+        // A publish for a repo this window no longer shows (the user
+        // switched mid-flight) is not ours to splice.
+        if state.git_dir.is_some() && state.git_dir != git_dir {
+            return;
         }
-        // Comments come and go without a load (the CLI adds one, a thread is
-        // deleted): reconcile the Comments tab and its view button here, the
-        // same way a landed load reconciles the other streams.
-        if let Some(has) = has_comments {
-            let pane = self.pane(cx);
-            pane.button(cx, ids!(comments_button)).set_visible(cx, has);
-            let closed = pane
-                .borrow::<ReviewPane>()
-                .map(|p| p.user_closed.clone())
-                .unwrap_or_default();
-            let dock = pane.dock(cx, ids!(dock));
-            let tab_id = stream_tab_spec(Stream::Comments).id;
-            let want = has && !closed.contains(&tab_id);
-            sync_stream_tab(cx, &dock, Stream::Comments, want);
+        if self.spliced_rev != state.comments_rev {
+            self.spliced_rev = state.comments_rev;
+            self.state
+                .with(|doc| resplice_comments(doc, &state.comments));
+            // Comments come and go without a load (the CLI adds one, a thread
+            // is deleted), so the tabs follow them here too.
+            let doc = self.state.snapshot();
+            if let Some(mut p) = self.pane(cx).borrow_mut::<ReviewPane>() {
+                p.sync_stream_tabs(cx, &doc);
+            }
         }
         if let Some(mut p) = self.pane(cx).borrow_mut::<ReviewPane>() {
             p.refresh_progress(cx);

@@ -218,7 +218,7 @@ pub(crate) fn open_settings(d: &mut ReviewDoc) {
     );
     // No comments: this file has no place in the repo, so nothing anchors to it.
     let view = FileView {
-        tab: crate::dock::settings_tab_id().0,
+        tab: crate::dock::settings_tab_spec().id.0,
         path: name,
         rows: Vec::new(),
         base: Some(index),

@@ -27,7 +27,7 @@ use crate::{
     FrameData, WindowScope,
     dock::{
         TabSpec, drag_source_tab_id, file_tab_id, is_terminal_dock_tab, model_tab_of,
-        open_tab_beside_streams, stream_tab_spec,
+        open_tab_beside_streams, settings_tab_spec, stream_tab_spec,
     },
     file_view::{open_file, read_file_sides},
     load::{hold_minted, resplice_comments, spawn_load},
@@ -670,6 +670,15 @@ pub struct ReviewPane {
     recents: Vec<String>,
 }
 
+/// The status-bar view buttons, one per stream.
+const VIEW_BUTTONS: [(&[LiveId], Stream); 5] = [
+    (ids!(guide_button), Stream::Guide),
+    (ids!(sessions_button), Stream::Sessions),
+    (ids!(commits_button), Stream::Commits),
+    (ids!(files_button), Stream::Files),
+    (ids!(comments_button), Stream::Comments),
+];
+
 /// The fixed row slots of the diff-picker dropdown. A handful is plenty:
 /// the filter narrows the list as you type.
 macro_rules! combo_rows {
@@ -730,17 +739,9 @@ impl ReviewPane {
     pub fn open_settings_tab(&mut self, cx: &mut Cx) {
         self.state().with(crate::file_view::open_settings);
         let dock = self.view.dock(cx, ids!(dock));
-        open_tab_beside_streams(
-            cx,
-            &dock,
-            TabSpec {
-                id: id!(settings_tab),
-                kind: id!(SettingsPane),
-                template: id!(SettingsTab),
-                title: "Settings",
-            },
-        );
-        dock.select_tab(cx, id!(settings_tab));
+        let spec = settings_tab_spec();
+        open_tab_beside_streams(cx, &dock, spec);
+        dock.select_tab(cx, spec.id);
         self.view.redraw(cx);
     }
 
@@ -783,10 +784,8 @@ impl ReviewPane {
             cx,
             &dock,
             TabSpec {
-                id: tab_id,
-                kind: id!(FilePane),
-                template: id!(FileTab),
                 title: &title,
+                ..stream_tab_spec(Stream::File(tab_id.0))
             },
         );
         dock.select_tab(cx, tab_id);
@@ -1484,6 +1483,23 @@ impl ReviewPane {
         self.view.redraw(cx);
     }
 
+    /// A stream with nothing to show has no tab and no view button, and a tab
+    /// the user closed stays closed until its button reopens it. The rest of
+    /// the user's layout is kept.
+    pub(crate) fn sync_stream_tabs(&mut self, cx: &mut Cx, d: &ReviewDoc) {
+        let dock = self.view.dock(cx, ids!(dock));
+        for (button, stream) in VIEW_BUTTONS {
+            let available = stream == Stream::Files || !d.stream(stream).is_empty();
+            let spec = stream_tab_spec(stream);
+            if available && !self.user_closed.contains(&spec.id) {
+                open_tab_beside_streams(cx, &dock, spec);
+            } else if dock.find_tab_bar_of_tab(spec.id).is_some() {
+                dock.close_tab(cx, spec.id);
+            }
+            self.view.button(cx, button).set_visible(cx, available);
+        }
+    }
+
     /// Open the bottom panel with the default terminal selected and its
     /// shell running. The screenshot path (`CONCATS_APP_TERM=1`) — rides
     /// the same slide animation as the toggle, so the shot also proves the
@@ -1804,13 +1820,7 @@ impl ReviewPane {
             self.add_terminal_session(cx);
         }
         // The view buttons: reopen (or jump to) each stream's tab.
-        for (btn, tab) in [
-            (ids!(guide_button), Stream::Guide),
-            (ids!(sessions_button), Stream::Sessions),
-            (ids!(commits_button), Stream::Commits),
-            (ids!(files_button), Stream::Files),
-            (ids!(comments_button), Stream::Comments),
-        ] {
+        for (btn, tab) in VIEW_BUTTONS {
             if self.view.button(cx, btn).clicked(actions) {
                 self.open_stream_tab(cx, tab);
             }
@@ -2029,7 +2039,7 @@ impl Widget for ReviewPane {
         {
             let dock = self.view.dock(cx, ids!(dock));
             for file in &document.files_open {
-                if file.tab == crate::dock::settings_tab_id().0 {
+                if file.tab == settings_tab_spec().id.0 {
                     continue;
                 }
                 let title = crate::file_view::file_tab_title(

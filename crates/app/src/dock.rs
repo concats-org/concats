@@ -68,8 +68,13 @@ pub(crate) fn stream_tab_spec(tab: Stream) -> TabSpec<'static> {
 /// and a stream of their own would answer every question the file path already
 /// answers — how it lowers, how you type into it, how it saves — a second time.
 /// Only the content and what saving means differ.
-pub(crate) fn settings_tab_id() -> LiveId {
-    id!(settings_tab)
+pub(crate) fn settings_tab_spec() -> TabSpec<'static> {
+    TabSpec {
+        id: id!(settings_tab),
+        kind: id!(SettingsPane),
+        template: id!(SettingsTab),
+        title: "Settings",
+    }
 }
 
 /// The dock tab that shows `path`, so opening a file twice selects the tab it
@@ -102,15 +107,6 @@ pub(crate) fn open_tab_beside_streams(cx: &mut Cx, dock: &DockRef, spec: TabSpec
         spec.template,
         after,
     );
-}
-
-pub(crate) fn sync_stream_tab(cx: &mut Cx, dock: &DockRef, stream: Stream, wanted: bool) {
-    let spec = stream_tab_spec(stream);
-    if wanted {
-        open_tab_beside_streams(cx, dock, spec);
-    } else if dock.find_tab_bar_of_tab(spec.id).is_some() {
-        dock.close_tab(cx, spec.id);
-    }
 }
 
 /// Is this dock tab a terminal pane? Judged by its kind, so it holds for the

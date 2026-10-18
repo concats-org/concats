@@ -161,7 +161,7 @@ fn guide_for(path: Option<&str>, loaded: &Loaded) -> Option<(String, Option<u64>
 /// second while being read would be unusable.
 fn reopen_files(d: &mut ReviewDoc, open: Vec<(u64, String)>, target: &Target) {
     for (tab, path) in open {
-        if tab == crate::dock::settings_tab_id().0 {
+        if tab == crate::dock::settings_tab_spec().id.0 {
             // Not a path in this repo — its content comes from the config
             // file, and `read_file_sides` would fail and empty the tab.
             open_settings(d);
@@ -373,10 +373,6 @@ fn compose_from_env(d: &mut ReviewDoc) {
 /// Assemble the review document: every tab's stream over one blob table. The
 /// Guide tab is the agent's guide when one exists for the range (`guide_md`);
 /// without one there is no Guide tab.
-#[expect(
-    clippy::cognitive_complexity,
-    reason = "Each document stream is assembled once over the shared loaded blobs."
-)]
 pub(crate) fn build_review(
     d: &mut ReviewDoc,
     mut loaded: Loaded,
@@ -386,24 +382,9 @@ pub(crate) fn build_review(
     let s = loaded.stats.clone();
     d.git_dir = Some(loaded.git_dir.clone());
 
-    d.guide_rows.push(Row::Title {
-        text: format!("# `{}...{}`", target.base, target.head),
-    });
-    let against = match (loaded.merge_base, loaded.head) {
-        (Some(mb), Some(_)) => format!("merge-base `{}`", &mb.to_string()[..10]),
-        (Some(mb), None) => format!("worktree vs `{}`", &mb.to_string()[..10]),
-        (None, _) => "worktree vs the index — the unstaged changes".to_string(),
-    };
-    d.guide_rows.push(Row::Prose {
-        md: format!(
-            "`{}` · {against} · **{} files**, +{}/−{} · loaded in **{:.0} ms**",
-            target.repo, s.files, s.adds, s.dels, s.total_ms,
-        ),
-    });
     // The recorded agent sessions next to the diff: the Sessions and Commits
     // tabs. Costs one refs listing when there are none.
     let mut mined = sessions::mine(&mut loaded);
-    d.has_guide = guide_md.is_some();
 
     // What the file browser lists, and which of those paths this range creates
     // — the rest of its status it reads off the File Diff stream, which covers
@@ -437,28 +418,28 @@ pub(crate) fn build_review(
     }
 
     // The Sessions tab renders this second stream over the same blobs. Empty
-    // stream = no tab (the design hides what does not exist), but keep the
-    // explainer rows in case the tab is ever forced visible.
+    // stream = no tab (the design hides what does not exist).
     d.sessions_rows = std::mem::take(&mut mined.sessions);
-    d.has_sessions = !d.sessions_rows.is_empty();
-    if d.sessions_rows.is_empty() {
-        d.sessions_rows.push(Row::Title {
-            text: "# Sessions".into(),
-        });
-        d.sessions_rows.push(Row::Prose {
-            md: "No agent sessions (`refs/agent/sessions/*`) link to this range. \
-                 Sessions are only visible where they were recorded — `refs/agent/*` \
-                 are not fetched by default refspecs."
-                .into(),
-        });
-    }
 
     // The Commits tab: the range by commit, over the same blobs. Empty when
     // the range has fewer than two commits — no tab.
     d.commits_rows = std::mem::take(&mut mined.commits);
-    d.has_commits = !d.commits_rows.is_empty();
 
     if let Some(md) = guide_md {
+        d.guide_rows.push(Row::Title {
+            text: format!("# `{}...{}`", target.base, target.head),
+        });
+        let against = match (loaded.merge_base, loaded.head) {
+            (Some(mb), Some(_)) => format!("merge-base `{}`", &mb.to_string()[..10]),
+            (Some(mb), None) => format!("worktree vs `{}`", &mb.to_string()[..10]),
+            (None, _) => "worktree vs the index — the unstaged changes".to_string(),
+        };
+        d.guide_rows.push(Row::Prose {
+            md: format!(
+                "`{}` · {against} · **{} files**, +{}/−{} · loaded in **{:.0} ms**",
+                target.repo, s.files, s.adds, s.dels, s.total_ms,
+            ),
+        });
         let r = guide::render(&md, &loaded);
         d.guide_rows.push(Row::Prose {
             md: format!(
@@ -479,10 +460,10 @@ pub(crate) fn build_review(
 
     // The default tab: the guide when one exists, otherwise the plain file
     // diff. A hidden tab is never left active.
-    d.tab = if d.has_guide {
-        Stream::Guide
-    } else {
+    d.tab = if d.guide_rows.is_empty() {
         Stream::Files
+    } else {
+        Stream::Guide
     };
 }
 

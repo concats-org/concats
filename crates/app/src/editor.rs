@@ -330,7 +330,7 @@ pub(crate) fn replace_all(d: &mut ReviewDoc, tab: Stream, query: &str, insert: &
 
 /// Record a settings save result after the caller has applied it.
 pub(crate) fn record_settings(d: &mut ReviewDoc, text: &str, error: Option<&str>) {
-    if let Some(rows) = d.stream_mut(Stream::File(crate::dock::settings_tab_id().0)) {
+    if let Some(rows) = d.stream_mut(Stream::File(crate::dock::settings_tab_spec().id.0)) {
         rows.retain(|r| !matches!(r, Row::Warning { .. }));
         if let Some(message) = error {
             rows.insert(

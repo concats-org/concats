@@ -89,10 +89,6 @@ pub(crate) const STREAMS: [Stream; 5] = [
 ];
 
 #[derive(Clone, Default)]
-#[expect(
-    clippy::struct_excessive_bools,
-    reason = "Stream availability, edit state, and focus are independent properties."
-)]
 pub struct ReviewDoc {
     /// The Guide tab: the agent's guide.
     pub guide_rows: Vec<Row>,
@@ -109,22 +105,10 @@ pub struct ReviewDoc {
     /// by [`splice_comments`] whenever the comment list changes, so it never
     /// lags behind what the splice placed.
     pub comments_rows: Vec<Row>,
-    /// Whether any comments are recorded for this repo — the Comments tab and
-    /// its status-bar button exist only when there is something to track.
-    pub has_comments: bool,
     /// The open File tabs, in the order they were opened — one per file, like
     /// an editor. Each renders over the same blob table as every other stream.
     pub files_open: Vec<FileView>,
     pub tab: Stream,
-    /// Whether an agent's guide exists for this range. Per the design, the
-    /// Guide tab is hidden otherwise.
-    pub has_guide: bool,
-    /// Whether any recorded sessions link to this range (the placeholder
-    /// explainer does not count). Hidden tab otherwise.
-    pub has_sessions: bool,
-    /// Whether the range has more than one commit — with one, the Commits tab
-    /// would just duplicate the File Diff, so it doesn't exist.
-    pub has_commits: bool,
     /// What this pane has loaded, for the header chrome (dir name, base…head).
     pub repo: String,
     pub base: String,
@@ -821,7 +805,6 @@ pub(crate) fn splice_comments(
     d.quote_spans = quote_spans(&d.blobs, &d.blob_paths, comments);
     let (comments_rows, outdated_paths) = comments_stream(&d.blobs, &d.blob_paths, comments);
     d.comments_rows = comments_rows;
-    d.has_comments = !comments.is_empty();
     // Union over the streams: every stream reads the same blob table, so a
     // thread that places in one places in every stream that shows its file.
     let mut placed = std::collections::HashSet::new();
@@ -981,17 +964,13 @@ fn comments_stream(
     blob_paths: &std::collections::HashMap<u32, String>,
     comments: &[store::Comment],
 ) -> (Vec<Row>, HashSet<String>) {
+    let mut outdated_paths: HashSet<String> = HashSet::new();
+    if comments.is_empty() {
+        return (Vec::new(), outdated_paths);
+    }
     let mut rows = vec![Row::Title {
         text: "# Comments".into(),
     }];
-    let mut outdated_paths: HashSet<String> = HashSet::new();
-    if comments.is_empty() {
-        rows.push(Row::Prose {
-            md: "No comments recorded for this repo yet — click a line number to leave one, or `concats comments add` from the terminal."
-                .into(),
-        });
-        return (rows, outdated_paths);
-    }
 
     let of_path = blobs_by_name(blobs, blob_paths);
 
