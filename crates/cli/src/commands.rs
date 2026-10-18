@@ -221,15 +221,13 @@ fn resolve_scope(path: Option<PathBuf>, global: bool) -> miette::Result<InstallS
 }
 
 fn resolve_agent(name: &str) -> miette::Result<HookAgent> {
-    find_agent(name).ok_or_else(|| unknown_agent_error(name))
-}
-
-fn unknown_agent_error(name: &str) -> miette::Report {
-    let names: Vec<_> = all_agents().iter().map(|agent| agent.name()).collect();
-    miette::miette!(
-        "unknown agent: {name}. Expected one of: {}",
-        names.join(", ")
-    )
+    find_agent(name).ok_or_else(|| {
+        let names: Vec<_> = all_agents().iter().map(|agent| agent.name()).collect();
+        miette::miette!(
+            "unknown agent: {name}. Expected one of: {}",
+            names.join(", ")
+        )
+    })
 }
 
 fn run_sessions_list(workspace: Option<PathBuf>) -> miette::Result<()> {
@@ -409,7 +407,7 @@ fn resolve_session_ref(repo: &Rc<Repository>, input: &str) -> miette::Result<Res
 
     // Try session-name resolution first.
     if let Ok(session) = session::open(Rc::clone(repo), name) {
-        let turns = turn::list(&session).map_err(|e| miette::miette!("{e}"))?;
+        let mut turns = turn::list(&session).map_err(|e| miette::miette!("{e}"))?;
         if turns.is_empty() {
             return Err(miette::miette!("session '{name}' has no turns"));
         }
@@ -419,7 +417,7 @@ fn resolve_session_ref(repo: &Rc<Repository>, input: &str) -> miette::Result<Res
                 turns.len()
             )
         })?;
-        let turn = turns[index].clone();
+        let turn = turns.swap_remove(index);
         return Ok(ResolvedRef {
             session,
             turn,
@@ -435,18 +433,21 @@ fn resolve_session_ref(repo: &Rc<Repository>, input: &str) -> miette::Result<Res
     }
 
     let sessions = session::list(repo).map_err(|e| miette::miette!("{e}"))?;
-    for session in &sessions {
-        let Ok(turns) = turn::list(session) else {
+    for session in sessions {
+        let Ok(turns) = turn::list(&session) else {
             continue;
         };
-        for (i, turn) in turns.iter().enumerate() {
-            if turn.oid.to_string().starts_with(input) {
-                return Ok(ResolvedRef {
-                    session: session.clone(),
-                    turn: turn.clone(),
-                    offset_from_tip: turns.len() - 1 - i,
-                });
-            }
+        let count = turns.len();
+        if let Some((i, turn)) = turns
+            .into_iter()
+            .enumerate()
+            .find(|(_, turn)| turn.oid.to_string().starts_with(input))
+        {
+            return Ok(ResolvedRef {
+                session,
+                turn,
+                offset_from_tip: count - 1 - i,
+            });
         }
     }
 

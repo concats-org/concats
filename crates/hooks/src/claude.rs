@@ -184,7 +184,10 @@ fn extract_plan_mode_entries(data: &str) -> Option<Vec<TurnEntry>> {
         .filter_map(|line| serde_json::from_str(line).ok())
         .collect();
 
-    let start = current_prompt_start(&entries);
+    let start = entries
+        .iter()
+        .rposition(is_submitted_user_prompt)
+        .map_or(0, |index| index + 1);
     let turn_entries = &entries[start..];
     let tool_names = tool_use_names(turn_entries);
     let mut out = Vec::new();
@@ -222,9 +225,32 @@ fn collect_assistant_plan_entries(
 
     let mut text = Vec::new();
     for block in blocks {
-        collect_text_after_plan(block, *seen_plan_mode, &mut text);
-        update_plan_write_path(block, last_plan_path);
-        if let Some(plan) = plan_from_exit_block(block, last_plan_path.as_deref()) {
+        if *seen_plan_mode && let Some(part) = block.get("text").and_then(|text| text.as_str()) {
+            text.push(part);
+        }
+        let tool = block
+            .get("name")
+            .and_then(|name| name.as_str())
+            .filter(|_| block.get("type").and_then(|t| t.as_str()) == Some("tool_use"));
+        let input = |key: &'static str| block.get("input")?.get(key)?.as_str();
+        if tool == Some("Write")
+            && let Some(path) = input("file_path").and_then(plan_file_path)
+        {
+            *last_plan_path = Some(path);
+        }
+        if tool != Some("ExitPlanMode") {
+            continue;
+        }
+        let read = |path: &str| std::fs::read_to_string(path).ok();
+        let plan = input("plan")
+            .map(str::to_string)
+            .or_else(|| {
+                input("planFilePath")
+                    .and_then(plan_file_path)
+                    .and_then(|path| read(&path))
+            })
+            .or_else(|| last_plan_path.as_deref().and_then(read));
+        if let Some(plan) = plan {
             push_pending_text(&mut text, out);
             out.push(TurnEntry::response_now(plan));
             *seen_plan_mode = true;
@@ -233,45 +259,11 @@ fn collect_assistant_plan_entries(
     push_pending_text(&mut text, out);
 }
 
-fn collect_text_after_plan<'a>(
-    block: &'a serde_json::Value,
-    seen_plan_mode: bool,
-    text: &mut Vec<&'a str>,
-) {
-    if seen_plan_mode && let Some(part) = block.get("text").and_then(|text| text.as_str()) {
-        text.push(part);
-    }
-}
-
-fn update_plan_write_path(block: &serde_json::Value, last_plan_path: &mut Option<String>) {
-    if is_tool_use(block, "Write")
-        && let Some(path) = plan_write_file_path(block)
-    {
-        *last_plan_path = Some(path);
-    }
-}
-
-fn plan_from_exit_block(block: &serde_json::Value, last_plan_path: Option<&str>) -> Option<String> {
-    if !is_tool_use(block, "ExitPlanMode") {
-        return None;
-    }
-    exit_plan_text(block)
-        .or_else(|| exit_plan_file_path(block).and_then(|path| read_plan_file(&path)))
-        .or_else(|| last_plan_path.and_then(read_plan_file))
-}
-
 fn push_pending_text(text: &mut Vec<&str>, out: &mut Vec<TurnEntry>) {
     if !text.is_empty() {
         out.push(TurnEntry::response_now(text.join("\n")));
         text.clear();
     }
-}
-
-fn current_prompt_start(entries: &[serde_json::Value]) -> usize {
-    entries
-        .iter()
-        .rposition(is_submitted_user_prompt)
-        .map_or(0, |index| index + 1)
 }
 
 fn is_submitted_user_prompt(entry: &serde_json::Value) -> bool {
@@ -352,31 +344,6 @@ fn tool_result_text(block: &serde_json::Value) -> Option<String> {
     }
 }
 
-fn exit_plan_text(block: &serde_json::Value) -> Option<String> {
-    block
-        .get("input")?
-        .get("plan")?
-        .as_str()
-        .map(str::to_string)
-}
-
-fn exit_plan_file_path(block: &serde_json::Value) -> Option<String> {
-    block
-        .get("input")?
-        .get("planFilePath")?
-        .as_str()
-        .and_then(plan_file_path)
-}
-
-fn read_plan_file(path: &str) -> Option<String> {
-    std::fs::read_to_string(path).ok()
-}
-
-fn plan_write_file_path(block: &serde_json::Value) -> Option<String> {
-    let path = block.get("input")?.get("file_path")?.as_str()?;
-    plan_file_path(path)
-}
-
 fn plan_file_path(path: &str) -> Option<String> {
     let is_md = Path::new(path)
         .extension()
@@ -406,11 +373,6 @@ fn assistant_text(entry: &serde_json::Value) -> Option<String> {
     } else {
         Some(parts.join("\n"))
     }
-}
-
-fn is_tool_use(block: &serde_json::Value, name: &str) -> bool {
-    block.get("type").and_then(|t| t.as_str()) == Some("tool_use")
-        && block.get("name").and_then(|n| n.as_str()) == Some(name)
 }
 
 fn content_blocks(entry: &serde_json::Value) -> Option<&[serde_json::Value]> {

@@ -258,13 +258,10 @@ impl RangeArgs {
         let shown = (self.base.is_none() || self.head.is_none())
             .then(|| shown_range(&repo))
             .flatten();
+        let (shown_base, shown_head) = shown.map(|t| (t.base, t.head)).unzip();
         let (Some(base), Some(head)) = (
-            self.base
-                .clone()
-                .or_else(|| shown.as_ref().map(|t| t.base.clone())),
-            self.head
-                .clone()
-                .or_else(|| shown.as_ref().map(|t| t.head.clone())),
+            self.base.clone().or(shown_base),
+            self.head.clone().or(shown_head),
         ) else {
             eprintln!(
                 "error: no review range — pass --base <rev> --head <rev>, or open the repo in \
