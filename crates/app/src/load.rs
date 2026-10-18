@@ -14,11 +14,12 @@ use concats_review::{comments, guide, sessions, store};
 use concats_state::Target;
 
 use crate::{
+    editor::{caret_at_offset, offset_of},
     file_view::{open_file, open_settings, read_file_sides},
     makepad_widgets::makepad_platform::thread::SignalToUI,
     review_doc::{
-        Caret, Compose, Composing, ReviewDoc, Stream, caret_at_offset, changed_keys, offset_of,
-        splice_comments, splice_composer,
+        Caret, Compose, Composing, ReviewDoc, Stream, changed_keys, splice_comments,
+        splice_composer,
     },
     service::{ReviewCmd, review, review_state},
     window::WindowState,

@@ -326,7 +326,10 @@ mod tests {
     use gix::ObjectId;
 
     use super::*;
-    use crate::review_doc::{Caret, Stream, reveal_removed, type_at};
+    use crate::{
+        editor::type_at,
+        review_doc::{Caret, Stream, reveal_removed},
+    };
 
     fn oid(n: u8) -> ObjectId {
         ObjectId::from_hex(format!("{n:040x}").as_bytes()).expect("valid hex")
