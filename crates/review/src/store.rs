@@ -723,18 +723,20 @@ pub fn inject_comments(
     // placeable comment has the last word on where it goes; a thread with no
     // place flushes as outdated rather than landing somewhere wrong.
     let where_blobs = blobs_by_path(rows, blobs, about);
-    let mut thread_at: HashMap<u64, LineKey> = HashMap::new();
-    for comment in &threaded {
-        let path_blobs = where_blobs
-            .get(comment.path.as_str())
-            .map_or(&[][..], Vec::as_slice);
-        if let Some(run) = place(comment, blobs, path_blobs) {
-            thread_at.insert(thread_key(comment), (blobs[run.blob as usize].oid, run.end));
-        }
-    }
+    let path_blobs = |path: &str| where_blobs.get(path).map_or(&[][..], Vec::as_slice);
+    // Where each thread sits, and the path that placed it: the whole thread
+    // renders under that path's card, whichever file its other comments name.
+    let thread_at: HashMap<u64, (LineKey, &str)> = threaded
+        .chunk_by(|a, b| thread_key(a) == thread_key(b))
+        .filter_map(|thread| {
+            let (at, run) = thread_place(thread.iter().copied(), blobs, path_blobs)?;
+            let key = (blobs[run.blob as usize].oid, run.end);
+            Some((thread_key(at), (key, at.path.as_str())))
+        })
+        .collect();
     let mut by_anchor: HashMap<LineKey, Vec<&Comment>> = HashMap::new();
     for comment in &threaded {
-        if let Some(at) = thread_at.get(&thread_key(comment)) {
+        if let Some((at, _)) = thread_at.get(&thread_key(comment)) {
             by_anchor.entry(*at).or_default().push(comment);
         }
     }
@@ -767,7 +769,7 @@ pub fn inject_comments(
             .get(&(blob.oid, line))
             .into_iter()
             .flatten()
-            .filter(|c| owner == Some(c.path.as_str()))
+            .filter(|c| owner == thread_at.get(&thread_key(c)).map(|(_, path)| *path))
         {
             placed.insert(thread_key(c));
             out.push(comment_row(c, byline(c)));
@@ -964,6 +966,21 @@ pub fn place(comment: &Comment, blobs: &[Blob], path_blobs: &[u32]) -> Option<Si
     })
 }
 
+/// Where a thread sits: at the newest of its comments that can still be placed,
+/// each looked for among the blobs of its own path, since a reply can move the
+/// thread to another file. The one answer every view places a thread by.
+pub fn thread_place<'c, 'b>(
+    thread: impl IntoIterator<Item = &'c Comment>,
+    blobs: &[Blob],
+    path_blobs: impl Fn(&str) -> &'b [u32],
+) -> Option<(&'c Comment, Side)> {
+    let mut newest_first: Vec<&Comment> = thread.into_iter().collect();
+    newest_first.sort_by_key(|c| std::cmp::Reverse(c.id));
+    newest_first
+        .into_iter()
+        .find_map(|c| Some((c, place(c, blobs, path_blobs(&c.path))?)))
+}
+
 /// Where a comment's run sits in one blob: its own lines, when the blob is
 /// the one the comment names. This is how a thread gets its cursor pair; from
 /// then on the text carries it.
@@ -1152,13 +1169,19 @@ mod tests {
             code(0, 1),
         ];
         let comments = [
-            comment("session/s", anchor(prose_oid, 0, 1), "whole session"),
+            Comment {
+                id: 1,
+                ..comment("session/s", anchor(prose_oid, 0, 1), "whole session")
+            },
             // Recorded against the card this prose happens to follow: its
             // lines are not that file's, so it has nowhere to land.
-            comment("a.txt", anchor(prose_oid, 0, 0), "misfiled"),
+            Comment {
+                id: 2,
+                ..comment("a.txt", anchor(prose_oid, 0, 0), "misfiled")
+            },
         ];
         let placed = inject_comments(&mut rows, &blobs, &comments, &HashSet::new(), None);
-        assert_eq!(placed, HashSet::from([0]));
+        assert_eq!(placed, HashSet::from([1]));
         // Below the LAST line of its range, like every other thread.
         assert!(matches!(rows[4], Row::Comment { ref body, .. } if body == "whole session"));
         assert_eq!(rows.len(), 5);
@@ -1771,6 +1794,45 @@ mod tests {
                 .count(),
             2
         );
+    }
+
+    /// A reply can name another file, and then the whole thread lives there:
+    /// under the reply's card, root included, and nowhere under the root's.
+    #[test]
+    fn a_thread_moved_to_another_file_renders_whole_under_that_file() {
+        let comments = vec![
+            Comment {
+                id: 1,
+                ..comment("old.txt", anchor(oid(8), 0, 0), "this leaks")
+            },
+            Comment {
+                id: 2,
+                parent: Some(1),
+                ..comment("new.txt", anchor(oid(7), 1, 1), "it moved here")
+            },
+        ];
+        let blobs = vec![
+            Blob::new(oid(8), "txt".into(), "x\n".into()),
+            Blob::new(oid(7), "txt".into(), "a\nb\n".into()),
+        ];
+        let mut rows = card("old.txt", 0, 1);
+        rows.extend(card("new.txt", 1, 2));
+        let placed = inject_comments(&mut rows, &blobs, &comments, &HashSet::new(), None);
+        assert_eq!(placed, HashSet::from([1]));
+        let new_card = rows
+            .iter()
+            .position(|r| matches!(r, Row::FileHeader { path, .. } if path == "new.txt"))
+            .unwrap();
+        let ids = |rows: &[Row]| -> Vec<u64> {
+            rows.iter()
+                .filter_map(|r| match r {
+                    Row::Comment { id, .. } => Some(*id),
+                    _ => None,
+                })
+                .collect()
+        };
+        assert_eq!(ids(&rows[..new_card]), [] as [u64; 0]);
+        assert_eq!(ids(&rows[new_card..]), [1, 2]);
     }
 
     #[test]

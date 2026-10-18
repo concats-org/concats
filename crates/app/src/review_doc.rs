@@ -1020,38 +1020,33 @@ fn comments_stream(
         .filter(|c| !replies.contains_key(&c.id))
         .count();
 
+    // A thread sits where its newest placeable comment does, in that comment's
+    // file; one that cannot be placed is listed under its root's file.
+    let path_blobs = |path: &str| of_name.get(path).map_or(&[][..], Vec::as_slice);
+    let mut located: Vec<(&str, Side, &store::Comment)> = Vec::new();
+    let mut unplaced: Vec<&store::Comment> = Vec::new();
+    for &root in &roots {
+        let thread = replies.get(&root.id).into_iter().flatten().copied();
+        match store::thread_place(thread.chain([root]), blobs, path_blobs) {
+            Some((at, run)) => located.push((at.path.as_str(), run, root)),
+            None => unplaced.push(root),
+        }
+    }
+    located.sort_by_key(|&(path, run, root)| (path, run.blob, run.start, root.id));
+    let paths: std::collections::BTreeSet<&str> = located
+        .iter()
+        .map(|&(path, ..)| path)
+        .chain(unplaced.iter().map(|c| c.path.as_str()))
+        .collect();
+
     let mut outdated = 0usize;
     let mut cards: Vec<Row> = Vec::new();
-    for group in roots.chunk_by(|a, b| a.path == b.path) {
-        let path = group[0].path.as_str();
-        let path_blobs: &[u32] = of_name.get(path).map_or(&[], Vec::as_slice);
-        // A thread sits where its newest placeable comment does.
-        let mut located: Vec<(&store::Comment, Side)> = Vec::new();
-        let mut unplaced: Vec<&store::Comment> = Vec::new();
-        for &root in group {
-            let mut members: Vec<&store::Comment> = replies
-                .get(&root.id)
-                .into_iter()
-                .flatten()
-                .copied()
-                .chain([root])
-                .collect();
-            members.sort_by_key(|comment| std::cmp::Reverse(comment.id));
-            match members
-                .iter()
-                .find_map(|comment| store::place(comment, blobs, path_blobs))
-            {
-                Some(run) => located.push((root, run)),
-                None => unplaced.push(root),
-            }
-        }
-        located.sort_by_key(|(c, run)| (run.blob, run.start, c.id));
-
+    for path in paths {
         // Threads whose context overlaps share one card: the same line must not
         // render in two cards, or the splice would attach every thread at both
         // occurrences.
         let mut merged: Vec<(Vec<&store::Comment>, Side)> = Vec::new();
-        for (root, run) in located {
+        for &(_, run, root) in located.iter().filter(|&&(at, ..)| at == path) {
             match merged.last_mut() {
                 Some((members, card))
                     if card.blob == run.blob
@@ -1087,10 +1082,15 @@ fn comments_stream(
             }));
         }
 
-        if !unplaced.is_empty() {
-            outdated += unplaced.len();
+        let stale: Vec<&store::Comment> = unplaced
+            .iter()
+            .copied()
+            .filter(|c| c.path == path)
+            .collect();
+        if !stale.is_empty() {
+            outdated += stale.len();
             outdated_paths.insert(path.to_string());
-            let lines: Vec<String> = unplaced
+            let lines: Vec<String> = stale
                 .iter()
                 .map(|c| line(c, " · **content not in this range** — thread below"))
                 .collect();
@@ -2629,6 +2629,37 @@ mod tests {
             .collect();
         let expect: Vec<u32> = (2..=11).collect();
         assert_eq!(lines, expect);
+    }
+
+    /// A reply that moved its thread to another file takes the thread's card
+    /// with it: the context is built in the file the reply names.
+    #[test]
+    fn a_thread_moved_to_another_file_is_framed_in_that_file() {
+        let blobs = vec![
+            Blob::new(oid(1), "rs".into(), "a\nb\n".into()),
+            Blob::new(oid(2), "rs".into(), "c\nd\n".into()),
+        ];
+        let names = HashMap::from([("old.rs", vec![0]), ("new.rs", vec![1])]);
+        let reply = Comment {
+            parent: Some(1),
+            ..stored(2, "new.rs", oid(2), 1, 1)
+        };
+        let comments = vec![stored(1, "old.rs", oid(1), 0, 0), reply];
+        let (rows, outdated) = comments_stream(&blobs, &names, &comments);
+        assert!(outdated.is_empty());
+        let headers: Vec<&str> = rows
+            .iter()
+            .filter_map(|r| match r {
+                Row::FileHeader { path, .. } => Some(path.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(headers, ["new.rs"]);
+        assert!(
+            rows.iter()
+                .filter(|r| matches!(r, Row::Code { .. }))
+                .all(|r| matches!(r, Row::Code { blob: 1, .. }))
+        );
     }
 
     #[test]
