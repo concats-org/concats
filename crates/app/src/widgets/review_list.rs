@@ -720,51 +720,6 @@ script_mod! {
             }
         }
 
-        // The find bar. Pinned over the list rather than spliced into it: it
-        // belongs to the view, not to the document, and a row that scrolled it
-        // out of reach would be a search box you cannot see while searching.
-        find_bar := View {
-            visible: false
-            width: Fill height: Fit
-            align: Align{x: 1.0, y: 0.0}
-            padding: Inset{top: 8 right: 24}
-            SolidView {
-                width: 420 height: Fit
-                draw_bg.color: C_BORDER
-                padding: Inset{top: 1 bottom: 1 left: 1 right: 1}
-                SolidView {
-                    width: Fill height: Fit
-                    draw_bg.color: C_BG
-                    flow: Down
-                    padding: Inset{top: 8 bottom: 8 left: 10 right: 10}
-                    spacing: 6
-                    View {
-                        width: Fill height: Fit
-                        flow: Right
-                        align: Align{y: 0.5}
-                        spacing: 8
-                        find_input := FlatInput {
-                            width: Fill height: 20
-                            is_multiline: false
-                            submit_on_enter: true
-                            empty_text: "Find"
-                        }
-                        find_count := Prose {
-                            width: Fit height: Fit
-                            draw_text.color: C_FAINT
-                            draw_text.text_style: FONT{font_size: 8.5}
-                        }
-                    }
-                    replace_input := FlatInput {
-                        width: Fill height: 20
-                        is_multiline: false
-                        submit_on_enter: true
-                        empty_text: "Replace (enter replaces, cmd-enter all)"
-                    }
-                }
-            }
-        }
-
         // The offer to comment on selected text, parked at the end of the
         // selection. It is the selection's own affordance — the gutter's `+`
         // comments on whole lines, this one on the words — so it appears with
@@ -834,6 +789,53 @@ script_mod! {
             st_shadow := DropShadow {
                 width: Fill height: 12
                 strength: 0.84
+            }
+        }
+
+        // The find bar. Pinned over the list rather than spliced into it: it
+        // belongs to the view, not to the document, and a row that scrolled it
+        // out of reach would be a search box you cannot see while searching.
+        // Last, so it is drawn over the pinned header and, events running last
+        // child first, is the first to see the pointer.
+        find_bar := View {
+            visible: false
+            width: Fill height: Fit
+            align: Align{x: 1.0, y: 0.0}
+            padding: Inset{top: 8 right: 24}
+            SolidView {
+                width: 420 height: Fit
+                draw_bg.color: C_BORDER
+                padding: Inset{top: 1 bottom: 1 left: 1 right: 1}
+                SolidView {
+                    width: Fill height: Fit
+                    draw_bg.color: C_BG
+                    flow: Down
+                    padding: Inset{top: 8 bottom: 8 left: 10 right: 10}
+                    spacing: 6
+                    View {
+                        width: Fill height: Fit
+                        flow: Right
+                        align: Align{y: 0.5}
+                        spacing: 8
+                        find_input := FlatInput {
+                            width: Fill height: 20
+                            is_multiline: false
+                            submit_on_enter: true
+                            empty_text: "Find"
+                        }
+                        find_count := Prose {
+                            width: Fit height: Fit
+                            draw_text.color: C_FAINT
+                            draw_text.text_style: FONT{font_size: 8.5}
+                        }
+                    }
+                    replace_input := FlatInput {
+                        width: Fill height: 20
+                        is_multiline: false
+                        submit_on_enter: true
+                        empty_text: "Replace (enter replaces, cmd-enter all)"
+                    }
+                }
             }
         }
     }

@@ -504,6 +504,9 @@ fn search_stays_in_its_tab_without_a_code_caret() {
             data["dirty_buffers"], 0,
             "the query must reach the find input"
         );
+        // The bar draws over the card header pinned beneath it, input row and
+        // all.
+        assert_matches(name, &shot, EXACT);
     }
 }
 
