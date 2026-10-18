@@ -116,19 +116,10 @@ pub struct Comment {
 /// answer for the store and the app's published snapshot, so the two can
 /// never disagree about what a tick box shows.
 pub fn seen_state(keys: &[LineKey], seen: &HashSet<LineKey>) -> (bool, bool) {
-    if keys.is_empty() {
-        return (false, false);
-    }
-    let mut all = true;
-    let mut any = false;
-    for k in keys {
-        if seen.contains(k) {
-            any = true;
-        } else {
-            all = false;
-        }
-    }
-    (all, any)
+    (
+        !keys.is_empty() && keys.iter().all(|k| seen.contains(k)),
+        keys.iter().any(|k| seen.contains(k)),
+    )
 }
 
 /// The thread a comment belongs to: its root's id, itself if it is the root.
@@ -358,7 +349,8 @@ impl Store {
 
         let mut comments = Vec::new();
         if let Ok(mut stmt) = self.conn.prepare(&format!(
-            "SELECT id, {COMMENT_COLUMNS} FROM comments ORDER BY id"
+            "SELECT id, {COMMENT_COLUMNS}, run_start, run_end
+             FROM comments LEFT JOIN comment_cursors ON comment = id ORDER BY id"
         )) {
             let rows = stmt.query_map([], |row| {
                 // NOTE: an oid that is not hex is corruption, not a query
@@ -383,27 +375,12 @@ impl Store {
                         (Some(text), Some(from), Some(to)) => Some(Quote { text, from, to }),
                         _ => None,
                     },
-                    cursors: None,
+                    cursors: row
+                        .get::<_, Option<Vec<u8>>>(13)?
+                        .zip(row.get::<_, Option<Vec<u8>>>(14)?),
                 }))
             });
             comments.extend(rows.into_iter().flatten().flatten().flatten());
-        }
-        if let Ok(mut stmt) = self
-            .conn
-            .prepare("SELECT comment, run_start, run_end FROM comment_cursors")
-        {
-            let rows = stmt.query_map([], |row| {
-                Ok((
-                    row.get::<_, u64>(0)?,
-                    row.get::<_, Vec<u8>>(1)?,
-                    row.get::<_, Vec<u8>>(2)?,
-                ))
-            });
-            for (id, from, to) in rows.into_iter().flatten().flatten() {
-                if let Some(c) = comments.iter_mut().find(|c| c.id == id) {
-                    c.cursors = Some((from, to));
-                }
-            }
         }
 
         let changed = seen != self.seen || comments != self.comments;
@@ -412,30 +389,19 @@ impl Store {
         changed
     }
 
-    /// (all seen, any seen) for a set of line keys — drives the tick box
-    /// (checked when all) and lets a view show partial state.
-    pub fn state(&self, keys: &[LineKey]) -> (bool, bool) {
-        seen_state(keys, &self.seen)
-    }
-
     /// Tick-box semantics: if everything is seen, unsee it all; otherwise
     /// mark it all seen. Returns the new state. Writes through, one
     /// transaction per gesture.
     pub fn toggle(&mut self, keys: &[LineKey]) -> bool {
-        let (all, _) = self.state(keys);
+        let (all, _) = seen_state(keys, &self.seen);
+        let sql = if all {
+            "DELETE FROM seen WHERE blob = ?1 AND line = ?2"
+        } else {
+            "INSERT OR IGNORE INTO seen(blob, line) VALUES (?1, ?2)"
+        };
         let write = self.conn.transaction().and_then(|tx| {
             for (oid, line) in keys {
-                if all {
-                    tx.execute(
-                        "DELETE FROM seen WHERE blob = ?1 AND line = ?2",
-                        (oid.to_string(), line),
-                    )?;
-                } else {
-                    tx.execute(
-                        "INSERT OR IGNORE INTO seen(blob, line) VALUES (?1, ?2)",
-                        (oid.to_string(), line),
-                    )?;
-                }
+                tx.execute(sql, (oid.to_string(), line))?;
             }
             tx.commit()
         });
@@ -446,13 +412,10 @@ impl Store {
             for k in keys {
                 self.seen.remove(k);
             }
-            false
         } else {
-            for k in keys {
-                self.seen.insert(*k);
-            }
-            true
+            self.seen.extend(keys);
         }
+        !all
     }
 
     /// Store a comment and return it as stored. `comment.id` is ignored: the
@@ -686,14 +649,14 @@ pub fn git_user_name(git_dir: &Path) -> Option<String> {
 /// lines on the old blob plus the add lines on the new one. Context lines are
 /// not part of "seen": they weren't changed.
 pub fn hunk_keys(old: Option<Side>, new: Option<Side>, blobs: &[Blob]) -> Vec<LineKey> {
-    let mut keys = Vec::new();
-    for side in [old, new].into_iter().flatten() {
-        let oid = blobs[side.blob as usize].oid;
-        for l in side.start..=side.end {
-            keys.push((oid, l));
-        }
-    }
-    keys
+    [old, new]
+        .into_iter()
+        .flatten()
+        .flat_map(|side| {
+            let oid = blobs[side.blob as usize].oid;
+            (side.start..=side.end).map(move |line| (oid, line))
+        })
+        .collect()
 }
 
 /// Splice comment rows into a row stream, each thread directly below the LAST
@@ -787,13 +750,7 @@ pub fn inject_comments(
             .filter(|c| owner == Some(c.path.as_str()))
         {
             placed.insert(thread_key(c));
-            out.push(Row::Comment {
-                id: c.id,
-                parent: c.parent,
-                body: c.body.clone(),
-                meta: byline(c),
-                quote: c.quote.as_ref().map(|quote| quote.text.clone()),
-            });
+            out.push(comment_row(c, byline(c)));
         }
     }
     flush_outdated(&mut out, card.as_deref(), &threaded, &placed, show_all);
@@ -840,38 +797,16 @@ pub fn save_guide(git_dir: &Path, rec: &Guide) -> Result<(), Error> {
     Ok(())
 }
 
-/// Every stored guide, oldest first.
-pub fn guides(git_dir: &Path) -> Vec<Guide> {
-    let Ok(conn) = open_db(git_dir) else {
-        return Vec::new();
-    };
-    let Ok(mut stmt) = conn.prepare(
-        "SELECT base, head, author, created_at, markdown FROM guides ORDER BY created_at, id",
-    ) else {
-        return Vec::new();
-    };
-    let rows = stmt.query_map([], |row| {
-        Ok((
-            row.get::<_, String>(0)?,
-            row.get::<_, String>(1)?,
-            row.get::<_, Option<String>>(2)?,
-            row.get::<_, u64>(3)?,
-            row.get::<_, String>(4)?,
-        ))
-    });
-    rows.into_iter()
-        .flatten()
-        .flatten()
-        .filter_map(|(base, head, author, created_at, markdown)| {
-            Some(Guide {
-                base: ObjectId::from_hex(base.as_bytes()).ok()?,
-                head: ObjectId::from_hex(head.as_bytes()).ok()?,
-                created_at,
-                author,
-                markdown,
-            })
+/// Whether any guide was submitted at all — the 1 s poll asks this, so it reads
+/// no guide to answer.
+pub fn any_guide(git_dir: &Path) -> bool {
+    // NOTE: a store that cannot be read offers no guide, and the poll asks
+    // again in a second; saying so every second would bury the terminal.
+    open_db(git_dir)
+        .and_then(|conn| {
+            conn.query_row("SELECT EXISTS(SELECT 1 FROM guides)", [], |row| row.get(0))
         })
-        .collect()
+        .unwrap_or(false)
 }
 
 /// The (base, head) key a guide is stored under. A WORKTREE endpoint has no
@@ -1022,17 +957,25 @@ fn flush_outdated(
         .filter(|c| c.path == path && !placed.contains(&thread_key(c)))
     {
         let byline = byline(c);
-        out.push(Row::Comment {
-            id: c.id,
-            parent: c.parent,
-            body: c.body.clone(),
-            meta: if byline.is_empty() {
+        out.push(comment_row(
+            c,
+            if byline.is_empty() {
                 "outdated".into()
             } else {
                 format!("{byline} · outdated")
             },
-            quote: c.quote.as_ref().map(|quote| quote.text.clone()),
-        });
+        ));
+    }
+}
+
+/// The row a comment renders as, under `meta` for its byline.
+fn comment_row(c: &Comment, meta: String) -> Row {
+    Row::Comment {
+        id: c.id,
+        parent: c.parent,
+        body: c.body.clone(),
+        meta,
+        quote: c.quote.as_ref().map(|quote| quote.text.clone()),
     }
 }
 
@@ -1486,11 +1429,11 @@ mod tests {
         let keys = [(oid(1), 0), (oid(1), 1)];
         // Partially seen -> toggling completes the set, not clears it.
         s.seen.insert(keys[0]);
-        assert_eq!(s.state(&keys), (false, true));
+        assert_eq!(seen_state(&keys, &s.seen), (false, true));
         assert!(s.toggle(&keys));
-        assert_eq!(s.state(&keys), (true, true));
+        assert_eq!(seen_state(&keys, &s.seen), (true, true));
         assert!(!s.toggle(&keys));
-        assert_eq!(s.state(&keys), (false, false));
+        assert_eq!(seen_state(&keys, &s.seen), (false, false));
     }
 
     #[test]
@@ -1983,6 +1926,7 @@ mod tests {
     #[test]
     fn round_trips_and_newest_wins() {
         let tmp = tempfile::tempdir().unwrap();
+        assert!(!any_guide(tmp.path()));
         save_guide(tmp.path(), &guide(1, 2, 100, "first")).unwrap();
         save_guide(tmp.path(), &guide(1, 2, 200, "second")).unwrap();
         save_guide(tmp.path(), &guide(1, 3, 300, "other range")).unwrap();
@@ -1990,7 +1934,11 @@ mod tests {
         let g = latest_guide(tmp.path(), &oid(1), &oid(2)).unwrap();
         assert_eq!(g.markdown, "second");
         assert_eq!(g.author.as_deref(), Some("claude"));
-        assert_eq!(guides(tmp.path()).len(), 3);
+        assert!(any_guide(tmp.path()));
+        assert_eq!(
+            latest_guide(tmp.path(), &oid(1), &oid(3)).unwrap().markdown,
+            "other range"
+        );
         // No guide for a range nothing was submitted against.
         assert!(latest_guide(tmp.path(), &oid(9), &oid(2)).is_none());
     }

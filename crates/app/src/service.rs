@@ -551,7 +551,7 @@ impl Service for AppService {
                         }
                         // Something was submitted, but not for this range: say
                         // so, don't switch the diff under the reviewer.
-                        None if !store::guides(&git_dir).is_empty() => {
+                        None if store::any_guide(&git_dir) => {
                             notify(ReviewUpdate::Status { window, message:
                                 "a guide was submitted for a different range — open it via the diff picker".into(),
                             });
