@@ -88,15 +88,15 @@ type PathBlobs = HashMap<String, HashSet<Option<ObjectId>>>;
 /// One commit of the range: identity, message, and its own diff against the
 /// first parent — both as lowering input (`changes`, with the before/after
 /// oids the `FileLowerer` needs) and as the linking lookup (`paths`).
-pub struct CommitDiff {
-    pub oid: ObjectId,
+struct CommitDiff {
+    oid: ObjectId,
     /// First line of the message.
-    pub subject: String,
+    subject: String,
     /// The rest of the message, trimmed. Empty when subject-only.
-    pub body: String,
+    body: String,
     /// More than one = a merge; its diff is still against parents[0].
-    pub parent_count: usize,
-    pub changes: Vec<Change>,
+    parent_count: usize,
+    changes: Vec<Change>,
     paths: PathBlobs,
 }
 
@@ -107,7 +107,7 @@ pub struct CommitDiff {
 pub struct RangeDiff {
     commit_set: HashSet<ObjectId>,
     /// Head-first, as walked from `head` — reverse for display order.
-    pub by_commit: Vec<CommitDiff>,
+    by_commit: Vec<CommitDiff>,
     union: PathBlobs,
 }
 
@@ -124,7 +124,9 @@ impl RangeDiff {
 pub fn review_diff(repo: &Repository, loaded: &Loaded) -> RangeDiff {
     match (loaded.merge_base, loaded.head) {
         (Some(base), Some(head)) => range_diff(repo, &base, &head),
-        _ if loaded.workdir.is_some() => RangeDiff {
+        // NOTE: only a WORKTREE load lacks a commit endpoint, and only it has
+        // stage files: their new blobs are the range.
+        _ => RangeDiff {
             commit_set: HashSet::new(),
             by_commit: Vec::new(),
             union: loaded
@@ -132,11 +134,6 @@ pub fn review_diff(repo: &Repository, loaded: &Loaded) -> RangeDiff {
                 .iter()
                 .map(|file| (file.path.clone(), HashSet::from([file.new])))
                 .collect(),
-        },
-        _ => RangeDiff {
-            commit_set: HashSet::new(),
-            by_commit: Vec::new(),
-            union: HashMap::new(),
         },
     }
 }
@@ -155,14 +152,12 @@ pub fn matching_turns(range: &RangeDiff, turns: &[Turn]) -> HashMap<usize, (bool
         .collect()
 }
 
-pub fn range_diff(repo: &Repository, merge_base: &ObjectId, head: &ObjectId) -> RangeDiff {
+fn range_diff(repo: &Repository, merge_base: &ObjectId, head: &ObjectId) -> RangeDiff {
     let commits = range_commits(repo, merge_base, head);
     let mut by_commit = Vec::new();
     let mut union: PathBlobs = HashMap::new();
-    for &c in &commits {
-        let Ok(commit) = read_commit(repo, &c) else {
-            continue;
-        };
+    for (c, commit) in &commits {
+        let c = *c;
         let Some(parent) = commit.parents.first().copied() else {
             continue;
         };
@@ -190,7 +185,7 @@ pub fn range_diff(repo: &Repository, merge_base: &ObjectId, head: &ObjectId) -> 
         });
     }
     RangeDiff {
-        commit_set: commits.into_iter().collect(),
+        commit_set: commits.into_iter().map(|(oid, _)| oid).collect(),
         by_commit,
         union,
     }
@@ -279,10 +274,12 @@ pub fn load_turns(repo: &Repository, range: &RangeDiff) -> Vec<Turn> {
                 .get(1)
                 .is_some_and(|p| range.commit_set.contains(p))
         });
+        // The newest snapshot of the session, whichever turn it belongs to.
+        let snapshot = resolve_ref(repo, &format!("{SNAPSHOT_REF_PREFIX}{session_id}"));
         let candidate = branch_link
-            || match (base, session_tip_tree(repo, &session_id)) {
-                (Some(base), Some(tip_tree)) => match read_commit(repo, &base).map(|c| c.tree) {
-                    Ok(base_tree) => load::diff_trees(repo, base_tree, tip_tree)
+            || match (base, snapshot.and_then(|tip| read_commit(repo, &tip).ok())) {
+                (Some(base), Some(tip)) => match read_commit(repo, &base).map(|c| c.tree) {
+                    Ok(base_tree) => load::diff_trees(repo, base_tree, tip.tree)
                         .is_ok_and(|changes| range.overlaps(&changes)),
                     Err(_) => false,
                 },
@@ -290,10 +287,9 @@ pub fn load_turns(repo: &Repository, range: &RangeDiff) -> Vec<Turn> {
             };
 
         let chain_oids: Vec<ObjectId> = chain.iter().map(|(o, _, _)| *o).collect();
-        let mut touched = if candidate {
-            snapshot_diffs(repo, &session_id, &chain_oids, base)
-        } else {
-            HashMap::new()
+        let mut touched = match snapshot.filter(|_| candidate) {
+            Some(tip) => snapshot_diffs(repo, tip, &chain_oids, base),
+            None => HashMap::new(),
         };
 
         for (oid, c, msg) in chain {
@@ -307,12 +303,6 @@ pub fn load_turns(repo: &Repository, range: &RangeDiff) -> Vec<Turn> {
         }
     }
     turns
-}
-
-/// The tree of the newest snapshot of a session, whichever turn it belongs to.
-fn session_tip_tree(repo: &Repository, session_id: &str) -> Option<ObjectId> {
-    let tip = resolve_ref(repo, &format!("{SNAPSHOT_REF_PREFIX}{session_id}"))?;
-    read_commit(repo, &tip).ok().map(|c| c.tree)
 }
 
 /// A ref's target oid, if the ref exists.
@@ -337,14 +327,11 @@ fn resolve_ref(repo: &Repository, name: &str) -> Option<ObjectId> {
 /// position" resolves every generation to one slot.
 fn snapshot_diffs(
     repo: &Repository,
-    session_id: &str,
+    tip: ObjectId,
     chain: &[ObjectId],
     base: Option<ObjectId>,
 ) -> HashMap<ObjectId, Vec<Change>> {
     let mut out = HashMap::new();
-    let Some(tip) = resolve_ref(repo, &format!("{SNAPSHOT_REF_PREFIX}{session_id}")) else {
-        return out;
-    };
     let (Some(base), false) = (base, chain.is_empty()) else {
         return out;
     };
@@ -513,25 +500,13 @@ fn commit_change_rows(
     }
 }
 
-/// A turn ↔ commit link inside a review range.
-pub struct Link {
-    pub commit: ObjectId,
-    /// Index into the `turns` slice passed to `link_turns`.
-    pub turn: usize,
-    /// The commit's diff and the turn's snapshot diff share a (path, blob).
-    pub via_tree: bool,
-    /// The turn was recorded with this commit checked out (parents[1]).
-    pub via_branch: bool,
-}
-
-/// Link turns to the commits of the range. Pure: everything expensive was
-/// computed once in `range_diff`.
-pub fn link_turns(range: &RangeDiff, turns: &[Turn]) -> Vec<Link> {
-    let mut links = Vec::new();
-    if turns.is_empty() {
-        return links;
-    }
-    for cd in &range.by_commit {
+/// turn -> the indices into `range.by_commit` of the commits it is linked to:
+/// recorded with the commit checked out (parents[1]), or sharing a (path, blob)
+/// with its diff. Walked tail-first, and `by_commit` is head-first, so each
+/// list is the commits in the order the turn produced them.
+fn commits_by_turn(range: &RangeDiff, turns: &[Turn]) -> HashMap<usize, Vec<usize>> {
+    let mut out: HashMap<usize, Vec<usize>> = HashMap::new();
+    for (ci, cd) in range.by_commit.iter().enumerate().rev() {
         for (i, t) in turns.iter().enumerate() {
             let via_branch = t.branch_parent == Some(cd.oid);
             let via_tree = t.touched.iter().any(|c| {
@@ -540,22 +515,21 @@ pub fn link_turns(range: &RangeDiff, turns: &[Turn]) -> Vec<Link> {
                     .is_some_and(|s| s.contains(&c.new_oid()))
             });
             if via_branch || via_tree {
-                links.push(Link {
-                    commit: cd.oid,
-                    turn: i,
-                    via_tree,
-                    via_branch,
-                });
+                out.entry(i).or_default().push(ci);
             }
         }
     }
-    links
+    out
 }
 
 /// Commits reachable from `head`, stopping at `merge_base`. This is the
 /// pragmatic review-range set — a side branch merged below the merge base can
 /// slip extra commits in, which is acceptable for attributing transcripts.
-fn range_commits(repo: &Repository, merge_base: &ObjectId, head: &ObjectId) -> Vec<ObjectId> {
+fn range_commits(
+    repo: &Repository,
+    merge_base: &ObjectId,
+    head: &ObjectId,
+) -> Vec<(ObjectId, Commit)> {
     let mut out = Vec::new();
     let mut seen: HashSet<ObjectId> = HashSet::new();
     let mut stack = vec![*head];
@@ -566,8 +540,8 @@ fn range_commits(repo: &Repository, merge_base: &ObjectId, head: &ObjectId) -> V
         let Ok(c) = read_commit(repo, &oid) else {
             continue;
         };
-        out.push(oid);
         stack.extend(c.parents.iter().copied());
+        out.push((oid, c));
         if out.len() >= MAX_CHAIN {
             break;
         }
@@ -595,12 +569,11 @@ pub struct Mined {
 /// `loaded` mutably because the sessions tab lowers each turn's own diff into
 /// the same blob table the review uses.
 pub fn mine(loaded: &mut Loaded) -> Mined {
-    let Ok(mut repo) = gix::open(&loaded.root) else {
+    // NOTE: the mining pass re-reads the same snapshot trees constantly; the
+    // object cache `open_repo` sets collapses that to memory reads.
+    let Ok(repo) = load::open_repo(&loaded.root) else {
         return Mined::default();
     };
-    // The mining pass re-reads the same snapshot trees constantly; a small
-    // object cache collapses that to memory reads.
-    repo.object_cache_size_if_unset(16 * 1024 * 1024);
     let range = review_diff(&repo, loaded);
 
     let mut mined = Mined::default();
@@ -614,26 +587,8 @@ pub fn mine(loaded: &mut Loaded) -> Mined {
     if turns.is_empty() {
         return mined;
     }
-    let links = link_turns(&range, &turns);
-
     let via = matching_turns(&range, &turns);
-    // turn -> the by_commit indices linking it. by_commit is head-first, so
-    // descending index order = the commits as the turn produced them.
-    let commit_ix: HashMap<ObjectId, usize> = range
-        .by_commit
-        .iter()
-        .enumerate()
-        .map(|(i, cd)| (cd.oid, i))
-        .collect();
-    let mut turn_commits: HashMap<usize, Vec<usize>> = HashMap::new();
-    for l in &links {
-        if let Some(&ci) = commit_ix.get(&l.commit) {
-            turn_commits.entry(l.turn).or_default().push(ci);
-        }
-    }
-    for v in turn_commits.values_mut() {
-        v.sort_unstable_by(|a, b| b.cmp(a));
-    }
+    let turn_commits = commits_by_turn(&range, &turns);
 
     mined.sessions = sessions_rows(
         &repo,
@@ -978,11 +933,15 @@ mod tests {
 
         // The turn's snapshot and the feature commit changed the same bytes at
         // the same path, so the link fires via tree overlap.
-        let links = link_turns(&range, &turns);
-        assert_eq!(links.len(), 1);
-        assert!(links[0].via_tree);
-        assert!(!links[0].via_branch);
-        assert_eq!(links[0].commit, hd);
+        assert_eq!(range.by_commit[0].oid, hd);
+        assert_eq!(
+            commits_by_turn(&range, &turns),
+            HashMap::from([(0, vec![0])])
+        );
+        assert_eq!(
+            matching_turns(&range, &turns),
+            HashMap::from([(0, (true, false))])
+        );
 
         // The full mining pass: a Sessions document holding the transcript
         // followed by the produced diff rows.
@@ -1119,9 +1078,14 @@ mod tests {
             }]
         );
 
-        let links = link_turns(&range, &turns);
-        assert_eq!(links.len(), 1);
-        assert!(links[0].via_tree);
+        assert_eq!(
+            commits_by_turn(&range, &turns),
+            HashMap::from([(0, vec![0])])
+        );
+        assert!(matches!(
+            matching_turns(&range, &turns).get(&0),
+            Some((true, _))
+        ));
     }
 
     /// A session is linked as a whole: once any turn of it matches the range,
