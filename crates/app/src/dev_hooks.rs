@@ -293,7 +293,7 @@ impl App {
                         .pane(cx)
                         .dock(cx, ids!(dock))
                         .item(stream_tab_spec(tab).id)
-                        .check_box(cx, ids!(st_seen))
+                        .check_box(cx, ids!(sticky.seen_box))
                         .area();
                     let rect = area.rect(cx);
                     (rect.size.x > 0.0 && rect.size.y > 0.0).then_some((

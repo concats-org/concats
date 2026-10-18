@@ -409,6 +409,83 @@ script_mod! {
         }
     }
 
+    // A file card's header box: fold caret, viewed tick box, path, ±stats.
+    // The nested views fake a 1px border with rounded top corners. The card
+    // header and its pinned copy are both this box: the copy rides on the
+    // real header while it climbs, so any difference between the two reads
+    // as the header changing shape mid-scroll. The levels down to the path
+    // are named so the copy can reach it (see `CommentStrip`).
+    let HeaderCard = View {
+        width: Fill height: Fit
+        flow: Overlay
+        fh_frame := SolidView {
+            width: Fill height: Fit
+            draw_bg.color: C_BORDER
+            padding: Inset{top: 1 left: 1 right: 1}
+            fh_card := SolidView {
+                width: Fill height: Fit
+                draw_bg.color: C_CARD
+                flow: Down
+
+                fh_row := View {
+                    width: Fill height: 30
+                    flow: Right
+                    spacing: 8
+                    align: Align{x: 0.0, y: 0.5}
+                    padding: Inset{left: 8 right: 8}
+
+                    fold_button := FoldCaret {
+                        draw_icon.svg: crate_resource("self:resources/icons/caret_down.svg")
+                    }
+                    unfold_button := FoldCaret {
+                        visible: false
+                        // A right caret's ink is 1:2, and the svg scales from
+                        // its ink bounds, not the viewbox: ask for 6 wide so
+                        // Fit lands on 12 tall.
+                        icon_walk: Walk{width: 6 height: Fit}
+                        draw_icon.svg: crate_resource("self:resources/icons/caret_right.svg")
+                    }
+                    seen_box := SeenBox {}
+                    fh_path := Prose {
+                        width: Fit
+                        draw_text.color: C_TEXT
+                        draw_text.text_style: FONT{font_size: 9}
+                    }
+                    View { width: Fill height: Fit }
+                    // Conversations this range cannot place. Shown only when
+                    // there are some, because a card with nothing hidden has
+                    // nothing to offer.
+                    fh_outdated := OutdatedToggle {}
+                    fh_stat := Label {
+                        width: Fit
+                        draw_text.color: C_FAINT
+                        draw_text.text_style: FONT{font_size: 9}
+                    }
+                }
+                // The hairline under the title, dropped while the card is
+                // folded (the CardEnd cap closes it instead).
+                fh_rule := SolidView {
+                    width: Fill height: 1
+                    draw_bg.color: C_BORDER
+                }
+            }
+        }
+        // Rounds the card's top corners over the square body.
+        View {
+            width: Fill height: Fill
+            align: Align{x: 0.0, y: 0.0}
+            CardCap {}
+        }
+        // Only the pinned copy shows this: free-floating, it rounds at the
+        // bottom too.
+        fh_bottom := View {
+            visible: false
+            width: Fill height: Fill
+            align: Align{x: 0.0, y: 1.0}
+            CardCapBottom {}
+        }
+    }
+
     mod.widgets.ReviewList = #(ReviewList::register_widget(vm)) {
         width: Fill
         height: Fill
@@ -462,83 +539,20 @@ script_mod! {
                 }
             }
 
-            // The top of a file card: fold caret, viewed tick box, path,
-            // ±stats. The nested views fake a 1px border with rounded top
-            // corners; the code rows below continue the side borders and
-            // CardEnd closes the bottom — a "card" over a flat virtualized
-            // list. The title row is a fixed 32, like the design: a Fit height
-            // paints short of the box it lays out and left a band of window
-            // background between the header and the first code row. Fixed also
-            // because the body is hidden while the pinned copy stands in for
-            // it, and a Fit box would collapse to nothing — the row leaves the
-            // list, everything shunts up, the scroll resets. 16 lead-in + 1
-            // border + 30 row + 1 rule.
+            // The top of a file card. The code rows below continue the side
+            // borders and CardEnd closes the bottom — a "card" over a flat
+            // virtualized list. The title row is a fixed 32, like the design:
+            // a Fit height paints short of the box it lays out and left a band
+            // of window background between the header and the first code row.
+            // Fixed also because the body is hidden while the pinned copy
+            // stands in for it, and a Fit box would collapse to nothing — the
+            // row leaves the list, everything shunts up, the scroll resets. 16
+            // lead-in + 1 border + 30 row + 1 rule.
             FileHeader := View {
                 width: Fill height: 48
                 padding: Inset{top: 16 bottom: 0 left: 16 right: 16}
                 flow: Overlay
-                fh_body := View {
-                    width: Fill height: Fit
-                    flow: Overlay
-                SolidView {
-                    width: Fill height: Fit
-                    draw_bg.color: C_BORDER
-                    padding: Inset{top: 1 left: 1 right: 1}
-                    SolidView {
-                        width: Fill height: Fit
-                        draw_bg.color: C_CARD
-                        flow: Down
-
-                        View {
-                            width: Fill height: 30
-                            flow: Right
-                            spacing: 8
-                            align: Align{x: 0.0, y: 0.5}
-                            padding: Inset{left: 8 right: 8}
-
-                            fold_button := FoldCaret {
-                                draw_icon.svg: crate_resource("self:resources/icons/caret_down.svg")
-                            }
-                            unfold_button := FoldCaret {
-                                visible: false
-                                // A right caret's ink is 1:2, and the svg
-                                // scales from its ink bounds, not the viewbox:
-                                // ask for 6 wide so Fit lands on 12 tall.
-                                icon_walk: Walk{width: 6 height: Fit}
-                                draw_icon.svg: crate_resource("self:resources/icons/caret_right.svg")
-                            }
-                            seen_box := SeenBox {}
-                            fh_path := Prose {
-                                width: Fit
-                                draw_text.color: C_TEXT
-                                draw_text.text_style: FONT{font_size: 9}
-                            }
-                            View { width: Fill height: Fit }
-                            // Conversations this range cannot place. Shown
-                            // only when there are some, because a card with
-                            // nothing hidden has nothing to offer.
-                            fh_outdated := OutdatedToggle {}
-                            fh_stat := Label {
-                                width: Fit
-                                draw_text.color: C_FAINT
-                                draw_text.text_style: FONT{font_size: 9}
-                            }
-                        }
-                        // The hairline under the title, dropped while the card
-                        // is folded (the CardEnd cap closes it instead).
-                        fh_rule := SolidView {
-                            width: Fill height: 1
-                            draw_bg.color: C_BORDER
-                        }
-                    }
-                }
-                // Rounds the card's top corners over the square body.
-                View {
-                    width: Fill height: Fill
-                    align: Align{x: 0.0, y: 0.0}
-                    CardCap {}
-                }
-                }
+                fh_body := HeaderCard {}
             }
 
             // A collapsed run of unchanged lines: the arrow band(s) that reveal
@@ -839,11 +853,6 @@ script_mod! {
         // viewport: the header scrolls along, so the path and the viewed tick
         // box stay at hand until the card is read (and ticked) to its end.
         // Populated and shown by ReviewList::draw_walk.
-        //
-        // Chrome-identical to a FileHeader's card box (its 16px lead-in aside):
-        // same border, same hairline, same rounded top corners. The copy rides
-        // on the real header while it climbs, so any difference between the two
-        // reads as the header changing shape mid-scroll.
         sticky := View {
             visible: false
             width: Fill height: Fit
@@ -858,61 +867,12 @@ script_mod! {
             st_shadow_up := ShadowUp {
                 width: Fill height: 12
             }
-            View {
-            width: Fill height: Fit
-            flow: Overlay
-            SolidView {
-                width: Fill height: Fit
-                draw_bg.color: C_BORDER
-                padding: Inset{top: 1 left: 1 right: 1}
-                SolidView {
-                    width: Fill height: Fit
-                    draw_bg.color: C_CARD
-                    flow: Down
-                    View {
-                        width: Fill height: 30
-                        flow: Right
-                        spacing: 8
-                        align: Align{x: 0.0, y: 0.5}
-                        padding: Inset{left: 8 right: 8}
-                        st_fold := FoldCaret {
-                            draw_icon.svg: crate_resource("self:resources/icons/caret_down.svg")
-                        }
-                        st_seen := SeenBox {}
-                        st_path := Label {
-                            width: Fit
-                            draw_text.color: C_TEXT
-                            draw_text.text_style: FONT{font_size: 9}
-                        }
-                        View { width: Fill height: Fit }
-                        // The pinned twin of the card header's toggle: the
-                        // in-list header is invisible while this stands in for
-                        // it, so a control that only lived there would be out
-                        // of reach just when the card is on screen.
-                        st_outdated := OutdatedToggle {}
-                        st_stat := Label {
-                            width: Fit
-                            draw_text.color: C_FAINT
-                            draw_text.text_style: FONT{font_size: 9}
-                        }
-                    }
-                    st_rule := SolidView {
-                        width: Fill height: 1
-                        draw_bg.color: C_BORDER
-                    }
-                }
-            }
-            View {
-                width: Fill height: Fill
-                align: Align{x: 0.0, y: 0.0}
-                CardCap {}
-            }
-            // Pinned it is a free-floating box, so it rounds at the bottom too.
-            View {
-                width: Fill height: Fill
-                align: Align{x: 0.0, y: 1.0}
-                CardCapBottom {}
-            }
+            // Chrome, not content: the copy's path is not selectable.
+            HeaderCard {
+                fh_frame +: { fh_card +: { fh_row +: { fh_path +: {
+                    selectable: false
+                } } } }
+                fh_bottom +: { visible: true }
             }
             // …and the header's own shadow onto the rows passing beneath it,
             // ramped by the same `fade`: at rest the copy rides on the real
@@ -1584,7 +1544,14 @@ impl ReviewList {
             }
             Row::FileHeader { .. } => {
                 let item = list.item(cx, entry, id!(FileHeader));
-                self.draw_file_header(cx, &item, r, pass);
+                // Invisible while the pinned copy stands in for this card — and
+                // inert with it, since an invisible View drops the events its
+                // caret and tick box need. The row keeps its height, so nothing
+                // moves.
+                item.view(cx, ids!(fh_body))
+                    .set_visible(cx, self.sticky_idx != Some(r));
+                self.fill_header(cx, &item, r, pass);
+                item.draw_all(cx, &mut Scope::with_props(theme));
             }
             // What the range took out, standing where it was. The file view
             // shows the file as it is, so this is the only trace of a deletion
@@ -1721,7 +1688,9 @@ impl ReviewList {
         }
     }
 
-    fn draw_file_header(&self, cx: &mut Cx2d, item: &WidgetRef, r: usize, pass: &DrawPass) {
+    /// The header of the card at row `r`, in the box under `root`: the list
+    /// row's or the pinned copy's.
+    fn fill_header(&self, cx: &mut Cx2d, root: &WidgetRef, r: usize, pass: &DrawPass) {
         let Some(Row::FileHeader {
             path,
             adds,
@@ -1733,23 +1702,18 @@ impl ReviewList {
         else {
             return;
         };
-        let (d, tab) = (pass.doc, pass.tab);
-        // Invisible while the pinned copy stands in for this card — and inert
-        // with it, since an invisible View drops the events its caret and tick
-        // box need. The row keeps its height, so nothing moves.
-        item.view(cx, ids!(fh_body))
-            .set_visible(cx, self.sticky_idx != Some(r));
-        item.widget(cx, ids!(seen_box))
+        let d = pass.doc;
+        root.widget(cx, ids!(seen_box))
             .set_action_data(ReviewItemAction::Seen {
-                tab,
+                tab: pass.tab,
                 path: path.clone(),
                 near: r,
             });
         for ids in [ids!(fold_button), ids!(unfold_button)] {
-            item.widget(cx, ids)
+            root.widget(cx, ids)
                 .set_action_data(ReviewItemAction::Fold { path: path.clone() });
         }
-        item.label(cx, ids!(fh_path))
+        root.label(cx, ids!(fh_path))
             .set_text(cx, &header_title(path, from.as_deref()));
         // The viewed tick box covers every hunk of this card — all their
         // changed lines flip together.
@@ -1758,9 +1722,9 @@ impl ReviewList {
             .at(r)
             .map(|card| card.seen_state(&pass.review.seen))
             .unwrap_or_default();
-        item.check_box(cx, ids!(seen_box))
+        root.check_box(cx, ids!(seen_box))
             .set_active(cx, all, Animate::No);
-        item.label(cx, ids!(fh_stat))
+        root.label(cx, ids!(fh_stat))
             .set_text(cx, &header_stat(*adds, *dels, *similarity, any && !all));
         // Conversations recorded against this file that this range cannot
         // place. Offered only when there are some; the label says which way
@@ -1768,23 +1732,22 @@ impl ReviewList {
         // read, not recomputed: the splice decided, and deciding again here is
         // how a header ends up disagreeing with the rows right under it.
         let hidden = store::outdated_threads(&pass.review.comments, path, &d.placed_threads);
-        let outdated = item.button(cx, ids!(fh_outdated));
+        let outdated = root.button(cx, ids!(fh_outdated));
         outdated.set_visible(cx, hidden > 0);
         if hidden > 0 {
             outdated.set_text(
                 cx,
                 &outdated_label(hidden, d.show_all_comments.contains(path)),
             );
-            item.widget(cx, ids!(fh_outdated))
+            root.widget(cx, ids!(fh_outdated))
                 .set_action_data(ReviewItemAction::Outdated { path: path.clone() });
         }
         // Shut cards show the other caret and drop the hairline: the bottom
         // cap closes them instead.
         let folded = d.folded.contains(path);
-        item.button(cx, ids!(fold_button)).set_visible(cx, !folded);
-        item.button(cx, ids!(unfold_button)).set_visible(cx, folded);
-        item.view(cx, ids!(fh_rule)).set_visible(cx, !folded);
-        item.draw_all(cx, &mut Scope::with_props(&pass.theme));
+        root.button(cx, ids!(fold_button)).set_visible(cx, !folded);
+        root.button(cx, ids!(unfold_button)).set_visible(cx, folded);
+        root.view(cx, ids!(fh_rule)).set_visible(cx, !folded);
     }
 
     /// A code row: the gutter's numbers and marks, the line's text and colours,
@@ -2076,60 +2039,14 @@ impl ReviewList {
         let sticky = self.view.view(cx, ids!(sticky));
         let pinned = self
             .sticky_idx
-            .and_then(|header| Some((header, pass.rows.get(header)?)));
-        let Some((
-            header,
-            Row::FileHeader {
-                path,
-                adds,
-                dels,
-                from,
-                similarity,
-                ..
-            },
-        )) = pinned
-        else {
+            .filter(|&header| matches!(pass.rows.get(header), Some(Row::FileHeader { .. })));
+        let Some(header) = pinned else {
             if sticky.visible() {
                 sticky.set_visible(cx, false);
             }
             return;
         };
-        self.view
-            .widget(cx, ids!(st_seen))
-            .set_action_data(ReviewItemAction::Seen {
-                tab: pass.tab,
-                path: path.clone(),
-                near: header,
-            });
-        self.view
-            .widget(cx, ids!(st_fold))
-            .set_action_data(ReviewItemAction::Fold { path: path.clone() });
-        self.view
-            .widget(cx, ids!(st_outdated))
-            .set_action_data(ReviewItemAction::Outdated { path: path.clone() });
-        self.view
-            .label(cx, ids!(st_path))
-            .set_text(cx, &header_title(path, from.as_deref()));
-        let (all, any) = self
-            .cards
-            .at(header)
-            .map(|card| card.seen_state(&pass.review.seen))
-            .unwrap_or_default();
-        self.view
-            .check_box(cx, ids!(st_seen))
-            .set_active(cx, all, Animate::No);
-        self.view
-            .label(cx, ids!(st_stat))
-            .set_text(cx, &header_stat(*adds, *dels, *similarity, any && !all));
-        let hidden = store::outdated_threads(&pass.review.comments, path, &pass.doc.placed_threads);
-        let st_outdated = self.view.button(cx, ids!(st_outdated));
-        st_outdated.set_visible(cx, hidden > 0);
-        if hidden > 0 {
-            st_outdated.set_text(
-                cx,
-                &outdated_label(hidden, pass.doc.show_all_comments.contains(path)),
-            );
-        }
+        self.fill_header(cx, &sticky, header, pass);
         if let Some(mut view) = sticky.borrow_mut() {
             // The up-shadow always takes the 12pt above the header inside the
             // sticky, so the box always starts that much higher for the header
