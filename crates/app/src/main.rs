@@ -16,7 +16,7 @@
 //! shows error/warning counts, the load stats, the view buttons, the terminal
 //! toggle and its `+` (more shell sessions as closable tabs), and a `{ }`
 //! button that opens a Settings tab (theme and font, as editable highlighted
-//! JSON). The chip opens an autocomplete over the repo's refs: pick one to diff
+//! TOML). The chip opens an autocomplete over the repo's refs: pick one to diff
 //! it against HEAD, or type an explicit `base...head`.
 //!
 //! Perf: F3 toggles the live frame graph. Loading happens on a worker thread,

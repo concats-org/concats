@@ -26,8 +26,8 @@ use super::{FileBrowserAction, GutterAction, ReviewList, SeenBar, review_list::R
 use crate::{
     FrameData, WindowScope,
     dock::{
-        TabSpec, drag_source_tab_id, file_tab_id, is_terminal_dock_tab, model_tab_of,
-        open_tab_beside_streams, settings_tab_spec, stream_tab_spec,
+        TabSpec, drag_source_tab_id, file_tab_id, is_terminal_dock_tab, model_tab_of, open_tab,
+        settings_tab_spec, stream_tab_spec, stream_tabs, terminal_tab_spec,
     },
     file_view::{open_file, read_file_sides},
     load::{hold_minted, resplice_comments, spawn_load},
@@ -158,8 +158,8 @@ script_mod! {
     let FileTab = ReviewTab {
         draw_icon +: { color: C_DIM svg: crate_resource("self:resources/icons/file_fill.svg") }
     }
-    // The settings tab; the `{ }` status-bar button opens it in the bottom
-    // panel (no dedicated icon yet).
+    // The settings tab; the `{ }` status-bar button opens it beside the
+    // streams (no dedicated icon yet).
     let SettingsTab = ReviewTab {}
     // The bottom tab bar is the panel's structural anchor; its default
     // terminal is a normal closable tab, recreated by the `>_` button.
@@ -740,7 +740,7 @@ impl ReviewPane {
         self.state().with(crate::file_view::open_settings);
         let dock = self.view.dock(cx, ids!(dock));
         let spec = settings_tab_spec();
-        open_tab_beside_streams(cx, &dock, spec);
+        open_tab(cx, &dock, spec, &stream_tabs(), id!(main_tabs));
         dock.select_tab(cx, spec.id);
         self.view.redraw(cx);
     }
@@ -780,13 +780,15 @@ impl ReviewPane {
                 .is_some_and(|file| d.blobs[file.head as usize].dirty());
             crate::file_view::file_tab_title(path, d.head_oid, dirty)
         });
-        open_tab_beside_streams(
+        open_tab(
             cx,
             &dock,
             TabSpec {
                 title: &title,
                 ..stream_tab_spec(Stream::File(tab_id.0))
             },
+            &stream_tabs(),
+            id!(main_tabs),
         );
         dock.select_tab(cx, tab_id);
         self.set_gesture_tab(cx, Stream::File(tab_id.0));
@@ -1449,23 +1451,21 @@ impl ReviewPane {
     /// created next to the other terminals, selected, and revealed.
     fn add_terminal_session(&mut self, cx: &mut Cx) {
         let dock = self.view.dock(cx, ids!(dock));
-        // Wherever the user keeps their terminals — the permanent tab's bar.
-        let bar = dock
-            .find_tab_bar_of_tab(id!(terminal_tab))
-            .map(|(bar, _)| bar)
-            .unwrap_or(id!(bottom_tabs));
-        let tab_id = dock.unique_id(id!(terminal_tab).0);
+        let tab_id = dock.unique_id(terminal_tab_spec().id.0);
         let n = self.next_terminal.max(2);
         self.next_terminal = n + 1;
-        dock.create_and_select_tab(
+        open_tab(
             cx,
-            bar,
-            tab_id,
-            id!(TerminalPane),
-            format!("Terminal {n}"),
-            id!(TerminalTab),
-            None,
+            &dock,
+            TabSpec {
+                id: tab_id,
+                title: &format!("Terminal {n}"),
+                ..terminal_tab_spec()
+            },
+            &[terminal_tab_spec().id],
+            id!(bottom_tabs),
         );
+        dock.select_tab(cx, tab_id);
         self.open_terminal(cx, tab_id);
         self.state().set_terminal_tab(Some(tab_id));
         self.reveal_panel(cx, Panel::Bottom);
@@ -1474,11 +1474,11 @@ impl ReviewPane {
     /// A status-bar view button: reopen the stream's tab if it was closed,
     /// and jump to it either way.
     fn open_stream_tab(&mut self, cx: &mut Cx, tab: Stream) {
-        let tab_id = stream_tab_spec(tab).id;
-        self.user_closed.remove(&tab_id);
+        let spec = stream_tab_spec(tab);
+        self.user_closed.remove(&spec.id);
         let dock = self.view.dock(cx, ids!(dock));
-        open_tab_beside_streams(cx, &dock, stream_tab_spec(tab));
-        dock.select_tab(cx, tab_id);
+        open_tab(cx, &dock, spec, &stream_tabs(), id!(main_tabs));
+        dock.select_tab(cx, spec.id);
         self.set_gesture_tab(cx, tab);
         self.view.redraw(cx);
     }
@@ -1488,11 +1488,12 @@ impl ReviewPane {
     /// the user's layout is kept.
     pub(crate) fn sync_stream_tabs(&mut self, cx: &mut Cx, d: &ReviewDoc) {
         let dock = self.view.dock(cx, ids!(dock));
+        let siblings = stream_tabs();
         for (button, stream) in VIEW_BUTTONS {
             let available = stream == Stream::Files || !d.stream(stream).is_empty();
             let spec = stream_tab_spec(stream);
             if available && !self.user_closed.contains(&spec.id) {
-                open_tab_beside_streams(cx, &dock, spec);
+                open_tab(cx, &dock, spec, &siblings, id!(main_tabs));
             } else if dock.find_tab_bar_of_tab(spec.id).is_some() {
                 dock.close_tab(cx, spec.id);
             }
@@ -1506,22 +1507,11 @@ impl ReviewPane {
     /// slide completed.
     pub fn reveal_terminal(&mut self, cx: &mut Cx) {
         let dock = self.view.dock(cx, ids!(dock));
-        if dock.find_tab_bar_of_tab(id!(terminal_tab)).is_none() {
-            dock.create_and_select_tab(
-                cx,
-                id!(bottom_tabs),
-                id!(terminal_tab),
-                id!(TerminalPane),
-                "Terminal".into(),
-                id!(TerminalTab),
-                None,
-            );
-        }
-        self.open_terminal(cx, id!(terminal_tab));
-        self.state().set_terminal_tab(Some(id!(terminal_tab)));
-        self.view
-            .dock(cx, ids!(dock))
-            .select_tab(cx, id!(terminal_tab));
+        let spec = terminal_tab_spec();
+        open_tab(cx, &dock, spec, &[], id!(bottom_tabs));
+        self.open_terminal(cx, spec.id);
+        self.state().set_terminal_tab(Some(spec.id));
+        dock.select_tab(cx, spec.id);
         self.reveal_panel(cx, Panel::Bottom);
     }
 

@@ -83,21 +83,47 @@ pub(crate) fn file_tab_id(path: &str) -> LiveId {
     LiveId::from_str(&format!("file:{path}"))
 }
 
-pub(crate) fn open_tab_beside_streams(cx: &mut Cx, dock: &DockRef, spec: TabSpec<'_>) {
+/// The permanent terminal tab, the one the `>_` button opens.
+pub(crate) fn terminal_tab_spec() -> TabSpec<'static> {
+    TabSpec {
+        id: id!(terminal_tab),
+        kind: id!(TerminalPane),
+        template: id!(TerminalTab),
+        title: "Terminal",
+    }
+}
+
+/// The stream tabs, File Diff first: what opens beside the streams goes next
+/// to File Diff when it can.
+pub(crate) fn stream_tabs() -> Vec<LiveId> {
+    std::iter::once(Stream::Files)
+        .chain(crate::review_doc::STREAMS)
+        .map(|stream| stream_tab_spec(stream).id)
+        .collect()
+}
+
+/// Open `spec`'s tab unless it is open: in the bar of the first open sibling,
+/// else in `home`. Opening does not select it, because reconciling the
+/// streams opens tabs nobody asked to look at.
+pub(crate) fn open_tab(
+    cx: &mut Cx,
+    dock: &DockRef,
+    spec: TabSpec<'_>,
+    siblings: &[LiveId],
+    home: LiveId,
+) {
     if dock.find_tab_bar_of_tab(spec.id).is_some() {
         return;
     }
+    let bar = siblings
+        .iter()
+        .find_map(|tab| dock.find_tab_bar_of_tab(*tab))
+        .map_or(home, |(bar, _)| bar);
     // NOTE: keeping File Diff last gives reopened streams a stable position.
-    let (bar, after) = dock
+    let after = dock
         .find_tab_bar_of_tab(id!(files_tab))
-        .map(|(bar, position)| (bar, position.checked_sub(1)))
-        .or_else(|| {
-            crate::review_doc::STREAMS.into_iter().find_map(|stream| {
-                dock.find_tab_bar_of_tab(stream_tab_spec(stream).id)
-                    .map(|(bar, position)| (bar, Some(position)))
-            })
-        })
-        .unwrap_or((id!(main_tabs), None));
+        .filter(|(files_bar, _)| *files_bar == bar)
+        .and_then(|(_, position)| position.checked_sub(1));
     dock.create_tab(
         cx,
         bar,
