@@ -27,14 +27,10 @@ script_mod! {
 
     set_type_default() do #(DrawCardCap::script_shader(vm)) {
         ..mod.draw.DrawQuad
-        color: mod.app_theme.color_card
-        border_color: mod.app_theme.color_border
-        page_color: mod.app_theme.color_bg
         // `--radius-xs` in the design (Code node, 703:943) — the same token the
         // tick box uses, and the one radius the whole UI shares. The pinned
         // header carries it the whole way up, so it never changes shape.
         radius: 2.0
-        flip: 0.0
         pixel: fn() {
             let sdf = Sdf2d.viewport(self.pos * self.rect_size)
             sdf.clear(self.page_color)

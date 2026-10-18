@@ -14,10 +14,6 @@ script_mod! {
 
     set_type_default() do #(DrawSeenBar::script_shader(vm)) {
         ..mod.draw.DrawQuad
-        progress: 0.0
-        color: mod.app_theme.color_bg
-        border_color: mod.app_theme.color_border
-        fill_color: mod.app_theme.color_dim
         pixel: fn() {
             let sdf = Sdf2d.viewport(self.pos * self.rect_size)
             sdf.box(0.5, 0.5, self.rect_size.x - 1.0, self.rect_size.y - 1.0, 2.0)

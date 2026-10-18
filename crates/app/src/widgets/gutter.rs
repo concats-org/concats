@@ -29,8 +29,6 @@ script_mod! {
     // texture that works whatever the hue.
     set_type_default() do #(DrawMark::script_shader(vm)) {
         ..mod.draw.DrawQuad
-        color: mod.app_theme.color_added
-        striped: 0.0
         pixel: fn() {
             let mut a = self.color.w
             if self.striped > 0.5 {

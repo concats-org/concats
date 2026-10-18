@@ -29,9 +29,6 @@ script_mod! {
 
     set_type_default() do #(DrawDropShadow::script_shader(vm)) {
         ..mod.draw.DrawQuad
-        shadow_color: mod.app_theme.color_shadow
-        strength: 0.96
-        up: 0.0
         pixel: fn() {
             // Linear, like the design's own gradient. A squared falloff put
             // almost all the darkening in the first pixel or two and left the

@@ -52,6 +52,7 @@ script_mod! {
     use mod.widgets.SeenBar
     use mod.widgets.FONT
     use mod.widgets.DarkInput
+    use mod.widgets.BarButton
     use mod.widgets.C_CARD
     use mod.widgets.C_BORDER
     use mod.widgets.C_CHROME
@@ -163,10 +164,8 @@ script_mod! {
     // The bottom tab bar is the panel's structural anchor; its default
     // terminal is a normal closable tab, recreated by the `>_` button.
     let TerminalTab = ReviewTab {
-        closeable: true
         draw_icon +: { color: C_DIM svg: crate_resource("self:resources/icons/terminal_fill.svg") }
     }
-    let TerminalCloseTab = TerminalTab { closeable: true }
 
     let ReviewDock = DockFlat {
         padding: 0
@@ -226,17 +225,17 @@ script_mod! {
         draw_bg.color: C_BORDER
     }
 
-    // One chrome icon button: 20x20 around a 12px glyph, dim until hovered.
-    let BarButton = ButtonFlatter {
-        width: 20 height: 20
-        padding: 0
-        margin: 0
-        text: ""
-        icon_walk: Walk{width: 12 height: Fit}
-        draw_icon +: {
-            color: C_DIM
-            color_hover: C_TEXT
-        }
+    // A floating dropdown panel: the card fill in a hairline box, rows
+    // stacked down it.
+    let Dropdown = RoundedView {
+        height: Fit
+        flow: Down
+        spacing: 2
+        padding: 4
+        draw_bg.color: C_CARD
+        draw_bg.border_radius: 2.0
+        draw_bg.border_size: 1.0
+        draw_bg.border_color: C_BORDER
     }
 
     // One row of a picker dropdown: a full-width, left-aligned entry. Every
@@ -334,26 +333,13 @@ script_mod! {
             // Sits right after the diff chip: click to reload the open repo
             // at its current range. Icon color is the theme's (C_DIM/C_TEXT),
             // so it tracks light/dark.
-            load_button := ButtonFlatter {
-                width: 20 height: 20
-                padding: 0
+            load_button := BarButton {
                 margin: Inset{left: 4}
-                text: ""
-                icon_walk: Walk{width: 12 height: Fit}
-                draw_icon +: {
-                    svg: crate_resource("self:resources/icons/refresh.svg")
-                    color: C_DIM
-                    color_hover: C_TEXT
-                }
+                draw_icon.svg: crate_resource("self:resources/icons/refresh.svg")
             }
             View { width: Fill height: Fit }
             // Share lives in the title bar, top right — per the design.
-            share_button := ButtonFlatter {
-                width: 20 height: 20
-                padding: 0
-                margin: 0
-                text: ""
-                icon_walk: Walk{width: 12 height: Fit}
+            share_button := BarButton {
                 draw_icon +: {
                     // Brighter than the status bar's icons, like the design.
                     svg: crate_resource("self:resources/icons/share.svg")
@@ -386,7 +372,6 @@ script_mod! {
                     CommentsTab := CommentsTab{}
                     FileTab := FileTab{}
                     TerminalTab := TerminalTab{}
-                    TerminalCloseTab := TerminalCloseTab{}
                     SettingsTab := SettingsTab{}
                 }
 
@@ -477,17 +462,10 @@ script_mod! {
             // The diff picker: a floating panel right under the header chip.
             // A filter input over the repo's refs; Enter accepts a typed ref
             // or an explicit `base...head` range.
-            combo_panel := RoundedView {
+            combo_panel := Dropdown {
                 visible: false
-                width: 340 height: Fit
+                width: 340
                 margin: Inset{left: 78 top: 4}
-                flow: Down
-                spacing: 2
-                padding: 4
-                draw_bg.color: C_CARD
-                draw_bg.border_radius: 2.0
-                draw_bg.border_size: 1.0
-                draw_bg.border_color: C_BORDER
 
                 combo_input := DarkInput {
                     width: Fill
@@ -506,17 +484,10 @@ script_mod! {
 
             // The repo picker: a floating panel under the repo name. The recent
             // repos as rows, then "Open dir…" to browse for another one.
-            repo_panel := RoundedView {
+            repo_panel := Dropdown {
                 visible: false
-                width: 300 height: Fit
+                width: 300
                 margin: Inset{left: 78 top: 4}
-                flow: Down
-                spacing: 2
-                padding: 4
-                draw_bg.color: C_CARD
-                draw_bg.border_radius: 2.0
-                draw_bg.border_size: 1.0
-                draw_bg.border_color: C_BORDER
 
                 repo_row0 := ComboRow {}
                 repo_row1 := ComboRow {}
@@ -538,15 +509,8 @@ script_mod! {
                 width: Fill height: Fit
                 align: Align{x: 1.0, y: 0.0}
                 padding: Inset{right: 4 top: 2}
-                RoundedView {
-                    width: 150 height: Fit
-                    flow: Down
-                    spacing: 2
-                    padding: 4
-                    draw_bg.color: C_CARD
-                    draw_bg.border_radius: 2.0
-                    draw_bg.border_size: 1.0
-                    draw_bg.border_color: C_BORDER
+                Dropdown {
+                    width: 150
                     share_prompt := ComboRow { visible: true text: "Copy as prompt" }
                     share_md := ComboRow { visible: true text: "Copy as markdown" }
                     // WORKTREE reviews only (toggled on open): `git add -p`
@@ -1526,7 +1490,7 @@ impl ReviewPane {
             tab_id,
             id!(TerminalPane),
             format!("Terminal {n}"),
-            id!(TerminalCloseTab),
+            id!(TerminalTab),
             None,
         );
         self.open_terminal(cx, tab_id);

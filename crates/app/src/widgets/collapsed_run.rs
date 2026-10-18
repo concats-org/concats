@@ -30,12 +30,6 @@ script_mod! {
 
     set_type_default() do #(DrawSkip::script_shader(vm)) {
         ..mod.draw.DrawQuad
-        color: mod.app_theme.color_card
-        hover_color: mod.app_theme.color_element_hover
-        rule_color: mod.app_theme.color_faint
-        rule_y: 0.0
-        hover_y: 0.0
-        hover_on: 0.0
         pixel: fn() {
             let sdf = Sdf2d.viewport(self.pos * self.rect_size)
             sdf.clear(self.color)

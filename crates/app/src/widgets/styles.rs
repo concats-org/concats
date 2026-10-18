@@ -25,8 +25,6 @@ script_mod! {
     mod.widgets.C_BG = mod.app_theme.color_bg          // window + content + active tab
     mod.widgets.C_CARD = mod.app_theme.color_card      // file cards, inactive chrome
     mod.widgets.C_BORDER = mod.app_theme.color_border  // every hairline and card border
-    mod.widgets.C_BORDER_HOVER = mod.app_theme.color_border_hover
-    mod.widgets.C_BORDER_FOCUS = mod.app_theme.color_border_focus
     mod.widgets.C_CHROME = mod.app_theme.color_chrome  // header + status bar
     mod.widgets.C_TEXT = mod.app_theme.color_text
     mod.widgets.C_DIM = mod.app_theme.color_dim
@@ -34,10 +32,7 @@ script_mod! {
     mod.widgets.C_YELLOW = mod.app_theme.color_yellow
     mod.widgets.C_ACCENT = mod.app_theme.color_accent  // comment markers, selection, +
     mod.widgets.C_ON_ACCENT = mod.app_theme.color_on_accent
-    mod.widgets.C_ADDED = mod.app_theme.color_added    // seen tick, add marker
     mod.widgets.C_DELETED = mod.app_theme.color_deleted // "N lines removed"
-    mod.widgets.C_CHECKBOX_BG = mod.app_theme.color_checkbox_bg
-    mod.widgets.C_CHECKBOX_HOVER = mod.app_theme.color_checkbox_hover
     mod.widgets.C_ELEMENT_HOVER = mod.app_theme.color_element_hover
     mod.widgets.C_DRAG = mod.app_theme.color_drag
 
@@ -93,6 +88,19 @@ script_mod! {
         }
         draw_text +: {
             color: mod.app_theme.color_text
+        }
+    }
+
+    // One chrome icon button: 20x20 around a 12px glyph, dim until hovered.
+    mod.widgets.BarButton = ButtonFlatter {
+        width: 20 height: 20
+        padding: 0
+        margin: 0
+        text: ""
+        icon_walk: Walk{width: 12 height: Fit}
+        draw_icon +: {
+            color: mod.app_theme.color_dim
+            color_hover: mod.app_theme.color_text
         }
     }
 

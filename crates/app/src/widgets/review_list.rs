@@ -228,6 +228,7 @@ script_mod! {
     use mod.widgets.FONT_BOLD
     use mod.widgets.SeenBox
     use mod.widgets.DarkInput
+    use mod.widgets.BarButton
     use mod.widgets.C_BG
     use mod.widgets.C_CARD
     use mod.widgets.C_BORDER
@@ -253,15 +254,7 @@ script_mod! {
         // what breaks a line.
         is_multiline: true
         submit_on_enter: true
-        draw_bg +: {
-            border_size: 0.0
-            color: mod.app_theme.color_bg
-            color_hover: mod.app_theme.color_bg
-            color_focus: mod.app_theme.color_bg
-            color_down: mod.app_theme.color_bg
-            color_empty: mod.app_theme.color_bg
-            color_disabled: mod.app_theme.color_bg
-        }
+        draw_bg +: { border_size: 0.0 }
         // The draft reads as text and the prompt as a hint, in every state.
         // `get_color` mixes toward the state colours, and any we leave unset
         // fall through to makepad's own theme instead of ours — an unset
@@ -289,19 +282,6 @@ script_mod! {
         draw_selection.color: mod.app_theme.color_sel_focus
     }
 
-    // A composer control: 20x20 around a 12px glyph, like the status bar's.
-    let IconAction = ButtonFlatter {
-        width: 20 height: 20
-        padding: 0
-        margin: 0
-        text: ""
-        icon_walk: Walk{width: 12 height: Fit}
-        draw_icon +: {
-            color: C_DIM
-            color_hover: C_TEXT
-        }
-    }
-
     // The card header's toggle for the conversations this range cannot place.
     // Hidden until there are some. The card header and its pinned twin share
     // it, since either can be the one on screen. Every colour state is set;
@@ -322,6 +302,19 @@ script_mod! {
         }
     }
 
+    // A row inside a file card: the card's 16pt inset and its side borders,
+    // which the code, the collapsed runs and the air between them carry
+    // straight down from the header to the bottom cap.
+    let CardSides = View {
+        width: Fill height: Fit
+        padding: Inset{left: 16 right: 16}
+        sides := SolidView {
+            width: Fill height: Fit
+            draw_bg.color: C_BORDER
+            padding: Inset{left: 1 right: 1}
+        }
+    }
+
     // One code row's content: the gutter rail and the line. Shared by the
     // card-framed `Code` and the bare `CodeFlat`, so the two never drift.
     let CodeRow = SolidView {
@@ -332,12 +325,12 @@ script_mod! {
         dl := DiffLine {}
     }
 
-    // A comment strip, shared by `Comment` and its indented `Reply` twin.
-    // Hoisted so the two differ in one line — see the entries in the list.
-    // Every level is named, so `Reply` can reach the innermost box: a `+:`
+    // The strip a comment sits in: hairlines round it, the blue bar down its
+    // left edge, the window-dark body. Posted comments and the composer share
+    // it. Every level is named, so a user can reach the innermost box: a `+:`
     // merge resolves a direct child, and each level in between has to be
     // addressable for the nested form to get there.
-    let CommentStrip = View {
+    let StripFrame = View {
         width: Fill height: Fit
         padding: Inset{left: 16 right: 16}
         cm_frame := SolidView {
@@ -353,46 +346,53 @@ script_mod! {
                 cm_strip := SolidView {
                     width: Fill height: Fit
                     draw_bg.color: C_BG
-                    flow: Right
-                    align: Align{x: 0.0, y: 0.0}
                     padding: Inset{top: 12 bottom: 12 left: 12 right: 12}
-                    View {
-                        width: Fill height: Fit
-                        flow: Down
-                        spacing: 4
-                        // Who said it, and where it came from when that is not
-                        // here. Empty on the pre-author records, and an empty
-                        // label draws nothing.
-                        cm_meta := Prose {
-                            width: Fill
-                            draw_text.color: C_FAINT
-                            draw_text.text_style: FONT{font_size: 8}
-                        }
-                        // What the comment is about, when it was left on a
-                        // selection rather than on whole lines. Quoted from
-                        // the content, so it reads as the code's words and not
-                        // as the reviewer's; hidden when there is none.
-                        cm_quote := Prose {
-                            visible: false
-                            width: Fill
-                            draw_text.color: C_DIM
-                            draw_text.text_style: FONT{font_size: 8.5}
-                        }
-                        cm_body := Prose {
-                            width: Fill
-                            draw_text.color: C_TEXT
-                            draw_text.text_style: FONT{font_size: 9}
-                        }
-                    }
-                    cm_reply := IconAction {
-                        draw_icon.svg: crate_resource("self:resources/icons/reply.svg")
-                    }
-                    cm_delete := IconAction {
-                        draw_icon.svg: crate_resource("self:resources/icons/close_circle.svg")
-                    }
                 }
             }
         }
+    }
+
+    // A comment strip, shared by `Comment` and its indented `Reply` twin.
+    // Hoisted so the two differ in one line — see the entries in the list.
+    let CommentStrip = StripFrame {
+        cm_frame +: { cm_bar +: { cm_strip +: {
+            flow: Right
+            align: Align{x: 0.0, y: 0.0}
+            View {
+                width: Fill height: Fit
+                flow: Down
+                spacing: 4
+                // Who said it, and where it came from when that is not
+                // here. Empty on the pre-author records, and an empty
+                // label draws nothing.
+                cm_meta := Prose {
+                    width: Fill
+                    draw_text.color: C_FAINT
+                    draw_text.text_style: FONT{font_size: 8}
+                }
+                // What the comment is about, when it was left on a
+                // selection rather than on whole lines. Quoted from
+                // the content, so it reads as the code's words and not
+                // as the reviewer's; hidden when there is none.
+                cm_quote := Prose {
+                    visible: false
+                    width: Fill
+                    draw_text.color: C_DIM
+                    draw_text.text_style: FONT{font_size: 8.5}
+                }
+                cm_body := Prose {
+                    width: Fill
+                    draw_text.color: C_TEXT
+                    draw_text.text_style: FONT{font_size: 9}
+                }
+            }
+            cm_reply := BarButton {
+                draw_icon.svg: crate_resource("self:resources/icons/reply.svg")
+            }
+            cm_delete := BarButton {
+                draw_icon.svg: crate_resource("self:resources/icons/close_circle.svg")
+            }
+        } } }
     }
 
     // The fold caret in a card header: 12px, one per direction (the icon is
@@ -558,27 +558,15 @@ script_mod! {
             // A collapsed run of unchanged lines: the arrow band(s) that reveal
             // it. Wrapped like a code row so the card's side borders carry
             // straight through the cut.
-            Skipped := View {
-                width: Fill height: Fit
-                padding: Inset{left: 16 right: 16}
-                SolidView {
-                    width: Fill height: Fit
-                    draw_bg.color: C_BORDER
-                    padding: Inset{left: 1 right: 1}
-                    collapsed := CollapsedRun {}
-                }
+            Skipped := CardSides {
+                sides +: { collapsed := CollapsedRun {} }
             }
 
             // What the range removed, where it was removed from. The file view
             // shows the file as it is, so this stands in for lines the head
             // does not have — press it and they take its place.
-            Removed := View {
-                width: Fill height: Fit
-                padding: Inset{left: 16 right: 16}
-                SolidView {
-                    width: Fill height: Fit
-                    draw_bg.color: C_BORDER
-                    padding: Inset{left: 1 right: 1}
+            Removed := CardSides {
+                sides +: {
                     SolidView {
                         width: Fill height: Fit
                         draw_bg.color: C_CARD
@@ -614,13 +602,8 @@ script_mod! {
             // 10pt of air between the card's code and the chrome bracketing it.
             // Part of the code region, not of the chrome: a card ticked seen
             // runs its marker through this, and stops at a collapsed run.
-            Spacer := View {
-                width: Fill height: Fit
-                padding: Inset{left: 16 right: 16}
-                SolidView {
-                    width: Fill height: Fit
-                    draw_bg.color: C_BORDER
-                    padding: Inset{left: 1 right: 1}
+            Spacer := CardSides {
+                sides +: {
                     SolidView {
                         width: Fill height: 10
                         draw_bg.color: C_CARD
@@ -660,15 +643,8 @@ script_mod! {
             // The row itself: the rail and the line, and nothing about the
             // box around them. Hoisted so a card and an editor can differ in
             // their framing without differing in their content.
-            Code := View {
-                width: Fill height: Fit
-                padding: Inset{left: 16 right: 16}
-                SolidView {
-                    width: Fill height: Fit
-                    draw_bg.color: C_BORDER
-                    padding: Inset{left: 1 right: 1}
-                    CodeRow {}
-                }
+            Code := CardSides {
+                sides +: { CodeRow {} }
             }
             // The same row in a File tab, which is an editor and not a code
             // block: no card sides, no inset, the text against the pane.
@@ -693,48 +669,33 @@ script_mod! {
             // to the selected range the same way. One box and two icons, like
             // the design: no well, no title, the placeholder names the target
             // range, send and dismiss are the icons.
-            Composer := View {
-                width: Fill height: Fit
-                padding: Inset{left: 16 right: 16}
-                SolidView {
-                    width: Fill height: Fit
-                    draw_bg.color: C_BORDER
-                    padding: Inset{top: 1 bottom: 1 left: 1 right: 1}
-                    SolidView {
-                        width: Fill height: Fit
-                        draw_bg.color: C_ACCENT
-                        padding: Inset{left: 6}
-                        SolidView {
-                            width: Fill height: Fit
-                            draw_bg.color: C_BG
-                            flow: Down
-                            spacing: 10
-                            padding: Inset{top: 12 bottom: 12 left: 12 right: 12}
+            Composer := StripFrame {
+                cm_frame +: { cm_bar +: { cm_strip +: {
+                    flow: Down
+                    spacing: 10
 
-                            comp_input := FlatInput {
-                                width: Fill
-                                empty_text: "Add a comment"
-                            }
-                            View {
-                                width: Fill height: Fit
-                                flow: Right
-                                spacing: 1
-                                align: Align{x: 1.0, y: 0.5}
-                                comp_cancel := IconAction {
-                                    draw_icon.svg: crate_resource("self:resources/icons/close_circle.svg")
-                                }
-                                SolidView {
-                                    width: 1 height: 16
-                                    margin: Inset{left: 4 right: 4}
-                                    draw_bg.color: C_BORDER
-                                }
-                                comp_post := IconAction {
-                                    draw_icon.svg: crate_resource("self:resources/icons/send.svg")
-                                }
-                            }
+                    comp_input := FlatInput {
+                        width: Fill
+                        empty_text: "Add a comment"
+                    }
+                    View {
+                        width: Fill height: Fit
+                        flow: Right
+                        spacing: 1
+                        align: Align{x: 1.0, y: 0.5}
+                        comp_cancel := BarButton {
+                            draw_icon.svg: crate_resource("self:resources/icons/close_circle.svg")
+                        }
+                        SolidView {
+                            width: 1 height: 16
+                            margin: Inset{left: 4 right: 4}
+                            draw_bg.color: C_BORDER
+                        }
+                        comp_post := BarButton {
+                            draw_icon.svg: crate_resource("self:resources/icons/send.svg")
                         }
                     }
-                }
+                } } }
             }
 
             // Bottom cap: rounds off the card the FileHeader opened. Its
@@ -847,7 +808,7 @@ script_mod! {
         // The tab strip's shadow over the content. Drawn before the pinned
         // header so the header sits in front of it, the way it does in the
         // design: the strip's shadow is clipped short by the header's own top.
-        DropShadow { height: 16 }
+        DropShadow {}
 
         // The pinned copy of the card header whose rows fill the top of the
         // viewport: the header scrolls along, so the path and the viewed tick
@@ -864,9 +825,7 @@ script_mod! {
             // laid out, only its opacity ramps: toggling `visible` moved the
             // whole box by its own height at one scroll position, and that jump
             // read as a flicker.
-            st_shadow_up := ShadowUp {
-                width: Fill height: 12
-            }
+            st_shadow_up := ShadowUp {}
             // Chrome, not content: the copy's path is not selectable.
             HeaderCard {
                 fh_frame +: { fh_card +: { fh_row +: { fh_path +: {

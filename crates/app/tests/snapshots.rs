@@ -252,7 +252,7 @@ fn capture(name: &str, hooks: &[(&str, &str)], setup: impl FnOnce(&Path)) -> Pat
                     "{name}: the app exited without a readable frame — see {}",
                     work.display()
                 );
-                let layout = repo.join(".git/concats-app-layout-2.ron");
+                let layout = repo.join(".git/concats-app-layout-3.ron");
                 if layout.exists() {
                     std::fs::copy(layout, work.join("layout.ron")).expect("capture saved layout");
                 }
@@ -726,7 +726,7 @@ fn restoring_the_sidebar_does_not_start_a_hidden_shell() {
         "restored_sidebar",
         &[("CONCATS_APP_TERM_SCRIPT", ".git/terminal-fixture.sh")],
         |repo| {
-            std::fs::write(repo.join(".git/concats-app-layout-2.ron"), layout)
+            std::fs::write(repo.join(".git/concats-app-layout-3.ron"), layout)
                 .expect("restore layout");
             std::fs::write(
                 repo.join(".git/terminal-fixture.sh"),

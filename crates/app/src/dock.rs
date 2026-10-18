@@ -133,11 +133,14 @@ pub(crate) fn drag_source_tab_id(items: &[DragItem]) -> Option<LiveId> {
 /// The dock layout, persisted per repo next to the review store in `.git/`: tab
 /// arrangement, splits, terminal-panel height.
 ///
-/// The `-2` marks the shape of the dock tree. The file browser added an outer
-/// horizontal splitter, and a layout saved before that restores a `root` with
-/// no room for the browser. A layout from another version has a name we don't
-/// read, so it is ignored; one reset beats a dock missing a panel.
-const LAYOUT_FILE: &str = "concats-app-layout-2.ron";
+/// The `-3` marks the shape of the dock tree and the tab templates it names.
+/// The file browser added an outer horizontal splitter, and a layout saved
+/// before that restores a `root` with no room for the browser. A saved tab also
+/// names its template, and one the tab bar no longer declares (the `+`
+/// terminals' `TerminalCloseTab`) restores as an unstyled tab. A layout from
+/// another version has a name we don't read, so it is ignored; one reset beats
+/// a dock missing a panel.
+const LAYOUT_FILE: &str = "concats-app-layout-3.ron";
 
 // NOTE: bare `pub`, not `pub(crate)`: makepad's hand-rolled SerRon/DeRon derive
 // parser does `eat_ident("pub")` then expects `struct`, so it accepts private
