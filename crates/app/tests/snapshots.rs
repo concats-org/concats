@@ -98,6 +98,14 @@ const EXACT: Tolerance = Tolerance {
     pixels: 0,
 };
 
+/// A golden with a focused text field in it: the field's cursor blinks, and
+/// whether a frame catches it lit is timing. That cursor, about 120 pixels, is
+/// all that may differ.
+const BLINKING_CURSOR: Tolerance = Tolerance {
+    channel: 0,
+    pixels: 200,
+};
+
 fn workspace() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -506,7 +514,7 @@ fn search_stays_in_its_tab_without_a_code_caret() {
         );
         // The bar draws over the card header pinned beneath it, input row and
         // all.
-        assert_matches(name, &shot, EXACT);
+        assert_matches(name, &shot, BLINKING_CURSOR);
     }
 }
 
