@@ -335,6 +335,8 @@ impl Store {
 
     /// Did another connection (the CLI, another instance) commit since we
     /// last asked? Cheap — one pragma read, no table access.
+    // NOTE: asking is taking the change; split, one commit could be seen twice or missed.
+    // coland-ignore: @coland/read_write_operation
     pub fn external_change(&mut self) -> bool {
         let version = self
             .conn
@@ -349,6 +351,8 @@ impl Store {
     /// changed. External deletes simply vanish and external adds appear:
     /// mutations write through, so memory never holds unsaved state a refresh
     /// could lose.
+    // NOTE: whether anything changed needs the state the read replaces.
+    // coland-ignore: @coland/read_write_operation
     pub fn refresh(&mut self) -> bool {
         let mut seen = HashSet::new();
         if let Ok(mut stmt) = self.conn.prepare("SELECT blob, line FROM seen") {

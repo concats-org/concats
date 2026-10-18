@@ -198,6 +198,8 @@ struct User {
 /// Reads a stream of top-level values: `gh api --paginate` concatenates one
 /// array per page and `--slurp` nests them. Both are what you actually type,
 /// and neither is a single flat array.
+// NOTE: one production caller, `comments import`; the rest of its fan-in is its tests.
+// coland-ignore: @coland/high_fan_in_complex_function, @coland/high_call_degree
 pub fn parse(json: &str) -> Result<Document, Error> {
     let mut doc = Document::default();
     let mut items = Vec::new();

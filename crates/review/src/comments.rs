@@ -36,6 +36,8 @@ use crate::{
 /// Every line of the range must be in the diff; context lines count, the GUI
 /// lets you comment on them too. A miss names the file's reviewable ranges, so
 /// a fix is a copy rather than fresh line arithmetic.
+// NOTE: the one anchor grammar: add and reply resolve through it, its tests pin it.
+// coland-ignore: @coland/high_fan_in_complex_function
 pub fn resolve_anchor(spec: &str, loaded: &Loaded) -> Result<(String, Anchor), Error> {
     let (at, lines) = spec.rsplit_once(':').ok_or(Error::AnchorSyntax)?;
     let (first, last) = lines.split_once('-').unwrap_or((lines, lines));
