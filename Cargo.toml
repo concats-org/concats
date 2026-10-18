@@ -58,7 +58,6 @@ concats_fixture = { package = "concats-fixture", path = "crates/fixture" }
 alacritty_terminal = { version = "0.26", default-features = false }
 clap = { version = "4.5.31", features = ["derive"] }
 dirs = "6"
-figment = { version = "0.10", features = ["toml", "env"] }
 gix = { version = "0.85", default-features = false, features = [
     "sha1",
     "parallel",
