@@ -20,24 +20,6 @@ pub enum DiffStatus {
     Deleted,
 }
 
-impl FileDiff {
-    fn from_tree_change(change: &gix::object::tree::diff::Change<'_, '_, '_>) -> Option<Self> {
-        use gix::object::tree::diff::Change;
-        let status = match change {
-            Change::Addition { .. } => DiffStatus::Added,
-            Change::Deletion { .. } => DiffStatus::Deleted,
-            Change::Modification { .. } => DiffStatus::Modified,
-            // NOTE: Never produced; `for_turn` turns rewrite tracking off.
-            Change::Rewrite { .. } => return None,
-        };
-        let mode = change.entry_mode();
-        (mode.is_blob() || mode.is_link()).then(|| Self {
-            path: change.location().to_string(),
-            status,
-        })
-    }
-}
-
 /// Compute the diff introduced by a turn relative to its first-parent base.
 ///
 /// # Errors
@@ -84,7 +66,23 @@ pub fn for_turn(session: &Session, turn: &Turn) -> Result<Vec<FileDiff>> {
             options.track_rewrites(None);
         })
         .for_each_to_obtain_tree(&head_tree, |change| {
-            changes.extend(FileDiff::from_tree_change(&change));
+            use gix::object::tree::diff::Change;
+            let status = match &change {
+                Change::Addition { .. } => Some(DiffStatus::Added),
+                Change::Deletion { .. } => Some(DiffStatus::Deleted),
+                Change::Modification { .. } => Some(DiffStatus::Modified),
+                // NOTE: Never produced; rewrite tracking is off above.
+                Change::Rewrite { .. } => None,
+            };
+            let mode = change.entry_mode();
+            if let Some(status) = status
+                && (mode.is_blob() || mode.is_link())
+            {
+                changes.push(FileDiff {
+                    path: change.location().to_string(),
+                    status,
+                });
+            }
             Ok::<_, std::convert::Infallible>(std::ops::ControlFlow::Continue(()))
         })
         .map_err(Error::git)?;

@@ -10,18 +10,13 @@ pub struct Config {
     pub app: AppConfig,
 }
 
-fn default_remote() -> String {
-    "origin".into()
-}
-
 /// Configuration for syncing session turn refs to a remote.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct SyncConfig {
     /// When true, automatically push the session ref after each turn.
-    #[serde(default)]
     pub auto_push: bool,
     /// Git remote name to push to.
-    #[serde(default = "default_remote")]
     pub remote: String,
 }
 
@@ -29,7 +24,7 @@ impl Default for SyncConfig {
     fn default() -> Self {
         Self {
             auto_push: false,
-            remote: default_remote(),
+            remote: "origin".into(),
         }
     }
 }
