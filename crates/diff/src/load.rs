@@ -468,6 +468,8 @@ impl<'a> FileLowerer<'a> {
     /// makes the transcript behave like the rest of the review: the gutter
     /// selects a run of lines, a comment anchors to `(blob oid, line)`, and the
     /// same content rendered in two tabs carries the same conversation.
+    // NOTE: like file: interning the text and handing back the rows over it is the operation.
+    // coland-ignore: @coland/read_write_operation
     pub fn prose(&mut self, name: String, text: String) -> Vec<Row> {
         let oid = hash_object(text.as_bytes());
         // Interned by name as well as content, and kept out of `blob_ix`. The
@@ -503,6 +505,8 @@ impl<'a> FileLowerer<'a> {
     /// stable id, so an agent can select and reorder hunks by id without seeing
     /// the code inside them — or inventing any. Returns `None` for binary
     /// content (counted in the stats).
+    // NOTE: lowering interns the change's blobs and hands back the rows over them; that is the operation.
+    // coland-ignore: @coland/read_write_operation
     pub fn file(&mut self, id: String, change: &Change) -> Result<Option<FileChange>, Error> {
         let (from, similarity) = match change {
             Change::Renamed {

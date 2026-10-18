@@ -187,6 +187,8 @@ impl Highlighter {
     /// The returned table is the length of the file with only `lines` filled: a
     /// row indexes it by line number, and the rest waits until it is scrolled
     /// to.
+    // NOTE: the parse is a cache kept in step on the way; the spans are queried from it, not read.
+    // coland-ignore: @coland/read_write_operation
     pub fn spans_for_lines(
         &mut self,
         buffer: Buffer<'_>,

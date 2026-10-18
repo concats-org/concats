@@ -574,6 +574,8 @@ impl Blob {
 
     /// Undo the last edit. Returns where the restored text now ends, so the
     /// caller can put the caret back where the typing started.
+    // NOTE: where the restored text ends is only known once it is restored; the caret goes there.
+    // coland-ignore: @coland/read_write_operation
     pub fn undo(&mut self) -> Option<usize> {
         let edit = self.undo.pop()?;
         let (end, back) = self.invert(edit)?;
@@ -581,6 +583,8 @@ impl Blob {
         Some(end)
     }
 
+    // NOTE: undo's mirror: the caret goes where the reapplied text ends.
+    // coland-ignore: @coland/read_write_operation
     pub fn redo(&mut self) -> Option<usize> {
         let edit = self.redo.pop()?;
         let (end, back) = self.invert(edit)?;
@@ -594,6 +598,8 @@ impl Blob {
     /// The entry's own run is found by resolving its cursors, so an undo still
     /// lands on the right text after someone else's write moved it. `None` when
     /// that run is no longer there to undo.
+    // NOTE: the inverse is made from the text this puts back, so it comes out of applying it.
+    // coland-ignore: @coland/read_write_operation
     fn invert(&mut self, edit: Edit) -> Option<(usize, Edit)> {
         let doc = self.doc.clone()?;
         let from = document::byte_of(&doc, &edit.from)?;
@@ -617,6 +623,8 @@ impl Blob {
     /// The edit itself: splice the text, patch `line_starts` and `spans` around
     /// the change rather than rebuilding them, and bump `rev`. Returns what came
     /// out, which is what an undo entry has to put back.
+    // NOTE: hands back what it took out, as a replace does: the undo entry's text.
+    // coland-ignore: @coland/read_write_operation
     fn splice(&mut self, range: Range<usize>, insert: &str) -> String {
         let (start, end) = (range.start, range.end);
         let first = self.line_of(start);
