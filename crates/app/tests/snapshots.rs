@@ -624,15 +624,14 @@ fn terminal_search_finds_literal_text_in_scrollback() {
         &[
             ("CONCATS_APP_TERM", "1"),
             ("CONCATS_APP_CLICK", "300,690"),
-            ("CONCATS_APP_TERM_SCRIPT", ".git/terminal-fixture.sh"),
+            (
+                "CONCATS_APP_TERM_SCRIPT",
+                "printf '[needle] in history\\n'\ni=0\nwhile [ $i -lt 80 ]; do printf 'filler line %s\\n' \"$i\"; i=$((i+1)); done\nread -r answer\n",
+            ),
             ("CONCATS_APP_FIND", "[needle]"),
             ("CONCATS_APP_FIND_KEEP_FOCUS", "1"),
         ],
-        |repo| {
-            std::fs::write(repo.join(".git/terminal-fixture.sh"),
-                "printf '[needle] in history\\n'\ni=0\nwhile [ $i -lt 80 ]; do printf 'filler line %s\\n' \"$i\"; i=$((i+1)); done\nread -r answer\n"
-            ).expect("terminal fixture");
-        },
+        |_| {},
     );
     let data = state(&shot, "state.json");
     assert_eq!(data["terminal_find_query"], "[needle]");
@@ -651,13 +650,12 @@ fn terminal_draws_combining_marks_and_unicode() {
         &[
             ("CONCATS_APP_TERM", "1"),
             ("CONCATS_APP_CLICK", "300,690"),
-            ("CONCATS_APP_TERM_SCRIPT", ".git/terminal-fixture.sh"),
+            (
+                "CONCATS_APP_TERM_SCRIPT",
+                "printf 'ASCII: hello\\nCombining: e\u{301} a\u{30a} n\u{303}\\nWide: 世界 👩‍💻\\nBraille: ⠁⠃⠇⠏\\nCursor: X\\r\\033[8C'\nread -r answer\n",
+            ),
         ],
-        |repo| {
-            std::fs::write(repo.join(".git/terminal-fixture.sh"),
-                "printf 'ASCII: hello\\nCombining: e\u{301} a\u{30a} n\u{303}\\nWide: 世界 👩‍💻\\nBraille: ⠁⠃⠇⠏\\nCursor: X\\r\\033[8C'\nread -r answer\n"
-            ).expect("terminal fixture");
-        },
+        |_| {},
     );
     let state = state(&shot, "state.json");
     assert!(
@@ -678,14 +676,13 @@ fn terminal_link_hover_shows_the_destination() {
         "terminal_link_hover",
         &[
             ("CONCATS_APP_TERM", "1"),
-            ("CONCATS_APP_TERM_SCRIPT", ".git/terminal-fixture.sh"),
+            (
+                "CONCATS_APP_TERM_SCRIPT",
+                "printf '\\033]8;;https://example.com/review\\007Review changes\\033]8;;\\007\\n'\nread -r answer\n",
+            ),
             ("CONCATS_APP_HOVER", "50,673"),
         ],
-        |repo| {
-            std::fs::write(repo.join(".git/terminal-fixture.sh"),
-                "printf '\\033]8;;https://example.com/review\\007Review changes\\033]8;;\\007\\n'\nread -r answer\n"
-            ).expect("link fixture");
-        },
+        |_| {},
     );
     assert_matches("terminal_link_hover", &shot, EXACT);
 }
@@ -719,15 +716,13 @@ fn restoring_the_sidebar_does_not_start_a_hidden_shell() {
     let layout = std::fs::read(baseline.with_file_name("layout.ron")).expect("saved layout");
     let shot = capture(
         "restored_sidebar",
-        &[("CONCATS_APP_TERM_SCRIPT", ".git/terminal-fixture.sh")],
+        &[(
+            "CONCATS_APP_TERM_SCRIPT",
+            "printf 'unexpected shell startup'\nread -r answer\n",
+        )],
         |repo| {
             std::fs::write(repo.join(".git/concats-app-layout-4.ron"), layout)
                 .expect("restore layout");
-            std::fs::write(
-                repo.join(".git/terminal-fixture.sh"),
-                "printf 'unexpected shell startup'\nread -r answer\n",
-            )
-            .expect("terminal fixture");
         },
     );
     let state = state(&shot, "state.json");

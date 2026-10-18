@@ -218,7 +218,7 @@ pub fn open(session: Session, cwd: &Path) {
         ("TERM".to_string(), "xterm-256color".to_string()),
         ("COLORTERM".to_string(), "truecolor".to_string()),
     ]);
-    let fixture = crate::dev_hooks::var("CONCATS_APP_TERM_SCRIPT").ok();
+    let fixture = crate::dev_hooks::var("CONCATS_APP_TERM_SCRIPT");
     // NOTE: PTY and visual tests must not run personal shell startup files.
     let hermetic = cfg!(test) || fixture.is_some();
     if hermetic {
@@ -237,10 +237,11 @@ pub fn open(session: Session, cwd: &Path) {
     };
     let options = tty::Options {
         shell: hermetic.then(|| {
-            tty::Shell::new(
-                "/bin/sh".to_string(),
-                vec![fixture.unwrap_or_else(|| "-i".to_string())],
-            )
+            let args = fixture.map_or_else(
+                || vec!["-i".to_string()],
+                |script| vec!["-c".to_string(), script],
+            );
+            tty::Shell::new("/bin/sh".to_string(), args)
         }),
         working_directory: Some(cwd.to_path_buf()),
         drain_on_exit: false,

@@ -134,7 +134,6 @@ fn theme_slot() -> &'static RwLock<Arc<Theme>> {
         // CONCATS_APP_THEME overrides the persisted selection — dev/screenshot
         // convenience, matching the app's other CONCATS_APP_* env knobs.
         let initial = crate::dev_hooks::var("CONCATS_APP_THEME")
-            .ok()
             .or_else(|| Some(settings().app.theme.clone()))
             .and_then(|name| by_name(&name))
             .unwrap_or_else(Theme::concats);

@@ -332,7 +332,7 @@ pub(crate) fn carry_forward(d: &mut ReviewDoc, prev: &ReviewDoc) {
 // NOTE: sets the compose the way a gesture does; splice_composer drops one it cannot place.
 // coland-ignore: @coland/mixed_abstraction_levels
 fn compose_from_env(d: &mut ReviewDoc) {
-    let Ok(spec) = crate::dev_hooks::var("CONCATS_APP_COMPOSE") else {
+    let Some(spec) = crate::dev_hooks::var("CONCATS_APP_COMPOSE") else {
         return;
     };
     let mut it = spec.rsplitn(3, ':');

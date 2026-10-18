@@ -23,16 +23,9 @@
 //! Perf: F3 toggles the live frame graph. Loading happens on a worker thread,
 //! so a huge diff slows the load, not the window.
 //!
-//! With `--features dev-hooks`: `CONCATS_APP_SHOT=/path.png` writes a PNG of the frame after the
-//! first load lands (no macOS screen-recording permission needed).
-//! `CONCATS_APP_COMPOSE=path:s:e` pre-opens the comment composer.
-//! `CONCATS_APP_FILE=path[,path…]` opens a File tab per named file of the
-//! head tree, as picking them in the browser would. `CONCATS_APP_TYPE=text` types
-//! that text at the caret a tick after `CONCATS_APP_CLICK` placed one.
-//! `CONCATS_APP_SCROLL=N` starts the list at row N, which screenshots the sticky
-//! header without a pointer. `CONCATS_APP_WINDOWS=N` opens N windows on the
-//! range, the way ⌘N does. `CONCATS_APP_THEME=name` overrides the startup theme
-//! (else the persisted config, else the built-in Concats theme).
+//! With `--features dev-hooks`, the `CONCATS_APP_*` variables in `dev_hooks`
+//! drive the app for captures: no pointer, and no macOS screen-recording
+//! permission needed.
 
 use std::{path::PathBuf, sync::Arc};
 
@@ -414,7 +407,7 @@ impl MatchEvent for App {
         // be laid over a design frame of the same size without rescaling — the
         // layout itself changes with width, so a resized screenshot is not the
         // same picture. Startup only; makepad ignores it later.
-        if let Ok(spec) = crate::dev_hooks::var("CONCATS_APP_SIZE")
+        if let Some(spec) = crate::dev_hooks::var("CONCATS_APP_SIZE")
             && let Some((w, h)) = spec.split_once('x')
             && let (Ok(w), Ok(h)) = (w.parse::<f64>(), h.parse::<f64>())
         {
@@ -528,16 +521,6 @@ impl MatchEvent for App {
                         dock.set_tab_title(cx, session.tab, title);
                     }
                 }
-            }
-            // Pairs with CONCATS_APP_TERM: re-capture on terminal frames
-            // so the shot shows the shell's actual output, not the pre-spawn
-            // blank panel.
-            if self.shot_done
-                && crate::dev_hooks::var("CONCATS_APP_TERM").is_ok_and(|v| !v.is_empty())
-                && let Ok(path) = crate::dev_hooks::var("CONCATS_APP_SHOT")
-                && !path.is_empty()
-            {
-                cx.capture_next_frame_to_file(path.into());
             }
         }
         let mut dirty = false;
