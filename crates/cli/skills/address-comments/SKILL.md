@@ -144,7 +144,9 @@ concats comments reply <id> -m "<what you did, or why not>" --author <your-name>
 #     A reply anchored on the fixed lines brings the thread there: every
 #     comment keeps the lines it was written on, and a thread renders under
 #     its newest comment the diff can place. Same grammar as `comments add`,
-#     and the lines are the manifest's, never computed by hand.
+#     and the lines are the manifest's, never computed by hand. Deleted lines
+#     take `<path>@<rev>:<start>[-<end>]`, <rev> naming the diff's old side
+#     the way `concats comments` prints it.
 curl -s --fail-with-body --unix-socket .concats/app.sock \
     --data-binary "fixed: <what you changed>" \
     "http://concats/comments/<id>/replies?author=<your-name>&at=<path>:<start>[-<end>]"

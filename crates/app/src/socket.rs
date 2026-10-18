@@ -183,7 +183,7 @@ fn reply(doc: &ReviewDoc, to: u64, body: &str, url: &url::Url) -> Answer {
     let moved = loaded.as_ref().zip(at.as_deref());
     let mut store = Store::open(git_dir);
     match comments::reply(&mut store, to, body, query(url, "author"), moved) {
-        Ok(c) => text(201, &comments::added(&c, moved.is_some())),
+        Ok(c) => text(201, &comments::added(&c, loaded.as_ref())),
         Err(error) => {
             let status = match error {
                 Error::EmptyBody => 400,
@@ -192,6 +192,7 @@ fn reply(doc: &ReviewDoc, to: u64, body: &str, url: &url::Url) -> Answer {
                 Error::AnchorSyntax
                 | Error::AnchorLines(_)
                 | Error::AnchorZero
+                | Error::AnchorOldSide { .. }
                 | Error::NotInDiff(_)
                 | Error::LinesNotInDiff { .. }
                 | Error::UnsupportedSchema { .. }
@@ -338,6 +339,14 @@ mod tests {
         );
         assert_eq!(status, 422);
         assert!(said.contains("not part of this diff"), "{said}");
+        let (status, said) = ask(
+            &socket,
+            "POST",
+            &format!("{COMMENTS}/{shown}/{REPLIES}?at=file.rs@INDEX:1"),
+            "moved",
+        );
+        assert_eq!(status, 422);
+        assert!(said.contains("not this diff's old side"), "{said}");
         let (status, _) = ask(&socket, "POST", &format!("{COMMENTS}/999/{REPLIES}"), "x");
         assert_eq!(status, 404);
         let (status, _) = ask(

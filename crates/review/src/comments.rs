@@ -4,8 +4,8 @@
 //! Everything here anchors to content: a comment names a blob and a line range,
 //! so it renders in every view that shows those lines. Line numbers come in as
 //! 1-based new-side numbers, the same the manifest's links carry (never
-//! computed by hand), and every anchor is checked against the loaded diff
-//! before anything is stored.
+//! computed by hand), or as old-side ones for deleted lines, and every anchor
+//! is checked against the loaded diff before anything is stored.
 
 use std::collections::{HashMap, HashSet};
 
@@ -21,17 +21,20 @@ use crate::{
     store::{self, Anchor, Comment, Store},
 };
 
-/// `<path>:<start>[-<end>]` resolved against the loaded diff. Everything that
-/// takes an anchor shares this grammar, so nothing can disagree about what
-/// addresses a line.
+/// `<path>:<start>[-<end>]` resolved against the loaded diff, or
+/// `<path>@<rev>:<start>[-<end>]` for deleted lines, which have no new-side
+/// number. Everything that takes an anchor shares this grammar, so nothing can
+/// disagree about what addresses a line.
+///
+/// `<rev>` is the old side the lines were numbered on, as [`old_rev`] prints
+/// it: a 4 to 40 digit prefix of its commit, or `INDEX`. It must be this
+/// diff's, or the lines would be read in another version of the file.
 ///
 /// Every line of the range must be in the diff; context lines count, the GUI
-/// lets you comment on them too. Pure deletions have no new-side number, so you
-/// cannot address them from here — `import` reaches them via `old L…` anchors.
-/// A miss names the file's reviewable ranges, so a fix is a copy rather than
-/// fresh line arithmetic.
+/// lets you comment on them too. A miss names the file's reviewable ranges, so
+/// a fix is a copy rather than fresh line arithmetic.
 pub fn resolve_anchor(spec: &str, loaded: &Loaded) -> Result<(String, Anchor), Error> {
-    let (path_part, lines) = spec.rsplit_once(':').ok_or(Error::AnchorSyntax)?;
+    let (at, lines) = spec.rsplit_once(':').ok_or(Error::AnchorSyntax)?;
     let (first, last) = lines.split_once('-').unwrap_or((lines, lines));
     let (Ok(start), Ok(end)) = (first.trim().parse::<u32>(), last.trim().parse::<u32>()) else {
         return Err(Error::AnchorLines(lines.to_string()));
@@ -39,8 +42,30 @@ pub fn resolve_anchor(spec: &str, loaded: &Loaded) -> Result<(String, Anchor), E
     if start == 0 || end == 0 {
         return Err(Error::AnchorZero);
     }
+    // NOTE: a path can hold an `@` of its own; only a suffix shaped like a rev
+    // names the old side.
+    let old = at.rsplit_once('@').filter(|(_, rev)| {
+        *rev == INDEX_REV
+            || (4..=40).contains(&rev.len()) && rev.bytes().all(|b| b.is_ascii_hexdigit())
+    });
+    let (path_part, side) = match old {
+        None => (at, Side::New),
+        Some((path, rev)) => {
+            let ours = match loaded.merge_base {
+                Some(oid) => oid.to_string()[..rev.len()].eq_ignore_ascii_case(rev),
+                None => rev == INDEX_REV,
+            };
+            if !ours {
+                return Err(Error::AnchorOldSide {
+                    named: rev.to_string(),
+                    old: old_rev(loaded),
+                });
+            }
+            (path, Side::Old)
+        }
+    };
     let range = start.min(end)..=start.max(end);
-    interchange::resolve(loaded, path_part, Side::New, range).map_err(|error| match error {
+    interchange::resolve(loaded, path_part, side, range).map_err(|error| match error {
         ResolveError::UnknownPath => Error::NotInDiff(path_part.to_string()),
         ResolveError::MissingLines { file, missing } => Error::LinesNotInDiff {
             lines: missing
@@ -55,9 +80,33 @@ pub fn resolve_anchor(spec: &str, loaded: &Loaded) -> Result<(String, Anchor), E
 }
 
 /// `c`'s lines in the grammar [`resolve_anchor`] reads, so a printed anchor
-/// can be passed back.
-pub fn anchor_spec(c: &Comment) -> String {
-    format!("{}:{}-{}", c.path, c.anchor.start + 1, c.anchor.end + 1)
+/// can be passed back. `old` is its diff's [`old_rev`] when `c`'s blob is that
+/// diff's old side; `None` prints new-side lines.
+pub fn anchor_spec(c: &Comment, old: Option<&str>) -> String {
+    let side = old.map_or_else(String::new, |rev| format!("@{rev}"));
+    let (start, end) = (c.anchor.start + 1, c.anchor.end + 1);
+    format!("{}{side}:{start}-{end}", c.path)
+}
+
+/// How an anchor names `loaded`'s old side: its commit's first seven hex
+/// digits, or `INDEX`. A fixed length rather than git's unique abbreviation:
+/// [`resolve_anchor`] only compares it with the loaded diff's own old side, so
+/// uniqueness in the object database never matters.
+pub fn old_rev(loaded: &Loaded) -> String {
+    loaded.merge_base.map_or_else(
+        || INDEX_REV.to_string(),
+        |oid| oid.to_hex_with_len(7).to_string(),
+    )
+}
+
+/// Which side of `loaded` each of its blobs is on.
+pub fn sides(loaded: &Loaded) -> HashMap<ObjectId, Side> {
+    let rows = loaded
+        .files
+        .iter()
+        .flat_map(|f| f.hunks.iter())
+        .flat_map(|h| h.rows.iter());
+    interchange::blob_sides(rows, &loaded.blobs)
 }
 
 /// A file's hunks as ready-made links, so a caller fixing an anchor never does
@@ -121,15 +170,20 @@ pub fn reply(
 }
 
 /// What the CLI and the socket answer a new comment with. A root always says
-/// where it went; a reply only when it was `moved` off its root's lines.
-pub fn added(c: &Comment, moved: bool) -> String {
-    let place = anchor_spec(c);
-    match (c.parent, moved) {
+/// where it went; a reply only when it was moved off its root's lines.
+/// `anchored` is the diff its lines were resolved in: always there for a root,
+/// for a reply only when it moved.
+pub fn added(c: &Comment, anchored: Option<&Loaded>) -> String {
+    let old = anchored
+        .filter(|loaded| sides(loaded).get(&c.anchor.blob) == Some(&Side::Old))
+        .map(old_rev);
+    let place = anchor_spec(c, old.as_deref());
+    match (c.parent, anchored) {
         (None, _) => format!("added comment #{} on {place}", c.id),
-        (Some(thread), true) => {
+        (Some(thread), Some(_)) => {
             format!("added comment #{} replying to #{thread}, on {place}", c.id)
         }
-        (Some(thread), false) => format!("added comment #{} replying to #{thread}", c.id),
+        (Some(thread), None) => format!("added comment #{} replying to #{thread}", c.id),
     }
 }
 
@@ -229,12 +283,7 @@ pub enum Scope<'a> {
 /// shared by every worktree. Those export as recorded and will not re-import
 /// against it; [`Scope::Range`] leaves them out.
 pub fn entries(loaded: &Loaded, comments: &[Comment], scope: Scope) -> (Vec<Entry>, HashSet<u64>) {
-    let rows = loaded
-        .files
-        .iter()
-        .flat_map(|f| f.hunks.iter())
-        .flat_map(|h| h.rows.iter());
-    let sides = interchange::blob_sides(rows, &loaded.blobs);
+    let sides = sides(loaded);
     let mut buffers = HashMap::new();
     let mut comments: Vec<Comment> = comments
         .iter()
@@ -498,7 +547,14 @@ mod tests {
 
     use super::*;
 
-    /// An anchor copied from what `add` answers is one `add` takes back.
+    /// What `add` answered, as the anchor it printed.
+    fn printed(c: &Comment, loaded: &Loaded) -> String {
+        let said = added(c, Some(loaded));
+        said.rsplit_once(" on ").unwrap().1.to_string()
+    }
+
+    /// An anchor copied from what `add` answers is one `add` takes back, on
+    /// either side of the diff.
     #[test]
     fn a_printed_anchor_resolves_to_the_lines_it_names() {
         let tmp = tempfile::tempdir().unwrap();
@@ -507,10 +563,76 @@ mod tests {
         std::fs::write(repo.join("init.txt"), "a\nb\n").unwrap();
         let loaded = load::load(repo, "HEAD", WORKTREE_REV).unwrap();
         let mut store = Store::open(&loaded.git_dir);
-        let c = add(&mut store, &loaded, "init.txt:1-2", "both lines", None).unwrap();
+        let rev = old_rev(&loaded);
+        assert_eq!(rev, loaded.merge_base.unwrap().to_string()[..7]);
 
-        let printed = added(&c, false);
-        let (_, spec) = printed.rsplit_once(" on ").unwrap();
-        assert_eq!(resolve_anchor(spec, &loaded).unwrap(), (c.path, c.anchor));
+        let deleted = format!("init.txt@{rev}:1");
+        for (spec, side, shown) in [
+            ("init.txt:1-2", Side::New, "init.txt:1-2".to_string()),
+            (deleted.as_str(), Side::Old, format!("{deleted}-1")),
+        ] {
+            let c = add(&mut store, &loaded, spec, "lines", None).unwrap();
+            assert_eq!(sides(&loaded)[&c.anchor.blob], side);
+            assert_eq!(printed(&c, &loaded), shown);
+            assert_eq!(resolve_anchor(&shown, &loaded).unwrap(), (c.path, c.anchor));
+        }
+    }
+
+    /// Against the unstaged changes the old side is the index, and that is
+    /// what an anchor on a deleted line names.
+    #[test]
+    fn an_anchor_on_a_line_deleted_from_the_index_names_the_index() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path();
+        init_repo_with_commit(repo);
+        std::fs::write(repo.join("init.txt"), "staged\n").unwrap();
+        concats_fixture::git(repo, &["add", "init.txt"]);
+        std::fs::write(repo.join("init.txt"), "unstaged\n").unwrap();
+        let loaded = load::load(repo, INDEX_REV, WORKTREE_REV).unwrap();
+        let mut store = Store::open(&loaded.git_dir);
+
+        let c = add(&mut store, &loaded, "init.txt@INDEX:1", "gone", None).unwrap();
+        assert_eq!(c.anchor.blob, concats_sync::hash_object(b"staged\n"));
+        assert_eq!(printed(&c, &loaded), "init.txt@INDEX:1-1");
+        assert_eq!(
+            resolve_anchor("init.txt@INDEX:1-1", &loaded).unwrap(),
+            (c.path, c.anchor)
+        );
+    }
+
+    /// An old-side anchor printed against another range is refused, saying
+    /// what it named and what this diff's old side is. An `@` that names no rev
+    /// is part of the path.
+    #[test]
+    fn an_anchor_naming_another_old_side_is_refused() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path();
+        init_repo_with_commit(repo);
+        std::fs::write(repo.join("init.txt"), "a\n").unwrap();
+        let loaded = load::load(repo, "HEAD", WORKTREE_REV).unwrap();
+        let rev = old_rev(&loaded);
+        let other = if rev.starts_with('0') { "1111" } else { "0000" };
+
+        for named in [other, INDEX_REV] {
+            match resolve_anchor(&format!("init.txt@{named}:1"), &loaded) {
+                Err(error @ Error::AnchorOldSide { .. }) => {
+                    let said = error.to_string();
+                    assert!(said.contains(&format!("`@{named}`")), "{said}");
+                    assert!(said.contains(&format!("`@{rev}`")), "{said}");
+                }
+                got => panic!("expected AnchorOldSide, got {got:?}"),
+            }
+        }
+        assert!(resolve_anchor(&format!("init.txt@{}:1", &rev[..4]), &loaded).is_ok());
+        assert!(matches!(
+            resolve_anchor("init.txt@v2:1", &loaded),
+            Err(Error::NotInDiff(path)) if path == "init.txt@v2"
+        ));
+
+        let index = load::load(repo, INDEX_REV, WORKTREE_REV).unwrap();
+        assert!(matches!(
+            resolve_anchor(&format!("init.txt@{rev}:1"), &index),
+            Err(Error::AnchorOldSide { old, .. }) if old == INDEX_REV
+        ));
     }
 }

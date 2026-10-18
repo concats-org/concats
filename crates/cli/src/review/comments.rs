@@ -86,6 +86,15 @@ fn list(repo: Option<&str>, delete: Option<u64>) -> Outcome {
         println!("no review comments recorded for {}", repo.unwrap_or("."));
         return Ok(());
     }
+    // The review's default range says which anchors are on deleted lines, so
+    // those print as old-side anchors; the rest print as recorded.
+    let range = RangeArgs {
+        repo: repo.map(str::to_string),
+        base: None,
+        head: None,
+    };
+    let loaded = super::load(&range.resolve())?;
+    let (sides, old) = (comments::sides(&loaded), comments::old_rev(&loaded));
     // Threads read in order, replies indented under their root.
     let mut threaded: Vec<&Comment> = store.comments.iter().collect();
     threaded.sort_by_key(|c| (store::thread_key(c), c.id));
@@ -99,10 +108,11 @@ fn list(repo: Option<&str>, delete: Option<u64>) -> Outcome {
             .external
             .as_ref()
             .map_or_else(String::new, |e| format!("  [{e}]"));
+        let deleted = sides.get(&c.anchor.blob) == Some(&interchange::Side::Old);
+        let at = comments::anchor_spec(c, deleted.then_some(old.as_str()));
         println!(
-            "{lead}#{}  {}  (blob {}){by}{from}\n{lead}    {}\n",
+            "{lead}#{}  {at}  (blob {}){by}{from}\n{lead}    {}\n",
             c.id,
-            comments::anchor_spec(c),
             &c.anchor.blob.to_string()[..10],
             c.body.replace('\n', &format!("\n{lead}    "))
         );
@@ -118,7 +128,7 @@ fn add(spec: &str, body: &str, author: Option<String>, range: &RangeArgs) -> Out
     let mut store = Store::open(&loaded.git_dir);
     let c =
         comments::add(&mut store, &loaded, spec, body, author).map_err(|error| report(&error))?;
-    println!("{}", comments::added(&c, true));
+    println!("{}", comments::added(&c, Some(&loaded)));
     Ok(())
 }
 
@@ -147,7 +157,7 @@ fn reply(
     };
     let c = comments::reply(&mut store, parent, body, author, loaded.as_ref().zip(moved))
         .map_err(|error| report(&error))?;
-    println!("{}", comments::added(&c, moved.is_some()));
+    println!("{}", comments::added(&c, loaded.as_ref()));
     Ok(())
 }
 

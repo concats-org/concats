@@ -187,7 +187,9 @@ concats comments add <path>:<start>[-<end>] -m "<comment>" --author <your-name> 
 - Lines are **1-based, new-side** — exactly the numbers in the manifest's
   `#Lstart-end` links. Take them from `manifest` or `lint` output, **never
   compute them** (the no-line-arithmetic rule applies here too). Pure
-  deletions have no new-side numbers and cannot be commented from the CLI.
+  deletions have no new-side numbers: `<path>@<rev>:<start>[-<end>]`
+  addresses them on the diff's old side, `<rev>` as `concats comments`
+  prints it.
 - The anchor is validated against the diff: exit 1 means it missed, and the
   error lists the file's valid ranges to pick from.
 - `concats comments` lists stored comments; `--delete <id>` removes

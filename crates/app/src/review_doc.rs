@@ -11,7 +11,10 @@
 use std::{collections::HashSet, ops::Range};
 
 use concats_diff::{Blob, CollapsedEnd, LineKind, Row, Side, stage::StageFile};
-use concats_review::store::{self, Comment};
+use concats_review::{
+    interchange,
+    store::{self, Comment},
+};
 use gix::ObjectId;
 
 /// The text caret: a byte position on one line of one blob.
@@ -136,6 +139,9 @@ pub struct ReviewDoc {
     /// match to be picked up for this pane.
     pub merge_base_oid: Option<ObjectId>,
     pub head_oid: Option<ObjectId>,
+    /// How an anchor names this range's old side, `comments::old_rev`: what a
+    /// card on deleted lines prints, so the CLI reads its anchor back.
+    pub old_rev: String,
     /// An explicit `--guide` from startup. While set, it wins over any
     /// submitted guide (local iteration beats the store); the diff picker
     /// clears it — picking a different range invalidates the guide.
@@ -814,7 +820,11 @@ pub(crate) fn splice_comments(
     // with the comment list, and this is the one place that list arrives.
     let of_name = blobs_by_name(&d.blobs, &d.blob_paths);
     d.quote_spans = quote_spans(&d.blobs, &of_name, comments);
-    let (comments_rows, outdated_paths) = comments_stream(&d.blobs, &of_name, comments);
+    let sides = interchange::blob_sides(d.files_rows.iter(), &d.blobs);
+    let old = |c: &Comment| {
+        (sides.get(&c.anchor.blob) == Some(&interchange::Side::Old)).then_some(d.old_rev.as_str())
+    };
+    let (comments_rows, outdated_paths) = comments_stream(&d.blobs, &of_name, comments, old);
     d.comments_rows = comments_rows;
     // Union over the streams: every stream reads the same blob table, so a
     // thread that places in one places in every stream that shows its file.
@@ -960,7 +970,8 @@ const COMMENT_CONTEXT: u32 = 3;
 /// [`COMMENT_CONTEXT`] lines either side, overlapping threads sharing one card,
 /// and the threads whose content is not in this range listed last per file.
 /// Returns the rows and the paths whose outdated threads the injection must
-/// flush.
+/// flush. `old` is the old-side rev a root's anchor prints with, for a root on
+/// deleted lines.
 ///
 /// Only the context rows are built here. The comment rows are spliced in by the
 /// same `inject_comments` pass every stream gets, so this tab cannot disagree
@@ -973,10 +984,11 @@ const COMMENT_CONTEXT: u32 = 3;
 )]
 // NOTE: one pass building the Comments tab's cards; the tests pinning it are most of its fan-in.
 // coland-ignore: @coland/function_too_large, @coland/high_fan_in_complex_function
-fn comments_stream(
+fn comments_stream<'a>(
     blobs: &[Blob],
     of_name: &std::collections::HashMap<&str, Vec<u32>>,
     comments: &[store::Comment],
+    old: impl Fn(&store::Comment) -> Option<&'a str>,
 ) -> (Vec<Row>, HashSet<String>) {
     let mut outdated_paths: HashSet<String> = HashSet::new();
     if comments.is_empty() {
@@ -1008,7 +1020,7 @@ fn comments_stream(
                     .unwrap_or("unattributed"),
             ),
         };
-        let at = concats_review::comments::anchor_spec(root);
+        let at = concats_review::comments::anchor_spec(root, old(root));
         format!("`{at}` · {meta}{suffix}")
     };
 
@@ -2497,7 +2509,7 @@ mod tests {
         let blobs = vec![Blob::new(oid(1), "rs".into(), text)];
         let names = HashMap::from([("a.rs", vec![0])]);
         let comments = vec![stored(1, "a.rs", oid(1), 9, 10)];
-        let (rows, outdated) = comments_stream(&blobs, &names, &comments);
+        let (rows, outdated) = comments_stream(&blobs, &names, &comments, |_| None);
         assert!(outdated.is_empty());
         assert!(matches!(&rows[0], Row::Title { .. }));
         let Row::Prose { md } = &rows[1] else {
@@ -2541,8 +2553,8 @@ mod tests {
         let name = "turn/8ce374d0a3/prompt/0";
         let blobs = vec![Blob::prose(name.into(), text)];
         let comments = vec![stored(1, name, blobs[0].oid, 1, 2)];
-        let (rows, outdated) =
-            comments_stream(&blobs, &HashMap::from([(name, vec![0])]), &comments);
+        let names = HashMap::from([(name, vec![0])]);
+        let (rows, outdated) = comments_stream(&blobs, &names, &comments, |_| None);
         assert!(outdated.is_empty());
         assert!(!rows.iter().any(|r| matches!(r, Row::FileHeader { .. })));
         let Row::Prose { md } = &rows[2] else {
@@ -2576,7 +2588,7 @@ mod tests {
             ..stored(2, "a.rs", oid(1), 8, 8)
         };
         for comments in [[root.clone(), reply.clone()], [reply, root]] {
-            let (rows, _) = comments_stream(&blobs, &names, &comments);
+            let (rows, _) = comments_stream(&blobs, &names, &comments, |_| None);
             let lines: Vec<u32> = rows
                 .iter()
                 .filter_map(|row| match row {
@@ -2608,7 +2620,7 @@ mod tests {
             stored(2, "a.rs", oid(1), 8, 8),
             reply,
         ];
-        let (rows, _) = comments_stream(&blobs, &names, &comments);
+        let (rows, _) = comments_stream(&blobs, &names, &comments, |_| None);
         let headers = rows
             .iter()
             .filter(|r| matches!(r, Row::FileHeader { .. }))
@@ -2631,6 +2643,37 @@ mod tests {
         assert_eq!(lines, expect);
     }
 
+    /// A card prints the anchor the CLI reads back: a thread on deleted lines
+    /// names the old side of the range's diff, one on new lines does not.
+    #[test]
+    fn a_card_on_deleted_lines_prints_an_old_side_anchor() {
+        let mut d = ReviewDoc {
+            blobs: vec![
+                Blob::new(oid(1), "rs".into(), "gone\n".into()),
+                Blob::new(oid(2), "rs".into(), "kept\n".into()),
+            ],
+            blob_paths: HashMap::from([(0, "a.rs".to_string()), (1, "a.rs".to_string())]),
+            files_rows: vec![Row::del(0, 0), Row::add(1, 0)],
+            old_rev: "1a2b3c4".into(),
+            ..Default::default()
+        };
+        let comments = [
+            stored(1, "a.rs", oid(1), 0, 0),
+            stored(2, "a.rs", oid(2), 0, 0),
+        ];
+        splice_comments(&mut d, &comments);
+        let cards: String = d
+            .comments_rows
+            .iter()
+            .filter_map(|r| match r {
+                Row::Prose { md } => Some(md.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(cards.contains("`a.rs@1a2b3c4:1-1`"), "{cards}");
+        assert!(cards.contains("`a.rs:1-1`"), "{cards}");
+    }
+
     /// A reply that moved its thread to another file takes the thread's card
     /// with it: the context is built in the file the reply names.
     #[test]
@@ -2645,7 +2688,7 @@ mod tests {
             ..stored(2, "new.rs", oid(2), 1, 1)
         };
         let comments = vec![stored(1, "old.rs", oid(1), 0, 0), reply];
-        let (rows, outdated) = comments_stream(&blobs, &names, &comments);
+        let (rows, outdated) = comments_stream(&blobs, &names, &comments, |_| None);
         assert!(outdated.is_empty());
         let headers: Vec<&str> = rows
             .iter()
@@ -2667,7 +2710,7 @@ mod tests {
         // The anchor names a blob this range does not carry, and no blob of
         // the path exists to re-find it in: the thread is content-outdated.
         let comments = vec![stored(1, "gone.rs", oid(9), 4, 4)];
-        let (rows, outdated) = comments_stream(&[], &HashMap::new(), &comments);
+        let (rows, outdated) = comments_stream(&[], &HashMap::new(), &comments, |_| None);
         assert_eq!(outdated, HashSet::from(["gone.rs".to_string()]));
         let Row::Prose { md } = &rows[1] else {
             panic!("row 1 is not the summary");

@@ -666,7 +666,7 @@ pub fn resolve<'a>(
 /// The side of a row stream each blob oid appears on — how an exported
 /// comment knows whether its anchor is `L…` or `old L…`. A blob on both sides
 /// is new.
-pub(crate) fn blob_sides<'a>(
+pub fn blob_sides<'a>(
     rows: impl Iterator<Item = &'a Row>,
     blobs: &[Blob],
 ) -> HashMap<ObjectId, Side> {

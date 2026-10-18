@@ -14,12 +14,17 @@ pub enum Error {
         op: &'static str,
         source: rusqlite::Error,
     },
-    #[error("anchor must be <path>:<start>[-<end>]")]
+    #[error("anchor must be <path>[@<rev>]:<start>[-<end>]")]
     AnchorSyntax,
-    #[error("cannot parse line range `{0}` — lines are 1-based new-side numbers")]
+    #[error("cannot parse line range `{0}` — lines are 1-based numbers")]
     AnchorLines(String),
     #[error("lines are 1-based")]
     AnchorZero,
+    #[error(
+        "`@{named}` is not this diff's old side, `@{old}`\n       \
+         the anchor was printed against another range — review that one to use it"
+    )]
+    AnchorOldSide { named: String, old: String },
     #[error(
         "`{0}` is not part of this diff\n       run `concats manifest` for the reviewable files"
     )]

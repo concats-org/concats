@@ -10,7 +10,7 @@ use concats_diff::{
     Blob, Row, Side,
     load::{INDEX_REV, Loaded, WORKTREE_REV},
 };
-use concats_review::{guide, sessions, store};
+use concats_review::{comments, guide, sessions, store};
 use concats_state::Target;
 
 use crate::{
@@ -88,6 +88,7 @@ fn load_document(target: &Target, guide: Option<String>) -> ReviewDoc {
         Ok(loaded) => {
             next.merge_base_oid = loaded.merge_base;
             next.head_oid = loaded.head;
+            next.old_rev = comments::old_rev(&loaded);
             next.workdir.clone_from(&loaded.workdir);
             next.stage.clone_from(&loaded.stage);
             next.refs = picker_refs(&loaded);

@@ -133,11 +133,12 @@ pub enum ReviewCommands {
 pub enum CommentsAction {
     /// Leave a comment on a range of lines.
     ///
-    /// Lines are 1-based new-side numbers, the same the manifest's links carry.
-    /// The anchor is checked against the loaded diff, so a stored comment
-    /// always renders.
+    /// Lines are 1-based new-side numbers, the same the manifest's links carry;
+    /// `<path>@<rev>:…` addresses deleted lines on the diff's old side, the way
+    /// `concats comments` prints them. The anchor is checked against the
+    /// loaded diff, so a stored comment always renders.
     Add {
-        /// Where: `<path>:<start>[-<end>]`.
+        /// Where: `<path>[@<rev>]:<start>[-<end>]`.
         #[arg(value_name = "PATH:LINES")]
         anchor: String,
         /// The comment body.
@@ -161,7 +162,7 @@ pub enum CommentsAction {
         /// The comment to answer (`3` or `#3`).
         #[arg(value_name = "ID")]
         id: String,
-        /// Optionally, where that code lives now: `<path>:<start>[-<end>]`.
+        /// Optionally, where that code lives now: `<path>[@<rev>]:<start>[-<end>]`.
         #[arg(value_name = "PATH:LINES")]
         anchor: Option<String>,
         /// The reply body.
