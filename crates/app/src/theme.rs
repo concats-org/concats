@@ -41,12 +41,10 @@ pub(crate) fn config_file() -> Option<PathBuf> {
 fn settings() -> &'static concats_config::Config {
     static SETTINGS: OnceLock<concats_config::Config> = OnceLock::new();
     SETTINGS.get_or_init(|| {
-        concats_config::load_config(&concats_config::ConfigCliArgs::default()).unwrap_or_else(
-            |error| {
-                eprintln!("cannot load settings: {error}");
-                concats_config::Config::default()
-            },
-        )
+        concats_config::load_config().unwrap_or_else(|error| {
+            eprintln!("cannot load settings: {error}");
+            concats_config::Config::default()
+        })
     })
 }
 

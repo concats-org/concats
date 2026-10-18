@@ -23,4 +23,3 @@ tempfile = { workspace = true }
 
 [dev-dependencies]
 figment = { workspace = true, features = ["test"] }
-pretty_assertions = "1.4.1"

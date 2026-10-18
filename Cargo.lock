@@ -697,7 +697,6 @@ dependencies = [
  "dirs",
  "figment",
  "miette",
- "pretty_assertions",
  "serde",
  "tempfile",
  "toml",
