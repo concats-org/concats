@@ -966,6 +966,8 @@ fn install_app_theme(vm: &mut ScriptVm) {
 /// slots because the script block's text is compiled, not generated; a shorter
 /// list repeats, which costs the shaper a duplicate miss on a glyph nobody has
 /// and keeps the block readable.
+// NOTE: the four user slots, cycled out of the borrowed setting; the script takes each path owned.
+// coland-ignore: @coland/clone_heavy_function
 fn install_app_font(vm: &mut ScriptVm) {
     let font = theme::active_font();
     let size = font.size;

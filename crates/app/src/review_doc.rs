@@ -428,6 +428,8 @@ pub fn selected(rows: &[Row], caret: Option<Caret>, anchor: Option<Caret>) -> Op
 ///
 /// `len` is the line's length without its newline: a row draws no more than
 /// that, and a range running past it paints to the end and stops.
+// TODO: return the bytes as a Range; review_list destructures this pair.
+// coland-ignore: @coland/same_typed_tuple_return
 pub fn selection_on(at: Selected, row: usize, len: usize) -> Option<(usize, usize)> {
     if row < at.from_row || row > at.to_row {
         return None;
@@ -467,6 +469,8 @@ pub fn replace_selection(d: &mut ReviewDoc, insert: &str) -> bool {
 /// object does not (its bytes exist only in the object database), so a caret on
 /// a deleted-side row, or anywhere in a commit range, silently takes no text.
 /// `back` deletes preceding bytes, rounded back to a whole character.
+// NOTE: the one edit at the caret; the editor's keys and the tests pinning it are its fan-in.
+// coland-ignore: @coland/high_fan_in_complex_function, @coland/high_call_degree
 pub fn type_at(d: &mut ReviewDoc, insert: &str, back: usize) -> bool {
     // A selection is what the edit lands on: typing replaces it, and backspace
     // takes the whole of it rather than one byte off its end. `back` is the
@@ -532,6 +536,8 @@ pub fn step_row(rows: &[Row], row: usize, step: Step) -> Option<usize> {
 
 /// Fold a row span into the two-sided compose selection: deleted rows grow the
 /// old side, added and context rows the new side.
+// NOTE: the one fold of a row span into a compose: the drag, the chip and the tests.
+// coland-ignore: @coland/high_fan_in_complex_function
 pub fn derive_compose(rows: &[Row], lo: usize, hi: usize) -> Option<Compose> {
     let mut c = Compose {
         old: None,
@@ -715,6 +721,8 @@ pub(crate) fn changed_keys(d: &ReviewDoc) -> std::collections::HashSet<store::Li
 
 /// How much of the range is ticked seen: `(seen, total)`. The denominator was
 /// built by the loader, so this is one hash lookup per changed line.
+// NOTE: (seen, total), in the order SeenBar::set_progress takes them.
+// coland-ignore: @coland/same_typed_tuple_return
 pub(crate) fn seen_progress(d: &ReviewDoc, st: &crate::service::ReviewState) -> (usize, usize) {
     let seen = d
         .changed_keys
@@ -924,6 +932,8 @@ pub(crate) fn splice_stream(
     placed
 }
 
+// NOTE: comments_stream opens a card with it at both places a file's threads start.
+// coland-ignore: @coland/single_caller_private_function
 fn context_header(path: &str) -> Row {
     Row::FileHeader {
         path: path.to_string(),
@@ -954,6 +964,8 @@ const COMMENT_CONTEXT: u32 = 3;
     clippy::too_many_lines,
     reason = "Thread context is merged with a running right edge in the diff model’s u32 line coordinates."
 )]
+// NOTE: one pass building the Comments tab's cards; the tests pinning it are most of its fan-in.
+// coland-ignore: @coland/function_too_large, @coland/high_fan_in_complex_function
 fn comments_stream(
     blobs: &[Blob],
     of_name: &std::collections::HashMap<&str, Vec<u32>>,
@@ -1138,6 +1150,8 @@ pub(crate) fn finalize_cards(rows: &mut Vec<Row>, blobs: &[Blob]) {
 
 /// Cap the card `out` ends with, padding it unless it never got any content
 /// (`opening` still set — a 100%-similar rename has no code to give air to).
+// NOTE: finalize_cards closes a card at both ends of its loop; `opening` is the card's state.
+// coland-ignore: @coland/single_caller_private_function, @coland/selector_parameter
 fn close_card(out: &mut Vec<Row>, opening: bool) {
     if !opening {
         // A trailing collapsed run keeps the cap company; the air goes above it.
@@ -1238,6 +1252,8 @@ pub(crate) fn strip_composer(d: &mut ReviewDoc) {
 ///
 /// Replies follow their thread id. The old row is only a proximity hint when
 /// a guide renders the same thread more than once.
+// NOTE: every gesture and reload places the composer through it; rows_rev counts every row change.
+// coland-ignore: @coland/high_call_degree, @coland/mixed_abstraction_levels
 pub(crate) fn splice_composer(d: &mut ReviewDoc) {
     strip_composer(d);
     let Some(c) = d.compose else {

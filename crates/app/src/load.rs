@@ -66,6 +66,8 @@ pub(crate) fn spawn_load(
     });
 }
 
+// NOTE: build_review fills the rows from a load; the error arm fills them from its failure.
+// coland-ignore: @coland/mixed_abstraction_levels
 fn load_document(target: &Target, guide: Option<String>) -> ReviewDoc {
     let repo = std::fs::canonicalize(&target.repo)
         .unwrap_or_else(|_| std::path::PathBuf::from(&target.repo))
@@ -146,6 +148,8 @@ fn picker_refs(loaded: &Loaded) -> Vec<String> {
 /// the newest guide an agent submitted for exactly this resolved range. `None`
 /// means no Guide tab. The stamp is what the poll compares to notice a newer
 /// submission.
+// NOTE: the guide precedence (`--guide` beats the store), with an early return of its own.
+// coland-ignore: @coland/single_caller_private_function
 fn guide_for(path: Option<&str>, loaded: &Loaded) -> Option<(String, Option<u64>)> {
     if let Some(path) = path {
         return Some((std::fs::read_to_string(path).ok()?, None));
@@ -244,6 +248,9 @@ fn carry_side(d: &ReviewDoc, prev: &ReviewDoc, side: Side) -> Option<Side> {
     })
 }
 
+// NOTE: the window state a load carries over; prev is borrowed, and prev's tabs decide which stay open.
+// coland-ignore: @coland/clone_heavy_function, @coland/high_call_degree
+// coland-ignore: @coland/mixed_abstraction_levels
 pub(crate) fn carry_forward(d: &mut ReviewDoc, prev: &ReviewDoc) {
     if d.repo == prev.repo {
         carry_live_buffers(d, &prev.blobs);
@@ -322,6 +329,8 @@ pub(crate) fn carry_forward(d: &mut ReviewDoc, prev: &ReviewDoc) {
 /// Dev affordance, pairs with `CONCATS_APP_SHOT`: `CONCATS_APP_COMPOSE=path:start:end`
 /// (0-based) pre-opens the composer on those lines, so the comment dialog can
 /// be screenshotted without a pointer.
+// NOTE: sets the compose the way a gesture does; splice_composer drops one it cannot place.
+// coland-ignore: @coland/mixed_abstraction_levels
 fn compose_from_env(d: &mut ReviewDoc) {
     let Ok(spec) = crate::dev_hooks::var("CONCATS_APP_COMPOSE") else {
         return;

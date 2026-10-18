@@ -711,6 +711,8 @@ macro_rules! repo_rows {
 }
 
 impl ReviewPane {
+    // NOTE: a handle cached per repo and refilled when the repo changes; the state is only read.
+    // coland-ignore: @coland/read_write_operation
     fn review_snapshot(&mut self, git_dir: Option<&Path>) -> Arc<service::ReviewState> {
         if self.review_git_dir.as_deref() != git_dir {
             self.review_output = review_state(git_dir);
@@ -1063,6 +1065,8 @@ impl ReviewPane {
     /// Unlike folding, this changes which comment rows exist, so it resplices
     /// — and announces the new shape, because every row-indexed cache below
     /// is stale the moment a row is inserted mid-stream.
+    // NOTE: rows_rev counts row changes; splice_comments bumps it only for the composer's row.
+    // coland-ignore: @coland/mixed_abstraction_levels
     fn toggle_card_outdated(&mut self, cx: &mut Cx, path: &str) {
         let git_dir = self.state().read(|d| d.git_dir.clone());
         let comments = self.review_snapshot(git_dir.as_deref()).comments.clone();
@@ -1169,6 +1173,8 @@ impl ReviewPane {
     /// Open the composer on a comment's thread. Replying to a reply answers the
     /// thread, GitHub-style — the store normalizes it the same way — so the
     /// row's `parent` is the target whenever it has one.
+    // NOTE: sets the compose the way every gesture does; splice_composer drops one it cannot place.
+    // coland-ignore: @coland/mixed_abstraction_levels
     fn reply_to_comment(&mut self, cx: &mut Cx, tab: Stream, id: u64, near: usize) {
         // The gesture claims its stream first, like a gutter press does:
         // `d.tab` routes the composer into a stream.
@@ -1202,6 +1208,8 @@ impl ReviewPane {
     /// pressed line alone, extended by dragging. If the composer is already
     /// open on the same file, a further click widens its range instead —
     /// including onto the other side of a deleted→added boundary.
+    // NOTE: sets the compose the way every gesture does; splice_composer drops one it cannot place.
+    // coland-ignore: @coland/mixed_abstraction_levels
     fn compose_start(&mut self, cx: &mut Cx, tab: Stream, item_id: usize, blob: u32, line: u32) {
         // The gesture claims its stream first: `d.tab` routes the composer,
         // and with two streams visible in a split it must follow the pane the
@@ -1292,6 +1300,8 @@ impl ReviewPane {
     /// pull request and survives a reload — and the selection rides along as
     /// the quote, so a comment about one call in a line does not have to say
     /// which by hand.
+    // NOTE: sets the compose the way every gesture does; splice_composer drops one it cannot place.
+    // coland-ignore: @coland/mixed_abstraction_levels
     fn compose_span(&mut self, cx: &mut Cx, tab: Stream, near: usize) {
         self.set_gesture_tab(cx, tab);
         {
@@ -2004,6 +2014,8 @@ impl ReviewPane {
 }
 
 /// The window a pointer event names, for the events that name one.
+// NOTE: the pointer half of handle_event's window gate, beside is_keyboard_input.
+// coland-ignore: @coland/single_caller_private_function
 fn pointer_window(event: &Event) -> Option<WindowId> {
     Some(match event {
         Event::MouseDown(e) => e.window_id,
@@ -2018,6 +2030,8 @@ fn pointer_window(event: &Event) -> Option<WindowId> {
 /// Events that reach a widget by key focus rather than by position. Mouse and
 /// touch carry a `window_id` and makepad's hit test filters on it; these do
 /// not, so the window has to.
+// NOTE: the keyboard half of handle_event's window gate, beside pointer_window.
+// coland-ignore: @coland/single_caller_private_function
 fn is_keyboard_input(event: &Event) -> bool {
     matches!(
         event,
@@ -2042,6 +2056,8 @@ fn drop_composer(state: &WindowState, d: &mut ReviewDoc) {
 /// `repo` at a picked or typed range: `base...head` (or `base..head`), else a
 /// base ref diffed against HEAD. Git ref names cannot contain `..`, so a ref is
 /// never split.
+// NOTE: handle_diff_picker reads both a typed and a picked range through it.
+// coland-ignore: @coland/single_caller_private_function
 fn target_of(repo: String, text: &str) -> concats_state::Target {
     let (base, head) = match text.split_once("...").or_else(|| text.split_once("..")) {
         Some((base, head)) => (base.trim().to_string(), head.trim().to_string()),

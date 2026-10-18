@@ -260,6 +260,8 @@ pub(crate) fn review_state(git_dir: Option<&Path>) -> Shared<ReviewState> {
 }
 
 /// The handle every UI-side mutation goes through.
+// NOTE: the one handle every UI-side mutation goes through; its fan-in is the point.
+// coland-ignore: @coland/high_call_degree
 pub(crate) fn review() -> &'static Worker<ReviewCmd> {
     static W: OnceLock<Worker<ReviewCmd>> = OnceLock::new();
     W.get_or_init(|| Worker::spawn(AppService::default()))
