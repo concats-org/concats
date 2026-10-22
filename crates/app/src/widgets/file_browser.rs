@@ -29,7 +29,6 @@ use crate::{
 script_mod! {
     use mod.prelude.widgets.*
     use mod.widgets.FONT
-    use mod.widgets.FindBar
     use mod.widgets.C_CHROME
     use mod.widgets.C_TEXT
     use mod.widgets.C_DIM
@@ -41,9 +40,15 @@ script_mod! {
         height: Fill
         flow: Down
 
-        find_bar := FindBar {
+        // Filtering, not walking: the bar has no previous or next.
+        find_bar := mod.widgets.TabBar {
             visible: false
-            find_input +: { empty_text: "Find files" }
+            find_row := mod.widgets.FindRow {
+                width: Fill
+                find_input +: { width: Fill empty_text: "Find files" }
+                find_prev +: { visible: false }
+                find_next +: { visible: false }
+            }
         }
 
         tree := FileTree {
@@ -396,10 +401,7 @@ impl Widget for FileBrowser {
                     return;
                 }
                 KeyCode::Escape if self.find.is_some() => {
-                    self.find = None;
-                    self.built = 0;
-                    cx.set_key_focus(tree);
-                    self.redraw(cx);
+                    self.close_find(cx);
                     return;
                 }
                 _ => {}
@@ -417,6 +419,9 @@ impl WidgetMatchEvent for FileBrowser {
             self.built = 0;
             self.redraw(cx);
         }
+        if self.view.button(cx, ids!(find_close)).clicked(actions) {
+            self.close_find(cx);
+        }
         // A folder needs no handling — the tree owns its own open/closed state.
         let Some(id) = self.view.file_tree(cx, ids!(tree)).file_clicked(actions) else {
             return;
@@ -425,6 +430,16 @@ impl WidgetMatchEvent for FileBrowser {
             let path = node.path.clone();
             cx.widget_action(self.widget_uid(), FileBrowserAction::OpenFile(path));
         }
+    }
+}
+
+impl FileBrowser {
+    /// Close find, list the whole tree again, and give the keyboard back to it.
+    fn close_find(&mut self, cx: &mut Cx) {
+        self.find = None;
+        self.built = 0;
+        cx.set_key_focus(self.view.file_tree(cx, ids!(tree)).area());
+        self.redraw(cx);
     }
 }
 

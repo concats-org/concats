@@ -128,8 +128,10 @@ script_mod! {
             draw_call_group: @text
             text_style: TERM_FONT
         }
-        find_bar: mod.widgets.FindBar {
-            find_input +: { empty_text: "Find in terminal" }
+        find_bar: mod.widgets.TabBar {
+            find_row := mod.widgets.FindRow {
+                find_input +: { empty_text: "Find in terminal" }
+            }
         }
         link_tooltip: mod.widgets.Tooltip {
             content +: {
@@ -382,7 +384,7 @@ impl TerminalView {
         self.find_bar.label(cx, ids!(find_count)).set_text(
             cx,
             if self.find_match.is_some() {
-                "Match · Enter next / Shift-Enter previous"
+                "Match"
             } else {
                 "No matches"
             },
@@ -910,19 +912,16 @@ impl Widget for TerminalView {
         if session.is_some() && cx.has_key_focus(self.scroll_bars.area()) {
             cx.show_text_ime(self.scroll_bars.area(), self.ime_pos);
         }
+        // NOTE: over the top rows rather than above them: giving the bar its
+        // own room would resize the PTY each time find opens or closes.
         if self.find.is_some() {
-            let width = self.viewport_rect.size.x.min(320.0);
             self.find_bar.draw_walk(
                 cx,
                 scope,
                 Walk {
-                    abs_pos: Some(dvec2(
-                        self.viewport_rect.pos.x + self.viewport_rect.size.x - width,
-                        self.viewport_rect.pos.y,
-                    )),
-                    width: crate::makepad_widgets::Size::Fixed(width),
-                    height: crate::makepad_widgets::Size::fit(),
-                    ..Walk::default()
+                    abs_pos: Some(self.viewport_rect.pos),
+                    width: crate::makepad_widgets::Size::Fixed(self.viewport_rect.size.x),
+                    ..self.find_bar.walk
                 },
             )?;
             if std::mem::take(&mut self.focus_find) {
@@ -941,28 +940,32 @@ impl Widget for TerminalView {
     )]
     fn handle_event(&mut self, cx: &mut Cx, event: &Event, scope: &mut Scope) {
         let input = self.find_bar.text_input(cx, ids!(find_input));
+        let focused = [self.scroll_bars.area(), input.area()]
+            .into_iter()
+            .any(|area| area != Area::Empty && cx.has_key_focus(area));
         if let Event::KeyDown(key) = event
-            && [self.scroll_bars.area(), input.area()]
-                .into_iter()
-                .any(|area| area != Area::Empty && cx.has_key_focus(area))
+            && focused
+            && key.key_code == KeyCode::KeyF
+            && (key.modifiers.logo || key.modifiers.control)
         {
-            match key.key_code {
-                KeyCode::KeyF if key.modifiers.logo || key.modifiers.control => {
-                    self.find.get_or_insert_default();
-                    self.focus_find = true;
-                    self.redraw(cx);
-                    return;
-                }
-                KeyCode::Escape if self.find.is_some() => {
-                    self.find = None;
-                    self.find_regex = None;
-                    self.find_match = None;
-                    cx.set_key_focus(self.scroll_bars.area());
-                    self.redraw(cx);
-                    return;
-                }
-                _ => {}
-            }
+            self.find.get_or_insert_default();
+            self.focus_find = true;
+            self.redraw(cx);
+            return;
+        }
+        // Escape and the bar's × both close find, and give the keyboard back
+        // to the shell.
+        let escaped =
+            matches!(event, Event::KeyDown(key) if focused && key.key_code == KeyCode::Escape);
+        let closed = matches!(event, Event::Actions(actions)
+            if self.find_bar.button(cx, ids!(find_close)).clicked(actions));
+        if self.find.is_some() && (escaped || closed) {
+            self.find = None;
+            self.find_regex = None;
+            self.find_match = None;
+            cx.set_key_focus(self.scroll_bars.area());
+            self.redraw(cx);
+            return;
         }
         if self.find.is_some() {
             self.find_bar.handle_event(cx, event, scope);
@@ -987,10 +990,15 @@ impl Widget for TerminalView {
                     self.find = Some(query);
                     self.redraw(cx);
                 }
-                if let Some((_, modifiers)) = input.returned(actions) {
+                let back = self.find_bar.button(cx, ids!(find_prev)).clicked(actions);
+                let walked = input
+                    .returned(actions)
+                    .map(|(_, modifiers)| modifiers.shift);
+                let next = self.find_bar.button(cx, ids!(find_next)).clicked(actions);
+                if let Some(back) = walked.or(back.then_some(true)).or(next.then_some(false)) {
                     self.seek_match(
                         cx,
-                        if modifiers.shift {
+                        if back {
                             Direction::Left
                         } else {
                             Direction::Right

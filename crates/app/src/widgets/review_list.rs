@@ -492,14 +492,8 @@ script_mod! {
         // The view's own controls, over the rows and never among them: a
         // stream with file cards shows it always, any other only while
         // finding. Shown and filled by ReviewList::draw_walk.
-        tab_bar := SolidView {
+        tab_bar := mod.widgets.TabBar {
             visible: false
-            width: Fill height: 28
-            draw_bg.color: C_BG
-            flow: Right
-            align: Align{y: 0.5}
-            padding: Inset{left: 12 right: 12}
-            spacing: 4
             // Collapse seen, off and on: the same icon, lit while it is on.
             // `DrawSvg` scales a path by its extent, and the chevrons are
             // tall and narrow: 7 wide comes out the size of the arrows.
@@ -516,62 +510,10 @@ script_mod! {
                     color_hover: C_ACCENT
                 }
             }
-            // Find, while it is open: the query, its matches, and a replacement.
-            find_row := View {
+            find_row := mod.widgets.FindRow {
                 visible: false
-                width: Fit height: Fit
-                flow: Right
-                align: Align{y: 0.5}
-                spacing: 4
                 margin: Inset{left: 8}
-                RoundedView {
-                    width: Fit height: Fit
-                    padding: 0
-                    draw_bg.color: C_CARD
-                    draw_bg.border_color: C_BORDER
-                    draw_bg.border_size: 1.0
-                    draw_bg.border_radius: 2.0
-                    find_input := FlatInput {
-                        width: 220 height: 20
-                        padding: Inset{left: 6 right: 6}
-                        is_multiline: false
-                        submit_on_enter: true
-                        empty_text: "Find"
-                    }
-                }
-                find_prev := BarButton {
-                    icon_walk: Walk{width: 6 height: Fit}
-                    draw_icon.svg: crate_resource("self:resources/icons/chevron_left.svg")
-                }
-                find_next := BarButton {
-                    icon_walk: Walk{width: 6 height: Fit}
-                    draw_icon.svg: crate_resource("self:resources/icons/chevron_right.svg")
-                }
-                find_count := Prose {
-                    width: Fit height: Fit
-                    margin: Inset{left: 2 right: 6}
-                    draw_text.color: C_FAINT
-                    draw_text.text_style: FONT{font_size: 8.25}
-                }
-                RoundedView {
-                    width: Fit height: Fit
-                    padding: 0
-                    draw_bg.color: C_CARD
-                    draw_bg.border_color: C_BORDER
-                    draw_bg.border_size: 1.0
-                    draw_bg.border_radius: 2.0
-                    replace_input := FlatInput {
-                        width: 180 height: 20
-                        padding: Inset{left: 6 right: 6}
-                        is_multiline: false
-                        submit_on_enter: true
-                        empty_text: "Replace"
-                    }
-                }
-                find_close := BarButton {
-                    icon_walk: Walk{width: 9 height: Fit}
-                    draw_icon.svg: crate_resource("self:resources/icons/x.svg")
-                }
+                replace_box +: { visible: true }
             }
             View { width: Fill height: Fit }
             bar_totals := Label {
