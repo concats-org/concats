@@ -31,12 +31,12 @@ use alacritty_terminal::{
 };
 use makepad_widgets::{LiveId, makepad_platform::thread::SignalToUI};
 
-use crate::theme::Theme;
-
+pub mod blink;
 pub mod colors;
 pub mod environment;
 pub mod keys;
 pub mod mouse;
+pub mod queries;
 
 /// The term a view renders, shared with the thread parsing into it.
 pub type SharedTerm = Arc<FairMutex<Term<Proxy>>>;
@@ -69,7 +69,12 @@ pub struct Report {
     /// the answer written. Answered on the UI thread, where the term can be
     /// locked and the theme read.
     pub color_queries: Vec<(usize, ColorReply)>,
+    /// CSI 14t: the program asking how big the text area is, in pixels.
+    pub size_queries: Vec<SizeReply>,
 }
+
+/// How a program wants the text area's size reported.
+pub type SizeReply = Arc<dyn Fn(WindowSize) -> String + Sync + Send>;
 
 /// How a program wants a colour query answered, from alacritty's parser.
 pub type ColorReply = Arc<dyn Fn(Rgb) -> String + Sync + Send>;
@@ -145,13 +150,18 @@ impl EventListener for Proxy {
                     .color_queries
                     .push((index, reply));
             }
+            Event::TextAreaSizeRequest(reply) => {
+                self.report.lock().unwrap().size_queries.push(reply);
+            }
             // TODO: a bell should raise a desktop notification. It is how an
             // agent says it has finished while you are looking at another
             // window, and the panel currently swallows it. Left out here
             // because the sequences that carry a message with it (OSC 9, OSC
             // 777) are not ones the library parses, and hand-rolling that is
             // more than this change should carry.
-            Event::Wakeup | Event::Bell => {}
+            // The view reads whether the cursor blinks off the term itself;
+            // a change only has to redraw it.
+            Event::Wakeup | Event::Bell | Event::CursorBlinkingChange => {}
             _ => return,
         }
         // Every event that gets here changed what the view shows.
@@ -171,6 +181,12 @@ struct Shell {
 fn sessions() -> &'static Mutex<HashMap<Session, Shell>> {
     static S: OnceLock<Mutex<HashMap<Session, Shell>>> = OnceLock::new();
     S.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// The size this tab's shell was last given, or None while it has no live
+/// session.
+pub fn size(session: Session) -> Option<Size> {
+    shell(session, |s| s.size)
 }
 
 /// What `read` takes out of this session's shell. The map is unlocked again by
@@ -216,25 +232,6 @@ pub fn take_report(session: Session) -> Report {
     shell(session, |s| s.report.clone())
         .map(|report| std::mem::take(&mut *report.lock().unwrap()))
         .unwrap_or_default()
-}
-
-/// Answer a program's colour queries: what it set itself, else the theme.
-/// Codex blends its shimmer from the foreground and background it asks for.
-pub fn answer_colors(session: Session, queries: Vec<(usize, ColorReply)>, theme: &Theme) {
-    let Some(shared) = term(session) else {
-        return;
-    };
-    let replies: Vec<u8> = {
-        let term = shared.lock();
-        queries
-            .into_iter()
-            .flat_map(|(index, reply)| {
-                let [r, g, b] = colors::slot(index, term.colors(), theme).bytes();
-                reply(Rgb { r, g, b }).into_bytes()
-            })
-            .collect()
-    };
-    input(session, replies);
 }
 
 /// Spawn the user's login shell in `cwd` for this tab, unless one is already
@@ -337,6 +334,8 @@ pub fn open(session: Session, cwd: &Path) {
 
 /// End a session: the loop thread shuts down its PTY and the child shell gets
 /// hung up on.
+// NOTE: the teardown every PTY test ends with; its fan-in is the tests.
+// coland-ignore: @coland/high_call_degree
 pub fn close(session: Session) {
     let Some(shell) = sessions().lock().unwrap().remove(&session) else {
         return;
@@ -472,6 +471,29 @@ mod tests {
             })
             .contains("rgb:1e1e/1f1f/2222")
         );
+        close(session);
+    }
+
+    /// CSI 14t asks for the text area in pixels; the answer is the session's
+    /// own size.
+    #[test]
+    fn a_size_query_reaches_the_report() {
+        let session = session(0xC0FF_EE0C);
+        open(session, Path::new("."));
+        assert!(is_open(session), "shell failed to spawn");
+        input(session, b"printf '\\033[14t'\r".to_vec());
+        let mut queries = Vec::new();
+        assert!(until(|| {
+            queries.extend(take_report(session).size_queries);
+            !queries.is_empty()
+        }));
+        let size = WindowSize {
+            num_lines: 24,
+            num_cols: 80,
+            cell_width: 8,
+            cell_height: 16,
+        };
+        assert_eq!(queries[0](size), "\x1b[4;384;640t");
         close(session);
     }
 

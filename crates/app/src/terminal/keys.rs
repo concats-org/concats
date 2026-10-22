@@ -128,6 +128,13 @@ pub fn typed(text: &TextInputEvent, held: KeyModifiers) -> Option<&str> {
     (!text.replace_last && !key_press).then_some(text.input.as_str())
 }
 
+/// What a program that asked to hear about focus (`CSI ? 1004 h`) is told when
+/// the terminal gains or loses the keyboard.
+pub fn focus_report(gained: bool, mode: TermMode) -> Option<&'static [u8]> {
+    let report: &[u8] = if gained { b"\x1b[I" } else { b"\x1b[O" };
+    mode.contains(TermMode::FOCUS_IN_OUT).then_some(report)
+}
+
 /// The macOS shortcuts a terminal user expects, as Ghostty binds them by
 /// default: word moves on Option, line moves and line kill on Cmd. They hold
 /// under any keyboard protocol.
@@ -550,6 +557,14 @@ mod tests {
 
     /// A release only ever reports the key; Enter, Tab and Backspace have no
     /// release form outside the full protocol, so they send nothing.
+    #[test]
+    fn focus_is_reported_only_to_a_program_that_asked() {
+        assert_eq!(focus_report(true, TermMode::empty()), None);
+        let asked = TermMode::FOCUS_IN_OUT;
+        assert_eq!(focus_report(true, asked), Some(&b"\x1b[I"[..]));
+        assert_eq!(focus_report(false, asked), Some(&b"\x1b[O"[..]));
+    }
+
     #[test]
     fn releasing_a_legacy_key_sends_nothing() {
         let events = TermMode::REPORT_EVENT_TYPES | TermMode::DISAMBIGUATE_ESC_CODES;

@@ -42,7 +42,7 @@ use alacritty_terminal::{
 )]
 use crate::{
     makepad_widgets::{text::geom::Point as TextPoint, *},
-    terminal::{Proxy, Session, SharedTerm, Size, colors, keys, mouse},
+    terminal::{Proxy, Session, SharedTerm, Size, blink::Blink, colors, keys, mouse},
     window::WindowState,
 };
 
@@ -294,6 +294,8 @@ pub struct TerminalView {
     /// and whether Option or Ctrl was down decides what the text means.
     #[rust]
     held_keys: KeyModifiers,
+    #[rust]
+    blink: Blink,
     /// Shaped cells by text and face (bold, italic). Every face is the one
     /// font today.
     #[rust]
@@ -519,7 +521,14 @@ impl TerminalView {
         self.draw_cursor.new_draw_call(cx);
         // What OSC 12 set, else the theme's.
         self.draw_cursor.color = slot(NamedColor::Cursor);
-        self.draw_cursor_at(cx, cursor.shape, cursor.point, display_offset, focused);
+        // A program may ask for a blinking cursor; it blinks while the
+        // terminal has the keyboard.
+        let shown = self
+            .blink
+            .shown(cx, focused && term.cursor_style().blinking);
+        if shown {
+            self.draw_cursor_at(cx, cursor.shape, cursor.point, display_offset, focused);
+        }
         self.draw_text.new_draw_call(cx);
         self.draw_text.begin_many_instances(cx);
 
@@ -563,7 +572,11 @@ impl TerminalView {
                 });
             }
 
-            if focused && cursor.shape == CursorShape::Block && indexed.point == cursor.point {
+            if shown
+                && focused
+                && cursor.shape == CursorShape::Block
+                && indexed.point == cursor.point
+            {
                 fg = panel;
             }
             if let Some(color) = bg {
@@ -957,6 +970,9 @@ impl Widget for TerminalView {
         if let Event::KeyDown(key) | Event::KeyUp(key) = event {
             self.held_keys = key.modifiers;
         }
+        if self.blink.see(cx, event) {
+            self.draw_bg.redraw(cx);
+        }
         let input = self.find_bar.text_input(cx, ids!(find_input));
         let focused = [self.scroll_bars.area(), input.area()]
             .into_iter()
@@ -1252,10 +1268,16 @@ impl Widget for TerminalView {
                 if let Some(state) = &state {
                     state.set_terminal_tab(Some(session.tab));
                 }
+                if let Some(report) = keys::focus_report(true, mode) {
+                    crate::terminal::input(session, report.to_vec());
+                }
                 self.draw_bg.redraw(cx);
             }
             Hit::KeyFocusLost(_) => {
                 // NOTE: the newly focused input owns the IME now.
+                if let Some(report) = keys::focus_report(false, mode) {
+                    crate::terminal::input(session, report.to_vec());
+                }
                 self.draw_bg.redraw(cx);
             }
             Hit::KeyDown(e) => self.key_press(cx, session, &e, mode),

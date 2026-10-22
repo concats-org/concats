@@ -525,17 +525,14 @@ impl MatchEvent for App {
                     dock.item(session.tab).redraw(cx);
                     // What the program in there said about itself: the name it
                     // wants on its tab, and anything it asked to copy.
-                    let report = terminal::take_report(*session);
-                    if let Some(text) = report.clipboard {
+                    let mut report = terminal::take_report(*session);
+                    if let Some(text) = report.clipboard.take() {
                         cx.copy_to_clipboard(&text);
                     }
-                    if let Some(title) = report.title.filter(|t| !t.is_empty()) {
+                    if let Some(title) = report.title.take().filter(|t| !t.is_empty()) {
                         dock.set_tab_title(cx, session.tab, title);
                     }
-                    if !report.color_queries.is_empty() {
-                        let theme = theme::active_theme();
-                        terminal::answer_colors(*session, report.color_queries, &theme);
-                    }
+                    terminal::queries::answer(*session, report, &theme::active_theme());
                 }
             }
         }
