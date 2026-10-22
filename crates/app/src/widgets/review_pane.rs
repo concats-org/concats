@@ -53,6 +53,7 @@ script_mod! {
     use mod.widgets.FileBrowser
     use mod.widgets.ReviewList
     use mod.widgets.SeenBar
+    use mod.widgets.HeaderRule
     use mod.widgets.FONT
     use mod.widgets.DarkInput
     use mod.widgets.BarButton
@@ -354,7 +355,7 @@ script_mod! {
                 }
             }
         }
-        SolidView { width: Fill height: 1 draw_bg.color: C_BORDER }
+        header_rule := HeaderRule {}
 
         body_overlay := View {
             width: Fill

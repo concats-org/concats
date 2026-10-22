@@ -194,13 +194,17 @@ fn capture(name: &str, hooks: &[(&str, &str)], setup: impl FnOnce(&Path)) -> Pat
     let work = artifacts().join(name);
     let _ = std::fs::remove_dir_all(&work);
     std::fs::create_dir_all(&work).expect("scenario dir");
-    let repo = sandbox.path().join("repo");
-    fixture(&repo);
-    setup(&repo);
+    // NOTE: a fixed path, not one in the sandbox. The window's outline takes
+    // its colour from the checkout's path, so a fresh temp dir per run would
+    // repaint it every time. Runs hold ONE_AT_A_TIME, so they never share it.
+    let repo = Path::new("/tmp/concats-snapshots/repo");
+    let _ = std::fs::remove_dir_all(repo);
+    fixture(repo);
+    setup(repo);
     let shot = work.join("actual.png");
 
     let mut app = Command::new(env!("CARGO_BIN_EXE_concats-app"));
-    app.current_dir(&repo)
+    app.current_dir(repo)
         .args(["--repo", ".", "--base", "HEAD", "--head", "WORKTREE"])
         .env("CONCATS_APP_SIZE", CANVAS)
         // NOTE: paint is paced by a CADisplayLink, which only ticks while the

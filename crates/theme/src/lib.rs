@@ -60,6 +60,18 @@ impl Rgba {
             a: self.a,
         }
     }
+
+    /// `t` of the way from this colour to `other`, channel by channel.
+    #[must_use]
+    pub fn mix(self, other: Self, t: f32) -> Self {
+        let lerp = |a: f32, b: f32| a + (b - a) * t;
+        Self {
+            r: lerp(self.r, other.r),
+            g: lerp(self.g, other.g),
+            b: lerp(self.b, other.b),
+            a: lerp(self.a, other.a),
+        }
+    }
 }
 
 /// Every colour, in one place. Field names mirror Zed's `style` keys where a
@@ -132,6 +144,27 @@ impl Theme {
     pub fn syntax_color(&self, hl: Option<Hl>) -> Rgba {
         hl.and_then(|h| self.syntax.get(&h).copied())
             .unwrap_or(self.text)
+    }
+
+    /// Colours to tell windows apart by: the terminal's six hues around the
+    /// wheel, with two steps from each to the next, then the same 18 again
+    /// softened towards the text colour. The terminal's colours are the ones a
+    /// theme already makes read on its background. Many themes give the bright
+    /// variants the same values, so those add nothing.
+    #[must_use]
+    pub fn window_palette(&self) -> Vec<Rgba> {
+        // Red, yellow, green, cyan, blue, magenta, by ANSI index.
+        const WHEEL: [usize; 6] = [1, 3, 2, 6, 4, 5];
+        let next = WHEEL.iter().cycle().skip(1);
+        let hues: Vec<Rgba> = WHEEL
+            .iter()
+            .zip(next)
+            .flat_map(|(&from, &to)| {
+                [0.0, 1.0 / 3.0, 2.0 / 3.0].map(|t| self.ansi[from].mix(self.ansi[to], t))
+            })
+            .collect();
+        let soft = hues.iter().map(|hue| hue.mix(self.text, 0.45));
+        hues.iter().copied().chain(soft).collect()
     }
 
     /// The house palette, and the base an import falls back to: One Dark's
@@ -309,6 +342,21 @@ mod tests {
             Theme::concats().syntax_color(Some(Hl::Keyword)),
             "syntax got real overrides, not just the dark base"
         );
+    }
+
+    #[test]
+    fn every_theme_has_three_dozen_distinct_window_colours() {
+        for theme in registry(None) {
+            let palette = theme.window_palette();
+            assert_eq!(palette.len(), 36, "{}", theme.name);
+            for (i, a) in palette.iter().enumerate() {
+                assert!(
+                    palette[i + 1..].iter().all(|b| a != b),
+                    "{}: entry {i} repeats",
+                    theme.name
+                );
+            }
+        }
     }
 
     #[test]

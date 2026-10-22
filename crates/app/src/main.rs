@@ -43,7 +43,7 @@ pub use makepad_widgets;
 use makepad_widgets::*;
 use review_doc::{ReviewDoc, Stream, status_line};
 use service::{ReviewCmd, ReviewUpdate, review, review_state};
-use widgets::ReviewPane;
+use widgets::{HeaderRule, ReviewPane};
 use window::WindowState;
 
 use crate::theme::paint;
@@ -710,6 +710,14 @@ impl AppWindow {
                 .set_text(cx, if dir.is_empty() { "concats app" } else { &dir });
             pane.button(cx, ids!(range_button))
                 .set_text(cx, &format!("{}…{}", s.base, s.head));
+            let root = concats_diff::load::discover(std::path::Path::new(&s.repo))
+                .unwrap_or_else(|| PathBuf::from(&s.repo));
+            if let Some(mut rule) = pane
+                .widget(cx, ids!(header_rule))
+                .borrow_mut::<HeaderRule>()
+            {
+                rule.show(cx, root, format!("{}...{}", s.base, s.head));
+            }
             // The load rebuilt every stream, so nothing is spliced any more.
             self.spliced_rev = 0;
             // Adopt the repo the load landed on: the service opens its store
