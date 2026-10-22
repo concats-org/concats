@@ -485,356 +485,393 @@ script_mod! {
     mod.widgets.ReviewList = #(ReviewList::register_widget(vm)) {
         width: Fill
         height: Fill
-        flow: Overlay
+        flow: Down
 
-        list := PortalList {
+        // The view's own controls, over the rows and never among them: a
+        // stream with file cards shows it always, any other only while
+        // finding. Shown and filled by ReviewList::draw_walk.
+        tab_bar := SolidView {
+            visible: false
+            width: Fill height: 28
+            draw_bg.color: C_BG
+            flow: Right
+            align: Align{y: 0.5}
+            padding: Inset{left: 12 right: 12}
+            spacing: 4
+            View { width: Fill height: Fit }
+            bar_totals := Label {
+                text: ""
+                margin: Inset{right: 4}
+                draw_text.color: C_FAINT
+                draw_text.text_style: FONT{font_size: 8.25}
+            }
+            hunk_prev := BarButton {
+                draw_icon.svg: crate_resource("self:resources/icons/arrow_up.svg")
+            }
+            hunk_next := BarButton {
+                draw_icon.svg: crate_resource("self:resources/icons/arrow_down.svg")
+            }
+        }
+        bar_rule := SolidView {
+            visible: false
+            width: Fill height: 1
+            draw_bg.color: C_BORDER
+        }
+
+        body := View {
             width: Fill
             height: Fill
-            flow: Down
-            // One selection spanning prose and code rows.
-            selectable: true
-            drag_scrolling: false
+            flow: Overlay
 
-            Title := View {
-                width: Fill height: Fit
-                padding: Inset{top: 16 bottom: 0 left: 16 right: 16}
-                title_text := Prose {
+            list := PortalList {
+                width: Fill
+                height: Fill
+                flow: Down
+                // One selection spanning prose and code rows.
+                selectable: true
+                drag_scrolling: false
+
+                Title := View {
                     width: Fill height: Fit
-                    padding: 0
-                    draw_text.color: C_TEXT
-                    draw_text.text_style: FONT_BOLD{font_size: 11 line_spacing: 1.45}
+                    padding: Inset{top: 16 bottom: 0 left: 16 right: 16}
+                    title_text := Prose {
+                        width: Fill height: Fit
+                        padding: 0
+                        draw_text.color: C_TEXT
+                        draw_text.text_style: FONT_BOLD{font_size: 11 line_spacing: 1.45}
+                    }
                 }
-            }
 
-            ProseRow := View {
-                width: Fill height: Fit
-                padding: Inset{top: 6 bottom: 6 left: 16 right: 16}
-                // Raw Markdown on purpose: Makepad's Markdown widget reparses
-                // the body on every scrolling redraw.
-                prose_text := Prose {
+                ProseRow := View {
                     width: Fill height: Fit
-                    padding: 0
-                    draw_text.color: C_TEXT
-                    draw_text.text_style: FONT{font_size: 9 line_spacing: 1.5}
+                    padding: Inset{top: 6 bottom: 6 left: 16 right: 16}
+                    // Raw Markdown on purpose: Makepad's Markdown widget reparses
+                    // the body on every scrolling redraw.
+                    prose_text := Prose {
+                        width: Fill height: Fit
+                        padding: 0
+                        draw_text.color: C_TEXT
+                        draw_text.text_style: FONT{font_size: 9 line_spacing: 1.5}
+                    }
                 }
-            }
 
-            // An unresolved agent reference. Loud on purpose.
-            Warning := RoundedView {
-                width: Fill height: Fit
-                margin: Inset{top: 6 bottom: 6 left: 16 right: 16}
-                padding: Inset{top: 10 bottom: 10 left: 12 right: 12}
-                draw_bg.color: C_CARD
-                draw_bg.border_radius: 2.0
-                draw_bg.border_size: 1.0
-                draw_bg.border_color: C_YELLOW
-                warn_label := Prose {
-                    width: Fill
-                    draw_text.color: C_YELLOW
-                    draw_text.text_style: FONT{font_size: 9}
+                // An unresolved agent reference. Loud on purpose.
+                Warning := RoundedView {
+                    width: Fill height: Fit
+                    margin: Inset{top: 6 bottom: 6 left: 16 right: 16}
+                    padding: Inset{top: 10 bottom: 10 left: 12 right: 12}
+                    draw_bg.color: C_CARD
+                    draw_bg.border_radius: 2.0
+                    draw_bg.border_size: 1.0
+                    draw_bg.border_color: C_YELLOW
+                    warn_label := Prose {
+                        width: Fill
+                        draw_text.color: C_YELLOW
+                        draw_text.text_style: FONT{font_size: 9}
+                    }
                 }
-            }
 
-            // The top of a file card. The code rows below continue the side
-            // borders and CardEnd closes the bottom — a "card" over a flat
-            // virtualized list. The title row is a fixed 32, like the design:
-            // a Fit height paints short of the box it lays out and left a band
-            // of window background between the header and the first code row.
-            // Fixed also because the body is hidden while the pinned copy
-            // stands in for it, and a Fit box would collapse to nothing — the
-            // row leaves the list, everything shunts up, the scroll resets. 16
-            // lead-in + 1 border + 30 row + 1 rule.
-            FileHeader := View {
-                width: Fill height: 48
-                padding: Inset{top: 16 bottom: 0 left: 16 right: 16}
-                flow: Overlay
-                fh_body := HeaderCard {}
-            }
+                // The top of a file card. The code rows below continue the side
+                // borders and CardEnd closes the bottom — a "card" over a flat
+                // virtualized list. The title row is a fixed 32, like the design:
+                // a Fit height paints short of the box it lays out and left a band
+                // of window background between the header and the first code row.
+                // Fixed also because the body is hidden while the pinned copy
+                // stands in for it, and a Fit box would collapse to nothing — the
+                // row leaves the list, everything shunts up, the scroll resets. 16
+                // lead-in + 1 border + 30 row + 1 rule.
+                FileHeader := View {
+                    width: Fill height: 48
+                    padding: Inset{top: 16 bottom: 0 left: 16 right: 16}
+                    flow: Overlay
+                    fh_body := HeaderCard {}
+                }
 
-            // A collapsed run of unchanged lines: the arrow band(s) that reveal
-            // it. Wrapped like a code row so the card's side borders carry
-            // straight through the cut.
-            Skipped := CardSides {
-                sides +: { collapsed := CollapsedRun {} }
-            }
+                // A collapsed run of unchanged lines: the arrow band(s) that reveal
+                // it. Wrapped like a code row so the card's side borders carry
+                // straight through the cut.
+                Skipped := CardSides {
+                    sides +: { collapsed := CollapsedRun {} }
+                }
 
-            // What the range removed, where it was removed from. The file view
-            // shows the file as it is, so this stands in for lines the head
-            // does not have — press it and they take its place.
-            Removed := CardSides {
-                sides +: {
+                // What the range removed, where it was removed from. The file view
+                // shows the file as it is, so this stands in for lines the head
+                // does not have — press it and they take its place.
+                Removed := CardSides {
+                    sides +: {
+                        SolidView {
+                            width: Fill height: Fit
+                            draw_bg.color: C_CARD
+                            flow: Right
+                            align: Align{y: 0.5}
+                            // Lines up with the gutter's line-number column, so the
+                            // caret reads as belonging to the code's left edge.
+                            padding: Inset{left: 6 top: 1 bottom: 1}
+                            rm_button := ButtonFlatter {
+                                width: Fit height: Fit
+                                padding: Inset{top: 2 bottom: 2 left: 4 right: 6}
+                                spacing: 4
+                                icon_walk: Walk{width: 6 height: Fit}
+                                draw_icon +: {
+                                    color: C_DELETED
+                                    color_hover: C_TEXT
+                                    svg: crate_resource("self:resources/icons/caret_right.svg")
+                                }
+                                draw_bg +: { color_hover: C_ELEMENT_HOVER border_radius: 4.0 }
+                                draw_text +: {
+                                    color: C_DELETED
+                                    color_hover: C_TEXT
+                                    color_down: C_TEXT
+                                    color_focus: C_DELETED
+                                    color_disabled: C_DELETED
+                                    text_style: FONT{font_size: 8.25}
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // 10pt of air between the card's code and the chrome bracketing it.
+                // Part of the code region, not of the chrome: a card ticked seen
+                // runs its marker through this, and stops at a collapsed run.
+                Spacer := CardSides {
+                    sides +: {
+                        SolidView {
+                            width: Fill height: 10
+                            draw_bg.color: C_CARD
+                            flow: Right
+                            sp_mark := SolidView {
+                                width: 2 height: Fill
+                                visible: false
+                                draw_bg.color: C_ACCENT
+                            }
+                        }
+                    }
+                }
+
+                // Hunk boundaries carry review-state anchors but draw nothing:
+                // the design shows hunks as plain line-number jumps.
+                HunkBar := View {
+                    width: Fill height: 0
+                }
+
+                // A review comment, below the last line of its range and part of
+                // the code flow, like the design: a full-width strip on the
+                // window-dark tone, the blue comment bar running down its left edge
+                // — no card, no range header. The bar tells you the range; the
+                // byline has to tell you who, and in a thread that is the part that
+                // must stay legible. Reply and delete are the quiet icons.
+                //
+                // `Reply` is the same strip, indented on the inner box's padding:
+                // the outer 16 is the card's edge, and the accent bar would paint
+                // into a margin.
+                Comment := CommentStrip {}
+                Reply := CommentStrip {
+                    cm_frame +: { cm_bar +: { cm_strip +: {
+                        padding: Inset{top: 12 bottom: 12 left: 36 right: 12}
+                    } } }
+                }
+
+                // The row itself: the rail and the line, and nothing about the
+                // box around them. Hoisted so a card and an editor can differ in
+                // their framing without differing in their content.
+                Code := CardSides {
+                    sides +: { CodeRow {} }
+                }
+                // The same row in a File tab, which is an editor and not a code
+                // block: no card sides, no inset, the text against the pane.
+                CodeFlat := CodeRow {}
+
+                // One line of authored text — a prompt, a response, a commit
+                // message. The same rail and line a code row gets, on the page
+                // instead of in a card, so the transcript reads as prose and still
+                // selects, marks and comments exactly like code.
+                ProseLine := View {
+                    width: Fill height: Fit
+                    padding: Inset{left: 16 right: 16}
+                    CodeRow {
+                        draw_bg.color: C_BG
+                        gut +: { prose: true }
+                        dl +: { prose: true }
+                    }
+                }
+
+                // The inline comment composer, spliced below the last selected line
+                // — the same strip a posted comment gets, so the blue bar ties it
+                // to the selected range the same way. One box and two icons, like
+                // the design: no well, no title, the placeholder names the target
+                // range, send and dismiss are the icons.
+                Composer := StripFrame {
+                    cm_frame +: { cm_bar +: { cm_strip +: {
+                        flow: Down
+                        spacing: 10
+
+                        comp_input := FlatInput {
+                            width: Fill
+                            empty_text: "Add a comment"
+                        }
+                        View {
+                            width: Fill height: Fit
+                            flow: Right
+                            spacing: 1
+                            align: Align{x: 1.0, y: 0.5}
+                            comp_cancel := BarButton {
+                                draw_icon.svg: crate_resource("self:resources/icons/close_circle.svg")
+                            }
+                            SolidView {
+                                width: 1 height: 16
+                                margin: Inset{left: 4 right: 4}
+                                draw_bg.color: C_BORDER
+                            }
+                            comp_post := BarButton {
+                                draw_icon.svg: crate_resource("self:resources/icons/send.svg")
+                            }
+                        }
+                    } } }
+                }
+
+                // Bottom cap: rounds off the card the FileHeader opened. Its
+                // bottom padding is the other half of the design's 32 between
+                // cards (the next FileHeader brings 16 of its own).
+                CardEnd := View {
+                    width: Fill height: Fit
+                    padding: Inset{left: 16 right: 16 bottom: 16}
+                    flow: Overlay
                     SolidView {
                         width: Fill height: Fit
-                        draw_bg.color: C_CARD
-                        flow: Right
-                        align: Align{y: 0.5}
-                        // Lines up with the gutter's line-number column, so the
-                        // caret reads as belonging to the code's left edge.
-                        padding: Inset{left: 6 top: 1 bottom: 1}
-                        rm_button := ButtonFlatter {
-                            width: Fit height: Fit
-                            padding: Inset{top: 2 bottom: 2 left: 4 right: 6}
-                            spacing: 4
-                            icon_walk: Walk{width: 6 height: Fit}
-                            draw_icon +: {
-                                color: C_DELETED
-                                color_hover: C_TEXT
-                                svg: crate_resource("self:resources/icons/caret_right.svg")
-                            }
-                            draw_bg +: { color_hover: C_ELEMENT_HOVER border_radius: 4.0 }
-                            draw_text +: {
-                                color: C_DELETED
-                                color_hover: C_TEXT
-                                color_down: C_TEXT
-                                color_focus: C_DELETED
-                                color_disabled: C_DELETED
-                                text_style: FONT{font_size: 8.25}
-                            }
+                        draw_bg.color: C_BORDER
+                        padding: Inset{bottom: 1 left: 1 right: 1}
+                        SolidView {
+                            width: Fill height: 8
+                            draw_bg.color: C_CARD
                         }
+                    }
+                    // … and its bottom corners. Offset by hand rather than aligned
+                    // to the bottom of a Fill wrapper: inside this Fit parent the
+                    // wrapper collapsed to the cap's own height, so "bottom" was
+                    // the top and the cap's border landed 3px above the card's,
+                    // leaving an unbordered lip that read as a drop shadow.
+                    CardCapBottom {
+                        margin: Inset{top: 3}
                     }
                 }
             }
 
-            // 10pt of air between the card's code and the chrome bracketing it.
-            // Part of the code region, not of the chrome: a card ticked seen
-            // runs its marker through this, and stops at a collapsed run.
-            Spacer := CardSides {
-                sides +: {
-                    SolidView {
-                        width: Fill height: 10
-                        draw_bg.color: C_CARD
-                        flow: Right
-                        sp_mark := SolidView {
-                            width: 2 height: Fill
-                            visible: false
-                            draw_bg.color: C_ACCENT
-                        }
+            // The offer to comment on selected text, parked at the end of the
+            // selection. It is the selection's own affordance — the gutter's `+`
+            // comments on whole lines, this one on the words — so it appears with
+            // the selection and goes when the composer it opened does.
+            quote_chip := View {
+                visible: false
+                width: Fit height: Fit
+                quote_button := ButtonFlatter {
+                    width: Fit height: Fit
+                    padding: Inset{top: 4 bottom: 4 left: 8 right: 8}
+                    spacing: 5
+                    text: "Comment"
+                    icon_walk: Walk{width: 11 height: Fit}
+                    draw_icon +: {
+                        color: C_ON_ACCENT
+                        color_hover: C_ON_ACCENT
+                        svg: crate_resource("self:resources/icons/comment.svg")
+                    }
+                    draw_bg +: {
+                        color: C_ACCENT
+                        color_hover: C_ACCENT
+                        color_down: C_ACCENT
+                        border_radius: 4.0
+                    }
+                    draw_text +: {
+                        color: C_ON_ACCENT
+                        color_hover: C_ON_ACCENT
+                        color_down: C_ON_ACCENT
+                        color_focus: C_ON_ACCENT
+                        color_disabled: C_ON_ACCENT
+                        text_style: FONT{font_size: 8.25}
                     }
                 }
             }
 
-            // Hunk boundaries carry review-state anchors but draw nothing:
-            // the design shows hunks as plain line-number jumps.
-            HunkBar := View {
-                width: Fill height: 0
-            }
+            // The tab strip's shadow over the content. Drawn before the pinned
+            // header so the header sits in front of it, the way it does in the
+            // design: the strip's shadow is clipped short by the header's own top.
+            DropShadow {}
 
-            // A review comment, below the last line of its range and part of
-            // the code flow, like the design: a full-width strip on the
-            // window-dark tone, the blue comment bar running down its left edge
-            // — no card, no range header. The bar tells you the range; the
-            // byline has to tell you who, and in a thread that is the part that
-            // must stay legible. Reply and delete are the quiet icons.
-            //
-            // `Reply` is the same strip, indented on the inner box's padding:
-            // the outer 16 is the card's edge, and the accent bar would paint
-            // into a margin.
-            Comment := CommentStrip {}
-            Reply := CommentStrip {
-                cm_frame +: { cm_bar +: { cm_strip +: {
-                    padding: Inset{top: 12 bottom: 12 left: 36 right: 12}
-                } } }
-            }
-
-            // The row itself: the rail and the line, and nothing about the
-            // box around them. Hoisted so a card and an editor can differ in
-            // their framing without differing in their content.
-            Code := CardSides {
-                sides +: { CodeRow {} }
-            }
-            // The same row in a File tab, which is an editor and not a code
-            // block: no card sides, no inset, the text against the pane.
-            CodeFlat := CodeRow {}
-
-            // One line of authored text — a prompt, a response, a commit
-            // message. The same rail and line a code row gets, on the page
-            // instead of in a card, so the transcript reads as prose and still
-            // selects, marks and comments exactly like code.
-            ProseLine := View {
+            // The pinned copy of the card header whose rows fill the top of the
+            // viewport: the header scrolls along, so the path and the viewed tick
+            // box stay at hand until the card is read (and ticked) to its end.
+            // Populated and shown by ReviewList::draw_walk.
+            sticky := View {
+                visible: false
                 width: Fill height: Fit
                 padding: Inset{left: 16 right: 16}
-                CodeRow {
-                    draw_bg.color: C_BG
-                    gut +: { prose: true }
-                    dl +: { prose: true }
+                flow: Down
+                // The header's shadow reaching up into the gap — `0px 0px` in the
+                // design, no Y offset — so it mixes with the tab strip's and the
+                // gap gets dark enough that rows stop flashing through it. Always
+                // laid out, only its opacity ramps: toggling `visible` moved the
+                // whole box by its own height at one scroll position, and that jump
+                // read as a flicker.
+                st_shadow_up := ShadowUp {}
+                // Chrome, not content: the copy's path is not selectable.
+                HeaderCard {
+                    fh_frame +: { fh_card +: { fh_row +: { fh_path +: {
+                        selectable: false
+                    } } } }
+                    fh_bottom +: { visible: true }
+                }
+                // …and the header's own shadow onto the rows passing beneath it,
+                // ramped by the same `fade`: at rest the copy rides on the real
+                // header, which is part of the card and casts nothing.
+                st_shadow := DropShadow {
+                    width: Fill height: 12
+                    strength: 0.84
                 }
             }
 
-            // The inline comment composer, spliced below the last selected line
-            // — the same strip a posted comment gets, so the blue bar ties it
-            // to the selected range the same way. One box and two icons, like
-            // the design: no well, no title, the placeholder names the target
-            // range, send and dismiss are the icons.
-            Composer := StripFrame {
-                cm_frame +: { cm_bar +: { cm_strip +: {
-                    flow: Down
-                    spacing: 10
-
-                    comp_input := FlatInput {
-                        width: Fill
-                        empty_text: "Add a comment"
-                    }
-                    View {
-                        width: Fill height: Fit
-                        flow: Right
-                        spacing: 1
-                        align: Align{x: 1.0, y: 0.5}
-                        comp_cancel := BarButton {
-                            draw_icon.svg: crate_resource("self:resources/icons/close_circle.svg")
-                        }
-                        SolidView {
-                            width: 1 height: 16
-                            margin: Inset{left: 4 right: 4}
-                            draw_bg.color: C_BORDER
-                        }
-                        comp_post := BarButton {
-                            draw_icon.svg: crate_resource("self:resources/icons/send.svg")
-                        }
-                    }
-                } } }
-            }
-
-            // Bottom cap: rounds off the card the FileHeader opened. Its
-            // bottom padding is the other half of the design's 32 between
-            // cards (the next FileHeader brings 16 of its own).
-            CardEnd := View {
+            // The find bar. Pinned over the list rather than spliced into it: it
+            // belongs to the view, not to the document, and a row that scrolled it
+            // out of reach would be a search box you cannot see while searching.
+            // Last, so it is drawn over the pinned header and, events running last
+            // child first, is the first to see the pointer.
+            find_bar := View {
+                visible: false
                 width: Fill height: Fit
-                padding: Inset{left: 16 right: 16 bottom: 16}
-                flow: Overlay
+                align: Align{x: 1.0, y: 0.0}
+                padding: Inset{top: 8 right: 24}
                 SolidView {
-                    width: Fill height: Fit
+                    width: 420 height: Fit
                     draw_bg.color: C_BORDER
-                    padding: Inset{bottom: 1 left: 1 right: 1}
+                    padding: Inset{top: 1 bottom: 1 left: 1 right: 1}
                     SolidView {
-                        width: Fill height: 8
-                        draw_bg.color: C_CARD
-                    }
-                }
-                // … and its bottom corners. Offset by hand rather than aligned
-                // to the bottom of a Fill wrapper: inside this Fit parent the
-                // wrapper collapsed to the cap's own height, so "bottom" was
-                // the top and the cap's border landed 3px above the card's,
-                // leaving an unbordered lip that read as a drop shadow.
-                CardCapBottom {
-                    margin: Inset{top: 3}
-                }
-            }
-        }
-
-        // The offer to comment on selected text, parked at the end of the
-        // selection. It is the selection's own affordance — the gutter's `+`
-        // comments on whole lines, this one on the words — so it appears with
-        // the selection and goes when the composer it opened does.
-        quote_chip := View {
-            visible: false
-            width: Fit height: Fit
-            quote_button := ButtonFlatter {
-                width: Fit height: Fit
-                padding: Inset{top: 4 bottom: 4 left: 8 right: 8}
-                spacing: 5
-                text: "Comment"
-                icon_walk: Walk{width: 11 height: Fit}
-                draw_icon +: {
-                    color: C_ON_ACCENT
-                    color_hover: C_ON_ACCENT
-                    svg: crate_resource("self:resources/icons/comment.svg")
-                }
-                draw_bg +: {
-                    color: C_ACCENT
-                    color_hover: C_ACCENT
-                    color_down: C_ACCENT
-                    border_radius: 4.0
-                }
-                draw_text +: {
-                    color: C_ON_ACCENT
-                    color_hover: C_ON_ACCENT
-                    color_down: C_ON_ACCENT
-                    color_focus: C_ON_ACCENT
-                    color_disabled: C_ON_ACCENT
-                    text_style: FONT{font_size: 8.25}
-                }
-            }
-        }
-
-        // The tab strip's shadow over the content. Drawn before the pinned
-        // header so the header sits in front of it, the way it does in the
-        // design: the strip's shadow is clipped short by the header's own top.
-        DropShadow {}
-
-        // The pinned copy of the card header whose rows fill the top of the
-        // viewport: the header scrolls along, so the path and the viewed tick
-        // box stay at hand until the card is read (and ticked) to its end.
-        // Populated and shown by ReviewList::draw_walk.
-        sticky := View {
-            visible: false
-            width: Fill height: Fit
-            padding: Inset{left: 16 right: 16}
-            flow: Down
-            // The header's shadow reaching up into the gap — `0px 0px` in the
-            // design, no Y offset — so it mixes with the tab strip's and the
-            // gap gets dark enough that rows stop flashing through it. Always
-            // laid out, only its opacity ramps: toggling `visible` moved the
-            // whole box by its own height at one scroll position, and that jump
-            // read as a flicker.
-            st_shadow_up := ShadowUp {}
-            // Chrome, not content: the copy's path is not selectable.
-            HeaderCard {
-                fh_frame +: { fh_card +: { fh_row +: { fh_path +: {
-                    selectable: false
-                } } } }
-                fh_bottom +: { visible: true }
-            }
-            // …and the header's own shadow onto the rows passing beneath it,
-            // ramped by the same `fade`: at rest the copy rides on the real
-            // header, which is part of the card and casts nothing.
-            st_shadow := DropShadow {
-                width: Fill height: 12
-                strength: 0.84
-            }
-        }
-
-        // The find bar. Pinned over the list rather than spliced into it: it
-        // belongs to the view, not to the document, and a row that scrolled it
-        // out of reach would be a search box you cannot see while searching.
-        // Last, so it is drawn over the pinned header and, events running last
-        // child first, is the first to see the pointer.
-        find_bar := View {
-            visible: false
-            width: Fill height: Fit
-            align: Align{x: 1.0, y: 0.0}
-            padding: Inset{top: 8 right: 24}
-            SolidView {
-                width: 420 height: Fit
-                draw_bg.color: C_BORDER
-                padding: Inset{top: 1 bottom: 1 left: 1 right: 1}
-                SolidView {
-                    width: Fill height: Fit
-                    draw_bg.color: C_BG
-                    flow: Down
-                    padding: Inset{top: 8 bottom: 8 left: 10 right: 10}
-                    spacing: 6
-                    View {
                         width: Fill height: Fit
-                        flow: Right
-                        align: Align{y: 0.5}
-                        spacing: 8
-                        find_input := FlatInput {
+                        draw_bg.color: C_BG
+                        flow: Down
+                        padding: Inset{top: 8 bottom: 8 left: 10 right: 10}
+                        spacing: 6
+                        View {
+                            width: Fill height: Fit
+                            flow: Right
+                            align: Align{y: 0.5}
+                            spacing: 8
+                            find_input := FlatInput {
+                                width: Fill height: 20
+                                is_multiline: false
+                                submit_on_enter: true
+                                empty_text: "Find"
+                            }
+                            find_count := Prose {
+                                width: Fit height: Fit
+                                draw_text.color: C_FAINT
+                                draw_text.text_style: FONT{font_size: 8.5}
+                            }
+                        }
+                        replace_input := FlatInput {
                             width: Fill height: 20
                             is_multiline: false
                             submit_on_enter: true
-                            empty_text: "Find"
+                            empty_text: "Replace (enter replaces, cmd-enter all)"
                         }
-                        find_count := Prose {
-                            width: Fit height: Fit
-                            draw_text.color: C_FAINT
-                            draw_text.text_style: FONT{font_size: 8.5}
-                        }
-                    }
-                    replace_input := FlatInput {
-                        width: Fill height: 20
-                        is_multiline: false
-                        submit_on_enter: true
-                        empty_text: "Replace (enter replaces, cmd-enter all)"
                     }
                 }
             }
@@ -912,8 +949,10 @@ pub struct ReviewList {
     find: Option<String>,
     #[rust]
     find_at: Option<(usize, usize)>,
+    /// A row to scroll to on the next draw, and how far below the top of the
+    /// view to put it.
     #[rust]
-    seek_row: Option<usize>,
+    seek_row: Option<(usize, f64)>,
     /// Where the selection ended this pass and the row it ended on: what the
     /// chip is placed against, and what the comment it opens anchors to.
     #[rust]
@@ -1011,6 +1050,13 @@ impl CardMeta {
     }
 }
 
+impl WidgetMatchEvent for ReviewList {
+    fn handle_actions(&mut self, cx: &mut Cx, actions: &Actions, _scope: &mut Scope) {
+        self.handle_find(cx, actions);
+        self.handle_hunk_buttons(cx, actions);
+    }
+}
+
 impl ReviewList {
     /// The window these rows belong to. Detached until the first event carries
     /// one down from the pane, which is before any gesture can reach a row.
@@ -1037,6 +1083,37 @@ impl ReviewList {
             Some(row)
         } else {
             self.visible.binary_search(&row).ok()
+        }
+    }
+
+    /// The tab bar's arrows: scroll to the hunk before or after the one at
+    /// the top of the view. A shut card's hunks are not in the view, so they
+    /// are skipped.
+    fn handle_hunk_buttons(&mut self, cx: &mut Cx, actions: &Actions) {
+        let forward = self.view.button(cx, ids!(hunk_next)).clicked(actions);
+        if !forward && !self.view.button(cx, ids!(hunk_prev)).clicked(actions) {
+            return;
+        }
+        let Some(tab) = self.drawn_tab else {
+            return;
+        };
+        let top = self.view.portal_list(cx, ids!(list)).first_id();
+        let Some(from) = self.row_at(top) else {
+            return;
+        };
+        let shown = |row: usize| self.entry_of(row).is_some();
+        let target = self.state().read(|d| {
+            let rows = d.stream(tab);
+            if forward {
+                first_hunk(rows, from + 1..rows.len(), shown)
+            } else {
+                first_hunk(rows, (0..from).rev(), shown)
+            }
+        });
+        if let Some(row) = target {
+            // Below the pinned header, which would otherwise cover the hunk.
+            self.seek_row = Some((row, STICKY_TOP_GAP + STICKY_HEIGHT));
+            self.redraw(cx);
         }
     }
 
@@ -1067,6 +1144,15 @@ impl ReviewList {
             }
         }
     }
+}
+
+/// The first of `candidates` that starts a hunk the view shows.
+fn first_hunk(
+    rows: &[Row],
+    mut candidates: impl Iterator<Item = usize>,
+    shown: impl Fn(usize) -> bool,
+) -> Option<usize> {
+    candidates.find(|&row| matches!(rows[row], Row::HunkBar { .. }) && shown(row))
 }
 
 /// Where a pointer event is, for the widgets that have to know whether it is
@@ -1286,6 +1372,17 @@ impl Widget for ReviewList {
         if find_bar.visible() != self.find.is_some() {
             find_bar.set_visible(cx, self.find.is_some());
         }
+        let cards = matches!(
+            pass.tab,
+            Stream::Guide | Stream::Files | Stream::Sessions | Stream::Commits
+        );
+        for bar in [ids!(tab_bar), ids!(bar_rule)] {
+            self.view.view(cx, bar).set_visible(cx, cards);
+        }
+        let (adds, dels) = pass.doc.totals;
+        self.view
+            .label(cx, ids!(bar_totals))
+            .set_text(cx, &format!("+{adds} -{dels}"));
 
         // The list's own chrome — the pinned header's rounded caps, the top
         // fade — reads the theme off the scope like every row does. Drawing the
@@ -1306,9 +1403,10 @@ impl Widget for ReviewList {
                             .position(|row| matches!(row, Row::Composer))
                     })
                     .flatten();
-                for row in [composer, self.seek_row.take()].into_iter().flatten() {
+                let composer = composer.map(|row| (row, 0.0));
+                for (row, below) in [composer, self.seek_row.take()].into_iter().flatten() {
                     if let Some(entry) = self.entry_of(row) {
-                        list.set_first_id_and_scroll(entry, 0.0);
+                        list.set_first_id_and_scroll(entry, below);
                     }
                 }
                 let mut drawn = Vec::new();
@@ -1372,9 +1470,7 @@ impl Widget for ReviewList {
         }) {
             self.adopt_list_selection(cx);
         }
-        if let Event::Actions(actions) = event {
-            self.handle_find(cx, actions);
-        }
+        self.widget_match_event(cx, event, scope);
     }
 }
 
@@ -2069,8 +2165,8 @@ fn row_at_y(drawn: &[DrawnRow], y: f64) -> Option<usize> {
 mod tests {
     use super::{
         Band, CARD_END_EDGE, CardIndex, CardMeta, Cell, DrawnRow, FILE_HEADER_TOP_PADDING, HashSet,
-        STICKY_FADE, STICKY_HEIGHT, STICKY_TOP_GAP, Seen, anchor_entry, hits_in, owns_gesture,
-        row_at_y, sticky_offsets,
+        Row, STICKY_FADE, STICKY_HEIGHT, STICKY_TOP_GAP, Seen, anchor_entry, first_hunk, hits_in,
+        owns_gesture, row_at_y, sticky_offsets,
     };
     #[allow(
         clippy::wildcard_imports,
@@ -2106,6 +2202,27 @@ mod tests {
     /// answers for one only when its own press started it. Without this, a tab
     /// the reviewer visited once takes the caret — and the keyboard — off
     /// whatever they are using now.
+
+    #[test]
+    fn the_hunk_arrows_skip_hunks_the_view_does_not_show() {
+        let hunk = || Row::HunkBar {
+            old: None,
+            new: None,
+        };
+        let rows = [
+            Row::Spacer,
+            hunk(),
+            Row::Spacer,
+            hunk(),
+            hunk(),
+            Row::Spacer,
+        ];
+        let every = |_| true;
+        assert_eq!(first_hunk(&rows, 2..rows.len(), every), Some(3));
+        assert_eq!(first_hunk(&rows, (0..3).rev(), every), Some(1));
+        assert_eq!(first_hunk(&rows, 2..rows.len(), |row| row != 3), Some(4));
+        assert_eq!(first_hunk(&rows, 5..rows.len(), every), None);
+    }
     #[test]
     fn only_the_view_the_press_went_down_in_owns_the_gesture() {
         let rect = || Rect {

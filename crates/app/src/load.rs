@@ -89,6 +89,7 @@ fn load_document(target: &Target, guide: Option<String>) -> ReviewDoc {
             next.stage.clone_from(&loaded.stage);
             next.refs = picker_refs(&loaded);
             next.worktrees = concats_diff::load::worktrees(&loaded.root);
+            next.totals = (loaded.stats.adds, loaded.stats.dels);
             let guide = guide_for(next.guide_path.as_deref(), &loaded);
             next.applied_guide_at = guide.as_ref().and_then(|(_, at)| *at);
             build_review(&mut next, loaded, target, guide.map(|(md, _)| md));

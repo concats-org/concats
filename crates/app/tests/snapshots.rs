@@ -709,7 +709,7 @@ fn loading_another_window_keeps_typing_in_the_clicked_window() {
         "two_windows",
         &[
             ("CONCATS_APP_WINDOWS", "2"),
-            ("CONCATS_APP_CLICK", "200,228"),
+            ("CONCATS_APP_CLICK", "200,257"),
             ("CONCATS_APP_TYPE", "/* primary */"),
         ],
         |_| {},
@@ -780,8 +780,8 @@ fn a_gutter_drag_spans_deleted_and_added_lines() {
     let shot = capture(
         "gutter-drag",
         &[
-            ("CONCATS_APP_CLICK", "26,206"),
-            ("CONCATS_APP_DRAG_TO", "26,228"),
+            ("CONCATS_APP_CLICK", "26,235"),
+            ("CONCATS_APP_DRAG_TO", "26,257"),
             ("CONCATS_APP_TYPE", "Review this change"),
         ],
         |_| {},

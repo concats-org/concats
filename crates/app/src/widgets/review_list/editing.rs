@@ -258,7 +258,7 @@ impl ReviewList {
             return;
         };
         self.find_at = Some((row, byte));
-        self.seek_row = Some(row);
+        self.seek_row = Some((row, 0.0));
         self.state().with(|d| {
             d.tab = tab;
             d.caret = editor::caret_at(d, tab, row, byte);

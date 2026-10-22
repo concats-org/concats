@@ -116,6 +116,9 @@ pub struct ReviewDoc {
     /// The range pickers' refs: branches, then tags. Filled on load from the
     /// repo's refs.
     pub refs: Vec<String>,
+    /// Lines added and removed over the whole range, as the tab bar shows
+    /// them.
+    pub totals: (usize, usize),
     /// The repo picker's other checkouts: every worktree of this repository,
     /// the main one first, with what each has checked out. Filled on load.
     pub worktrees: Vec<(std::path::PathBuf, String)>,
