@@ -406,7 +406,7 @@ fn a_click_places_a_caret() {
         "caret-placed",
         &[
             ("CONCATS_APP_FILE", "editor.rs"),
-            ("CONCATS_APP_CLICK", "200,98"),
+            ("CONCATS_APP_CLICK", "200,104"),
         ],
         18,
         0,
@@ -421,7 +421,7 @@ fn typing_at_the_caret_reaches_the_buffer() {
         "typed-edit",
         &[
             ("CONCATS_APP_FILE", "editor.rs"),
-            ("CONCATS_APP_CLICK", "200,98"),
+            ("CONCATS_APP_CLICK", "200,104"),
             ("CONCATS_APP_TYPE", " // edited"),
         ],
         28,
@@ -548,7 +548,7 @@ fn file_browser_search_stays_in_its_own_pane() {
     let shot = capture(
         "file-browser-search",
         &[
-            ("CONCATS_APP_CLICK", "1100,64"),
+            ("CONCATS_APP_CLICK", "1100,70"),
             ("CONCATS_APP_FIND", "deep/target"),
             ("CONCATS_APP_FIND_KEEP_FOCUS", "1"),
         ],
@@ -601,7 +601,7 @@ fn file_tab_titles_follow_typing_and_save_acknowledgements() {
             name,
             &[
                 ("CONCATS_APP_FILE", "editor.rs"),
-                ("CONCATS_APP_CLICK", "200,98"),
+                ("CONCATS_APP_CLICK", "200,104"),
                 ("CONCATS_APP_TYPE", " // edited"),
                 ("CONCATS_APP_SAVE", save),
             ],
@@ -709,7 +709,7 @@ fn loading_another_window_keeps_typing_in_the_clicked_window() {
         "two_windows",
         &[
             ("CONCATS_APP_WINDOWS", "2"),
-            ("CONCATS_APP_CLICK", "200,222"),
+            ("CONCATS_APP_CLICK", "200,228"),
             ("CONCATS_APP_TYPE", "/* primary */"),
         ],
         |_| {},
@@ -780,8 +780,8 @@ fn a_gutter_drag_spans_deleted_and_added_lines() {
     let shot = capture(
         "gutter-drag",
         &[
-            ("CONCATS_APP_CLICK", "26,200"),
-            ("CONCATS_APP_DRAG_TO", "26,222"),
+            ("CONCATS_APP_CLICK", "26,206"),
+            ("CONCATS_APP_DRAG_TO", "26,228"),
             ("CONCATS_APP_TYPE", "Review this change"),
         ],
         |_| {},

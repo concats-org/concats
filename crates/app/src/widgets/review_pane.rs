@@ -277,9 +277,10 @@ script_mod! {
         // App answers WindowDragQuery for this band so it drags the window.
         header := SolidView {
             width: Fill
-            // 26 + the hairline below = the design's 27pt header band; the tab
-            // strip then starts at 27 and the content at 52, as in the frames.
-            height: 26
+            // AppKit puts the native buttons 9pt down and 14pt tall, so 32
+            // centres them, with the controls below on the same line. With
+            // the rule below, the tab strip starts at 33.
+            height: 32
             draw_bg.color: C_CHROME
             flow: Right
             spacing: 0
