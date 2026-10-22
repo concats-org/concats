@@ -174,6 +174,13 @@ pub struct ReviewDoc {
     /// the same file in every stream, so folding one folds it everywhere; the
     /// set survives a reload, like the seen ticks it sits next to.
     pub folded: HashSet<String>,
+    /// The tab bar's Collapse seen: every file card whose changed lines are
+    /// all ticked seen is shut too, without joining `folded`, so a card that
+    /// gains an unseen line opens again by itself. Same lifetime as `folded`.
+    pub collapse_seen: bool,
+    /// Cards opened by hand while Collapse seen shuts them. Cleared when the
+    /// mode goes off, which leaves exactly the cards folded by hand.
+    pub unfolded: HashSet<String>,
     /// File cards showing every comment recorded against them, by path —
     /// including the ones this range cannot place, which are otherwise
     /// invisible. Same scope and lifetime as `folded`.
@@ -614,6 +621,29 @@ pub(crate) fn seen_progress(d: &ReviewDoc, st: &crate::service::ReviewState) -> 
     (seen, d.changed_keys.len())
 }
 
+/// Whether the card for `path` is shut: folded by hand, or all `seen` while
+/// Collapse seen is on and no click has opened it.
+// NOTE: the read of the rule toggle_card writes; the two take the same card.
+// coland-ignore: @coland/data_clumps
+pub(crate) fn card_shut(d: &ReviewDoc, path: &str, seen: bool) -> bool {
+    d.folded.contains(path) || (d.collapse_seen && seen && !d.unfolded.contains(path))
+}
+
+/// Open the card for `path` if it is shut, shut it if it is open. A card
+/// Collapse seen shut stays open once clicked, until the mode goes off.
+// NOTE: its branches are the rule's outcomes: shut by hand, opened over the mode.
+// coland-ignore: @coland/dense_function
+pub(crate) fn toggle_card(d: &mut ReviewDoc, path: &str, seen: bool) {
+    let open = !card_shut(d, path, seen);
+    d.folded.remove(path);
+    d.unfolded.remove(path);
+    if open {
+        d.folded.insert(path.to_string());
+    } else if d.collapse_seen && seen {
+        d.unfolded.insert(path.to_string());
+    }
+}
+
 /// Close every file card: bracket the code a `FileHeader` opened with 10pt of
 /// air and insert a `CardEnd` after its last row. Idempotent — strips its own
 /// previous output first — because comment injection reruns it after every
@@ -956,6 +986,33 @@ pub(crate) mod tests {
 
     pub(crate) fn oid(n: u8) -> ObjectId {
         ObjectId::from_hex(format!("{n:040x}").as_bytes()).expect("valid hex")
+    }
+
+    #[test]
+    fn collapse_seen_shuts_seen_cards_until_one_is_clicked_open_or_unseen() {
+        let mut d = ReviewDoc::default();
+        d.folded.insert("manual.rs".into());
+        d.collapse_seen = true;
+        assert!(card_shut(&d, "seen.rs", true));
+        assert!(!card_shut(&d, "partly.rs", false));
+        assert!(card_shut(&d, "manual.rs", false));
+        // New changes make a card unseen, and it opens without a click.
+        assert!(!card_shut(&d, "seen.rs", false));
+        // A click opens a card the mode shut, and the mode leaves it open.
+        toggle_card(&mut d, "seen.rs", true);
+        assert!(!card_shut(&d, "seen.rs", true));
+        toggle_card(&mut d, "seen.rs", true);
+        assert!(card_shut(&d, "seen.rs", true));
+        // Off again: exactly the cards folded by hand.
+        toggle_card(&mut d, "open.rs", true);
+        d.collapse_seen = false;
+        d.unfolded.clear();
+        assert_eq!(
+            d.folded,
+            HashSet::from(["manual.rs".to_string(), "seen.rs".to_string()])
+        );
+        assert!(!card_shut(&d, "open.rs", true));
+        assert_eq!(d.unfolded, HashSet::new());
     }
 
     #[test]

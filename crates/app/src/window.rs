@@ -136,6 +136,8 @@ impl WindowState {
             return true;
         }
         next.folded.clone_from(&snapshot.folded);
+        next.collapse_seen = snapshot.collapse_seen;
+        next.unfolded.clone_from(&snapshot.unfolded);
         next.show_all_comments
             .clone_from(&snapshot.show_all_comments);
         crate::load::carry_forward(&mut next, &snapshot);

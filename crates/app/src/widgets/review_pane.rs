@@ -933,13 +933,11 @@ impl ReviewPane {
 
     /// Fold a file card shut (or open it again). Keyed by path, so the card
     /// is shut in every stream that renders that file — and the list rebuilds
-    /// its entry→row mapping on the next draw.
-    fn toggle_card_fold(&mut self, cx: &mut Cx, path: &str) {
-        self.state().with(|d| {
-            if !d.folded.remove(path) {
-                d.folded.insert(path.to_string());
-            }
-        });
+    /// its entry→row mapping on the next draw. `seen` is whether all of it is
+    /// ticked, which decides whether Collapse seen is what shuts it.
+    fn toggle_card_fold(&mut self, cx: &mut Cx, path: &str, seen: bool) {
+        self.state()
+            .with(|d| crate::review_doc::toggle_card(d, path, seen));
         self.redraw_streams(cx);
     }
 
@@ -1700,8 +1698,8 @@ impl ReviewPane {
                 {
                     self.toggle_card_seen(cx, *tab, path, *near);
                 }
-                ReviewItemAction::Fold { path } if clicked => {
-                    self.toggle_card_fold(cx, path);
+                ReviewItemAction::Fold { path, seen } if clicked => {
+                    self.toggle_card_fold(cx, path, *seen);
                 }
                 ReviewItemAction::Delete { id } if clicked => {
                     self.delete_comment(cx, *id);

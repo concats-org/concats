@@ -22,7 +22,7 @@ use super::{
 use crate::{
     FrameData, FrameTheme,
     makepad_widgets::{event::TouchState, *},
-    review_doc::{Composing, FileView, ReviewDoc, Stream, compose_title, header_title},
+    review_doc::{Composing, FileView, ReviewDoc, Stream, card_shut, compose_title, header_title},
     service::{HighlightCmd, ReviewState, highlight},
 };
 
@@ -178,6 +178,8 @@ pub(super) enum ReviewItemAction {
     },
     Fold {
         path: String,
+        /// Whether every changed line of the card is ticked seen.
+        seen: bool,
     },
     Delete {
         id: u64,
@@ -498,6 +500,22 @@ script_mod! {
             align: Align{y: 0.5}
             padding: Inset{left: 12 right: 12}
             spacing: 4
+            // Collapse seen, off and on: the same icon, lit while it is on.
+            // `DrawSvg` scales a path by its extent, and the chevrons are
+            // tall and narrow: 7 wide comes out the size of the arrows.
+            collapse_seen := BarButton {
+                icon_walk: Walk{width: 7 height: Fit}
+                draw_icon.svg: crate_resource("self:resources/icons/chevrons_down_up.svg")
+            }
+            show_seen := BarButton {
+                visible: false
+                icon_walk: Walk{width: 7 height: Fit}
+                draw_icon +: {
+                    svg: crate_resource("self:resources/icons/chevrons_down_up.svg")
+                    color: C_ACCENT
+                    color_hover: C_ACCENT
+                }
+            }
             View { width: Fill height: Fit }
             bar_totals := Label {
                 text: ""
@@ -516,6 +534,19 @@ script_mod! {
             visible: false
             width: Fill height: 1
             draw_bg.color: C_BORDER
+        }
+        bar_tooltip: mod.widgets.Tooltip {
+            content +: {
+                padding: 6
+                draw_bg +: {
+                    color: C_CARD
+                    border_color: C_BORDER
+                }
+                tooltip_label +: {
+                    width: Fit
+                    draw_text +: {text_style: FONT{font_size: 8.25} color: C_TEXT}
+                }
+            }
         }
 
         body := View {
@@ -883,6 +914,12 @@ script_mod! {
 pub struct ReviewList {
     #[deref]
     view: View,
+    /// What a tab bar button does, shown while the pointer rests on it.
+    #[live]
+    bar_tooltip: Tooltip,
+    /// Which bar button the tooltip names, by its place in `hover_bar`'s list.
+    #[rust]
+    bar_tip: Option<usize>,
     /// The window these rows belong to, taken from `Scope` — the pane above
     /// puts it there. Cached because the helpers below run off the event that
     /// carried it.
@@ -1054,6 +1091,17 @@ impl WidgetMatchEvent for ReviewList {
     fn handle_actions(&mut self, cx: &mut Cx, actions: &Actions, _scope: &mut Scope) {
         self.handle_find(cx, actions);
         self.handle_hunk_buttons(cx, actions);
+        // Collapse seen is one per window: every stream of it shuts the same
+        // cards.
+        let on = self.view.button(cx, ids!(collapse_seen)).clicked(actions);
+        if on || self.view.button(cx, ids!(show_seen)).clicked(actions) {
+            self.state().with(|d| {
+                d.collapse_seen = on;
+                d.unfolded.clear();
+            });
+            self.bar_tooltip.hide(cx);
+            self.redraw(cx);
+        }
     }
 }
 
@@ -1153,20 +1201,6 @@ fn first_hunk(
     shown: impl Fn(usize) -> bool,
 ) -> Option<usize> {
     candidates.find(|&row| matches!(rows[row], Row::HunkBar { .. }) && shown(row))
-}
-
-/// Where a pointer event is, for the widgets that have to know whether it is
-/// over them before anyone handles it.
-// NOTE: one position per pointer event, for the chip's hit test in handle_event.
-// coland-ignore: @coland/single_caller_private_function
-fn pointer_at(event: &Event) -> Option<DVec2> {
-    match event {
-        Event::MouseDown(e) => Some(e.abs),
-        Event::MouseUp(e) => Some(e.abs),
-        Event::MouseMove(e) => Some(e.abs),
-        Event::TouchUpdate(e) => e.touches.first().map(|touch| touch.abs),
-        _ => None,
-    }
 }
 
 /// Whether the pointer gesture that is ending belongs to the view laid out at
@@ -1379,6 +1413,11 @@ impl Widget for ReviewList {
         for bar in [ids!(tab_bar), ids!(bar_rule)] {
             self.view.view(cx, bar).set_visible(cx, cards);
         }
+        let on = pass.doc.collapse_seen;
+        self.view
+            .button(cx, ids!(collapse_seen))
+            .set_visible(cx, !on);
+        self.view.button(cx, ids!(show_seen)).set_visible(cx, on);
         let (adds, dels) = pass.doc.totals;
         self.view
             .label(cx, ids!(bar_totals))
@@ -1425,7 +1464,7 @@ impl Widget for ReviewList {
             input.set_key_focus(cx);
         }
         self.arm_ime(cx);
-        DrawStep::done()
+        self.bar_tooltip.draw_walk(cx, scope, Walk::default())
     }
 
     fn handle_event(&mut self, cx: &mut Cx, event: &Event, scope: &mut Scope) {
@@ -1448,13 +1487,7 @@ impl Widget for ReviewList {
             Event::TextInput(ti) if self.caret_text(cx, &ti.input) => return,
             _ => {}
         }
-        // The chip floats over the rows, so while the pointer is on it the rows
-        // do not see the pointer at all: dispatched to the whole tree in order,
-        // the press lands on the line underneath as well and clears the very
-        // selection the chip is offering to comment on.
-        let chip = self.view.view(cx, ids!(quote_chip));
-        if chip.visible() && pointer_at(event).is_some_and(|at| chip.area().rect(cx).contains(at)) {
-            chip.handle_event(cx, event, scope);
+        if self.pointer_overlays(cx, event, scope) {
             return;
         }
         self.view.handle_event(cx, event, scope);
@@ -1471,6 +1504,61 @@ impl Widget for ReviewList {
             self.adopt_list_selection(cx);
         }
         self.widget_match_event(cx, event, scope);
+    }
+}
+
+impl ReviewList {
+    /// What floats over the rows sees the pointer first. The quote chip takes
+    /// it outright: dispatched to the whole tree in order, a press would land
+    /// on the line underneath as well and clear the very selection the chip
+    /// is offering to comment on. The tab bar's tooltip names the button the
+    /// pointer rests on. Whether the chip took the event.
+    fn pointer_overlays(&mut self, cx: &mut Cx, event: &Event, scope: &mut Scope) -> bool {
+        let chip = self.view.view(cx, ids!(quote_chip));
+        if chip.visible() && pointer_at(event).is_some_and(|at| chip.area().rect(cx).contains(at)) {
+            chip.handle_event(cx, event, scope);
+            return true;
+        }
+        self.bar_tooltip.handle_event(cx, event, scope);
+        let Event::MouseMove(e) = event else {
+            return false;
+        };
+        let tips = [
+            (ids!(collapse_seen), "Collapse seen"),
+            (ids!(show_seen), "Show seen"),
+            (ids!(hunk_prev), "Previous hunk"),
+            (ids!(hunk_next), "Next hunk"),
+        ];
+        let over = tips.into_iter().enumerate().find_map(|(i, (id, tip))| {
+            let button = self.view.button(cx, id);
+            let rect = button.area().rect(cx);
+            (button.visible() && rect.contains(e.abs)).then_some((i, rect, tip))
+        });
+        if over.map(|(i, ..)| i) != self.bar_tip {
+            self.bar_tip = over.map(|(i, ..)| i);
+            match over {
+                Some((_, rect, tip)) => {
+                    let below = dvec2(rect.pos.x, rect.pos.y + rect.size.y + 4.0);
+                    self.bar_tooltip.show_with_options(cx, below, tip);
+                }
+                None => self.bar_tooltip.hide(cx),
+            }
+        }
+        false
+    }
+}
+
+/// Where a pointer event is, for the widgets that have to know whether it is
+/// over them before anyone handles it.
+// NOTE: one position per pointer event, for the chip's hit test in pointer_overlays.
+// coland-ignore: @coland/single_caller_private_function
+fn pointer_at(event: &Event) -> Option<DVec2> {
+    match event {
+        Event::MouseDown(e) => Some(e.abs),
+        Event::MouseUp(e) => Some(e.abs),
+        Event::MouseMove(e) => Some(e.abs),
+        Event::TouchUpdate(e) => e.touches.first().map(|touch| touch.abs),
+        _ => None,
     }
 }
 
@@ -1527,14 +1615,8 @@ impl ReviewList {
         // has to be rebuilt.
         let key = (d.generation, pass.review.comments_rev, d.rows_rev);
         let changed = self.mapped != key;
-        let mapping_changed = changed || self.mapped_folded != d.folded;
         let previous = self.mapped_entries;
         let old_first_row = self.row_at(old_first_id).unwrap_or(0);
-        if mapping_changed {
-            self.map_folded(pass.rows, &d.folded);
-            self.mapped = key;
-            self.mapped_folded.clone_from(&d.folded);
-        }
         if changed {
             self.cards.rebuild(pass.rows, &d.blobs);
         }
@@ -1546,6 +1628,27 @@ impl ReviewList {
         {
             self.cards.invalidate_seen();
             self.mapped_seen = Some(pass.review.seen.clone());
+        }
+        // Which cards are shut follows the seen ticks as well as the folds:
+        // with Collapse seen on, ticking a card's last line shuts it.
+        let shut: HashSet<String> = self
+            .cards
+            .cards
+            .iter()
+            .filter_map(|card| match &pass.rows[card.header] {
+                Row::FileHeader { path, .. }
+                    if card_shut(d, path, card.seen_state(&pass.review.seen) == Seen::All) =>
+                {
+                    Some(path.clone())
+                }
+                _ => None,
+            })
+            .collect();
+        let mapping_changed = changed || self.mapped_folded != shut;
+        if mapping_changed {
+            self.map_folded(pass.rows, &shut);
+            self.mapped = key;
+            self.mapped_folded = shut;
         }
         let first = if self.visible.is_empty() {
             old_first_row
@@ -1763,18 +1866,21 @@ impl ReviewList {
                 path: path.clone(),
                 near: r,
             });
-        for ids in [ids!(fold_button), ids!(unfold_button)] {
-            root.widget(cx, ids)
-                .set_action_data(ReviewItemAction::Fold { path: path.clone() });
-        }
-        root.label(cx, ids!(fh_path))
-            .set_text(cx, &header_title(path, from.as_deref()));
         // The viewed tick box covers every hunk of this card — all their
         // changed lines flip together.
         let seen = self
             .cards
             .at(r)
             .map_or(Seen::Unseen, |card| card.seen_state(&pass.review.seen));
+        for ids in [ids!(fold_button), ids!(unfold_button)] {
+            root.widget(cx, ids)
+                .set_action_data(ReviewItemAction::Fold {
+                    path: path.clone(),
+                    seen: seen == Seen::All,
+                });
+        }
+        root.label(cx, ids!(fh_path))
+            .set_text(cx, &header_title(path, from.as_deref()));
         root.check_box(cx, ids!(seen_box))
             .set_active(cx, seen == Seen::All, Animate::No);
         root.label(cx, ids!(fh_stat)).set_text(
@@ -1799,7 +1905,7 @@ impl ReviewList {
         }
         // Shut cards show the other caret and drop the hairline: the bottom
         // cap closes them instead.
-        let folded = d.folded.contains(path);
+        let folded = card_shut(d, path, seen == Seen::All);
         root.button(cx, ids!(fold_button)).set_visible(cx, !folded);
         root.button(cx, ids!(unfold_button)).set_visible(cx, folded);
         root.view(cx, ids!(fh_rule)).set_visible(cx, !folded);
