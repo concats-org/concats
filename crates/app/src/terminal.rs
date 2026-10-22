@@ -31,6 +31,7 @@ use alacritty_terminal::{
 use makepad_widgets::{LiveId, makepad_platform::thread::SignalToUI};
 
 pub mod colors;
+pub mod environment;
 pub mod keys;
 pub mod mouse;
 
@@ -212,17 +213,18 @@ pub fn open(session: Session, cwd: &Path) {
         return;
     }
 
-    // NOTE: alacritty's `tty::setup_env` sets these process-wide, which a GUI
-    // app with other children must not do. Per child instead — and claim the
-    // terminfo entry every system has, since the `alacritty` one ships with
-    // alacritty, not with us.
-    let mut environment = HashMap::from([
-        ("TERM".to_string(), "xterm-256color".to_string()),
-        ("COLORTERM".to_string(), "truecolor".to_string()),
-    ]);
     let fixture = crate::dev_hooks::var("CONCATS_APP_TERM_SCRIPT");
     // NOTE: PTY and visual tests must not run personal shell startup files.
     let hermetic = cfg!(test) || fixture.is_some();
+    let script = hermetic.then(|| {
+        fixture.map_or_else(
+            || vec!["-i".to_string()],
+            |script| vec!["-c".to_string(), script],
+        )
+    });
+    // NOTE: alacritty's `tty::setup_env` sets these process-wide, which a GUI
+    // app with other children must not do. Per child instead.
+    let (mut environment, shell) = environment::shell_from_env(script);
     if hermetic {
         environment.extend([
             ("ENV".to_string(), "/dev/null".to_string()),
@@ -238,13 +240,7 @@ pub fn open(session: Session, cwd: &Path) {
         cell_height: 16,
     };
     let options = tty::Options {
-        shell: hermetic.then(|| {
-            let args = fixture.map_or_else(
-                || vec!["-i".to_string()],
-                |script| vec!["-c".to_string(), script],
-            );
-            tty::Shell::new("/bin/sh".to_string(), args)
-        }),
+        shell,
         working_directory: Some(cwd.to_path_buf()),
         drain_on_exit: false,
         env: environment,
@@ -412,6 +408,23 @@ mod tests {
         input(session, b"printf 'concats_%s\\n' ok\r".to_vec());
 
         assert!(until(|| screen(session).contains("concats_ok")));
+        close(session);
+    }
+
+    #[test]
+    fn the_shell_knows_it_runs_in_concats() {
+        let session = session(0xC0FF_EE0A);
+        open(session, Path::new("."));
+        assert!(is_open(session), "shell failed to spawn");
+        input(
+            session,
+            b"printf 'program=%s\\n' \"$TERM_PROGRAM\"\r".to_vec(),
+        );
+        assert!(
+            until(|| screen(session).contains("program=concats")),
+            "{}",
+            screen(session)
+        );
         close(session);
     }
 
