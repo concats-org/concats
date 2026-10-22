@@ -19,7 +19,7 @@ use std::fmt::Write as _;
 
 use alacritty_terminal::term::TermMode;
 use bitflags::bitflags;
-use makepad_widgets::{KeyCode, KeyEvent, KeyModifiers};
+use makepad_widgets::{KeyCode, KeyEvent, KeyModifiers, TextInputEvent};
 
 bitflags! {
     /// The modifier bits of a CSI sequence, in the order the protocol numbers
@@ -72,10 +72,17 @@ impl Base {
 /// `pressed` is false for a key release, which only the kitty protocol asks to
 /// hear about.
 // NOTE: the encoder's entry: both of the view's key paths, and the tests that pin it.
-// coland-ignore: @coland/high_fan_in_complex_function
+// coland-ignore: @coland/high_fan_in_complex_function, @coland/high_call_degree
 pub fn encode(key: &KeyEvent, pressed: bool, mode: TermMode) -> Option<Vec<u8>> {
-    if !pressed && !mode.contains(TermMode::REPORT_EVENT_TYPES) {
-        return None;
+    if !pressed {
+        // A release is the kitty protocol's alone: a legacy byte sent on
+        // release would type its key a second time.
+        let reported =
+            mode.contains(TermMode::REPORT_EVENT_TYPES) && should_build_sequence(key, mode);
+        return reported.then(|| build_sequence(key, false, mode)).flatten();
+    }
+    if let Some(bytes) = macos_shortcut(key) {
+        return Some(bytes.to_vec());
     }
     if let Some(bytes) = legacy_binding(key, mode) {
         return Some(bytes);
@@ -98,6 +105,47 @@ pub fn encode_text(text: &str, modifiers: KeyModifiers, mode: TermMode) -> Optio
         bytes.push(0x1b);
     }
     bytes.extend_from_slice(text.as_bytes());
+    Some(bytes)
+}
+
+/// What text the platform produced types into the shell, given the modifiers
+/// `held` with it: nothing while an IME's composition is replaced, and nothing
+/// when the text is really its key press, which goes out as the key instead.
+///
+/// Option composing what a line editor wants as Alt is such a key press: a US
+/// layout composes `∫` for Option+b, which nobody types into a shell, while a
+/// German one composes `@` for Option+L, which its users type all the time. So
+/// what stays ASCII is kept as text. makepad's paste for Ctrl+V is another: on
+/// macOS only Cmd+V pastes, and Ctrl+V is the program's own key.
+// NOTE: one branch per case above: a paste, or composed text.
+// coland-ignore: @coland/dense_function
+pub fn typed(text: &TextInputEvent, held: KeyModifiers) -> Option<&str> {
+    let key_press = if text.was_paste {
+        held.control && !held.logo
+    } else {
+        held.alt && !held.logo && !text.input.is_ascii()
+    };
+    (!text.replace_last && !key_press).then_some(text.input.as_str())
+}
+
+/// The macOS shortcuts a terminal user expects, as Ghostty binds them by
+/// default: word moves on Option, line moves and line kill on Cmd. They hold
+/// under any keyboard protocol.
+// NOTE: the binding table, apart from where the encoder consults it.
+// coland-ignore: @coland/single_caller_private_function
+fn macos_shortcut(key: &KeyEvent) -> Option<&'static [u8]> {
+    if !cfg!(target_os = "macos") {
+        return None;
+    }
+    let held = Modifiers::held(key.modifiers);
+    let bytes: &[u8] = match (key.key_code, held) {
+        (KeyCode::ArrowLeft, Modifiers::ALT) => b"\x1bb",
+        (KeyCode::ArrowRight, Modifiers::ALT) => b"\x1bf",
+        (KeyCode::ArrowLeft, Modifiers::SUPER) => b"\x01",
+        (KeyCode::ArrowRight, Modifiers::SUPER) => b"\x05",
+        (KeyCode::Backspace, Modifiers::SUPER) => b"\x15",
+        _ => return None,
+    };
     Some(bytes)
 }
 
@@ -480,6 +528,66 @@ mod tests {
         String::from_utf8(encode(event, true, mode).unwrap_or_default()).unwrap()
     }
 
+    fn cmd() -> KeyModifiers {
+        KeyModifiers {
+            logo: true,
+            ..Default::default()
+        }
+    }
+
+    /// Ghostty's macOS defaults, under any keyboard protocol.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn option_moves_by_word_and_cmd_by_line_as_ghostty_binds_them() {
+        for mode in [TermMode::empty(), TermMode::DISAMBIGUATE_ESC_CODES] {
+            assert_eq!(sent(&with(KeyCode::ArrowLeft, alt()), mode), "\x1bb");
+            assert_eq!(sent(&with(KeyCode::ArrowRight, alt()), mode), "\x1bf");
+            assert_eq!(sent(&with(KeyCode::ArrowLeft, cmd()), mode), "\x01");
+            assert_eq!(sent(&with(KeyCode::ArrowRight, cmd()), mode), "\x05");
+            assert_eq!(sent(&with(KeyCode::Backspace, cmd()), mode), "\x15");
+        }
+    }
+
+    /// A release only ever reports the key; Enter, Tab and Backspace have no
+    /// release form outside the full protocol, so they send nothing.
+    #[test]
+    fn releasing_a_legacy_key_sends_nothing() {
+        let events = TermMode::REPORT_EVENT_TYPES | TermMode::DISAMBIGUATE_ESC_CODES;
+        for code in [KeyCode::ReturnKey, KeyCode::Tab, KeyCode::Backspace] {
+            assert_eq!(encode(&key(code), false, events), None);
+            assert!(encode(&key(code), true, events).is_some());
+        }
+        assert_eq!(
+            encode(&key(KeyCode::ArrowUp), false, events),
+            Some(b"\x1b[1;1:3A".to_vec())
+        );
+    }
+
+    #[test]
+    fn option_is_alt_where_it_composes_what_nobody_types_into_a_shell() {
+        let text = |input: &str, was_paste| TextInputEvent {
+            input: input.to_string(),
+            was_paste,
+            ..Default::default()
+        };
+        assert_eq!(typed(&text("∫", false), alt()), None);
+        assert_eq!(typed(&text("ƒ", false), alt()), None);
+        assert_eq!(typed(&text("@", false), alt()), Some("@"));
+        assert_eq!(typed(&text("∫", false), KeyModifiers::default()), Some("∫"));
+        // Ctrl+V is the program's key; Cmd+V pastes.
+        assert_eq!(typed(&text("clip", true), ctrl()), None);
+        assert_eq!(typed(&text("clip", true), cmd()), Some("clip"));
+        let composing = TextInputEvent {
+            replace_last: true,
+            ..text("e", false)
+        };
+        assert_eq!(typed(&composing, KeyModifiers::default()), None);
+        assert_eq!(
+            encode_text("b", alt(), TermMode::empty()),
+            Some(b"\x1bb".to_vec())
+        );
+    }
+
     #[test]
     fn arrows_are_csi_until_the_application_asks_for_ss3() {
         assert_eq!(sent(&key(KeyCode::ArrowUp), TermMode::empty()), "\x1b[A");
@@ -493,8 +601,8 @@ mod tests {
             "\x1b[1;5A"
         );
         assert_eq!(
-            sent(&with(KeyCode::ArrowRight, alt()), TermMode::empty()),
-            "\x1b[1;3C"
+            sent(&with(KeyCode::ArrowRight, shift()), TermMode::empty()),
+            "\x1b[1;2C"
         );
         // Even in application cursor mode: only the bare key is SS3.
         assert_eq!(

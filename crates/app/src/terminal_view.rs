@@ -290,6 +290,10 @@ pub struct TerminalView {
     /// out, so the press must not type its character again.
     #[rust]
     text_forwarded: bool,
+    /// The modifiers the last key event reported. Text arrives without them,
+    /// and whether Option or Ctrl was down decides what the text means.
+    #[rust]
+    held_keys: KeyModifiers,
     /// Shaped cells by text and face (bold, italic). Every face is the one
     /// font today.
     #[rust]
@@ -761,19 +765,20 @@ impl TerminalView {
     /// does, that text has already gone out as [`Self::text_typed`] and the
     /// character would type the key twice.
     fn key_press(&mut self, cx: &mut Cx, session: Session, e: &KeyEvent, mode: TermMode) {
-        // NOTE: makepad emits a paste for both shortcuts on macOS.
-        if matches!(e.key_code, KeyCode::KeyV)
-            && (e.modifiers.logo || (cfg!(target_os = "macos") && e.modifiers.control))
-        {
+        // NOTE: Cmd+V's paste arrives as text. Ctrl+V is the program's own key.
+        if matches!(e.key_code, KeyCode::KeyV) && e.modifiers.logo {
             return;
         }
         let typed = std::mem::take(&mut self.text_forwarded);
-        let Some(bytes) = keys::encode(e, true, mode).or_else(|| {
-            (!typed)
-                .then(|| e.key_code.to_char(e.modifiers.shift))
-                .flatten()
-                .map(|c| c.to_string().into_bytes())
-        }) else {
+        // A Cmd chord the app did not claim is not a character; Option kept
+        // as Alt puts ESC in front of the key's own one.
+        let character = || {
+            let c = e.key_code.to_char(e.modifiers.shift)?;
+            keys::encode_text(&c.to_string(), e.modifiers, mode)
+        };
+        let Some(bytes) = keys::encode(e, true, mode)
+            .or_else(|| (!typed && !e.modifiers.logo).then(character).flatten())
+        else {
             return;
         };
         cx.set_key_focus(self.scroll_bars.area());
@@ -792,14 +797,14 @@ impl TerminalView {
     /// Text the platform produced — typing, a dead key, an IME commit, a paste
     /// — for the session. Marks the key press it belongs to as already sent.
     fn text_typed(&mut self, cx: &mut Cx, session: Session, e: &TextInputEvent, mode: TermMode) {
-        if e.replace_last {
+        let Some(text) = keys::typed(e, self.held_keys) else {
             return;
-        }
+        };
         cx.set_key_focus(self.scroll_bars.area());
         if e.was_paste {
             self.text_forwarded = true;
-            Self::paste(session, &e.input, mode.contains(TermMode::BRACKETED_PASTE));
-        } else if let Some(bytes) = keys::encode_text(&e.input, KeyModifiers::default(), mode) {
+            Self::paste(session, text, mode.contains(TermMode::BRACKETED_PASTE));
+        } else if let Some(bytes) = keys::encode_text(text, KeyModifiers::default(), mode) {
             self.text_forwarded = true;
             crate::terminal::input(session, bytes);
         }
@@ -939,6 +944,9 @@ impl Widget for TerminalView {
         reason = "Focus, terminal modes, and scroll handling are ordered here."
     )]
     fn handle_event(&mut self, cx: &mut Cx, event: &Event, scope: &mut Scope) {
+        if let Event::KeyDown(key) | Event::KeyUp(key) = event {
+            self.held_keys = key.modifiers;
+        }
         let input = self.find_bar.text_input(cx, ids!(find_input));
         let focused = [self.scroll_bars.area(), input.area()]
             .into_iter()
@@ -946,7 +954,8 @@ impl Widget for TerminalView {
         if let Event::KeyDown(key) = event
             && focused
             && key.key_code == KeyCode::KeyF
-            && (key.modifiers.logo || key.modifiers.control)
+            // NOTE: macOS finds on Cmd; Ctrl+F belongs to the program.
+            && (key.modifiers.logo || (!cfg!(target_os = "macos") && key.modifiers.control))
         {
             self.find.get_or_insert_default();
             self.focus_find = true;
