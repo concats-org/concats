@@ -182,6 +182,38 @@ pub fn branch_point(start: &Path) -> String {
     point().unwrap_or_else(|| "HEAD".to_string())
 }
 
+/// The checkouts sharing `root`'s repository, the main one first, each with
+/// what it has checked out: the branch, or a short oid when detached. A linked
+/// worktree whose directory is gone is left out.
+pub fn worktrees(root: &Path) -> Vec<(PathBuf, String)> {
+    let checked_out = |repo: &Repository| match repo.head_name() {
+        Ok(Some(name)) => name.shorten().to_string(),
+        _ => repo
+            .head_id()
+            .map(|id| id.to_hex_with_len(7).to_string())
+            .unwrap_or_default(),
+    };
+    // NOTE: the list is an offer, not the review; a repository gix cannot
+    // open again offers no other checkouts.
+    let Some(main) = gix::open(root).ok().and_then(|repo| repo.main_repo().ok()) else {
+        return Vec::new();
+    };
+    let linked = main
+        .worktrees()
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|proxy| {
+            let path = proxy.base().ok()?.canonicalize().ok()?;
+            Some((path, checked_out(&proxy.into_repo().ok()?)))
+        });
+    main.workdir()
+        .and_then(|dir| dir.canonicalize().ok())
+        .map(|dir| (dir, checked_out(&main)))
+        .into_iter()
+        .chain(linked)
+        .collect()
+}
+
 // NOTE: the loader's entry for the CLI, the app, the socket and tests; its callees are its steps.
 // coland-ignore: @coland/high_fan_in_complex_function, @coland/high_call_degree
 pub fn load(repo_path: &Path, base_rev: &str, head_rev: &str) -> Result<Loaded, Error> {
@@ -1556,6 +1588,54 @@ mod tests {
         let feature = load(&root, &branch_point(&root), WORKTREE_REV).unwrap();
         assert_eq!(feature.merge_base.map(|oid| oid.to_string()), Some(main));
         assert_eq!(feature.files[0].path, "a.txt");
+    }
+
+    /// Every checkout of the repository, from any of them: the main one
+    /// first, a detached one by its short oid, a removed one not at all.
+    #[test]
+    fn worktrees_lists_every_checkout_with_what_it_has_checked_out() {
+        let (_tmp, root) = init_repo();
+        let git = |args: &[&str]| concats_fixture::git(&root, args);
+        std::fs::write(root.join("a.txt"), "one\n").unwrap();
+        commit(&root, "base");
+        git(&["branch", "-M", "main"]);
+        let others = tempfile::tempdir().unwrap();
+        let other = |name: &str| others.path().canonicalize().unwrap().join(name);
+        let (linked, detached, gone) = (other("linked"), other("detached"), other("gone"));
+        git(&[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "feature",
+            linked.to_str().unwrap(),
+        ]);
+        git(&[
+            "worktree",
+            "add",
+            "-q",
+            "--detach",
+            detached.to_str().unwrap(),
+        ]);
+        git(&[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "gone",
+            gone.to_str().unwrap(),
+        ]);
+        std::fs::remove_dir_all(&gone).unwrap();
+        let short = git(&["rev-parse", "--short=7", "HEAD"]);
+
+        let mut listed = worktrees(&linked);
+        listed[1..].sort();
+        let expected = [
+            (root.clone(), "main".to_string()),
+            (detached, short),
+            (linked, "feature".to_string()),
+        ];
+        assert_eq!(listed, expected);
     }
 
     #[test]

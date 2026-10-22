@@ -116,6 +116,9 @@ pub struct ReviewDoc {
     /// Candidate refs for the diff picker: branches, tags, then HEAD~N
     /// presets. Filled on load from the repo's refs.
     pub refs: Vec<String>,
+    /// The repo picker's other checkouts: every worktree of this repository,
+    /// the main one first, with what each has checked out. Filled on load.
+    pub worktrees: Vec<(std::path::PathBuf, String)>,
     /// blob index -> repo path, for comment records and composer labels.
     pub blob_paths: std::collections::HashMap<u32, String>,
     /// Every blob path of the tree at the head, sorted — what the file browser

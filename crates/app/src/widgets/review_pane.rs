@@ -494,6 +494,21 @@ script_mod! {
                 width: 300
                 margin: Inset{left: 78 top: 4}
 
+                // This repository's checkouts, shown when it has more than one.
+                worktree_row0 := ComboRow {}
+                worktree_row1 := ComboRow {}
+                worktree_row2 := ComboRow {}
+                worktree_row3 := ComboRow {}
+                worktree_row4 := ComboRow {}
+                worktree_row5 := ComboRow {}
+                worktree_row6 := ComboRow {}
+                worktree_row7 := ComboRow {}
+                worktree_rule := SolidView {
+                    visible: false
+                    width: Fill height: 1
+                    margin: Inset{top: 2 bottom: 2}
+                    draw_bg.color: C_BORDER
+                }
                 repo_row0 := ComboRow {}
                 repo_row1 := ComboRow {}
                 repo_row2 := ComboRow {}
