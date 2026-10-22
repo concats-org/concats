@@ -74,44 +74,35 @@ fn a_bare_command_without_an_app_reviews_the_branch_so_far() {
 }
 
 /// The list prints a comment on deleted lines as the old-side anchor `add`
-/// takes back. When the default range does not resolve it still lists, every
-/// anchor as recorded.
+/// takes back, measured against the default range.
 #[test]
-fn the_list_prints_old_side_anchors_and_lists_without_a_range() {
+fn the_list_prints_old_side_anchors_against_the_default_range() {
     let sandbox = fixture();
     let repo = sandbox.path();
     let rev = git(repo, &["rev-parse", "HEAD"])[..7].to_string();
     comments(repo, &["add", &format!("file.rs@{rev}:1"), "-m", "gone"]);
     let list = || {
-        Command::new(env!("CARGO_BIN_EXE_concats"))
+        let output = Command::new(env!("CARGO_BIN_EXE_concats"))
             .current_dir(repo)
             .arg("comments")
             .output()
-            .unwrap()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(output.status.success(), "{stderr}");
+        String::from_utf8_lossy(&output.stdout).into_owned()
     };
 
-    let listed = list();
-    let stdout = String::from_utf8_lossy(&listed.stdout);
-    assert!(
-        listed.status.success(),
-        "{}",
-        String::from_utf8_lossy(&listed.stderr)
-    );
+    let stdout = list();
     assert!(
         stdout.contains(&format!("#1  file.rs@{rev}:1-1  ")),
         "{stdout}"
     );
 
-    // An unborn branch leaves HEAD, and with it the default range, unresolved.
+    // Before a branch's first commit the default range is the index against
+    // the working tree, and the comment's lines are the index's.
     git(repo, &["checkout", "-q", "--orphan", "unborn"]);
-    let listed = list();
-    let (stdout, stderr) = (
-        String::from_utf8_lossy(&listed.stdout),
-        String::from_utf8_lossy(&listed.stderr),
-    );
-    assert!(listed.status.success(), "{stderr}");
-    assert!(stdout.contains("#1  file.rs:1-1  "), "{stdout}");
-    assert!(stderr.contains("anchors print new-side"), "{stderr}");
+    let stdout = list();
+    assert!(stdout.contains("#1  file.rs@INDEX:1-1  "), "{stdout}");
 }
 
 /// A comment left without `--author` is signed with `git config user.name`,

@@ -2,6 +2,8 @@
 //! folder dialog, and the range chip drops down a filter over the refs. What
 //! either one picks, the pane loads.
 
+use concats_diff::load;
+
 use super::ReviewPane;
 #[allow(
     clippy::wildcard_imports,
@@ -129,14 +131,14 @@ impl ReviewPane {
         self.start_load(cx, target, None, Some("loading…"));
     }
 
-    /// What to (re)load: the open repo at the open range, else at a sane default
-    /// for a repo the app hasn't diffed yet.
+    /// What to (re)load: the open repo at the open range, else the branch so
+    /// far for a repo the app hasn't diffed yet.
     fn current_target(&self) -> concats_state::Target {
         let target = self.state().read(ReviewDoc::target);
         if target.base.is_empty() {
             concats_state::Target {
-                base: "HEAD~5".into(),
-                head: "HEAD".into(),
+                base: load::branch_point(std::path::Path::new(&target.repo)),
+                head: load::WORKTREE_REV.into(),
                 ..target
             }
         } else {

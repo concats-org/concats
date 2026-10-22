@@ -271,30 +271,9 @@ impl RangeArgs {
             .base
             .clone()
             .or(shown_base)
-            .unwrap_or_else(|| branch_point(&repo));
+            .unwrap_or_else(|| load::branch_point(Path::new(&repo)));
         Target { repo, base, head }
     }
-}
-
-/// Where HEAD left the default branch: its merge base with origin's HEAD,
-/// else `main`, else `master`. HEAD itself when there is none, or when the
-/// histories never met.
-// NOTE: names the default range's base; resolve reads it only when nothing else names one.
-// coland-ignore: @coland/single_caller_private_function
-fn branch_point(repo: &str) -> String {
-    let point = || {
-        let repo = gix::open(load::discover(Path::new(repo))?).ok()?;
-        let head = repo.head_id().ok()?;
-        let branch = [
-            "refs/remotes/origin/HEAD",
-            "refs/heads/main",
-            "refs/heads/master",
-        ]
-        .into_iter()
-        .find_map(|name| repo.find_reference(name).ok()?.into_fully_peeled_id().ok())?;
-        Some(repo.merge_base(branch, head).ok()?.to_string())
-    };
-    point().unwrap_or_else(|| "HEAD".to_string())
 }
 
 /// What the app shows for `repo`, asked over the socket in its root. `None`

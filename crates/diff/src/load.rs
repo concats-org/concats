@@ -150,6 +150,38 @@ pub fn discover(start: &Path) -> Option<PathBuf> {
     }
 }
 
+/// The base of the branch so far: the default branch HEAD left, by name —
+/// origin's HEAD, else `main`, else `master` — so `<base>...WORKTREE` reads as
+/// this branch and its uncommitted work. `HEAD` when that branch shares no
+/// history with HEAD, and `INDEX` before the first commit, when there is no
+/// HEAD to diff from.
+pub fn branch_point(start: &Path) -> String {
+    let point = || {
+        let repo = gix::open(discover(start)?).ok()?;
+        let Ok(head) = repo.head_id() else {
+            return Some(INDEX_REV.to_string());
+        };
+        let reference = [
+            "refs/remotes/origin/HEAD",
+            "refs/heads/main",
+            "refs/heads/master",
+        ]
+        .into_iter()
+        .find_map(|name| repo.find_reference(name).ok())?;
+        // origin/HEAD only points at the remote's default branch; name that.
+        let name = reference
+            .target()
+            .try_name()
+            .unwrap_or(reference.name())
+            .shorten()
+            .to_string();
+        let tip = reference.into_fully_peeled_id().ok()?;
+        repo.merge_base(tip, head).ok()?;
+        Some(name)
+    };
+    point().unwrap_or_else(|| "HEAD".to_string())
+}
+
 // NOTE: the loader's entry for the CLI, the app, the socket and tests; its callees are its steps.
 // coland-ignore: @coland/high_fan_in_complex_function, @coland/high_call_degree
 pub fn load(repo_path: &Path, base_rev: &str, head_rev: &str) -> Result<Loaded, Error> {
@@ -1488,6 +1520,42 @@ mod tests {
         assert_eq!(loaded.merge_base.map(|oid| oid.to_string()), Some(base));
         let paths: Vec<&str> = loaded.files.iter().map(|f| f.path.as_str()).collect();
         assert_eq!(paths, ["a.txt"], "trunk's later.txt is not the branch's");
+    }
+
+    /// The branch so far names its base: the index before the first commit,
+    /// then the default branch HEAD left, preferring the remote's.
+    #[test]
+    fn branch_point_names_the_default_branch_head_left() {
+        let (_tmp, root) = init_repo();
+        let git = |args: &[&str]| concats_fixture::git(&root, args);
+        std::fs::write(root.join("a.txt"), "one\n").unwrap();
+        assert_eq!(branch_point(&root), INDEX_REV);
+        let unborn = load(&root, INDEX_REV, WORKTREE_REV).unwrap();
+        assert_eq!(unborn.files[0].path, "a.txt");
+
+        commit(&root, "base");
+        git(&["branch", "-M", "main"]);
+        assert_eq!(branch_point(&root), "main");
+        let on_main = load(&root, "main", WORKTREE_REV).unwrap();
+        assert_eq!(
+            on_main.merge_base.map(|oid| oid.to_string()),
+            Some(git(&["rev-parse", "HEAD"]))
+        );
+
+        git(&["checkout", "-q", "-b", "feature"]);
+        std::fs::write(root.join("a.txt"), "one\ntwo\n").unwrap();
+        commit(&root, "feature work");
+        let main = git(&["rev-parse", "main"]);
+        git(&["update-ref", "refs/remotes/origin/main", &main]);
+        git(&[
+            "symbolic-ref",
+            "refs/remotes/origin/HEAD",
+            "refs/remotes/origin/main",
+        ]);
+        assert_eq!(branch_point(&root), "origin/main");
+        let feature = load(&root, &branch_point(&root), WORKTREE_REV).unwrap();
+        assert_eq!(feature.merge_base.map(|oid| oid.to_string()), Some(main));
+        assert_eq!(feature.files[0].path, "a.txt");
     }
 
     #[test]

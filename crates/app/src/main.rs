@@ -455,11 +455,15 @@ impl MatchEvent for App {
         let args = Args::parse();
         let guide = args.guide;
         let repo = args.repo.or(args.repo_path).unwrap_or_else(|| ".".into());
+        // With no range given, the branch so far: the CLI's default too.
         let base = args
             .base
             .or(args.base_rev)
-            .unwrap_or_else(|| "HEAD~5".into());
-        let head = args.head.or(args.head_rev).unwrap_or_else(|| "HEAD".into());
+            .unwrap_or_else(|| concats_diff::load::branch_point(std::path::Path::new(&repo)));
+        let head = args
+            .head
+            .or(args.head_rev)
+            .unwrap_or_else(|| concats_diff::load::WORKTREE_REV.into());
 
         self.adopt_window(cx, id!(window_a), self.ui.widget(cx, ids!(window_a)));
         self.launched_on = Target { repo, base, head };
