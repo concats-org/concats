@@ -532,6 +532,10 @@ impl MatchEvent for App {
                     if let Some(title) = report.title.filter(|t| !t.is_empty()) {
                         dock.set_tab_title(cx, session.tab, title);
                     }
+                    if !report.color_queries.is_empty() {
+                        let theme = theme::active_theme();
+                        terminal::answer_colors(*session, report.color_queries, &theme);
+                    }
                 }
             }
         }

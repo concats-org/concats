@@ -61,6 +61,18 @@ impl Rgba {
         }
     }
 
+    /// The 8-bit channels, rounded: what a terminal reports a colour as.
+    #[must_use]
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "Each channel is clamped to 0..=255 before the cast."
+    )]
+    pub fn bytes(self) -> [u8; 3] {
+        let byte = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
+        [byte(self.r), byte(self.g), byte(self.b)]
+    }
+
     /// `t` of the way from this colour to `other`, channel by channel.
     #[must_use]
     pub fn mix(self, other: Self, t: f32) -> Self {

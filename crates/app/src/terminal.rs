@@ -27,8 +27,11 @@ use alacritty_terminal::{
     sync::FairMutex,
     term::{ClipboardType, Config, Term},
     tty,
+    vte::ansi::Rgb,
 };
 use makepad_widgets::{LiveId, makepad_platform::thread::SignalToUI};
+
+use crate::theme::Theme;
 
 pub mod colors;
 pub mod environment;
@@ -62,7 +65,14 @@ pub struct Report {
     pub title: Option<String>,
     /// OSC 52: text the program asked to put on the clipboard.
     pub clipboard: Option<String>,
+    /// OSC 4/10/11/12 queries: which palette slot, and how the program wants
+    /// the answer written. Answered on the UI thread, where the term can be
+    /// locked and the theme read.
+    pub color_queries: Vec<(usize, ColorReply)>,
 }
+
+/// How a program wants a colour query answered, from alacritty's parser.
+pub type ColorReply = Arc<dyn Fn(Rgb) -> String + Sync + Send>;
 
 /// The geometry both halves need: the term counts cells, the PTY also carries
 /// the pixel size, which full-screen apps ask for to lay themselves out.
@@ -128,6 +138,13 @@ impl EventListener for Proxy {
             Event::ClipboardStore(ClipboardType::Clipboard, text) => {
                 self.report.lock().unwrap().clipboard = Some(text);
             }
+            Event::ColorRequest(index, reply) => {
+                self.report
+                    .lock()
+                    .unwrap()
+                    .color_queries
+                    .push((index, reply));
+            }
             // TODO: a bell should raise a desktop notification. It is how an
             // agent says it has finished while you are looking at another
             // window, and the panel currently swallows it. Left out here
@@ -170,6 +187,8 @@ fn dirty() -> &'static Mutex<HashSet<Session>> {
 
 /// Whether this dock tab has a live session — also how the view recognizes
 /// which terminal tab it is nested under.
+// NOTE: the liveness check every PTY test starts from; its fan-in is the tests.
+// coland-ignore: @coland/high_call_degree
 pub fn is_open(session: Session) -> bool {
     sessions().lock().unwrap().contains_key(&session)
 }
@@ -197,6 +216,25 @@ pub fn take_report(session: Session) -> Report {
     shell(session, |s| s.report.clone())
         .map(|report| std::mem::take(&mut *report.lock().unwrap()))
         .unwrap_or_default()
+}
+
+/// Answer a program's colour queries: what it set itself, else the theme.
+/// Codex blends its shimmer from the foreground and background it asks for.
+pub fn answer_colors(session: Session, queries: Vec<(usize, ColorReply)>, theme: &Theme) {
+    let Some(shared) = term(session) else {
+        return;
+    };
+    let replies: Vec<u8> = {
+        let term = shared.lock();
+        queries
+            .into_iter()
+            .flat_map(|(index, reply)| {
+                let [r, g, b] = colors::slot(index, term.colors(), theme).bytes();
+                reply(Rgb { r, g, b }).into_bytes()
+            })
+            .collect()
+    };
+    input(session, replies);
 }
 
 /// Spawn the user's login shell in `cwd` for this tab, unless one is already
@@ -358,7 +396,7 @@ pub fn take_dirty() -> Vec<Session> {
 mod tests {
     use std::time::Duration;
 
-    use alacritty_terminal::term::TermMode;
+    use alacritty_terminal::{term::TermMode, vte::ansi::NamedColor};
     use makepad_widgets::{KeyCode, KeyEvent, KeyModifiers};
 
     use super::*;
@@ -408,6 +446,32 @@ mod tests {
         input(session, b"printf 'concats_%s\\n' ok\r".to_vec());
 
         assert!(until(|| screen(session).contains("concats_ok")));
+        close(session);
+    }
+
+    /// OSC 11 asks for the background; the query reaches the report with the
+    /// slot it names and the shape its answer takes.
+    #[test]
+    fn a_colour_query_reaches_the_report() {
+        let session = session(0xC0FF_EE0B);
+        open(session, Path::new("."));
+        assert!(is_open(session), "shell failed to spawn");
+        input(session, b"printf '\\033]11;?\\033\\\\'\r".to_vec());
+        let mut queries = Vec::new();
+        assert!(until(|| {
+            queries.extend(take_report(session).color_queries);
+            !queries.is_empty()
+        }));
+        let (index, reply) = &queries[0];
+        assert_eq!(*index, NamedColor::Background as usize);
+        assert!(
+            reply(Rgb {
+                r: 0x1e,
+                g: 0x1f,
+                b: 0x22
+            })
+            .contains("rgb:1e1e/1f1f/2222")
+        );
         close(session);
     }
 

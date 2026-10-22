@@ -33,7 +33,7 @@ use alacritty_terminal::{
         search::{Match, RegexSearch},
         viewport_to_point,
     },
-    vte::ansi::CursorShape,
+    vte::ansi::{CursorShape, NamedColor},
 };
 
 #[allow(
@@ -504,11 +504,21 @@ impl TerminalView {
         let content = term.renderable_content();
         let (display_offset, cursor, selection) =
             (content.display_offset, content.cursor, content.selection);
+        let slot = |named: NamedColor| {
+            crate::theme::paint(colors::slot(named as usize, content.colors, &theme))
+        };
+        let panel = slot(NamedColor::Background);
         let (cell_width, cell_height) = (self.cell_width, self.cell_height);
         let origin = self.origin();
 
         self.draw_cell_bg.new_draw_call(cx);
+        // The terminal's own background, which a program may have set (OSC
+        // 11), under every cell; one on the default background shows it.
+        self.draw_cell_bg.color = panel;
+        self.draw_cell_bg.draw_abs(cx, self.viewport_rect);
         self.draw_cursor.new_draw_call(cx);
+        // What OSC 12 set, else the theme's.
+        self.draw_cursor.color = slot(NamedColor::Cursor);
         self.draw_cursor_at(cx, cursor.shape, cursor.point, display_offset, focused);
         self.draw_text.new_draw_call(cx);
         self.draw_text.begin_many_instances(cx);
@@ -554,7 +564,7 @@ impl TerminalView {
             }
 
             if focused && cursor.shape == CursorShape::Block && indexed.point == cursor.point {
-                fg = crate::theme::paint(theme.terminal_bg);
+                fg = panel;
             }
             if let Some(color) = bg {
                 self.draw_cell_bg.color = color;

@@ -67,12 +67,12 @@ fn shade_indexed(idx: u8, flags: Flags) -> usize {
 }
 
 /// One palette slot: whatever OSC set, else what the theme and the standard
-/// ramps say.
+/// ramps say. 256 is the foreground, 257 the background, 258 the cursor.
 #[expect(
     clippy::cast_possible_truncation,
     reason = "The cube and grey-ramp match arms bound each channel to 0..=255."
 )]
-fn slot(idx: usize, colors: &Colors, theme: &Theme) -> Rgba {
+pub fn slot(idx: usize, colors: &Colors, theme: &Theme) -> Rgba {
     if let Some(rgb) = colors[idx] {
         return from_rgb(rgb);
     }
@@ -183,6 +183,23 @@ mod tests {
                 &theme
             ),
             paint(Rgba::opaque(1, 2, 3))
+        );
+    }
+
+    /// The background and cursor a program asks about, or sets: OSC 11 and
+    /// 12 win over the theme like any other slot.
+    #[test]
+    fn the_background_and_cursor_slots_answer_with_what_osc_set() {
+        let theme = theme();
+        let mut colors = Colors::default();
+        let background = NamedColor::Background as usize;
+        assert_eq!(slot(background, &colors, &theme), theme.terminal_bg);
+        colors[NamedColor::Background] = Some(Rgb { r: 9, g: 8, b: 7 });
+        colors[NamedColor::Cursor] = Some(Rgb { r: 1, g: 2, b: 3 });
+        assert_eq!(slot(background, &colors, &theme).bytes(), [9, 8, 7]);
+        assert_eq!(
+            slot(NamedColor::Cursor as usize, &colors, &theme),
+            Rgba::opaque(1, 2, 3)
         );
     }
 
