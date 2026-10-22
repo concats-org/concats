@@ -276,6 +276,11 @@ pub struct App {
     /// until it lands, so each one answers from its own presented frame.
     #[rust]
     shot_pending: Option<PathBuf>,
+    /// A press's release, held until `release_timer` fires: where it lands.
+    #[rust]
+    release: Option<Vec2d>,
+    #[rust]
+    release_timer: Timer,
 }
 
 /// One open window: the document it renders, the widget subtree it renders
@@ -495,6 +500,7 @@ impl MatchEvent for App {
     }
 
     fn handle_timer(&mut self, cx: &mut Cx, e: &TimerEvent) {
+        self.release_hook(cx, e);
         if self.poll.is_timer(e).is_some() {
             self.click_hook(cx);
             for window in &mut self.windows {

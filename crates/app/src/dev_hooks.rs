@@ -212,6 +212,29 @@ impl App {
         }
     }
 
+    /// The release half of `CONCATS_APP_CLICK`, where its press left the
+    /// pointer, once the press's timeout fires.
+    pub(super) fn release_hook(&mut self, cx: &mut Cx, e: &TimerEvent) {
+        if self.release_timer.is_timer(e).is_none() {
+            return;
+        }
+        let Some(abs) = self.release.take() else {
+            return;
+        };
+        self.ui.handle_event(
+            cx,
+            &Event::MouseUp(MouseUpEvent {
+                abs,
+                button: MouseButton::PRIMARY,
+                window_id: CxWindowPool::id_zero(),
+                modifiers: KeyModifiers::default(),
+                time: cx.seconds_since_app_start(),
+            }),
+            &mut Scope::empty(),
+        );
+        cx.end_mouse_up(MouseButton::PRIMARY);
+    }
+
     /// The hooks that need input, one step per poll tick; see the module docs.
     ///
     /// Interactions are otherwise unreachable from a test: the app has no
@@ -316,18 +339,12 @@ impl App {
                     }
                     None => abs,
                 };
-                self.ui.handle_event(
-                    cx,
-                    &Event::MouseUp(MouseUpEvent {
-                        abs,
-                        button: MouseButton::PRIMARY,
-                        window_id: CxWindowPool::id_zero(),
-                        modifiers: KeyModifiers::default(),
-                        time: now + 0.1,
-                    }),
-                    &mut Scope::empty(),
-                );
-                cx.end_mouse_up(MouseButton::PRIMARY);
+                // NOTE: a button reads the first action its batch holds for
+                // it, and a press and release sent in one event arrive as one
+                // batch that reads as a press. A real click spans two events,
+                // close enough together to be a tap; so does this one.
+                self.release = Some(abs);
+                self.release_timer = cx.start_timeout(0.05);
             }
             3 => self.event_hook(cx, "CONCATS_APP_TYPE", typed),
             4 => {
