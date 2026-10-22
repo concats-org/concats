@@ -285,8 +285,8 @@ script_mod! {
             flow: Right
             spacing: 0
             align: Align{x: 0.0, y: 0.5}
-            // 78 clears the native traffic lights (the design's 60 assumes
-            // 10px dots; macOS draws bigger ones).
+            // 78 clears the native traffic lights until the window reports
+            // where they are; `header_inset` takes over from there.
             padding: Inset{left: 78 right: 4}
 
             // The repo name doubles as the repo picker: click to drop down the

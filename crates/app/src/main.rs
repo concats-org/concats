@@ -1039,6 +1039,25 @@ impl AppMain for App {
         self::script_mod(vm)
     }
     fn handle_event(&mut self, cx: &mut Cx, event: &Event) {
+        if let Event::WindowGeomChange(e) = event
+            && let Some(window) = self
+                .windows
+                .iter()
+                .find(|w| w.window.as_window().window_id() == Some(e.window_id))
+        {
+            let pane = window.pane(cx);
+            let inset = header_inset(&e.new_geom);
+            if let Some(mut header) = pane.view(cx, ids!(header)).borrow_mut() {
+                header.layout.padding.left = inset;
+            }
+            // The pickers drop down under the repo name, wherever it starts.
+            for panel in [ids!(repo_panel), ids!(combo_panel)] {
+                if let Some(mut panel) = pane.view(cx, panel).borrow_mut() {
+                    panel.walk.margin.left = inset;
+                }
+            }
+            pane.redraw(cx);
+        }
         if let Event::WindowDragQuery(dq) = event
             && self.caption_at(cx, dq.window_id, dq.abs)
         {
@@ -1057,5 +1076,44 @@ impl AppMain for App {
         // `Root` hands every window the same scope, so the per-window one is
         // built further down, by each window's own pane.
         self.ui.handle_event(cx, event, &mut Scope::empty());
+    }
+}
+
+/// Where the header's controls start: past the native window buttons, or the
+/// same gap from the window's edge when there are none, as in fullscreen.
+fn header_inset(geom: &WindowGeom) -> f64 {
+    const GAP: f64 = 9.0;
+    let buttons = geom.window_chrome_buttons;
+    if geom.is_fullscreen || buttons.size.x <= 0.0 {
+        GAP
+    } else {
+        buttons.pos.x + buttons.size.x + GAP
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_header_clears_the_window_buttons_unless_fullscreen_hides_them() {
+        let inset = |geom: WindowGeom| header_inset(&geom).round();
+        let buttons = Rect {
+            pos: dvec2(9.0, 9.0),
+            size: dvec2(60.0, 14.0),
+        };
+        let windowed = WindowGeom {
+            window_chrome_buttons: buttons,
+            ..Default::default()
+        };
+        assert_eq!(inset(windowed.clone()), 78.0);
+        assert_eq!(
+            inset(WindowGeom {
+                is_fullscreen: true,
+                ..windowed
+            }),
+            9.0
+        );
+        assert_eq!(inset(WindowGeom::default()), 9.0);
     }
 }
