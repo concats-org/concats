@@ -6,10 +6,7 @@
 //! in, the buffers cached between runs, the open File tabs, the caret. That
 //! carry-over is most of this file.
 
-use concats_diff::{
-    Blob, Row, Side,
-    load::{INDEX_REV, Loaded, WORKTREE_REV},
-};
+use concats_diff::{Blob, Row, Side, load::Loaded};
 use concats_review::{comments, guide, sessions, store};
 use concats_state::Target;
 
@@ -112,14 +109,10 @@ fn load_document(target: &Target, guide: Option<String>) -> ReviewDoc {
     next
 }
 
-/// The diff picker's candidates: the worktree presets, then branches and tags,
-/// then the last few commits. Short names — the loader resolves them like git;
-/// a `...` row is a full range.
+/// The range pickers' refs: branches, then tags. Short names — the loader
+/// resolves them like git.
 fn picker_refs(loaded: &Loaded) -> Vec<String> {
-    let mut refs = vec![
-        format!("{INDEX_REV}...{WORKTREE_REV}"),
-        format!("HEAD...{WORKTREE_REV}"),
-    ];
+    let mut refs = Vec::new();
     let repo = gix::open(&loaded.git_dir).ok();
     for prefix in ["refs/heads/", "refs/tags/"] {
         let mut names: Vec<String> = repo
@@ -139,8 +132,6 @@ fn picker_refs(loaded: &Loaded) -> Vec<String> {
         names.sort();
         refs.extend(names);
     }
-    // "The last N commits" — a ref list alone cannot say that.
-    refs.extend(["HEAD~1", "HEAD~5", "HEAD~10", "HEAD~20"].map(String::from));
     refs
 }
 

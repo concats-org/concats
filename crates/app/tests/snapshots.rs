@@ -740,7 +740,7 @@ fn every_window_drags_by_its_own_header() {
     );
     let caption = serde_json::json!({
         "header": true,
-        "buttons": [false, false, false, false],
+        "buttons": [false, false, false, false, false],
         "below": false,
     });
     assert_eq!(

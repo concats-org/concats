@@ -583,7 +583,8 @@ impl App {
         let r = pane.view(cx, ids!(header)).area().rect(cx);
         let buttons = [
             id!(repo_button),
-            id!(range_button),
+            id!(base_button),
+            id!(head_button),
             id!(load_button),
             id!(share_button),
         ];
@@ -714,8 +715,8 @@ impl AppWindow {
                 .map_or_else(|| s.repo.clone(), |n| n.to_string_lossy().into_owned());
             pane.button(cx, ids!(repo_button))
                 .set_text(cx, if dir.is_empty() { "concats app" } else { &dir });
-            pane.button(cx, ids!(range_button))
-                .set_text(cx, &format!("{}…{}", s.base, s.head));
+            pane.button(cx, ids!(base_button)).set_text(cx, &s.base);
+            pane.button(cx, ids!(head_button)).set_text(cx, &s.head);
             let root = concats_diff::load::discover(std::path::Path::new(&s.repo))
                 .unwrap_or_else(|| PathBuf::from(&s.repo));
             if let Some(mut rule) = pane
@@ -1056,11 +1057,10 @@ impl AppMain for App {
             if let Some(mut header) = pane.view(cx, ids!(header)).borrow_mut() {
                 header.layout.padding.left = inset;
             }
-            // The pickers drop down under the repo name, wherever it starts.
-            for panel in [ids!(repo_panel), ids!(combo_panel)] {
-                if let Some(mut panel) = pane.view(cx, panel).borrow_mut() {
-                    panel.walk.margin.left = inset;
-                }
+            // The repo picker drops down under the repo name, wherever it
+            // starts. The range picker finds its chip each time it opens.
+            if let Some(mut panel) = pane.view(cx, ids!(repo_panel)).borrow_mut() {
+                panel.walk.margin.left = inset;
             }
             pane.redraw(cx);
         }

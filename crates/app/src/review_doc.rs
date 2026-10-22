@@ -113,8 +113,8 @@ pub struct ReviewDoc {
     pub repo: String,
     pub base: String,
     pub head: String,
-    /// Candidate refs for the diff picker: branches, tags, then HEAD~N
-    /// presets. Filled on load from the repo's refs.
+    /// The range pickers' refs: branches, then tags. Filled on load from the
+    /// repo's refs.
     pub refs: Vec<String>,
     /// The repo picker's other checkouts: every worktree of this repository,
     /// the main one first, with what each has checked out. Filled on load.

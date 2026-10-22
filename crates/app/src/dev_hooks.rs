@@ -481,7 +481,8 @@ impl App {
                 let header = middle(pane.view(cx, ids!(header)).area().rect(cx));
                 let buttons: Vec<_> = [
                     ids!(repo_button),
-                    ids!(range_button),
+                    ids!(base_button),
+                    ids!(head_button),
                     ids!(load_button),
                     ids!(share_button),
                 ]

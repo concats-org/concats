@@ -33,7 +33,7 @@ pub const REPLIES: &str = "replies";
 /// value the load pipeline threads from the CLI flags or the picker down to
 /// the loader. `repo` is a path; `base`/`head` are whatever the loader
 /// resolves: revs, or the `INDEX`/`WORKTREE` sentinels.
-#[derive(Clone, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Target {
     pub repo: String,
     pub base: String,

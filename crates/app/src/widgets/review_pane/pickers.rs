@@ -1,9 +1,11 @@
-//! The header's two pickers: the repo name drops down this repository's
-//! checkouts, the recent repos and a folder dialog, and the range chip drops
-//! down a filter over the refs. What either one picks, the pane loads; a
-//! checkout picked from the repo name opens on its branch so far.
+//! The header's pickers, a breadcrumb `repo → base / head`. The repo name
+//! drops down this repository's checkouts, the recent repos and a folder
+//! dialog; a checkout picked there opens on its branch so far. The base and the
+//! head each drop down a filter over what that end can be, so either changes
+//! alone; the head's presets, or a typed `base...head`, change both.
 
-use concats_diff::load;
+use concats_diff::load::{self, INDEX_REV, WORKTREE_REV};
+use concats_state::Target;
 
 use super::ReviewPane;
 #[allow(
@@ -16,7 +18,18 @@ use crate::{
     service::{ReviewCmd, review},
 };
 
-/// The fixed row slots of the diff-picker dropdown. A handful is plenty:
+/// Which end of the range a range picker edits.
+#[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
+pub(super) enum RangeEnd {
+    Base,
+    #[default]
+    Head,
+}
+
+/// One row of a range picker: the text it shows and the range it loads.
+pub(super) type RangeRow = (String, Target);
+
+/// The fixed row slots of the range-picker dropdown. A handful is plenty:
 /// the filter narrows the list as you type.
 macro_rules! combo_rows {
     () => {
@@ -63,11 +76,25 @@ macro_rules! repo_rows {
 }
 
 impl ReviewPane {
-    /// Open the diff picker under the header chip: empty filter, refs listed,
-    /// keyboard in the input.
-    pub fn combo_open(&mut self, cx: &mut Cx) {
+    /// Open the range picker for one end, under that end's chip: empty
+    /// filter, everything that end can be listed, keyboard in the input.
+    fn combo_open(&mut self, cx: &mut Cx, end: RangeEnd) {
         self.repo_close(cx);
-        self.view.view(cx, ids!(combo_panel)).set_visible(cx, true);
+        let (target, refs) = self.state().read(|d| (d.target(), d.refs.clone()));
+        let branch_point = load::branch_point(std::path::Path::new(&target.repo));
+        self.range_end = end;
+        self.range_rows = range_rows(end, &target, &refs, &branch_point);
+        let chip = match end {
+            RangeEnd::Base => ids!(base_button),
+            RangeEnd::Head => ids!(head_button),
+        };
+        let left =
+            self.view.widget(cx, chip).area().rect(cx).pos.x - self.view.area().rect(cx).pos.x;
+        let panel = self.view.view(cx, ids!(combo_panel));
+        if let Some(mut panel) = panel.borrow_mut() {
+            panel.walk.margin.left = left;
+        }
+        panel.set_visible(cx, true);
         let input = self.view.text_input(cx, ids!(combo_input));
         input.set_text(cx, "");
         input.set_key_focus(cx);
@@ -139,33 +166,35 @@ impl ReviewPane {
         self.view.redraw(cx);
     }
 
-    /// Fill the row slots with the refs matching the query.
+    /// Fill the row slots with the rows matching the query.
     fn combo_filter(&mut self, cx: &mut Cx, query: &str) {
         let query = query.trim().to_lowercase();
-        let rows = combo_rows!();
-        let matches: Vec<String> = self.state().read(|d| {
-            d.refs
-                .iter()
-                .filter(|r| query.is_empty() || r.to_lowercase().contains(&query))
-                .take(rows.len())
-                .cloned()
-                .collect()
-        });
-        for (i, ids) in rows.into_iter().enumerate() {
+        let slots = combo_rows!();
+        let matches: Vec<&RangeRow> = self
+            .range_rows
+            .iter()
+            .filter(|(label, _)| query.is_empty() || label.to_lowercase().contains(&query))
+            .take(slots.len())
+            .collect();
+        for (i, ids) in slots.into_iter().enumerate() {
             let row = self.view.button(cx, ids);
             match matches.get(i) {
-                Some(name) => {
-                    row.set_text(cx, name);
+                Some((label, _)) => {
+                    row.set_text(cx, label);
                     row.set_visible(cx, true);
                 }
                 None => row.set_visible(cx, false),
             }
         }
+        self.range_shown = matches
+            .into_iter()
+            .map(|(_, target)| target.clone())
+            .collect();
         self.view.redraw(cx);
     }
 
-    /// Load `base…head` of `repo`, and close the diff picker.
-    fn combo_load(&mut self, cx: &mut Cx, target: concats_state::Target) {
+    /// Load `base…head` of `repo`, and close the range picker.
+    fn combo_load(&mut self, cx: &mut Cx, target: Target) {
         self.combo_close(cx);
         self.start_load(cx, target, None, Some("loading…"));
     }
@@ -238,15 +267,21 @@ impl ReviewPane {
         }
     }
 
-    /// The diff picker: chip toggles, typing filters, Enter accepts a typed
-    /// ref (or an explicit base...head), a row click picks that ref as the
-    /// base — both against HEAD.
+    /// The range pickers: each end's chip toggles its picker, typing filters,
+    /// Enter takes a typed rev for that end (or a typed `base...head` for both),
+    /// and a row loads the range it shows.
     pub(super) fn handle_diff_picker(&mut self, cx: &mut Cx, actions: &Actions) {
-        if self.view.button(cx, ids!(range_button)).clicked(actions) {
-            if self.view.view(cx, ids!(combo_panel)).visible() {
-                self.combo_close(cx);
-            } else {
-                self.combo_open(cx);
+        for (chip, end) in [
+            (ids!(base_button), RangeEnd::Base),
+            (ids!(head_button), RangeEnd::Head),
+        ] {
+            if self.view.button(cx, chip).clicked(actions) {
+                let open = self.view.view(cx, ids!(combo_panel)).visible();
+                if open && self.range_end == end {
+                    self.combo_close(cx);
+                } else {
+                    self.combo_open(cx, end);
+                }
             }
         }
         if let Some(query) = self.view.text_input(cx, ids!(combo_input)).changed(actions) {
@@ -261,43 +296,96 @@ impl ReviewPane {
             if text.is_empty() {
                 self.combo_close(cx);
             } else {
-                let target = target_of(self.state().read(|d| d.repo.clone()), &text);
+                let target = typed(self.state().read(ReviewDoc::target), self.range_end, &text);
                 self.combo_load(cx, target);
             }
         }
         if self.view.text_input(cx, ids!(combo_input)).escaped(actions) {
             self.combo_close(cx);
         }
-        for ids in combo_rows!() {
-            if self.view.button(cx, ids).clicked(actions) {
-                let text = self.view.button(cx, ids).text();
-                if !text.is_empty() {
-                    // A row is usually a base ref (diffed against HEAD), but
-                    // the worktree presets are full `base...head` ranges.
-                    let target = target_of(self.state().read(|d| d.repo.clone()), &text);
-                    self.combo_load(cx, target);
-                }
-            }
+        let picked = combo_rows!()
+            .into_iter()
+            .position(|ids| self.view.button(cx, ids).clicked(actions))
+            .and_then(|i| self.range_shown.get(i).cloned());
+        if let Some(target) = picked {
+            self.combo_load(cx, target);
         }
     }
 }
 
-/// `repo` at a picked or typed range: `base...head` (or `base..head`), else a
-/// base ref diffed against HEAD. Git ref names cannot contain `..`, so a ref is
-/// never split.
-// NOTE: handle_diff_picker reads both a typed and a picked range through it.
-// coland-ignore: @coland/single_caller_private_function
-fn target_of(repo: String, text: &str) -> concats_state::Target {
-    let (base, head) = match text.split_once("...").or_else(|| text.split_once("..")) {
-        Some((base, head)) => (base.trim().to_string(), head.trim().to_string()),
-        None => (text.to_string(), "HEAD".to_string()),
+/// What a range picker offers for one end, each row with the range it loads.
+/// The head's picker leads with the presets that set both ends. Nothing the
+/// loader refuses is offered: INDEX is a base only for a WORKTREE head, and a
+/// commit is a head only after a commit base.
+fn range_rows(
+    end: RangeEnd,
+    target: &Target,
+    refs: &[String],
+    branch_point: &str,
+) -> Vec<RangeRow> {
+    let range = |base: &str, head: &str| Target {
+        repo: target.repo.clone(),
+        base: base.to_string(),
+        head: head.to_string(),
     };
-    concats_state::Target { repo, base, head }
+    match end {
+        RangeEnd::Base => {
+            let index = (target.head == WORKTREE_REV).then_some(INDEX_REV);
+            let recent = ["HEAD~1", "HEAD~5", "HEAD~10", "HEAD~20"];
+            index
+                .into_iter()
+                .chain(refs.iter().map(String::as_str))
+                .chain(recent)
+                .map(|base| (base.to_string(), range(base, &target.head)))
+                .collect()
+        }
+        RangeEnd::Head => {
+            let presets = [
+                ("Branch so far", branch_point, WORKTREE_REV),
+                ("Uncommitted", "HEAD", WORKTREE_REV),
+                ("Unstaged", INDEX_REV, WORKTREE_REV),
+                ("Last commit", "HEAD~1", "HEAD"),
+            ]
+            .map(|(name, base, head)| (format!("{name} · {base}...{head}"), range(base, head)));
+            let commits = (target.base != INDEX_REV)
+                .then(|| std::iter::once("HEAD").chain(refs.iter().map(String::as_str)))
+                .into_iter()
+                .flatten();
+            let heads = std::iter::once(WORKTREE_REV)
+                .chain(commits)
+                .map(|head| (head.to_string(), range(&target.base, head)));
+            presets.into_iter().chain(heads).collect()
+        }
+    }
+}
+
+/// A typed range: `base...head` (or `base..head`) sets both ends, anything else
+/// is a rev for the end being edited. Git ref names cannot contain `..`, so a
+/// ref is never split.
+fn typed(target: Target, end: RangeEnd, text: &str) -> Target {
+    match (
+        text.split_once("...").or_else(|| text.split_once("..")),
+        end,
+    ) {
+        (Some((base, head)), _) => Target {
+            base: base.trim().to_string(),
+            head: head.trim().to_string(),
+            ..target
+        },
+        (None, RangeEnd::Base) => Target {
+            base: text.to_string(),
+            ..target
+        },
+        (None, RangeEnd::Head) => Target {
+            head: text.to_string(),
+            ..target
+        },
+    }
 }
 
 /// `repo` at the branch so far: what a checkout opens on.
-fn branch_so_far(repo: String) -> concats_state::Target {
-    concats_state::Target {
+fn branch_so_far(repo: String) -> Target {
+    Target {
         base: load::branch_point(std::path::Path::new(&repo)),
         head: load::WORKTREE_REV.into(),
         repo,
@@ -335,6 +423,82 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use super::*;
+
+    fn range(base: &str, head: &str) -> Target {
+        Target {
+            repo: "/work/concats".into(),
+            base: base.into(),
+            head: head.into(),
+        }
+    }
+
+    #[test]
+    fn an_end_picks_alone_and_a_preset_or_a_typed_range_sets_both() {
+        let refs = ["main".to_string(), "oh/app".to_string()];
+        let from = range("main", WORKTREE_REV);
+        let pick = |end, label: &str| {
+            range_rows(end, &from, &refs, "main")
+                .into_iter()
+                .find(|(shown, _)| shown == label)
+                .map(|(_, target)| target)
+        };
+        assert_eq!(pick(RangeEnd::Head, "HEAD"), Some(range("main", "HEAD")));
+        assert_eq!(
+            pick(RangeEnd::Base, "oh/app"),
+            Some(range("oh/app", WORKTREE_REV))
+        );
+
+        let presets: Vec<Target> = range_rows(RangeEnd::Head, &from, &refs, "main")
+            .into_iter()
+            .take(4)
+            .map(|(_, target)| target)
+            .collect();
+        assert_eq!(
+            presets,
+            [
+                range("main", WORKTREE_REV),
+                range("HEAD", WORKTREE_REV),
+                range(INDEX_REV, WORKTREE_REV),
+                range("HEAD~1", "HEAD"),
+            ]
+        );
+
+        assert_eq!(
+            typed(from.clone(), RangeEnd::Head, "v1...v2"),
+            range("v1", "v2")
+        );
+        assert_eq!(
+            typed(from.clone(), RangeEnd::Head, "v1..v2"),
+            range("v1", "v2")
+        );
+        assert_eq!(typed(from, RangeEnd::Base, "v1"), range("v1", WORKTREE_REV));
+    }
+
+    /// The loader only diffs INDEX (or WORKTREE) against the working tree; no
+    /// row a picker offers may ask it for anything else.
+    #[test]
+    fn no_offered_row_pairs_the_index_with_a_commit_head() {
+        let refs = ["main".to_string()];
+        let opened = [
+            (INDEX_REV, WORKTREE_REV),
+            ("main", WORKTREE_REV),
+            ("main", "HEAD"),
+            ("HEAD~1", "HEAD"),
+        ];
+        for (base, head) in opened {
+            for end in [RangeEnd::Base, RangeEnd::Head] {
+                for (label, to) in range_rows(end, &range(base, head), &refs, "main") {
+                    let worktree_only = to.base == INDEX_REV || to.base == WORKTREE_REV;
+                    assert!(
+                        !worktree_only || to.head == WORKTREE_REV,
+                        "{base}...{head} offers {label}: {}...{}",
+                        to.base,
+                        to.head
+                    );
+                }
+            }
+        }
+    }
 
     #[test]
     fn checkouts_read_by_branch_and_the_tail_of_their_path() {

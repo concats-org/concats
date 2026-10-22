@@ -18,7 +18,9 @@ use std::{
 
 use concats_diff::{CollapsedEnd, LineKind, Loaded, Row, Side};
 use concats_review::{comments, interchange, store};
+use concats_state::Target;
 use makepad_service::Shared;
+use pickers::{RangeEnd, RangeRow};
 
 use super::{FileBrowserAction, GutterAction, ReviewList, SeenBar, review_list::ReviewItemAction};
 #[allow(
@@ -249,6 +251,23 @@ script_mod! {
     // text state is pinned to C_TEXT — the "Open dir…" row opens a blocking
     // modal that can leave it focused-but-not-hovered, where the theme's
     // `color_focus`/`_down` would otherwise render it invisible.
+    // One end of the header's range breadcrumb.
+    let RangeChip = ButtonFlatter {
+        width: Fit height: Fit
+        padding: Inset{top: 1 bottom: 1 left: 4 right: 4}
+        margin: 0
+        text: ""
+        draw_bg +: {
+            color_hover: C_BORDER
+            border_radius: 4.0
+        }
+        draw_text +: {
+            color: C_DIM
+            color_hover: C_TEXT
+            text_style: FONT{font_size: 8.25}
+        }
+    }
+
     let ComboRow = ButtonFlatter {
         visible: false
         width: Fill height: Fit
@@ -315,29 +334,23 @@ script_mod! {
                 }
             }
             Divider {}
-            // The diff picker chip: click to open the autocomplete dropdown.
-            // The App's WindowDragQuery handler carves this rect out of the
-            // header's drag band so the click actually arrives.
-            range_button := ButtonFlatter {
-                width: Fit height: Fit
-                padding: Inset{top: 1 bottom: 1 left: 4 right: 4}
-                margin: 0
-                text: "select a diff"
+            // The range as a breadcrumb, `base / head`: each end is a chip
+            // that drops down its own picker. The App's WindowDragQuery
+            // handler carves the chips out of the header's drag band so the
+            // clicks actually arrive.
+            base_button := RangeChip {
                 icon_walk: Walk{width: 12 height: Fit}
                 draw_icon +: {
                     svg: crate_resource("self:resources/icons/git_branch.svg")
                     color: C_DIM
                 }
-                draw_bg +: {
-                    color_hover: C_BORDER
-                    border_radius: 4.0
-                }
-                draw_text +: {
-                    color: C_DIM
-                    color_hover: C_TEXT
-                    text_style: FONT{font_size: 8.25}
-                }
             }
+            Label {
+                text: "/"
+                draw_text.color: C_FAINT
+                draw_text.text_style: FONT{font_size: 8.25}
+            }
+            head_button := RangeChip {}
             // Sits right after the diff chip: click to reload the open repo
             // at its current range. Icon color is the theme's (C_DIM/C_TEXT),
             // so it tracks light/dark.
@@ -464,9 +477,9 @@ script_mod! {
                 }
             }
 
-            // The diff picker: a floating panel right under the header chip.
-            // A filter input over the repo's refs; Enter accepts a typed ref
-            // or an explicit `base...head` range.
+            // The range picker: a floating panel under whichever end's chip
+            // opened it. A filter over what that end can be; Enter accepts a
+            // typed rev, or a `base...head` range for both ends.
             combo_panel := Dropdown {
                 visible: false
                 width: 340
@@ -474,7 +487,7 @@ script_mod! {
 
                 combo_input := DarkInput {
                     width: Fill
-                    empty_text: "ref to diff against HEAD, or base...head"
+                    empty_text: "filter, a rev, or base...head"
                     draw_text.text_style: FONT{font_size: 8.25}
                 }
                 combo_row0 := ComboRow {}
@@ -688,6 +701,16 @@ pub struct ReviewPane {
     /// so a row click maps back to its full path (the rows show basenames).
     #[rust]
     recents: Vec<String>,
+    /// Which end of the range the range picker edits while it is open.
+    #[rust]
+    range_end: RangeEnd,
+    /// What the range picker offers for that end: each row's text and the
+    /// range it loads. Filled when the picker opens.
+    #[rust]
+    range_rows: Vec<RangeRow>,
+    /// The ranges behind the visible rows, in slot order.
+    #[rust]
+    range_shown: Vec<Target>,
 }
 
 /// The status-bar view buttons, one per stream.
