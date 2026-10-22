@@ -516,6 +516,63 @@ script_mod! {
                     color_hover: C_ACCENT
                 }
             }
+            // Find, while it is open: the query, its matches, and a replacement.
+            find_row := View {
+                visible: false
+                width: Fit height: Fit
+                flow: Right
+                align: Align{y: 0.5}
+                spacing: 4
+                margin: Inset{left: 8}
+                RoundedView {
+                    width: Fit height: Fit
+                    padding: 0
+                    draw_bg.color: C_CARD
+                    draw_bg.border_color: C_BORDER
+                    draw_bg.border_size: 1.0
+                    draw_bg.border_radius: 2.0
+                    find_input := FlatInput {
+                        width: 220 height: 20
+                        padding: Inset{left: 6 right: 6}
+                        is_multiline: false
+                        submit_on_enter: true
+                        empty_text: "Find"
+                    }
+                }
+                find_prev := BarButton {
+                    icon_walk: Walk{width: 6 height: Fit}
+                    draw_icon.svg: crate_resource("self:resources/icons/chevron_left.svg")
+                }
+                find_next := BarButton {
+                    icon_walk: Walk{width: 6 height: Fit}
+                    draw_icon.svg: crate_resource("self:resources/icons/chevron_right.svg")
+                }
+                find_count := Prose {
+                    width: Fit height: Fit
+                    margin: Inset{left: 2 right: 6}
+                    draw_text.color: C_FAINT
+                    draw_text.text_style: FONT{font_size: 8.25}
+                }
+                RoundedView {
+                    width: Fit height: Fit
+                    padding: 0
+                    draw_bg.color: C_CARD
+                    draw_bg.border_color: C_BORDER
+                    draw_bg.border_size: 1.0
+                    draw_bg.border_radius: 2.0
+                    replace_input := FlatInput {
+                        width: 180 height: 20
+                        padding: Inset{left: 6 right: 6}
+                        is_multiline: false
+                        submit_on_enter: true
+                        empty_text: "Replace"
+                    }
+                }
+                find_close := BarButton {
+                    icon_walk: Walk{width: 9 height: Fit}
+                    draw_icon.svg: crate_resource("self:resources/icons/x.svg")
+                }
+            }
             View { width: Fill height: Fit }
             bar_totals := Label {
                 text: ""
@@ -857,53 +914,6 @@ script_mod! {
                 st_shadow := DropShadow {
                     width: Fill height: 12
                     strength: 0.84
-                }
-            }
-
-            // The find bar. Pinned over the list rather than spliced into it: it
-            // belongs to the view, not to the document, and a row that scrolled it
-            // out of reach would be a search box you cannot see while searching.
-            // Last, so it is drawn over the pinned header and, events running last
-            // child first, is the first to see the pointer.
-            find_bar := View {
-                visible: false
-                width: Fill height: Fit
-                align: Align{x: 1.0, y: 0.0}
-                padding: Inset{top: 8 right: 24}
-                SolidView {
-                    width: 420 height: Fit
-                    draw_bg.color: C_BORDER
-                    padding: Inset{top: 1 bottom: 1 left: 1 right: 1}
-                    SolidView {
-                        width: Fill height: Fit
-                        draw_bg.color: C_BG
-                        flow: Down
-                        padding: Inset{top: 8 bottom: 8 left: 10 right: 10}
-                        spacing: 6
-                        View {
-                            width: Fill height: Fit
-                            flow: Right
-                            align: Align{y: 0.5}
-                            spacing: 8
-                            find_input := FlatInput {
-                                width: Fill height: 20
-                                is_multiline: false
-                                submit_on_enter: true
-                                empty_text: "Find"
-                            }
-                            find_count := Prose {
-                                width: Fit height: Fit
-                                draw_text.color: C_FAINT
-                                draw_text.text_style: FONT{font_size: 8.5}
-                            }
-                        }
-                        replace_input := FlatInput {
-                            width: Fill height: 20
-                            is_multiline: false
-                            submit_on_enter: true
-                            empty_text: "Replace (enter replaces, cmd-enter all)"
-                        }
-                    }
                 }
             }
         }
@@ -1402,26 +1412,7 @@ impl Widget for ReviewList {
         self.caret_rect = None;
         self.selection_end = None;
         self.drawn_rows.clear();
-        let find_bar = self.view.view(cx, ids!(find_bar));
-        if find_bar.visible() != self.find.is_some() {
-            find_bar.set_visible(cx, self.find.is_some());
-        }
-        let cards = matches!(
-            pass.tab,
-            Stream::Guide | Stream::Files | Stream::Sessions | Stream::Commits
-        );
-        for bar in [ids!(tab_bar), ids!(bar_rule)] {
-            self.view.view(cx, bar).set_visible(cx, cards);
-        }
-        let on = pass.doc.collapse_seen;
-        self.view
-            .button(cx, ids!(collapse_seen))
-            .set_visible(cx, !on);
-        self.view.button(cx, ids!(show_seen)).set_visible(cx, on);
-        let (adds, dels) = pass.doc.totals;
-        self.view
-            .label(cx, ids!(bar_totals))
-            .set_text(cx, &format!("+{adds} -{dels}"));
+        self.fill_bar(cx, &pass);
 
         // The list's own chrome — the pinned header's rounded caps, the top
         // fade — reads the theme off the scope like every row does. Drawing the
@@ -1508,6 +1499,34 @@ impl Widget for ReviewList {
 }
 
 impl ReviewList {
+    /// The tab bar for this pass: whether it shows, and which of its parts.
+    /// A view of file cards keeps its bar; any other has one while finding.
+    fn fill_bar(&self, cx: &mut Cx2d, pass: &DrawPass) {
+        let cards = matches!(
+            pass.tab,
+            Stream::Guide | Stream::Files | Stream::Sessions | Stream::Commits
+        );
+        let finding = self.find.is_some();
+        for bar in [ids!(tab_bar), ids!(bar_rule)] {
+            self.view.view(cx, bar).set_visible(cx, cards || finding);
+        }
+        self.view.view(cx, ids!(find_row)).set_visible(cx, finding);
+        let on = pass.doc.collapse_seen;
+        self.view
+            .button(cx, ids!(collapse_seen))
+            .set_visible(cx, cards && !on);
+        self.view
+            .button(cx, ids!(show_seen))
+            .set_visible(cx, cards && on);
+        for card_only in [ids!(bar_totals), ids!(hunk_prev), ids!(hunk_next)] {
+            self.view.widget(cx, card_only).set_visible(cx, cards);
+        }
+        let (adds, dels) = pass.doc.totals;
+        self.view
+            .label(cx, ids!(bar_totals))
+            .set_text(cx, &format!("+{adds} -{dels}"));
+    }
+
     /// What floats over the rows sees the pointer first. The quote chip takes
     /// it outright: dispatched to the whole tree in order, a press would land
     /// on the line underneath as well and clear the very selection the chip
@@ -1526,6 +1545,9 @@ impl ReviewList {
         let tips = [
             (ids!(collapse_seen), "Collapse seen"),
             (ids!(show_seen), "Show seen"),
+            (ids!(find_prev), "Previous match"),
+            (ids!(find_next), "Next match"),
+            (ids!(find_close), "Close find"),
             (ids!(hunk_prev), "Previous hunk"),
             (ids!(hunk_next), "Next hunk"),
         ];

@@ -487,7 +487,7 @@ fn search_stays_in_its_tab_without_a_code_caret() {
         (
             "find-diff",
             vec![("CONCATS_APP_TAB", "files"), ("CONCATS_APP_FIND", "needle")],
-            "2 matches",
+            "0/2",
         ),
         (
             "find-file",
@@ -496,7 +496,7 @@ fn search_stays_in_its_tab_without_a_code_caret() {
                 ("CONCATS_APP_TAB", "file:editor.rs"),
                 ("CONCATS_APP_FIND", "needle"),
             ],
-            "1 match",
+            "0/1",
         ),
     ] {
         let shot = capture(name, &hooks, |repo| {
@@ -516,8 +516,7 @@ fn search_stays_in_its_tab_without_a_code_caret() {
             data["dirty_buffers"], 0,
             "the query must reach the find input"
         );
-        // The bar draws over the card header pinned beneath it, input row and
-        // all.
+        // Find sits in the tab bar, above the rows and their pinned header.
         assert_matches(name, &shot, BLINKING_CURSOR);
     }
 }

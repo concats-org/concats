@@ -17,8 +17,8 @@ use crate::{
 };
 
 impl ReviewList {
-    /// The find bar's two fields: the query as it is typed, Enter to walk the
-    /// matches, and Enter in the second field to replace.
+    /// Find in the tab bar: the query as it is typed, Enter or the arrows to
+    /// walk the matches, Enter in the second field to replace, × to close.
     pub(super) fn handle_find(&mut self, cx: &mut Cx, actions: &Actions) {
         if self.find.is_none() {
             return;
@@ -32,9 +32,17 @@ impl ReviewList {
             self.count_hits(cx);
             self.redraw(cx);
         }
-        if let Some((_, modifiers)) = find.returned(actions) {
-            self.seek(cx, modifiers.shift);
+        let back = self.view.button(cx, ids!(find_prev)).clicked(actions);
+        let walked = find.returned(actions).map(|(_, modifiers)| modifiers.shift);
+        let next = self.view.button(cx, ids!(find_next)).clicked(actions);
+        if let Some(back) = walked.or(back.then_some(true)).or(next.then_some(false)) {
+            self.seek(cx, back);
+            self.count_hits(cx);
             find.set_key_focus(cx);
+        }
+        if self.view.button(cx, ids!(find_close)).clicked(actions) {
+            self.close_find(cx);
+            return;
         }
         let replace = self.view.text_input(cx, ids!(replace_input));
         if let Some((with, modifiers)) = replace.returned(actions) {
@@ -46,18 +54,21 @@ impl ReviewList {
 }
 
 impl ReviewList {
-    /// The bar's tally over the stream this tab renders.
+    /// The bar's tally over the stream this tab renders: which match the
+    /// caret is on, of how many. 0 until Enter or an arrow walks to one.
     pub(super) fn count_hits(&mut self, cx: &mut Cx) {
         let query = self.find.clone().unwrap_or_default();
-        let count = self.drawn_tab.map_or(0, |tab| {
-            self.state()
-                .read(|d| editor::search_hits(d, tab, &query).len())
+        let hits = self.drawn_tab.map_or_else(Vec::new, |tab| {
+            self.state().read(|d| editor::search_hits(d, tab, &query))
         });
-        let label = match (count, query.is_empty()) {
-            (_, true) => String::new(),
-            (0, _) => "no matches".into(),
-            (1, _) => "1 match".into(),
-            (n, _) => format!("{n} matches"),
+        let at = hits
+            .iter()
+            .position(|hit| Some(*hit) == self.find_at)
+            .map_or(0, |i| i + 1);
+        let label = if query.is_empty() {
+            String::new()
+        } else {
+            format!("{at}/{}", hits.len())
         };
         self.view.label(cx, ids!(find_count)).set_text(cx, &label);
     }
@@ -213,14 +224,20 @@ impl ReviewList {
             // Escape closes the bar and leaves the caret where searching put
             // it, so you carry on from what you found.
             KeyCode::Escape if self.find.is_some() => {
-                self.find = None;
-                self.find_at = None;
-                cx.set_key_focus(self.view.portal_list(cx, ids!(list)).area());
-                self.redraw(cx);
+                self.close_find(cx);
                 true
             }
             _ => false,
         }
+    }
+
+    /// Close find and give the keyboard back to the rows, leaving the caret
+    /// where searching put it.
+    fn close_find(&mut self, cx: &mut Cx) {
+        self.find = None;
+        self.find_at = None;
+        cx.set_key_focus(self.view.portal_list(cx, ids!(list)).area());
+        self.redraw(cx);
     }
 
     /// Open the find bar and put the keyboard in it.
