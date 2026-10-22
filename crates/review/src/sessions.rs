@@ -454,14 +454,14 @@ fn escape_angle_outside_code(line: &str) -> String {
 /// the old snapshot boundary diffs, nothing here needs path scoping.
 fn commit_change_rows(
     rows: &mut Vec<Row>,
-    cd: &CommitDiff,
+    changes: &[Change],
     id_prefix: &str,
     low: &mut FileLowerer,
     blob_paths: &mut HashMap<u32, String>,
 ) {
     let mut shown = 0usize;
     let mut binary = 0usize;
-    for (j, c) in cd.changes.iter().enumerate() {
+    for (j, c) in changes.iter().enumerate() {
         match low.file(format!("{id_prefix}-c{j}"), c) {
             Ok(Some(fc)) => {
                 for h in &fc.hunks {
@@ -546,9 +546,9 @@ pub struct Mined {
     /// The Sessions tab: per linked session, the transcript of every one of
     /// its turns interleaved with the per-commit diffs those turns produced.
     pub sessions: Vec<Row>,
-    /// The Commits tab: the range organized by commit, oldest first. Empty
-    /// (no tab) when the range has fewer than two commits — one commit would
-    /// just duplicate the File Diff.
+    /// The Commits tab: the range organized by commit, oldest first, and on a
+    /// WORKTREE review the uncommitted changes last. Empty (no tab) when the
+    /// range has no commit.
     pub commits: Vec<Row>,
     /// blob index -> path for blobs the session/commit lowering added (the
     /// review's own files are mapped by the caller).
@@ -571,9 +571,20 @@ pub fn mine(loaded: &mut Loaded) -> Mined {
 
     let mut mined = Mined::default();
     // The Commits tab is independent of sessions — build it before the
-    // no-turns bail-out.
-    if range.by_commit.len() > 1 {
-        mined.commits = commits_stream(&repo, &range, loaded, &mut mined.blob_paths);
+    // no-turns bail-out. A WORKTREE review has no head commit of its own, so
+    // its tab lists HEAD's commits since the base, then what is uncommitted.
+    let worktree = loaded
+        .head
+        .is_none()
+        .then(|| worktree_commits(&repo, loaded))
+        .flatten();
+    let commits = worktree.as_ref().map_or(&range, |(commits, _)| commits);
+    if !commits.by_commit.is_empty() {
+        mined.commits = commits_stream(&repo, commits, loaded, &mut mined.blob_paths);
+        if let Some((_, head)) = &worktree {
+            let uncommitted = uncommitted_rows(&repo, *head, loaded, &mut mined.blob_paths);
+            mined.commits.extend(uncommitted);
+        }
     }
 
     let turns = load_turns(&repo, &range);
@@ -612,10 +623,10 @@ fn commits_stream(
         text: "# Commits".into(),
     });
     rows.push(Row::Prose {
-        md: format!(
-            "**{} commits** in this range, oldest first.",
-            range.by_commit.len()
-        ),
+        md: match range.by_commit.len() {
+            1 => "**1 commit** in this range.".to_string(),
+            n => format!("**{n} commits** in this range, oldest first."),
+        },
     });
 
     let mut scratch = LoadStats::default();
@@ -624,8 +635,50 @@ fn commits_stream(
     for cd in range.by_commit.iter().rev() {
         commit_header_rows(&mut rows, cd, &mut low);
         let sha = cd.oid.to_string();
-        commit_change_rows(&mut rows, cd, &sha[..10], &mut low, blob_paths);
+        commit_change_rows(&mut rows, &cd.changes, &sha[..10], &mut low, blob_paths);
     }
+    rows
+}
+
+/// A `<commit>...WORKTREE` review's commits: HEAD's history back to where it
+/// meets the base, and HEAD, which the uncommitted changes sit on. `None` for
+/// `INDEX...WORKTREE`, and for a HEAD with no commit yet.
+fn worktree_commits(repo: &Repository, loaded: &Loaded) -> Option<(RangeDiff, ObjectId)> {
+    let base = loaded.merge_base?;
+    let head = repo.head_id().ok()?.detach();
+    let merge_base = repo.merge_base(base, head).ok()?.detach();
+    Some((range_diff(repo, &merge_base, &head), head))
+}
+
+/// The Commits tab's last entry on a WORKTREE review: the working tree
+/// against `head`, as one more commit-shaped header and its file cards. No
+/// rows when nothing is uncommitted. Hunk ids get a `u` namespace of their own.
+fn uncommitted_rows(
+    repo: &Repository,
+    head: ObjectId,
+    loaded: &mut Loaded,
+    blob_paths: &mut HashMap<u32, String>,
+) -> Vec<Row> {
+    let (changes, overlay) = match load::uncommitted(repo, loaded, head) {
+        Ok(uncommitted) => uncommitted,
+        Err(error) => {
+            // NOTE: the commits above still stand; a failed worktree read only
+            // costs the last entry.
+            eprintln!("concats: uncommitted changes not shown: {error}");
+            return Vec::new();
+        }
+    };
+    if changes.is_empty() {
+        return Vec::new();
+    }
+    let sha = head.to_string();
+    let mut scratch = LoadStats::default();
+    let mut low = FileLowerer::new((repo, Some(&overlay)), &mut loaded.blobs, "u", &mut scratch);
+    let mut rows = low.prose(
+        format!("uncommitted/{}", &sha[..10]),
+        format!("**Uncommitted**  on top of `{}`\n", &sha[..10]),
+    );
+    commit_change_rows(&mut rows, &changes, "uncommitted", &mut low, blob_paths);
     rows
 }
 
@@ -800,7 +853,7 @@ fn turn_rows(
         let sha = cd.oid.to_string();
         commit_change_rows(
             rows,
-            cd,
+            &cd.changes,
             &format!("{}-{}", &t.oid.to_string()[..10], &sha[..10]),
             low,
             blob_paths,
@@ -952,8 +1005,8 @@ mod tests {
                 .any(|r| matches!(r, Row::FileHeader { path, .. } if path == "a.txt"))
         );
         assert!(sess.iter().any(|r| matches!(r, Row::Code { .. })));
-        // A one-commit range does not earn a Commits tab.
-        assert!(mined.commits.is_empty());
+        // One commit still gets its Commits tab, though it repeats the File Diff.
+        assert!(prose(&mined.commits, &loaded.blobs).contains("feature"));
     }
 
     #[test]
@@ -1002,6 +1055,45 @@ mod tests {
             .collect();
         assert_eq!(headers, [&"a.txt".to_string(), &"b.txt".to_string()]);
         assert!(mined.commits.iter().any(|r| matches!(r, Row::Code { .. })));
+    }
+
+    #[test]
+    fn a_worktree_review_lists_heads_commits_then_what_is_uncommitted() {
+        let (tmp, base) = base_repo();
+        let dir = tmp.path();
+        std::fs::write(dir.join("a.txt"), "one\ntwo\n").unwrap();
+        git(dir, &["add", "."]);
+        git(dir, &["commit", "-qm", "add two"]);
+        std::fs::write(dir.join("b.txt"), "hi\n").unwrap();
+        git(dir, &["add", "."]);
+        git(dir, &["commit", "-qm", "add b"]);
+        std::fs::write(dir.join("a.txt"), "one\ntwo\nthree\n").unwrap();
+
+        let mut loaded = load::load(dir, &base, "WORKTREE").unwrap();
+        let mined = mine(&mut loaded);
+        let read = prose(&mined.commits, &loaded.blobs);
+        let two = read.find("add two").unwrap();
+        let b = read.find("add b").unwrap();
+        let uncommitted = read.find("Uncommitted").unwrap();
+        assert!(
+            two < b && b < uncommitted,
+            "commits oldest first, then the worktree"
+        );
+        let headers: Vec<&str> = mined
+            .commits
+            .iter()
+            .filter_map(|r| match r {
+                Row::FileHeader { path, .. } => Some(path.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(headers, ["a.txt", "b.txt", "a.txt"]);
+
+        // No commit since the base: no tab, however much is uncommitted.
+        for base in ["HEAD", "INDEX"] {
+            let mut loaded = load::load(dir, base, "WORKTREE").unwrap();
+            assert!(mine(&mut loaded).commits.is_empty(), "{base}...WORKTREE");
+        }
     }
 
     /// The live-data failure mode: a turn is amended as the agent streams, so

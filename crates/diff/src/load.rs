@@ -133,6 +133,10 @@ pub struct Loaded {
     pub tree: Vec<String>,
 }
 
+/// A WORKTREE load's working-tree bytes, keyed by the blob hash git would give
+/// them: content the object database does not have.
+pub type Overlay = HashMap<ObjectId, Vec<u8>>;
+
 /// Walk up from `start` until a `.git` shows up, so the app works from any cwd.
 pub fn discover(start: &Path) -> Option<PathBuf> {
     let mut p = start.canonicalize().ok()?;
@@ -269,41 +273,7 @@ fn load_worktree(root: PathBuf, base_rev: &str) -> Result<Loaded, Error> {
     }
     paths.sort();
     paths.dedup();
-
-    let mut overlay: HashMap<ObjectId, Vec<u8>> = HashMap::new();
-    let mut changes: Vec<Change> = Vec::new();
-    for path in paths {
-        let old = base_of.get(&path).copied();
-        let new = match read_worktree(&root, &path) {
-            Ok(bytes) if !bytes.contains(&0) => Some((hash_object(&bytes), bytes)),
-            Ok(_) | Err(Error::UnsafeWorktreePath(_) | Error::TooLarge { .. }) => {
-                st.skipped_binary += 1;
-                continue;
-            }
-            Err(Error::Io { source, .. }) if source.kind() == std::io::ErrorKind::NotFound => None,
-            Err(error) => return Err(error),
-        };
-        match (old, new) {
-            (None, None) => {}
-            (Some(oid), None) => changes.push(Change::Deleted { path, oid }),
-            (None, Some((oid, bytes))) => {
-                overlay.insert(oid, bytes);
-                changes.push(Change::Added { path, oid });
-            }
-            (Some(old_oid), Some((new_oid, bytes))) => {
-                // Stat noise (touched but identical) is not a change.
-                if old_oid == new_oid {
-                    continue;
-                }
-                overlay.insert(new_oid, bytes);
-                changes.push(Change::Modified {
-                    path,
-                    old_oid,
-                    new_oid,
-                });
-            }
-        }
-    }
+    let (changes, overlay) = worktree_changes(&root, paths, base_of, &mut st)?;
     st.git_ms += t.elapsed().as_secs_f64() * 1000.0;
 
     let t = Instant::now();
@@ -391,12 +361,92 @@ fn load_worktree(root: PathBuf, base_rev: &str) -> Result<Loaded, Error> {
     })
 }
 
+/// The working tree's bytes at `paths`, against the blobs in `base_of`: a
+/// change per path that differs, and the new bytes keyed by their blob hash,
+/// which the object database does not have. Binary and unreadable files are
+/// counted and left out.
+fn worktree_changes(
+    root: &Path,
+    paths: Vec<String>,
+    base_of: &HashMap<String, ObjectId>,
+    st: &mut LoadStats,
+) -> Result<(Vec<Change>, Overlay), Error> {
+    let mut overlay = Overlay::new();
+    let mut changes: Vec<Change> = Vec::new();
+    for path in paths {
+        let old = base_of.get(&path).copied();
+        let new = match read_worktree(root, &path) {
+            Ok(bytes) if !bytes.contains(&0) => Some((hash_object(&bytes), bytes)),
+            Ok(_) | Err(Error::UnsafeWorktreePath(_) | Error::TooLarge { .. }) => {
+                st.skipped_binary += 1;
+                continue;
+            }
+            Err(Error::Io { source, .. }) if source.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => return Err(error),
+        };
+        match (old, new) {
+            (None, None) => {}
+            (Some(oid), None) => changes.push(Change::Deleted { path, oid }),
+            (None, Some((oid, bytes))) => {
+                overlay.insert(oid, bytes);
+                changes.push(Change::Added { path, oid });
+            }
+            (Some(old_oid), Some((new_oid, bytes))) => {
+                // Stat noise (touched but identical) is not a change.
+                if old_oid == new_oid {
+                    continue;
+                }
+                overlay.insert(new_oid, bytes);
+                changes.push(Change::Modified {
+                    path,
+                    old_oid,
+                    new_oid,
+                });
+            }
+        }
+    }
+    Ok((changes, overlay))
+}
+
+/// What a `<commit>...WORKTREE` load has not committed on top of `head`: the
+/// working tree against `head`'s tree, with the bytes its new side reads from.
+/// Nothing for an `INDEX...WORKTREE` load, which has no base commit.
+///
+/// Only a path the load changed, or one the commits since its base touched,
+/// can differ from `head`, so those are the only ones read.
+pub fn uncommitted(
+    repo: &Repository,
+    loaded: &Loaded,
+    head: ObjectId,
+) -> Result<(Vec<Change>, Overlay), Error> {
+    let (Some(root), Some(base)) = (loaded.workdir.as_deref(), loaded.merge_base) else {
+        return Ok((Vec::new(), HashMap::new()));
+    };
+    let mut paths: Vec<String> = loaded
+        .stage
+        .iter()
+        .flat_map(|file| std::iter::once(file.path.clone()).chain(file.from.clone()))
+        .chain(
+            diff_commits(repo, base, head)?
+                .iter()
+                .map(|change| change.path().to_string()),
+        )
+        .collect();
+    paths.sort();
+    paths.dedup();
+    let head_of = flatten_tree(repo, commit_tree(repo, head)?)?;
+    let mut st = LoadStats::default();
+    let (changes, overlay) = worktree_changes(root, paths, &head_of, &mut st)?;
+    let changes = detect_renames(repo, changes, Some(&overlay), &mut st)?;
+    Ok((changes, overlay))
+}
+
 /// Lower a change list into FileChanges + blobs — the shared back half of
 /// both loaders.
 fn lower(
     repo: &Repository,
     changes: &[Change],
-    overlay: Option<&HashMap<ObjectId, Vec<u8>>>,
+    overlay: Option<&Overlay>,
     st: &mut LoadStats,
 ) -> Result<(Vec<FileChange>, Vec<Blob>), Error> {
     let mut files = Vec::new();
@@ -418,7 +468,7 @@ pub struct FileLowerer<'a> {
     repo: &'a Repository,
     /// WORKTREE loads: content for oids that exist nowhere in the object DB —
     /// the worktree files, keyed by their (unwritten) git blob hash.
-    overlay: Option<&'a HashMap<ObjectId, Vec<u8>>>,
+    overlay: Option<&'a Overlay>,
     blobs: &'a mut Vec<Blob>,
     /// Dedup blobs across files by oid — content-addressed, so identical
     /// content (a pure rename, a vendored file) is stored once.
@@ -436,7 +486,7 @@ impl<'a> FileLowerer<'a> {
     /// Resume lowering into `blobs`, reading content from the object database
     /// and, for a WORKTREE load, the overlay first.
     pub fn new(
-        (repo, overlay): (&'a Repository, Option<&'a HashMap<ObjectId, Vec<u8>>>),
+        (repo, overlay): (&'a Repository, Option<&'a Overlay>),
         blobs: &'a mut Vec<Blob>,
         hunk_prefix: &'a str,
         st: &'a mut LoadStats,
@@ -803,7 +853,7 @@ const RENAME_LIMIT: usize = 1000;
 fn detect_renames(
     repo: &Repository,
     changes: Vec<Change>,
-    overlay: Option<&HashMap<ObjectId, Vec<u8>>>,
+    overlay: Option<&Overlay>,
     st: &mut LoadStats,
 ) -> Result<Vec<Change>, Error> {
     let mut out = Vec::new();
@@ -935,7 +985,7 @@ fn similarity(a: &HashMap<u64, u32>, b: &HashMap<u64, u32>) -> u8 {
 
 pub(crate) fn read(
     repo: &Repository,
-    overlay: Option<&HashMap<ObjectId, Vec<u8>>>,
+    overlay: Option<&Overlay>,
     oid: Option<ObjectId>,
 ) -> Result<Vec<u8>, Error> {
     match oid {

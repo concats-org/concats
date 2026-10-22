@@ -378,7 +378,7 @@ pub(crate) fn build_review(
     d.sessions_rows = std::mem::take(&mut mined.sessions);
 
     // The Commits tab: the range by commit, over the same blobs. Empty when
-    // the range has fewer than two commits — no tab.
+    // the range has no commit — no tab.
     d.commits_rows = std::mem::take(&mut mined.commits);
 
     if let Some(md) = guide_md {
