@@ -642,11 +642,10 @@ fn commits_stream(
 
 /// A `<commit>...WORKTREE` review's commits: HEAD's history back to where it
 /// meets the base, and HEAD, which the uncommitted changes sit on. `None` for
-/// `INDEX...WORKTREE`, and for a HEAD with no commit yet.
+/// `INDEX...WORKTREE`.
 fn worktree_commits(repo: &Repository, loaded: &Loaded) -> Option<(RangeDiff, ObjectId)> {
-    let base = loaded.merge_base?;
+    let merge_base = loaded.merge_base?;
     let head = repo.head_id().ok()?.detach();
-    let merge_base = repo.merge_base(base, head).ok()?.detach();
     Some((range_diff(repo, &merge_base, &head), head))
 }
 

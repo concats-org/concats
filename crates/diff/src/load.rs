@@ -97,8 +97,8 @@ pub const INDEX_REV: &str = "INDEX";
 pub const WORKTREE_REV: &str = "WORKTREE";
 
 pub struct Loaded {
-    /// The resolved base: the merge base for a commit range, the base commit
-    /// for a `<commit>...WORKTREE` load, `None` for `INDEX...WORKTREE`.
+    /// The resolved base: where the base meets the head commit, or HEAD for a
+    /// `<commit>...WORKTREE` load; `None` for `INDEX...WORKTREE`.
     pub merge_base: Option<ObjectId>,
     /// The resolved head commit; `None` for a WORKTREE load.
     pub head: Option<ObjectId>,
@@ -168,18 +168,7 @@ pub fn load(repo_path: &Path, base_rev: &str, head_rev: &str) -> Result<Loaded, 
 
     let t = Instant::now();
     let repo = open_repo(&root)?;
-    let head = resolve(&repo, head_rev)?;
-    let base = resolve(&repo, base_rev)?;
-    let merge_base = match repo.merge_base(base, head) {
-        Ok(id) => id.detach(),
-        Err(gix::repository::merge_base::Error::NotFound { .. }) => {
-            return Err(Error::NoMergeBase {
-                base: base_rev.to_string(),
-                head: head_rev.to_string(),
-            });
-        }
-        Err(e) => return Err(Error::git("merge_base", e)),
-    };
+    let (merge_base, head) = merge_base(&repo, base_rev, head_rev)?;
     let changes = diff_commits(&repo, merge_base, head)?;
     st.git_ms += t.elapsed().as_secs_f64() * 1000.0;
 
@@ -240,14 +229,14 @@ fn load_worktree(root: PathBuf, base_rev: &str) -> Result<Loaded, Error> {
         .collect();
 
     // The old side: what the hunks' line numbers and del rows are measured
-    // against — the index's blobs, or the base commit's tree.
+    // against — the index's blobs, or the tree where the base meets HEAD.
     let base_is_index = base_rev.trim() == INDEX_REV;
     let mut base_commit = None;
     let base_tree;
     let base_of: &HashMap<String, ObjectId> = if base_is_index {
         &index_of
     } else {
-        let oid = resolve(&repo, base_rev)?;
+        let (oid, _) = merge_base(&repo, base_rev, "HEAD")?;
         let tree = commit_tree(&repo, oid)?;
         base_commit = Some(oid);
         base_tree = flatten_tree(&repo, tree)?;
@@ -1170,6 +1159,25 @@ pub fn resolve(repo: &Repository, rev: &str) -> Result<ObjectId, Error> {
         .id)
 }
 
+/// Where `base_rev` and `head_rev` meet, and the head: `base...head` diffs
+/// from the first to the second, the way `git diff` reads three dots.
+fn merge_base(
+    repo: &Repository,
+    base_rev: &str,
+    head_rev: &str,
+) -> Result<(ObjectId, ObjectId), Error> {
+    let head = resolve(repo, head_rev)?;
+    let base = resolve(repo, base_rev)?;
+    match repo.merge_base(base, head) {
+        Ok(id) => Ok((id.detach(), head)),
+        Err(gix::repository::merge_base::Error::NotFound { .. }) => Err(Error::NoMergeBase {
+            base: base_rev.to_string(),
+            head: head_rev.to_string(),
+        }),
+        Err(e) => Err(Error::git("merge_base", e)),
+    }
+}
+
 /// Open the repo at `root` with a small object cache — tree and blob reads
 /// repeat heavily during lowering and session mining.
 ///
@@ -1458,6 +1466,28 @@ mod tests {
 
         // The new-side oid is the real git blob hash of the worktree bytes.
         assert_eq!(sa.new.unwrap(), hash_object(b"one\nTWO\nthree\nfour\n"));
+    }
+
+    /// Three dots read the same against WORKTREE as between two commits: a
+    /// base that moved on after the branch left it adds nothing to the review.
+    #[test]
+    fn a_worktree_load_diffs_from_where_the_base_meets_head() {
+        let (_tmp, root) = init_repo();
+        std::fs::write(root.join("a.txt"), "one\n").unwrap();
+        commit(&root, "base");
+        concats_fixture::git(&root, &["branch", "trunk"]);
+        std::fs::write(root.join("a.txt"), "one\ntwo\n").unwrap();
+        commit(&root, "branch work");
+        concats_fixture::git(&root, &["checkout", "-q", "trunk"]);
+        std::fs::write(root.join("later.txt"), "trunk moved on\n").unwrap();
+        commit(&root, "trunk work");
+        concats_fixture::git(&root, &["checkout", "-q", "-"]);
+
+        let loaded = load(&root, "trunk", WORKTREE_REV).unwrap();
+        let base = concats_fixture::git(&root, &["merge-base", "trunk", "HEAD"]);
+        assert_eq!(loaded.merge_base.map(|oid| oid.to_string()), Some(base));
+        let paths: Vec<&str> = loaded.files.iter().map(|f| f.path.as_str()).collect();
+        assert_eq!(paths, ["a.txt"], "trunk's later.txt is not the branch's");
     }
 
     #[test]
