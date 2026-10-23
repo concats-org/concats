@@ -12,6 +12,7 @@ use super::ReviewList;
 use crate::{
     editor,
     file_view::{relower_edited, save_plan},
+    find::Find,
     makepad_widgets::*,
     service::{ReviewCmd, review},
 };
@@ -27,7 +28,8 @@ impl ReviewList {
         // Every keystroke: the hits are recomputed per row per draw, so simply
         // redrawing is what makes them follow what you have typed so far.
         if let Some(query) = find.changed(actions) {
-            self.find = Some(query);
+            let options = self.find.as_ref().map(Find::options).unwrap_or_default();
+            self.find = Some(Find::new(query, options));
             self.find_at = None;
             self.count_hits(cx);
             self.redraw(cx);
@@ -57,15 +59,15 @@ impl ReviewList {
     /// The bar's tally over the stream this tab renders: which match the
     /// caret is on, of how many. 0 until Enter or an arrow walks to one.
     pub(super) fn count_hits(&mut self, cx: &mut Cx) {
-        let query = self.find.clone().unwrap_or_default();
+        let find = self.find.clone().unwrap_or_default();
         let hits = self.drawn_tab.map_or_else(Vec::new, |tab| {
-            self.state().read(|d| editor::search_hits(d, tab, &query))
+            self.state().read(|d| editor::search_hits(d, tab, &find))
         });
         let at = hits
             .iter()
-            .position(|hit| Some(*hit) == self.find_at)
+            .position(|&(row, (start, _))| Some((row, start)) == self.find_at)
             .map_or(0, |i| i + 1);
-        let label = if query.is_empty() {
+        let label = if find.query().is_empty() {
             String::new()
         } else {
             format!("{at}/{}", hits.len())
@@ -254,13 +256,18 @@ impl ReviewList {
 
     /// Walk matches in this tab, unfolding and scrolling to the matching row.
     fn seek(&mut self, cx: &mut Cx, back: bool) {
-        let Some(query) = self.find.clone().filter(|q| !q.is_empty()) else {
+        let Some(find) = self.find.clone() else {
             return;
         };
         let Some(tab) = self.drawn_tab else {
             return;
         };
-        let hits = self.state().read(|d| editor::search_hits(d, tab, &query));
+        let hits: Vec<_> = self
+            .state()
+            .read(|d| editor::search_hits(d, tab, &find))
+            .into_iter()
+            .map(|(row, (start, _))| (row, start))
+            .collect();
         let found = if back {
             hits.iter()
                 .rev()
@@ -296,7 +303,7 @@ impl ReviewList {
 
     /// Replace the occurrence the caret sits on, or every one of them.
     fn replace(&mut self, cx: &mut Cx, with: &str, all: bool) {
-        let Some(query) = self.find.clone().filter(|q| !q.is_empty()) else {
+        let Some(find) = self.find.clone() else {
             return;
         };
         let Some(tab) = self.drawn_tab else {
@@ -304,9 +311,9 @@ impl ReviewList {
         };
         let changed = self.state().with(|d| {
             if all {
-                editor::replace_all(d, tab, &query, with)
+                editor::replace_all(d, tab, &find, with)
             } else {
-                editor::replace_one(d, tab, &query, with)
+                editor::replace_one(d, tab, &find, with)
             }
         });
         if changed {

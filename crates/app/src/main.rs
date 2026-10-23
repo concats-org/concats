@@ -54,6 +54,7 @@ mod dock;
 mod editor;
 /// One open file per tab, and the Settings tab that rides the same mechanism.
 mod file_view;
+mod find;
 mod links;
 /// Driving a load on a worker thread and landing it as a whole new document.
 mod load;

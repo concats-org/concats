@@ -41,6 +41,7 @@ use alacritty_terminal::{
     reason = "Makepad macros and derives expand against the widget prelude in this scope."
 )]
 use crate::{
+    find::{self, Options},
     makepad_widgets::{text::geom::Point as TextPoint, *},
     terminal::{Proxy, Session, SharedTerm, Size, blink::Blink, colors, keys, mouse},
     window::WindowState,
@@ -1011,7 +1012,12 @@ impl Widget for TerminalView {
                     if query.is_empty() {
                         self.find_bar.label(cx, ids!(find_count)).set_text(cx, "");
                     } else {
-                        match RegexSearch::new(&format!("(?i:{})", regex::escape(&query))) {
+                        let regex = find::pattern(&query, Options::default(), find::ASCII_WORD)
+                            .map_err(|error| error.to_string())
+                            .and_then(|pattern| {
+                                RegexSearch::new(&pattern).map_err(|error| error.to_string())
+                            });
+                        match regex {
                             Ok(regex) => {
                                 self.find_regex = Some(regex);
                                 self.seek_match(cx, Direction::Right);
@@ -1362,6 +1368,40 @@ mod tests {
         );
         let mut missing = RegexSearch::new("absent").unwrap();
         assert!(next_terminal_match(&term, &mut missing, None, Direction::Right).is_none());
+    }
+
+    #[test]
+    fn terminal_whole_word_and_case_follow_the_find_options() {
+        let size = Size {
+            columns: 40,
+            screen_lines: 3,
+            cell_width: 8,
+            cell_height: 16,
+        };
+        let mut term = Term::new(
+            Config::default(),
+            &size,
+            alacritty_terminal::event::VoidListener,
+        );
+        let mut parser: Processor = Processor::default();
+        parser.advance(&mut term, "filler\r\n".as_bytes());
+        let options = Options {
+            case: true,
+            word: true,
+            regex: false,
+        };
+        let found = |query: &str| {
+            let pattern = find::pattern(query, options, find::ASCII_WORD).unwrap();
+            let mut regex = RegexSearch::new(&pattern).unwrap();
+            next_terminal_match(&term, &mut regex, None, Direction::Right).is_some()
+        };
+        assert!(found("filler"));
+        assert!(!found("fill"), "only a whole word");
+        assert!(!found("FILLER"), "only the typed case");
+        assert!(
+            RegexSearch::new(r"\bfiller\b").is_err(),
+            "the terminal's search cannot bound a Unicode word"
+        );
     }
 
     #[test]

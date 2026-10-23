@@ -8,6 +8,7 @@
 use concats_diff::Row;
 
 use crate::{
+    find::Find,
     makepad_widgets::{KeyCode, KeyEvent},
     review_doc::{Caret, ReviewDoc, Stream, caret_row, header_title},
 };
@@ -225,15 +226,14 @@ fn step_caret(d: &mut ReviewDoc, tab: Stream, caret: Caret, step: Step) -> bool 
     true
 }
 
-/// Literal matches in stream order, as (row, byte) positions. ASCII case
-/// folding preserves byte offsets in Unicode text.
-pub(crate) fn search_hits(d: &ReviewDoc, stream: Stream, query: &str) -> Vec<(usize, usize)> {
+/// Matches in stream order, as a row and the byte range on it.
+pub(crate) fn search_hits(
+    d: &ReviewDoc,
+    stream: Stream,
+    find: &Find,
+) -> Vec<(usize, (usize, usize))> {
     use std::borrow::Cow;
 
-    if query.is_empty() {
-        return Vec::new();
-    }
-    let query = query.to_ascii_lowercase();
     d.stream(stream)
         .iter()
         .enumerate()
@@ -253,20 +253,20 @@ pub(crate) fn search_hits(d: &ReviewDoc, stream: Stream, query: &str) -> Vec<(us
                 | Row::CardEnd
                 | Row::Composer => "".into(),
             };
-            text.to_ascii_lowercase()
-                .match_indices(&query)
-                .map(|(byte, _)| (row, byte))
+            find.hits(&text)
+                .into_iter()
+                .map(|hit| (row, hit))
                 .collect::<Vec<_>>()
         })
         .collect()
 }
 
 /// Replace the match under the caret only when that code belongs to this tab.
-pub(crate) fn replace_one(d: &mut ReviewDoc, tab: Stream, query: &str, insert: &str) -> bool {
+pub(crate) fn replace_one(d: &mut ReviewDoc, tab: Stream, find: &Find, insert: &str) -> bool {
     let Some(caret) = d.caret else {
         return false;
     };
-    if query.is_empty() || caret_row(d.stream(tab), caret).is_none() {
+    if caret_row(d.stream(tab), caret).is_none() {
         return false;
     }
     let Some(at) = offset_of(d, caret) else {
@@ -276,40 +276,49 @@ pub(crate) fn replace_one(d: &mut ReviewDoc, tab: Stream, query: &str, insert: &
     if !blob.editable() {
         return false;
     }
-    let hay = blob.text.to_ascii_lowercase();
-    let query = query.to_ascii_lowercase();
-    let Some((start, _)) = hay
-        .match_indices(&query)
-        .find(|(start, _)| *start <= at && at < *start + query.len())
+    let Some((start, end)) = find
+        .hits(blob.line_text(caret.line as usize))
+        .into_iter()
+        .find(|&(start, end)| start <= caret.byte && caret.byte < end)
     else {
         return false;
     };
+    let line_start = at - caret.byte;
     blob.break_group();
-    blob.edit(start..start + query.len(), insert);
-    caret_to(d, caret.blob, start + insert.len());
+    blob.edit(line_start + start..line_start + end, insert);
+    caret_to(d, caret.blob, line_start + start + insert.len());
     true
 }
 
 /// Replace editable code matches in this tab. Repeated views of one line
 /// name one edit; reverse byte order keeps the remaining positions valid.
-pub(crate) fn replace_all(d: &mut ReviewDoc, tab: Stream, query: &str, insert: &str) -> bool {
-    let hits: std::collections::BTreeSet<_> = search_hits(d, tab, query)
+pub(crate) fn replace_all(d: &mut ReviewDoc, tab: Stream, find: &Find, insert: &str) -> bool {
+    let hits: std::collections::BTreeSet<_> = search_hits(d, tab, find)
         .into_iter()
-        .filter_map(|(row, byte)| {
+        .filter_map(|(row, (start, end))| {
             let &Row::Code { blob, line, .. } = d.stream(tab).get(row)? else {
                 return None;
             };
-            let at = offset_of(d, Caret { blob, line, byte })?;
-            d.blobs[blob as usize].editable().then_some((blob, at))
+            let at = offset_of(
+                d,
+                Caret {
+                    blob,
+                    line,
+                    byte: start,
+                },
+            )?;
+            d.blobs[blob as usize]
+                .editable()
+                .then_some((blob, at, at + end - start))
         })
         .collect();
-    let Some(&(first_blob, first_byte)) = hits.first() else {
+    let Some(&(first_blob, first_byte, _)) = hits.first() else {
         return false;
     };
-    for (blob, at) in hits.into_iter().rev() {
+    for (blob, start, end) in hits.into_iter().rev() {
         let buffer = &mut d.blobs[blob as usize];
         buffer.break_group();
-        buffer.edit(at..at + query.len(), insert);
+        buffer.edit(start..end, insert);
     }
     caret_to(d, first_blob, first_byte + insert.len());
     true
@@ -477,7 +486,10 @@ mod tests {
     use concats_diff::{Blob, LineKind};
 
     use super::*;
-    use crate::review_doc::tests::{code, oid};
+    use crate::{
+        find::Options,
+        review_doc::tests::{code, oid},
+    };
 
     #[expect(
         clippy::cast_possible_truncation,
@@ -607,15 +619,13 @@ mod tests {
             head: 0,
             heading: None,
         });
-        assert_eq!(search_hits(&d, Stream::Files, "needle").len(), 2);
-        assert_eq!(search_hits(&d, Stream::Comments, "needle").len(), 1);
-        assert_eq!(search_hits(&d, Stream::Comments, "alice"), [(0, 0)]);
-        assert_eq!(search_hits(&d, Stream::Guide, "needle").len(), 2);
-        assert_eq!(search_hits(&d, Stream::File(42), "needle").len(), 1);
-        assert_eq!(
-            search_hits(&d, Stream::Files, ""),
-            [] as [(usize, usize); 0]
-        );
+        let hits = |stream, query| search_hits(&d, stream, &literal(query));
+        assert_eq!(hits(Stream::Files, "needle").len(), 2);
+        assert_eq!(hits(Stream::Comments, "needle").len(), 1);
+        assert_eq!(hits(Stream::Comments, "alice"), [(0, (0, 5))]);
+        assert_eq!(hits(Stream::Guide, "needle").len(), 2);
+        assert_eq!(hits(Stream::File(42), "needle").len(), 1);
+        assert_eq!(hits(Stream::Files, ""), []);
     }
 
     /// Find searches a renamed card's title as it is drawn, so its offsets
@@ -635,17 +645,26 @@ mod tests {
             },
         );
         let title = header_title("new.rs", Some("old.rs"));
-        let hits = search_hits(&d, Stream::Files, "new.rs");
-        assert_eq!(hits, [(0, title.find("new.rs").unwrap())]);
-        assert_eq!(&title[hits[0].1..hits[0].1 + 6], "new.rs");
-        assert_eq!(search_hits(&d, Stream::Files, "old.rs  →  new").len(), 1);
+        let hits = search_hits(&d, Stream::Files, &literal("new.rs"));
+        let at = title.find("new.rs").unwrap();
+        assert_eq!(hits, [(0, (at, at + 6))]);
+        assert_eq!(
+            search_hits(&d, Stream::Files, &literal("old.rs  →  new")).len(),
+            1
+        );
     }
 
     #[test]
     fn search_returns_unicode_byte_offsets_and_nonoverlapping_matches() {
         let d = document("é🙂→→ aaa\n");
-        assert_eq!(search_hits(&d, Stream::Files, "→"), [(0, 6), (0, 9)]);
-        assert_eq!(search_hits(&d, Stream::Files, "AA"), [(0, 13)]);
+        assert_eq!(
+            search_hits(&d, Stream::Files, &literal("→")),
+            [(0, (6, 9)), (0, (9, 12))]
+        );
+        assert_eq!(
+            search_hits(&d, Stream::Files, &literal("AA")),
+            [(0, (13, 15))]
+        );
     }
     #[test]
     fn replace_all_edits_only_the_tabs_code_and_deduplicates_repeated_rows() {
@@ -676,7 +695,7 @@ mod tests {
             },
         ];
         d.selection_anchor = d.caret;
-        assert!(replace_all(&mut d, Stream::Guide, "x", "target"));
+        assert!(replace_all(&mut d, Stream::Guide, &literal("x"), "target"));
         assert_eq!(d.blobs[0].text, "é target target\noutside x\n");
         assert_eq!(d.blobs[1].text, "target\n");
         assert_eq!(d.blobs[2].text, "x\n");
@@ -690,12 +709,39 @@ mod tests {
         let mut d = document("é x x\noutside x\n");
         d.guide_rows = vec![d.files_rows[1].clone()];
         d.caret.as_mut().unwrap().byte = 5;
-        assert!(!replace_one(&mut d, Stream::Guide, "x", "long"));
+        assert!(!replace_one(&mut d, Stream::Guide, &literal("x"), "long"));
         assert_eq!(d.blobs[0].text, "é x x\noutside x\n");
-        assert!(replace_one(&mut d, Stream::Files, "X", "long"));
+        assert!(replace_one(&mut d, Stream::Files, &literal("X"), "long"));
         assert_eq!(d.blobs[0].text, "é x long\noutside x\n");
         assert_eq!(d.caret.unwrap().byte, 9);
-        assert!(!replace_one(&mut d, Stream::Files, "", "anything"));
+        assert!(!replace_one(
+            &mut d,
+            Stream::Files,
+            &literal(""),
+            "anything"
+        ));
+    }
+
+    #[test]
+    fn replace_takes_the_length_of_each_match() {
+        let runs = Find::new(
+            "x+".into(),
+            Options {
+                regex: true,
+                ..Options::default()
+            },
+        );
+        let mut d = document("a xx x xxx\n");
+        assert!(replace_all(&mut d, Stream::Files, &runs, "y"));
+        assert_eq!(d.blobs[0].text, "a y y y\n");
+        let mut d = document("a xx x\n");
+        d.caret.as_mut().unwrap().byte = 3;
+        assert!(replace_one(&mut d, Stream::Files, &runs, "y"));
+        assert_eq!(d.blobs[0].text, "a y x\n");
+    }
+
+    fn literal(query: &str) -> Find {
+        Find::new(query.to_owned(), Options::default())
     }
 
     fn blob(text: &str) -> Blob {

@@ -21,6 +21,7 @@ use super::{
 )]
 use crate::{
     FrameData, FrameTheme,
+    find::Find,
     makepad_widgets::{event::TouchState, *},
     review_doc::{Composing, FileView, ReviewDoc, Stream, card_shut, compose_title, header_title},
     service::{HighlightCmd, ReviewState, highlight},
@@ -935,7 +936,7 @@ pub struct ReviewList {
     /// and not the document: a search is something you are doing, not
     /// something the review says.
     #[rust]
-    find: Option<String>,
+    find: Option<Find>,
     #[rust]
     find_at: Option<(usize, usize)>,
     /// A row to scroll to on the next draw, and how far below the top of the
@@ -1393,7 +1394,7 @@ impl Widget for ReviewList {
         }
         if std::mem::take(&mut self.focus_find) {
             let input = self.view.text_input(cx, ids!(find_input));
-            input.set_text(cx, self.find.as_deref().unwrap_or_default());
+            input.set_text(cx, self.find.as_ref().map(Find::query).unwrap_or_default());
             input.set_key_focus(cx);
         }
         self.arm_ime(cx);
@@ -1944,7 +1945,11 @@ impl ReviewList {
             // Prose wraps whatever the setting says: a prompt is one line per
             // paragraph, and truncating it would hide what is being reviewed.
             dl.wrap = pass.wrap || b.prose.is_some();
-            dl.hits = hits_in(text, self.find.as_deref());
+            dl.hits = self
+                .find
+                .as_ref()
+                .map(|find| find.hits(text))
+                .unwrap_or_default();
             dl.quotes = d
                 .quote_spans
                 .get(&(*blob, *line))
@@ -2204,20 +2209,6 @@ impl ReviewList {
     }
 }
 
-/// Every occurrence of `query` in one line, as byte ranges. Case-insensitive on
-/// ASCII — that is what you mean by "find" most of the time. Recomputed per row
-/// per draw rather than cached: the text under it changes as you type, and a
-/// cached hit would outlive the characters it named.
-fn hits_in(text: &str, query: Option<&str>) -> Vec<(usize, usize)> {
-    let Some(query) = query.filter(|q| !q.is_empty()) else {
-        return Vec::new();
-    };
-    text.to_ascii_lowercase()
-        .match_indices(&query.to_ascii_lowercase())
-        .map(|(start, hit)| (start, start + hit.len()))
-        .collect()
-}
-
 /// Which row a position falls on, over the bands a list drew. Pure so the
 /// clamping is testable: this replaced arithmetic that turned a drag distance
 /// into a row count, and that arithmetic was only ever right while every row
@@ -2235,7 +2226,7 @@ fn row_at_y(drawn: &[DrawnRow], y: f64) -> Option<usize> {
 mod tests {
     use super::{
         Band, CARD_END_EDGE, CardIndex, CardMeta, Cell, DrawnRow, FILE_HEADER_TOP_PADDING, HashSet,
-        Row, STICKY_FADE, STICKY_HEIGHT, STICKY_TOP_GAP, Seen, anchor_entry, first_hunk, hits_in,
+        Row, STICKY_FADE, STICKY_HEIGHT, STICKY_TOP_GAP, Seen, anchor_entry, first_hunk,
         owns_gesture, row_at_y, sticky_offsets,
     };
     #[allow(
@@ -2447,21 +2438,6 @@ mod tests {
         assert_eq!(lift_at(start - STICKY_FADE), 1.0);
     }
 
-    #[test]
-    fn find_marks_every_occurrence_in_a_line_whatever_its_case() {
-        assert_eq!(hits_in("let x = x + 1;", Some("x")), [(4, 5), (8, 9)]);
-        assert_eq!(hits_in("Row::Code", Some("code")), [(5, 9)]);
-        assert_eq!(hits_in("aaa", Some("aa")), [(0, 2)], "hits do not overlap");
-        assert_eq!(hits_in("anything", None), [] as [(usize, usize); 0]);
-        assert!(
-            hits_in("anything", Some("")).is_empty(),
-            "an empty query finds nothing"
-        );
-        assert_eq!(hits_in("anything", Some("zz")), [] as [(usize, usize); 0]);
-    }
-
-    /// Rows of different heights: one wrapped line is taller than its
-    /// neighbours, the case a row delta could not express.
     #[test]
     fn a_position_names_the_row_whose_band_it_lands_in() {
         let rows = [

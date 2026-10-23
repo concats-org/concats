@@ -20,6 +20,7 @@ use concats_diff::Row;
 )]
 use crate::{
     FrameData,
+    find::Find,
     makepad_widgets::{
         file_tree::{FileTree, GitStatusDotKind},
         *,
@@ -131,7 +132,7 @@ pub struct FileBrowser {
     #[rust]
     built: u64,
     #[rust]
-    find: Option<String>,
+    find: Option<Find>,
     #[rust]
     focus_find: bool,
 }
@@ -241,15 +242,14 @@ fn build(
     paths: &[String],
     status: &HashMap<String, GitStatusDotKind>,
     repo: &str,
-    query: &str,
+    find: &Find,
 ) -> (HashMap<LiveId, Node>, LiveId) {
     let mut nodes: HashMap<LiveId, Node> = HashMap::new();
     let mut roots: Vec<LiveId> = Vec::new();
 
-    let query = query.to_ascii_lowercase();
     for path in paths
         .iter()
-        .filter(|path| path.to_ascii_lowercase().contains(&query))
+        .filter(|path| find.query().is_empty() || !find.hits(path).is_empty())
     {
         let kind = status.get(path).copied().unwrap_or(GitStatusDotKind::None);
         insert(&mut nodes, &mut roots, path, kind);
@@ -343,7 +343,7 @@ impl Widget for FileBrowser {
                 &d.tree,
                 &status,
                 &repo,
-                self.find.as_deref().unwrap_or_default(),
+                &self.find.clone().unwrap_or_default(),
             );
             let count = self
                 .nodes
@@ -364,7 +364,11 @@ impl Widget for FileBrowser {
                 // means one collapsed line and no listing at all.
                 if rebuilt {
                     tree.set_folder_is_open(cx, self.root, true, Animate::No);
-                    if self.find.as_ref().is_some_and(|query| !query.is_empty()) {
+                    if self
+                        .find
+                        .as_ref()
+                        .is_some_and(|find| !find.query().is_empty())
+                    {
                         for (&id, _) in self
                             .nodes
                             .iter()
@@ -379,7 +383,7 @@ impl Widget for FileBrowser {
         }
         if std::mem::take(&mut self.focus_find) {
             let input = self.view.text_input(cx, ids!(find_input));
-            input.set_text(cx, self.find.as_deref().unwrap_or_default());
+            input.set_text(cx, self.find.as_ref().map(Find::query).unwrap_or_default());
             input.set_key_focus(cx);
         }
         DrawStep::done()
@@ -415,7 +419,8 @@ impl Widget for FileBrowser {
 impl WidgetMatchEvent for FileBrowser {
     fn handle_actions(&mut self, cx: &mut Cx, actions: &Actions, _scope: &mut Scope) {
         if let Some(query) = self.view.text_input(cx, ids!(find_input)).changed(actions) {
-            self.find = Some(query);
+            let options = self.find.as_ref().map(Find::options).unwrap_or_default();
+            self.find = Some(Find::new(query, options));
             self.built = 0;
             self.redraw(cx);
         }
@@ -446,6 +451,11 @@ impl FileBrowser {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::find::Options;
+
+    fn literal(query: &str) -> Find {
+        Find::new(query.to_owned(), Options::default())
+    }
 
     fn paths(list: &[&str]) -> Vec<String> {
         list.iter().map(ToString::to_string).collect()
@@ -454,7 +464,7 @@ mod tests {
     #[test]
     fn search_filters_full_paths_and_keeps_their_ancestors() {
         let paths = paths(&["src/Éditor.rs", "src/other.rs", "docs/guide.md"]);
-        let (nodes, root) = build(&paths, &HashMap::new(), "repo", "ÉDITOR");
+        let (nodes, root) = build(&paths, &HashMap::new(), "repo", &literal("ÉDITOR"));
         assert_eq!(children_of(&nodes, root), ["src"]);
         assert_eq!(children_of(&nodes, LiveId::from_str("src")), ["Éditor.rs"]);
         assert_eq!(
@@ -462,14 +472,24 @@ mod tests {
             "src/Éditor.rs"
         );
 
-        let (nodes, _) = build(&paths, &HashMap::new(), "repo", "SRC/");
+        let (nodes, _) = build(&paths, &HashMap::new(), "repo", &literal("SRC/"));
         assert_eq!(
             children_of(&nodes, LiveId::from_str("src")),
             ["other.rs", "Éditor.rs"]
         );
 
-        let (nodes, root) = build(&paths, &HashMap::new(), "repo", "missing");
+        let (nodes, root) = build(&paths, &HashMap::new(), "repo", &literal("missing"));
         assert_eq!(children_of(&nodes, root), [] as [&str; 0]);
+
+        let markdown = Find::new(
+            r"\.md$".to_owned(),
+            Options {
+                regex: true,
+                ..Options::default()
+            },
+        );
+        let (nodes, root) = build(&paths, &HashMap::new(), "repo", &markdown);
+        assert_eq!(children_of(&nodes, root), ["docs"]);
     }
 
     fn name_of(nodes: &HashMap<LiveId, Node>, path: &str) -> String {
@@ -493,7 +513,7 @@ mod tests {
             &paths(&["a/b/c.rs", "a/d.rs", "top.md"]),
             &HashMap::new(),
             "repo",
-            "",
+            &literal(""),
         );
 
         // `a/b` is a node even though the listing only ever named blobs.
@@ -520,7 +540,7 @@ mod tests {
             &paths(&["a/new.rs", "a/edit.rs", "b/one.rs", "b/two.rs"]),
             &status,
             "repo",
-            "",
+            &literal(""),
         );
 
         assert_eq!(
@@ -534,7 +554,7 @@ mod tests {
     #[test]
     fn a_deleted_path_tints_its_folders_without_being_listed() {
         let status = HashMap::from([("a/gone.rs".to_string(), GitStatusDotKind::Mixed)]);
-        let (nodes, _) = build(&paths(&["a/kept.rs"]), &status, "repo", "");
+        let (nodes, _) = build(&paths(&["a/kept.rs"]), &status, "repo", &literal(""));
 
         assert!(!nodes.contains_key(&LiveId::from_str("a/gone.rs")));
         assert_eq!(
@@ -545,7 +565,12 @@ mod tests {
 
     #[test]
     fn a_path_the_range_never_touched_gets_no_dot() {
-        let (nodes, _) = build(&paths(&["a/quiet.rs"]), &HashMap::new(), "repo", "");
+        let (nodes, _) = build(
+            &paths(&["a/quiet.rs"]),
+            &HashMap::new(),
+            "repo",
+            &literal(""),
+        );
 
         assert_eq!(
             nodes[&LiveId::from_str("a/quiet.rs")].status,
