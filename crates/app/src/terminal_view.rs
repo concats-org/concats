@@ -994,6 +994,8 @@ const HALVES: [&str; 12] = [
 /// The filled rectangles of `c` in a cell of `size` at `dpi`, each relative to
 /// the cell's corner and with the share of the ink it takes (a shade takes
 /// less than all of it). `None` for a character the font draws.
+// NOTE: the one table of drawn ranges; each range's painter is a callee.
+// coland-ignore: @coland/high_call_degree
 fn fills(c: char, size: Vec2d, dpi: f64) -> Option<Vec<(Rect, f32)>> {
     // NOTE: worked in whole device pixels, so a run of cells meets edge to edge.
     let px = dvec2((size.x * dpi).round(), (size.y * dpi).round());
@@ -1007,6 +1009,10 @@ fn fills(c: char, size: Vec2d, dpi: f64) -> Option<Vec<(Rect, f32)>> {
         '\u{256d}'..='\u{2570}' => arc_fills(c, px),
         '\u{2571}'..='\u{2573}' => diagonal_fills(c, px),
         '\u{e0b0}'..='\u{e0b7}' => powerline_fills(c, px),
+        '\u{e0b8}' | '\u{e0ba}' | '\u{e0bc}' | '\u{e0be}' => triangle_fills(c, px),
+        // NOTE: the slanted powerline separators are the box diagonals.
+        '\u{e0b9}' | '\u{e0bf}' => diagonal_fills('╲', px),
+        '\u{e0bb}' | '\u{e0bd}' => diagonal_fills('╱', px),
         _ => return None,
     };
     let to_cell = |(rect, ink): (Rect, f32)| {
@@ -1275,6 +1281,28 @@ fn powerline_fills(c: char, px: Vec2d) -> Vec<(Rect, f32)> {
             } else {
                 fill(w - outer, y, w - from, y + 1.0)
             }
+        })
+        .collect()
+}
+
+/// The slanted powerline triangles (U+E0B8, U+E0BA, U+E0BC, U+E0BE) in a cell
+/// of `px` device pixels: lower left, lower right, upper left and upper right,
+/// each filling its corner up to the cell's diagonal, one device pixel row at
+/// a time.
+fn triangle_fills(c: char, px: Vec2d) -> Vec<(Rect, f32)> {
+    let (w, h) = (px.x, px.y);
+    (0..h as u16)
+        .map(f64::from)
+        .map(|y| {
+            // Where ╲ crosses the middle of this row; ╱ crosses at its mirror.
+            let falling = (w * (y + 0.5) / h).round();
+            let (x0, x1) = match c {
+                '\u{e0b8}' => (0.0, falling),
+                '\u{e0ba}' => (w - falling, w),
+                '\u{e0bc}' => (0.0, w - falling),
+                _ => (falling, w),
+            };
+            fill(x0, y, x1, y + 1.0)
         })
         .collect()
 }
@@ -2051,6 +2079,24 @@ mod tests {
         assert_eq!(device_fills('\u{e0b6}')[0], (12.0, 0.0, 16.0, 1.0, 1.0));
         // An outline is a light line thick where it crosses the middle.
         assert_eq!(device_fills('\u{e0b5}')[17], (14.0, 17.0, 16.0, 18.0, 1.0));
+    }
+
+    #[test]
+    fn a_slanted_separator_fills_its_corner_to_the_diagonal() {
+        let lower_left = device_fills('\u{e0b8}');
+        assert_eq!(lower_left.len(), 34, "one row per device pixel");
+        assert_eq!((lower_left[0].2, lower_left[33].2), (0.0, 16.0));
+        let upper_right = device_fills('\u{e0be}');
+        assert_eq!((upper_right[0].0, upper_right[33].0), (0.0, 16.0));
+        // Each row of the two together covers the cell exactly once.
+        let rows: Vec<_> = lower_left
+            .iter()
+            .zip(&upper_right)
+            .map(|(a, b)| (a.0, a.2 - b.0, b.2))
+            .collect();
+        assert_eq!(rows, vec![(0.0, 0.0, 16.0); 34]);
+        assert_eq!(device_fills('\u{e0bb}'), device_fills('╱'));
+        assert_eq!(device_fills('\u{e0bf}'), device_fills('╲'));
     }
 
     #[test]
