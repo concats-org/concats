@@ -132,6 +132,36 @@ script_mod! {
         line_spacing: 1.0
     }
 
+    // The italic face ahead of the same chain, for the cells a program makes
+    // italic; whatever it lacks falls through to the upright faces.
+    let TERM_FONT_ITALIC = TextStyle{
+        font_family: FontFamily{
+            italic := FontMember{res: mod.app_font.italic asc: 0.0 desc: 0.0}
+            first := FontMember{res: mod.app_font.first asc: 0.0 desc: 0.0}
+            second := FontMember{res: mod.app_font.second asc: 0.0 desc: 0.0}
+            third := FontMember{res: mod.app_font.third asc: 0.0 desc: 0.0}
+            fourth := FontMember{res: mod.app_font.fourth asc: 0.0 desc: 0.0}
+            mono := FontMember{res: mod.app_font.mono asc: 0.0 desc: 0.0}
+            cjk := FontMember{res: mod.app_font.cjk asc: 0.0 desc: 0.0}
+        }
+        font_size: mod.app_font.terminal_size
+        line_spacing: 1.0
+    }
+
+    let TERM_FONT_BOLD_ITALIC = TextStyle{
+        font_family: FontFamily{
+            italic := FontMember{res: mod.app_font.italic asc: 0.0 desc: 0.0 weight: 700.0}
+            first := FontMember{res: mod.app_font.first asc: 0.0 desc: 0.0 weight: 700.0}
+            second := FontMember{res: mod.app_font.second asc: 0.0 desc: 0.0 weight: 700.0}
+            third := FontMember{res: mod.app_font.third asc: 0.0 desc: 0.0 weight: 700.0}
+            fourth := FontMember{res: mod.app_font.fourth asc: 0.0 desc: 0.0 weight: 700.0}
+            mono := FontMember{res: mod.app_font.mono asc: 0.0 desc: 0.0 weight: 700.0}
+            cjk := FontMember{res: mod.app_font.cjk asc: 0.0 desc: 0.0 weight: 700.0}
+        }
+        font_size: mod.app_font.terminal_size
+        line_spacing: 1.0
+    }
+
     mod.widgets.TerminalView = set_type_default() do mod.widgets.TerminalViewBase {
         width: Fill
         height: Fill
@@ -154,6 +184,12 @@ script_mod! {
         }
         draw_bold +: {
             text_style: TERM_FONT_BOLD
+        }
+        draw_italic +: {
+            text_style: TERM_FONT_ITALIC
+        }
+        draw_bold_italic +: {
+            text_style: TERM_FONT_BOLD_ITALIC
         }
         find_bar: mod.widgets.TabBar {
             find_row := mod.widgets.FindRow {
@@ -261,10 +297,14 @@ pub struct TerminalView {
     draw_bg: DrawQuad,
     #[live]
     draw_text: DrawText,
-    /// Lays out the bold cells only: their glyphs draw through `draw_text`
-    /// with the rest.
+    /// Lay out the bold and italic cells only: their glyphs draw through
+    /// `draw_text` with the rest.
     #[live]
     draw_bold: DrawText,
+    #[live]
+    draw_italic: DrawText,
+    #[live]
+    draw_bold_italic: DrawText,
     #[live]
     draw_cursor: DrawTerminalCursor,
     #[live]
@@ -304,8 +344,7 @@ pub struct TerminalView {
     held_keys: KeyModifiers,
     #[rust]
     blink: Blink,
-    /// Shaped cells by text and face (bold, italic). Every face is the one
-    /// font today.
+    /// Shaped cells by text and face (bold, italic).
     #[rust]
     glyph_cache: HashMap<(String, Flags), PreparedTextRun>,
     /// The font size, font scale and DPI factor, as bits, that the cell and
@@ -502,10 +541,11 @@ impl TerminalView {
         if self.glyph_cache.contains_key(key) {
             return;
         }
-        let layout = if key.1.contains(Flags::BOLD) {
-            &mut self.draw_bold
-        } else {
-            &mut self.draw_text
+        let layout = match (key.1.contains(Flags::BOLD), key.1.contains(Flags::ITALIC)) {
+            (false, false) => &mut self.draw_text,
+            (true, false) => &mut self.draw_bold,
+            (false, true) => &mut self.draw_italic,
+            (true, true) => &mut self.draw_bold_italic,
         };
         let Some(run) = layout.prepare_single_line_run(cx, &key.0) else {
             return;

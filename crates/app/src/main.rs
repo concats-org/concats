@@ -1000,6 +1000,9 @@ fn install_app_theme(vm: &mut ScriptVm) {
 /// slots because the script block's text is compiled, not generated; a shorter
 /// list repeats, which costs the shaper a duplicate miss on a glyph nobody has
 /// and keeps the block readable.
+///
+/// `italic` heads the terminal's italic chain: the bundled italic face, or
+/// with faces of the user's own their first, which stays upright.
 // NOTE: the four user slots, cycled out of the borrowed setting; the script takes each path owned.
 // coland-ignore: @coland/clone_heavy_function
 fn install_app_font(vm: &mut ScriptVm) {
@@ -1015,6 +1018,7 @@ fn install_app_font(vm: &mut ScriptVm) {
                 third: mod.res.crate_resource("makepad_widgets:resources/jetbrains_mono_variable.ttf")
                 fourth: mod.res.crate_resource("makepad_widgets:resources/jetbrains_mono_variable.ttf")
                 mono: mod.res.crate_resource("makepad_widgets:resources/jetbrains_mono_variable.ttf")
+                italic: mod.res.crate_resource("self:resources/fonts/jetbrains_mono_italic_variable.ttf")
                 cjk: mod.res.crate_resource("makepad_widgets:resources/LXGWWenKaiRegular.ttf")
                 emoji: mod.res.crate_resource("makepad_widgets:resources/NotoColorEmoji.ttf")
             }
@@ -1028,6 +1032,7 @@ fn install_app_font(vm: &mut ScriptVm) {
         slots.next().cloned().unwrap_or_default(),
         slots.next().cloned().unwrap_or_default(),
     );
+    let italic = first.clone();
     script_eval!(vm, {
         mod.app_font = {
             size: #(size)
@@ -1037,6 +1042,7 @@ fn install_app_font(vm: &mut ScriptVm) {
             third: mod.res.file_resource(#(third))
             fourth: mod.res.file_resource(#(fourth))
             mono: mod.res.crate_resource("makepad_widgets:resources/jetbrains_mono_variable.ttf")
+            italic: mod.res.file_resource(#(italic))
             cjk: mod.res.crate_resource("makepad_widgets:resources/LXGWWenKaiRegular.ttf")
             emoji: mod.res.crate_resource("makepad_widgets:resources/NotoColorEmoji.ttf")
         }
