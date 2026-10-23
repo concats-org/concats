@@ -18,6 +18,7 @@ use std::{
         Arc, Mutex, OnceLock,
         atomic::{AtomicBool, Ordering},
     },
+    time::Instant,
 };
 
 use alacritty_terminal::{
@@ -31,6 +32,7 @@ use alacritty_terminal::{
 };
 use makepad_widgets::{LiveId, makepad_platform::thread::SignalToUI};
 
+pub mod bell;
 pub mod blink;
 pub mod colors;
 pub mod environment;
@@ -124,6 +126,7 @@ pub struct Proxy {
     sender: Arc<OnceLock<EventLoopSender>>,
     exited: Arc<AtomicBool>,
     report: Arc<Mutex<Report>>,
+    bell: Arc<Mutex<bell::Bell>>,
 }
 
 impl EventListener for Proxy {
@@ -139,7 +142,10 @@ impl EventListener for Proxy {
                 return;
             }
             Event::ChildExit(_) => self.exited.store(true, Ordering::Relaxed),
-            Event::Title(title) => self.report.lock().unwrap().title = Some(title),
+            Event::Title(title) => {
+                self.bell.lock().unwrap().titled(&title);
+                self.report.lock().unwrap().title = Some(title);
+            }
             Event::ClipboardStore(ClipboardType::Clipboard, text) => {
                 self.report.lock().unwrap().clipboard = Some(text);
             }
@@ -153,15 +159,13 @@ impl EventListener for Proxy {
             Event::TextAreaSizeRequest(reply) => {
                 self.report.lock().unwrap().size_queries.push(reply);
             }
-            // TODO: a bell should raise a desktop notification. It is how an
-            // agent says it has finished while you are looking at another
-            // window, and the panel currently swallows it. Left out here
-            // because the sequences that carry a message with it (OSC 9, OSC
-            // 777) are not ones the library parses, and hand-rolling that is
-            // more than this change should carry.
+            // TODO: OSC 9 and OSC 777 carry a message with a bell, but the
+            // library does not parse them, and its PTY loop offers no place to
+            // see the bytes without unsafe code.
+            Event::Bell => self.bell.lock().unwrap().ring(Instant::now()),
             // The view reads whether the cursor blinks off the term itself;
             // a change only has to redraw it.
-            Event::Wakeup | Event::Bell | Event::CursorBlinkingChange => {}
+            Event::Wakeup | Event::CursorBlinkingChange => {}
             _ => return,
         }
         // Every event that gets here changed what the view shows.
@@ -307,6 +311,7 @@ pub fn open(session: Session, cwd: &Path) {
         sender: Arc::new(OnceLock::new()),
         exited: exited.clone(),
         report: report.clone(),
+        bell: Arc::new(Mutex::new(bell::Bell::new(cwd))),
     };
     let term = Arc::new(FairMutex::new(Term::new(config, &size, proxy.clone())));
     let event_loop = match EventLoop::new(term.clone(), proxy.clone(), pty, false, false) {

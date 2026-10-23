@@ -96,6 +96,11 @@ regex = "1"
 # Native folder picker behind the header's repo name.
 rfd = { workspace = true }
 
+# A terminal's bell as a desktop notification. No unsafe on our side, and it
+# posts from a development build too, under the installed app's identity.
+[target.'cfg(target_os = "macos")'.dependencies]
+mac-notification-sys = { workspace = true }
+
 [dev-dependencies]
 concats_fixture = { workspace = true }
 # Visual snapshot tests (tests/snapshots.rs) compare PNG captures per pixel to

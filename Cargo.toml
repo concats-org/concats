@@ -69,6 +69,7 @@ gix = { version = "0.85", default-features = false, features = [
 ignore = "0.4"
 imara-diff = "0.2"
 loro = "1.13"
+mac-notification-sys = "0.6"
 makepad-platform = { git = "https://github.com/concats-org/makepad", branch = "int" }
 makepad-service = { path = "crates/makepad-service" }
 makepad-widgets = { git = "https://github.com/concats-org/makepad", branch = "int" }
