@@ -923,7 +923,8 @@ impl TerminalView {
 // the same reason. A new range is a new arm of `fills`.
 
 /// How a box line's arms reach out of a cell, as up, right, down and left: 0
-/// none, 1 light, 2 heavy. Empty for one the font draws: the dashed lines.
+/// none, 1 light, 2 heavy, 3 double. Empty for one the font draws: the dashed
+/// lines.
 #[rustfmt::skip]
 const LINES: [&str; 76] = [
     "0101", "0202", "1010", "2020", "", "", "", "", "", "", "", "",
@@ -935,6 +936,14 @@ const LINES: [&str; 76] = [
     "1101", "1102", "1201", "1202", "2101", "2102", "2201", "2202",
     "1111", "1112", "1211", "1212", "2111", "1121", "2121", "2112",
     "2211", "1122", "1221", "2212", "1222", "2122", "2221", "2222",
+];
+
+/// The double lines, U+2550 to U+256C, in the same notation as [`LINES`].
+#[rustfmt::skip]
+const DOUBLES: [&str; 29] = [
+    "0303", "3030", "0310", "0130", "0330", "0013", "0031", "0033", "1300", "3100",
+    "3300", "1003", "3001", "3003", "1310", "3130", "3330", "1013", "3031", "3033",
+    "0313", "0131", "0333", "1303", "3101", "3303", "1313", "3131", "3333",
 ];
 
 /// The half lines, U+2574 to U+257F, in the same notation as [`LINES`].
@@ -952,6 +961,7 @@ fn fills(c: char, size: Vec2d, dpi: f64) -> Option<Vec<(Rect, f32)>> {
         '\u{2800}'..='\u{28ff}' => return Some(braille_fills(c, size)),
         '\u{2580}'..='\u{259f}' => block_fills(c, px),
         '\u{2500}'..='\u{254b}' => line_fills(LINES[c as usize - 0x2500], px)?,
+        '\u{2550}'..='\u{256c}' => line_fills(DOUBLES[c as usize - 0x2550], px)?,
         '\u{2574}'..='\u{257f}' => line_fills(HALVES[c as usize - 0x2574], px)?,
         '\u{256d}'..='\u{2570}' => arc_fills(c, px),
         '\u{e0b0}'..='\u{e0b3}' => powerline_fills(c, px),
@@ -1011,8 +1021,15 @@ fn block_fills(c: char, px: Vec2d) -> Vec<(Rect, f32)> {
 /// A box line, given by its [`LINES`] or [`HALVES`] entry, in a cell of `px`
 /// device pixels: each arm a stroke from its edge to the centre and on across
 /// the other direction's stroke, so a corner or a tee closes without a notch.
-/// A light stroke is an eighth of the cell's width, a heavy one twice that.
-/// `None` for an entry the font draws.
+/// A light stroke is an eighth of the cell's width, a heavy one twice that,
+/// and a double line two light strokes a light stroke apart. `None` for an
+/// entry the font draws.
+#[expect(
+    clippy::cognitive_complexity,
+    reason = "The four arms, single or double, are joined in one place, where each can see the others."
+)]
+// NOTE: the four arms are joined together, so each sees the others' weights.
+// coland-ignore: @coland/high_decision_count
 fn line_fills(arms: &str, px: Vec2d) -> Option<Vec<(Rect, f32)>> {
     let &[up, right, down, left] = arms.as_bytes() else {
         return None;
@@ -1026,17 +1043,59 @@ fn line_fills(arms: &str, px: Vec2d) -> Option<Vec<(Rect, f32)>> {
     let (vertical, horizontal) = (thick(up.max(down)), thick(left.max(right)));
     let (x0, x1) = (start(w, vertical), start(w, vertical) + vertical);
     let (y0, y1) = (start(h, horizontal), start(h, horizontal) + horizontal);
+    let (double_vertical, double_horizontal) = (up.max(down) == 3, left.max(right) == 3);
+    // A double arm's strokes stop apart: the one on a side another double arm
+    // leaves from turns into that arm's near stroke, the other runs on to the
+    // band's far edge, so corners and tees close as they do in Ghostty.
     let mut fills = Vec::new();
-    for (weight, along) in [(up, (0.0, y1)), (down, (y0, h))] {
-        if weight > 0 {
+    for (weight, edge, far, near) in [(up, 0.0, y1, y0 + light), (down, h, y0, y1 - light)] {
+        if weight == 3 {
+            for (offset, side) in [(0.0, left), (2.0 * light, right)] {
+                let stop = if side > 0 && double_horizontal {
+                    near
+                } else {
+                    far
+                };
+                fills.push(fill(
+                    x0 + offset,
+                    edge.min(stop),
+                    x0 + offset + light,
+                    edge.max(stop),
+                ));
+            }
+        } else if weight > 0 {
             let t = thick(weight);
-            fills.push(fill(start(w, t), along.0, start(w, t) + t, along.1));
+            fills.push(fill(
+                start(w, t),
+                edge.min(far),
+                start(w, t) + t,
+                edge.max(far),
+            ));
         }
     }
-    for (weight, along) in [(left, (0.0, x1)), (right, (x0, w))] {
-        if weight > 0 {
+    for (weight, edge, far, near) in [(left, 0.0, x1, x0 + light), (right, w, x0, x1 - light)] {
+        if weight == 3 {
+            for (offset, side) in [(0.0, up), (2.0 * light, down)] {
+                let stop = if side > 0 && double_vertical {
+                    near
+                } else {
+                    far
+                };
+                fills.push(fill(
+                    edge.min(stop),
+                    y0 + offset,
+                    edge.max(stop),
+                    y0 + offset + light,
+                ));
+            }
+        } else if weight > 0 {
             let t = thick(weight);
-            fills.push(fill(along.0, start(h, t), along.1, start(h, t) + t));
+            fills.push(fill(
+                edge.min(far),
+                start(h, t),
+                edge.max(far),
+                start(h, t) + t,
+            ));
         }
     }
     Some(fills)
@@ -1790,6 +1849,25 @@ mod tests {
         // Dashed lines stay with the font.
         assert!(fills('┄', SIZE, 2.0).is_none());
         assert!(fills('a', SIZE, 2.0).is_none());
+    }
+
+    #[test]
+    fn a_double_corner_closes_inside_and_out() {
+        // ╔ in a 16 by 34 cell: strokes 2 wide, the band 6 wide.
+        let corner = device_fills('╔');
+        assert_eq!(
+            corner,
+            [
+                (5.0, 14.0, 7.0, 34.0, 1.0),
+                (9.0, 18.0, 11.0, 34.0, 1.0),
+                (5.0, 14.0, 16.0, 16.0, 1.0),
+                (9.0, 18.0, 16.0, 20.0, 1.0),
+            ],
+            "outer strokes meet at the band's corner, inner ones further in"
+        );
+        // ═ runs edge to edge in both strokes, so neighbours join.
+        let line = device_fills('═');
+        assert_eq!((line[0].0, line[3].2), (0.0, 16.0));
     }
 
     #[test]
