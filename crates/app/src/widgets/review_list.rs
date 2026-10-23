@@ -886,6 +886,10 @@ pub struct ReviewList {
     /// The header mirrored in this draw; action identity is the file path.
     #[rust]
     sticky_idx: Option<usize>,
+    /// Where the tab bar's arrows search from, as measured in the last draw;
+    /// see [`arrow_pivots`].
+    #[rust]
+    arrow_pivots: Option<(usize, usize)>,
     /// The composer field's widget, while one is on screen. Every other control
     /// in a row carries the `ReviewItemAction` that says what it is, but
     /// makepad's `TextInput` has no `#[action_data]` field — `set_action_data`
@@ -1088,9 +1092,9 @@ impl ReviewList {
         }
     }
 
-    /// The tab bar's arrows: scroll to the hunk before or after the one at
-    /// the top of the view. A shut card's hunks are not in the view, so they
-    /// are skipped.
+    /// The tab bar's arrows: scroll to the hunk before or after the one under
+    /// the pinned header. A shut card's hunks are not in the view, so they are
+    /// skipped.
     fn handle_hunk_buttons(&mut self, cx: &mut Cx, actions: &Actions) {
         let forward = self.view.button(cx, ids!(hunk_next)).clicked(actions);
         if !forward && !self.view.button(cx, ids!(hunk_prev)).clicked(actions) {
@@ -1099,17 +1103,17 @@ impl ReviewList {
         let Some(tab) = self.drawn_tab else {
             return;
         };
-        let top = self.view.portal_list(cx, ids!(list)).first_id();
-        let Some(from) = self.row_at(top) else {
+        let Some((on, below)) = self.arrow_pivots else {
             return;
         };
         let shown = |row: usize| self.entry_of(row).is_some();
         let target = self.state().read(|d| {
             let rows = d.stream(tab);
+            let row = |entry| self.row_at(entry).unwrap_or(rows.len());
             if forward {
-                first_hunk(rows, from + 1..rows.len(), shown)
+                first_hunk(rows, row(below)..rows.len(), shown)
             } else {
-                first_hunk(rows, (0..from).rev(), shown)
+                first_hunk(rows, (0..row(on)).rev(), shown)
             }
         });
         if let Some(row) = target {
@@ -1388,7 +1392,15 @@ impl Widget for ReviewList {
                     drawn.push(entry);
                     self.draw_row(cx, &mut list, entry, &pass);
                 }
-                self.place_sticky(&list, &drawn, &range, &pass)
+                let bands: Vec<Band> = drawn
+                    .iter()
+                    .filter_map(|&entry| {
+                        let (top, height) = (list.item_top(entry)?, list.item_height(entry)?);
+                        Some(Band { entry, top, height })
+                    })
+                    .collect();
+                self.arrow_pivots = arrow_pivots(&bands, STICKY_TOP_GAP + STICKY_HEIGHT);
+                self.place_sticky(&list, &bands, &range, &pass)
             };
             self.draw_sticky(cx, &pass, push, lift);
             self.draw_chip(cx, &pass);
@@ -2090,25 +2102,18 @@ impl ReviewList {
     fn place_sticky(
         &mut self,
         list: &PortalList,
-        drawn: &[usize],
+        bands: &[Band],
         range: &EntryRange,
         pass: &DrawPass,
     ) -> (f64, f64) {
         let item_rect = |entry: usize| Some((list.item_top(entry)?, list.item_height(entry)?));
-        let bands: Vec<Band> = drawn
-            .iter()
-            .filter_map(|&entry| {
-                let (top, height) = item_rect(entry)?;
-                Some(Band { entry, top, height })
-            })
-            .collect();
         let first_entry = if range.remapped {
             range.first
         } else {
             range.old_first
         };
         let first = self
-            .row_at(anchor_entry(&bands).unwrap_or(first_entry))
+            .row_at(anchor_entry(bands).unwrap_or(first_entry))
             .unwrap_or(0);
         let card = self.cards.containing(first);
         let header_top = card
@@ -2228,12 +2233,31 @@ fn row_at_y(drawn: &[DrawnRow], y: f64) -> Option<usize> {
     Some(if y < first.top { first.row } else { last.row })
 }
 
+/// Where the tab bar's arrows search from, over the bands drawn this pass:
+/// the first entry starting on `line`, where an arrow lands a hunk, and the
+/// first starting below it. A hunk on the line is the one in view, so ↑
+/// searches before the first and ↓ from the second. Its bar has no height and
+/// shares its top with the line under it, so the list's own first entry, a
+/// row above, would send ↓ to the same hunk again.
+// NOTE: (on the line, below it), the order the arrows search in; both are entries.
+// coland-ignore: @coland/same_typed_tuple_return
+fn arrow_pivots(bands: &[Band], line: f64) -> Option<(usize, usize)> {
+    let past = bands.last()?.entry + 1;
+    let starting_from = |y: f64| {
+        bands
+            .iter()
+            .find(|band| band.top >= y)
+            .map_or(past, |band| band.entry)
+    };
+    Some((starting_from(line - 0.5), starting_from(line + 0.5)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         Band, CARD_END_EDGE, CardIndex, CardMeta, Cell, DrawnRow, FILE_HEADER_TOP_PADDING, HashSet,
-        Row, STICKY_FADE, STICKY_HEIGHT, STICKY_TOP_GAP, Seen, anchor_entry, first_hunk,
-        owns_gesture, row_at_y, sticky_offsets,
+        Row, STICKY_FADE, STICKY_HEIGHT, STICKY_TOP_GAP, Seen, anchor_entry, arrow_pivots,
+        first_hunk, owns_gesture, row_at_y, sticky_offsets,
     };
     #[allow(
         clippy::wildcard_imports,
@@ -2411,6 +2435,35 @@ mod tests {
         ];
         assert_eq!(anchor_entry(&bands), Some(5));
         assert_eq!(anchor_entry(&[]), None);
+    }
+
+    #[test]
+    fn the_arrows_step_past_the_hunk_they_landed() {
+        let band = |entry, top, height| Band { entry, top, height };
+        // Just landed: hunk bar 7 sits on the line with its first row.
+        let landed = [
+            band(5, 0.0, 20.0),
+            band(6, 20.0, 20.0),
+            band(7, 40.0, 0.0),
+            band(8, 40.0, 20.0),
+            band(9, 60.0, 20.0),
+        ];
+        assert_eq!(
+            arrow_pivots(&landed, 40.0),
+            Some((7, 9)),
+            "↑ searches before bar 7, ↓ after the rows it starts"
+        );
+        // Scrolled into a hunk: the line falls inside row 9.
+        let inside = [
+            band(7, 10.0, 0.0),
+            band(8, 10.0, 20.0),
+            band(9, 30.0, 20.0),
+            band(10, 50.0, 20.0),
+        ];
+        assert_eq!(arrow_pivots(&inside, 40.0), Some((10, 10)));
+        // Nothing drawn starts below the line: search past what was drawn.
+        assert_eq!(arrow_pivots(&[band(3, 0.0, 90.0)], 40.0), Some((4, 4)));
+        assert_eq!(arrow_pivots(&[], 40.0), None);
     }
 
     #[test]
