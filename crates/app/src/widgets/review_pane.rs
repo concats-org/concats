@@ -1005,10 +1005,11 @@ impl ReviewPane {
     /// staged hunks drop out of the unstaged view within a second.
     fn stage_seen_hunks(&mut self, cx: &mut Cx) {
         self.view.view(cx, ids!(share_panel)).set_visible(cx, false);
-        let (workdir, files, git_dir) = self
-            .state()
-            .read(|d| (d.workdir.clone(), d.stage.clone(), d.git_dir.clone()));
-        let (Some(workdir), Some(git_dir)) = (workdir, git_dir) else {
+        let (worktree, workdir, files, git_dir) = self.state().read(|d| {
+            let worktree = d.worktree_review();
+            (worktree, d.root.clone(), d.stage.clone(), d.git_dir.clone())
+        });
+        let (true, Some(git_dir)) = (worktree, git_dir) else {
             return;
         };
         // Rewriting the index is git I/O: the service does it and posts the
@@ -1641,7 +1642,7 @@ impl ReviewPane {
             let open = panel.visible();
             if !open {
                 // Staging only exists where there is a worktree to stage from.
-                let worktree = self.state().read(|d| d.workdir.is_some());
+                let worktree = self.state().read(ReviewDoc::worktree_review);
                 self.view
                     .button(cx, ids!(share_stage))
                     .set_visible(cx, worktree);

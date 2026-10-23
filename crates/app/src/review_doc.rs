@@ -140,10 +140,9 @@ pub struct ReviewDoc {
     pub git_dir: Option<std::path::PathBuf>,
     /// A directory without Git: files to open, nothing to diff, no range.
     pub without_git: bool,
-    /// Set on a WORKTREE load: the working directory. `Some` is what marks
-    /// this pane's review as a worktree review (enables "stage seen hunks",
-    /// drives the staleness poll).
-    pub workdir: Option<std::path::PathBuf>,
+    /// The checkout's root, canonical, as the loader found it: where a File tab
+    /// saves to, and where a worktree review stages and polls.
+    pub root: std::path::PathBuf,
     /// WORKTREE loads: the per-file payload "stage seen hunks" works from.
     pub stage: Vec<StageFile>,
     /// The loaded range's resolved ends, base then head: what a File tab reads
@@ -229,6 +228,12 @@ pub struct ReviewDoc {
 }
 
 impl ReviewDoc {
+    /// A WORKTREE review of a Git checkout: what "stage seen hunks" and the
+    /// staleness poll work on.
+    pub fn worktree_review(&self) -> bool {
+        self.resolved.1 == Rev::Worktree && !self.without_git
+    }
+
     pub fn target(&self) -> concats_state::Target {
         concats_state::Target {
             repo: self.repo.clone(),

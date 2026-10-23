@@ -292,7 +292,7 @@ pub fn document_cursors(
 /// it when there is one: what a comment's cursors are minted in and read from.
 /// `None` for a commit range, which has no worktree side.
 fn worktree_buffer(loaded: &Loaded, path: &str) -> Option<Blob> {
-    let origin = loaded.workdir.as_ref()?.join(path);
+    let origin = (loaded.head == Rev::Worktree).then(|| loaded.root.join(path))?;
     let blob = loaded
         .blobs
         .iter()

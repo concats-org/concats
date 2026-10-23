@@ -735,7 +735,7 @@ fn sessions_rows(
             linked_sessions.len(),
             rendered,
             via.len(),
-            if loaded.workdir.is_some() {
+            if loaded.head == Rev::Worktree {
                 " A linked turn's snapshot holds the same changed file contents as this \
                  working tree."
             } else {

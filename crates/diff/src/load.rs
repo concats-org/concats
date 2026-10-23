@@ -142,9 +142,6 @@ pub struct Loaded {
     ///
     /// A directory without Git keeps its review state in `.concats/` instead.
     pub git_dir: PathBuf,
-    /// Set on a WORKTREE load: the working directory. `Some` is what marks a
-    /// worktree review, and it is where "stage seen hunks" writes back to.
-    pub workdir: Option<PathBuf>,
     pub files: Vec<FileChange>,
     pub blobs: Vec<Blob>,
     pub stats: LoadStats,
@@ -222,7 +219,6 @@ pub fn directory(dir: &Path) -> Result<Loaded, Error> {
         head: Rev::Worktree,
         git_dir: concats_dir(&root),
         root,
-        workdir: None,
         files: Vec::new(),
         blobs: Vec::new(),
         stats: LoadStats::default(),
@@ -342,7 +338,6 @@ pub fn load(repo_path: &Path, base_rev: &str, head_rev: &str) -> Result<Loaded, 
         head: Rev::Commit(head),
         root,
         git_dir: repo.common_dir().to_path_buf(),
-        workdir: None,
         files,
         blobs,
         stats: st,
@@ -488,9 +483,8 @@ fn load_worktree(root: PathBuf, base_rev: &str) -> Result<Loaded, Error> {
     Ok(Loaded {
         base,
         head: Rev::Worktree,
-        root: root.clone(),
+        root,
         git_dir: repo.common_dir().to_path_buf(),
-        workdir: Some(root),
         files,
         blobs,
         stats: st,
@@ -558,9 +552,10 @@ pub fn uncommitted(
     loaded: &Loaded,
     head: ObjectId,
 ) -> Result<(Vec<Change>, Overlay), Error> {
-    let (Some(root), Rev::Commit(base)) = (loaded.workdir.as_deref(), loaded.base) else {
+    let (Rev::Worktree, Rev::Commit(base)) = (loaded.head, loaded.base) else {
         return Ok((Vec::new(), HashMap::new()));
     };
+    let root = loaded.root.as_path();
     let mut paths: Vec<String> = loaded
         .stage
         .iter()
@@ -1619,7 +1614,7 @@ mod tests {
 
         let loaded = load(&root, INDEX_REV, WORKTREE_REV).unwrap();
         assert_eq!((loaded.base, loaded.head), (Rev::Index, Rev::Worktree));
-        assert_eq!(loaded.workdir.as_deref(), Some(root.as_path()));
+        assert_eq!(loaded.root, root);
         let mut paths: Vec<&str> = loaded.files.iter().map(|f| f.path.as_str()).collect();
         paths.sort();
         assert_eq!(paths, ["a.txt", "b.txt"]);

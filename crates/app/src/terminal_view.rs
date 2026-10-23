@@ -835,9 +835,11 @@ impl TerminalView {
             state?.read(|d| {
                 crate::links::target(
                     uri,
-                    d.workdir
-                        .as_deref()
-                        .unwrap_or_else(|| std::path::Path::new(&d.repo)),
+                    if d.worktree_review() {
+                        d.root.as_path()
+                    } else {
+                        std::path::Path::new(&d.repo)
+                    },
                 )
             })
         })

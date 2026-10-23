@@ -87,7 +87,7 @@ fn load_document(target: &Target, guide: Option<String>) -> ReviewDoc {
         Ok(loaded) => {
             next.resolved = (loaded.base, loaded.head);
             next.old_rev = comments::old_rev(loaded.base);
-            next.workdir.clone_from(&loaded.workdir);
+            next.root.clone_from(&loaded.root);
             next.stage.clone_from(&loaded.stage);
             next.refs = picker_refs(&loaded);
             next.worktrees = concats_diff::load::worktrees(&loaded.root);

@@ -303,7 +303,7 @@ pub(crate) fn save_plan(d: &ReviewDoc, blob: u32) -> Option<SavePlan> {
     let tip = b.doc.as_ref()?.oplog_frontiers();
     let lines = b.line_moves(&b.disk, &tip);
     Some(SavePlan {
-        root: d.workdir.clone()?,
+        root: d.worktree_review().then(|| d.root.clone())?,
         version: tip,
         path,
         text: b.text.clone(),
@@ -496,7 +496,7 @@ mod tests {
     #[test]
     fn a_save_plan_maps_every_surviving_line_to_where_it_sits_now() {
         let mut d = ReviewDoc {
-            workdir: Some("/tmp".into()),
+            root: "/tmp".into(),
             ..ReviewDoc::default()
         };
         let mut head = Blob::new(oid(2), "rs".into(), "a\nb\nc\n".into());
@@ -525,7 +525,7 @@ mod tests {
     #[test]
     fn a_line_typed_away_leaves_its_anchor_behind() {
         let mut d = ReviewDoc {
-            workdir: Some("/tmp".into()),
+            root: "/tmp".into(),
             ..ReviewDoc::default()
         };
         let mut head = Blob::new(oid(2), "rs".into(), "a\nb\nc\n".into());

@@ -850,13 +850,14 @@ impl AppWindow {
         // service runs it and reports back; a change reloads silently —
         // content-addressed seen state carries over untouched. This is also
         // how "stage seen hunks" refreshes the pane.
-        match &snap.workdir {
-            Some(workdir) => review().send(ReviewCmd::WorktreeProbe {
+        if snap.worktree_review() {
+            review().send(ReviewCmd::WorktreeProbe {
                 window: self.state.id,
-                workdir: workdir.clone(),
+                workdir: snap.root.clone(),
                 last: self.worktree_fp,
-            }),
-            None => self.worktree_fp = 0,
+            });
+        } else {
+            self.worktree_fp = 0;
         }
 
         // Everything other writers commit — a `submit`ted guide, a CLI-added

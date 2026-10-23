@@ -747,7 +747,6 @@ mod tests {
             head: concats_diff::load::Rev::Commit(oid(2)),
             root: std::path::PathBuf::new(),
             git_dir: std::path::PathBuf::new(),
-            workdir: None,
             stage: Vec::new(),
             tree: vec!["src/a.rs".into()],
             without_git: false,
