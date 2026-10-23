@@ -1002,11 +1002,12 @@ fn install_app_theme(vm: &mut ScriptVm) {
 // coland-ignore: @coland/clone_heavy_function
 fn install_app_font(vm: &mut ScriptVm) {
     let font = theme::active_font();
-    let size = font.size;
+    let (size, terminal_size) = (font.size, font.terminal_size);
     if font.paths.is_empty() {
         script_eval!(vm, {
             mod.app_font = {
                 size: #(size)
+                terminal_size: #(terminal_size)
                 first: mod.res.crate_resource("makepad_widgets:resources/jetbrains_mono_variable.ttf")
                 second: mod.res.crate_resource("makepad_widgets:resources/jetbrains_mono_variable.ttf")
                 third: mod.res.crate_resource("makepad_widgets:resources/jetbrains_mono_variable.ttf")
@@ -1028,6 +1029,7 @@ fn install_app_font(vm: &mut ScriptVm) {
     script_eval!(vm, {
         mod.app_font = {
             size: #(size)
+            terminal_size: #(terminal_size)
             first: mod.res.file_resource(#(first))
             second: mod.res.file_resource(#(second))
             third: mod.res.file_resource(#(third))

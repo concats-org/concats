@@ -88,9 +88,10 @@ script_mod! {
     mod.widgets.TerminalViewBase = #(TerminalView::register_widget(vm))
 
     // The terminal's text style: the app's configurable font chain from
-    // `mod.app_font`, at the terminal's own size, so the cell grid stays put
-    // when the app font size changes. (This module's script scope can't see the
-    // `FONT` `let` in `main.rs`.) Braille is drawn, not shaped — `draw_braille`.
+    // `mod.app_font`, at the terminal's own size (`terminal_font_size`), so
+    // the cell grid stays put when the app font size changes. (This module's
+    // script scope can't see the `FONT` `let` in `main.rs`.) Braille is drawn,
+    // not shaped — `draw_braille`.
     let TERM_FONT = TextStyle{
         font_family: FontFamily{
             first := FontMember{res: mod.app_font.first asc: 0.0 desc: 0.0}
@@ -101,7 +102,7 @@ script_mod! {
             cjk := FontMember{res: mod.app_font.cjk asc: 0.0 desc: 0.0}
             emoji := FontMember{res: mod.app_font.emoji asc: 0.0 desc: 0.0}
         }
-        font_size: 9
+        font_size: mod.app_font.terminal_size
         // A terminal cell is the glyph box, with no leading added: box-drawing
         // characters are cut to fill that box exactly, so any extra spacing
         // opens gaps between the rows of a frame an application draws, and the

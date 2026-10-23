@@ -88,8 +88,8 @@ pub fn settings_text() -> String {
 pub enum SettingsError {
     #[error("invalid TOML: {0}")]
     Toml(#[from] toml::de::Error),
-    #[error("font_size must be a positive finite number")]
-    FontSize,
+    #[error("{0} must be a positive finite number")]
+    FontSize(&'static str),
     #[error("cannot save configuration: {0}")]
     Persist(String),
     #[error("unknown theme {name:?} — try one of: {known}")]
@@ -116,13 +116,15 @@ pub fn apply_settings_text(text: &str) -> Result<String, SettingsError> {
             spec: settings.font.clone(),
         });
     }
-    let size = font_size(settings.font_size)?;
+    let size = font_size("font_size", settings.font_size)?;
+    let terminal_size = font_size("terminal_font_size", settings.terminal_font_size)?;
     concats_config::save_config(&config)
         .map_err(|error| SettingsError::Persist(error.to_string()))?;
     set_active_theme(theme);
     set_active_font(FontSetting {
         paths,
         size,
+        terminal_size,
         wrap: settings.wrap,
     });
     Ok(settings.theme.clone())
@@ -160,18 +162,19 @@ pub fn set_active_theme(theme: Theme) {
 // ---------------------------------------------------------------------------
 
 /// The resolved app font: the files to try in order (empty = the embedded
-/// fonts alone), plus base size.
+/// fonts alone), plus the base size and the terminal's.
 ///
-/// TODO: one size does not fit all three surfaces. The shape to grow into is
-/// a global `font_size` with `ui_font_size`, `editor_font_size` and
-/// `terminal_font_size` beside it, each falling back to the global when
-/// unset — and the same layering for anything else worth varying per
-/// surface, line height first. Today the terminal borrows this family and
-/// pins its own size in the DSL, which is why its cell cannot be tuned.
+/// TODO: one size does not fit the UI and the editor either. The shape to
+/// grow into is `ui_font_size` and `editor_font_size` beside the global
+/// `font_size`, each falling back to it when unset, and the same layering
+/// for anything else worth varying per surface, line height first.
 #[derive(Clone)]
 pub struct FontSetting {
     pub paths: Vec<String>,
     pub size: f64,
+    /// The terminal's own size, so its cell grid stays put when the base size
+    /// changes.
+    pub terminal_size: f64,
     /// Whether a line too long for its row wraps onto the next instead of
     /// running off the edge. It rides with the font because it is a layout
     /// property, and it re-bakes through the same live edit.
@@ -272,11 +275,11 @@ fn resolve_font_path(spec: &str) -> Option<String> {
     best.map(|(.., p)| p)
 }
 
-fn font_size(size: f64) -> Result<f64, SettingsError> {
+fn font_size(name: &'static str, size: f64) -> Result<f64, SettingsError> {
     if size.is_finite() && size > 0.0 {
         Ok(size)
     } else {
-        Err(SettingsError::FontSize)
+        Err(SettingsError::FontSize(name))
     }
 }
 
@@ -284,13 +287,22 @@ fn font_slot() -> &'static RwLock<Arc<FontSetting>> {
     static F: OnceLock<RwLock<Arc<FontSetting>>> = OnceLock::new();
     F.get_or_init(|| {
         let config = &settings().app;
+        let defaults = concats_config::AppConfig::default();
+        // NOTE: an invalid persisted size must not reach text layout.
+        let size = |name, size, default| {
+            font_size(name, size).unwrap_or_else(|error| {
+                eprintln!("cannot apply font size: {error}");
+                default
+            })
+        };
         RwLock::new(Arc::new(FontSetting {
             paths: resolve_font_paths(&config.font),
-            size: font_size(config.font_size).unwrap_or_else(|error| {
-                // NOTE: an invalid persisted size must not reach text layout.
-                eprintln!("cannot apply font size: {error}");
-                concats_config::AppConfig::default().font_size
-            }),
+            size: size("font_size", config.font_size, defaults.font_size),
+            terminal_size: size(
+                "terminal_font_size",
+                config.terminal_font_size,
+                defaults.terminal_font_size,
+            ),
             wrap: config.wrap,
         }))
     })
@@ -331,6 +343,7 @@ mod tests {
             "[app]\nfont = 'No Such Font 9Z'",
             "[app]\nfont_size = -3",
             "[app]\nfont_size = 'big'",
+            "[app]\nterminal_font_size = 0",
             "[app]\nwrap = 'yes'",
         ] {
             assert!(apply_settings_text(text).is_err(), "{text}");

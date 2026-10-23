@@ -36,6 +36,7 @@ pub struct AppConfig {
     pub theme: String,
     pub font: String,
     pub font_size: f64,
+    pub terminal_font_size: f64,
     pub wrap: bool,
 }
 
@@ -45,6 +46,9 @@ impl Default for AppConfig {
             theme: "Concats".into(),
             font: String::new(),
             font_size: 9.0,
+            // 13 px, the size Ghostty draws its terminal at on macOS: makepad
+            // reads a size in points at 96/72.
+            terminal_font_size: 9.75,
             // A line you cannot read is not a line you can review, so the
             // default is to wrap it. `wrap = false` puts it back on one row.
             wrap: true,
