@@ -855,7 +855,7 @@ mod tests {
         assert_eq!(message, "1 comment(s) on screen copied to the clipboard");
 
         let (text, _) = svc.share(&target, &HashSet::from([on_screen]), |loaded, entries| {
-            interchange::render_prompt(&comments::old_rev(loaded.merge_base), entries)
+            interchange::render_prompt(&comments::old_rev(loaded.base), entries)
         });
         assert!(text.unwrap().contains("on screen"));
 

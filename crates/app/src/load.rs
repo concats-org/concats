@@ -6,7 +6,10 @@
 //! in, the buffers cached between runs, the open File tabs, the caret. That
 //! carry-over is most of this file.
 
-use concats_diff::{Blob, Row, Side, load::Loaded};
+use concats_diff::{
+    Blob, Row, Side,
+    load::{Loaded, Rev},
+};
 use concats_review::{comments, guide, sessions, store};
 use concats_state::Target;
 
@@ -82,9 +85,8 @@ fn load_document(target: &Target, guide: Option<String>) -> ReviewDoc {
         &target.head,
     ) {
         Ok(loaded) => {
-            next.merge_base_oid = loaded.merge_base;
-            next.head_oid = loaded.head;
-            next.old_rev = comments::old_rev(loaded.merge_base);
+            next.resolved = (loaded.base, loaded.head);
+            next.old_rev = comments::old_rev(loaded.base);
             next.workdir.clone_from(&loaded.workdir);
             next.stage.clone_from(&loaded.stage);
             next.refs = picker_refs(&loaded);
@@ -160,7 +162,7 @@ fn guide_for(path: Option<&str>, loaded: &Loaded) -> Option<(String, Option<u64>
     if let Some(path) = path {
         return Some((std::fs::read_to_string(path).ok()?, None));
     }
-    let (base, head) = store::guide_key(loaded.merge_base, loaded.head);
+    let (base, head) = store::guide_key(loaded.base, loaded.head);
     let guide = store::latest_guide(&loaded.git_dir, &base, &head)?;
     Some((guide.markdown, Some(guide.created_at)))
 }
@@ -178,7 +180,7 @@ fn reopen_files(d: &mut ReviewDoc, open: Vec<(u64, String)>, target: &Target) {
         }
         // NOTE: A removed file has no fresh side; landing can still preserve
         // the open buffer and any unsaved edits.
-        match read_file_sides(&target.repo, (d.merge_base_oid, d.head_oid), &path) {
+        match read_file_sides(&target.repo, d.resolved, &path) {
             Ok(sides) => {
                 open_file(d, &path, sides, &[]);
             }
@@ -393,10 +395,10 @@ pub(crate) fn build_review(
         d.guide_rows.push(Row::Title {
             text: format!("# `{}...{}`", target.base, target.head),
         });
-        let against = match (loaded.merge_base, loaded.head) {
-            (Some(mb), Some(_)) => format!("merge-base `{}`", &mb.to_string()[..10]),
-            (Some(mb), None) => format!("worktree vs `{}`", &mb.to_string()[..10]),
-            (None, _) => "worktree vs the index — the unstaged changes".to_string(),
+        let against = match (loaded.base, loaded.head) {
+            (Rev::Commit(mb), Rev::Commit(_)) => format!("merge-base `{}`", &mb.to_string()[..10]),
+            (Rev::Commit(mb), _) => format!("worktree vs `{}`", &mb.to_string()[..10]),
+            _ => "worktree vs the index — the unstaged changes".to_string(),
         };
         d.guide_rows.push(Row::Prose {
             md: format!(

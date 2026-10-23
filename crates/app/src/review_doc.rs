@@ -10,7 +10,7 @@
 
 use std::{collections::HashSet, ops::Range};
 
-use concats_diff::{Blob, CollapsedEnd, LineKind, Row, Side, stage::StageFile};
+use concats_diff::{Blob, CollapsedEnd, LineKind, Row, Side, load::Rev, stage::StageFile};
 use concats_review::store::{self, Comment};
 use gix::ObjectId;
 
@@ -146,10 +146,10 @@ pub struct ReviewDoc {
     pub workdir: Option<std::path::PathBuf>,
     /// WORKTREE loads: the per-file payload "stage seen hunks" works from.
     pub stage: Vec<StageFile>,
-    /// The loaded range's resolved endpoints — what a submitted guide must
-    /// match to be picked up for this pane.
-    pub merge_base_oid: Option<ObjectId>,
-    pub head_oid: Option<ObjectId>,
+    /// The loaded range's resolved ends, base then head: what a File tab reads
+    /// its sides at, and what a submitted guide must match to be picked up for
+    /// this pane.
+    pub resolved: (Rev, Rev),
     /// How an anchor names this range's old side, `comments::old_rev`: what a
     /// card on deleted lines prints, so the CLI reads its anchor back.
     pub old_rev: String,

@@ -16,7 +16,7 @@ use std::{
     sync::Arc,
 };
 
-use concats_diff::{CollapsedEnd, LineKind, Loaded, Row, Side};
+use concats_diff::{CollapsedEnd, LineKind, Loaded, Row, Side, load::Rev};
 use concats_review::{comments, interchange, store};
 use concats_state::Target;
 use makepad_service::Shared;
@@ -775,9 +775,7 @@ impl ReviewPane {
     /// single-digit milliseconds — and it must not bump `generation`, the only
     /// thing a landed background load could signal with.
     pub fn open_file_tab(&mut self, cx: &mut Cx, path: &str) {
-        let (repo, range) = self
-            .state()
-            .read(|d| (d.repo.clone(), (d.merge_base_oid, d.head_oid)));
+        let (repo, range) = self.state().read(|d| (d.repo.clone(), d.resolved));
         let sides = match read_file_sides(&repo, range, path) {
             Ok(sides) => sides,
             Err(e) => {
@@ -798,7 +796,7 @@ impl ReviewPane {
             let dirty = d
                 .file(tab_id.0)
                 .is_some_and(|file| d.blobs[file.head as usize].dirty());
-            crate::file_view::file_tab_title(path, d.head_oid, dirty)
+            crate::file_view::file_tab_title(path, d.resolved.1, dirty)
         });
         open_tab(
             cx,
@@ -1653,7 +1651,7 @@ impl ReviewPane {
         }
         if self.view.button(cx, ids!(share_prompt)).clicked(actions) {
             self.share_comments(cx, |loaded, entries| {
-                interchange::render_prompt(&comments::old_rev(loaded.merge_base), entries)
+                interchange::render_prompt(&comments::old_rev(loaded.base), entries)
             });
         }
         if self.view.button(cx, ids!(share_json)).clicked(actions) {
@@ -1863,7 +1861,7 @@ impl Widget for ReviewPane {
                 }
                 let title = crate::file_view::file_tab_title(
                     &file.path,
-                    document.head_oid,
+                    document.resolved.1,
                     document.blobs[file.head as usize].dirty(),
                 );
                 dock.set_tab_title(cx, LiveId(file.tab), title);
@@ -1877,16 +1875,16 @@ impl Widget for ReviewPane {
         // was saved with.
         if document.generation > 0 {
             let spec = browser_tab_spec();
-            let title = match document.head_oid {
+            let title = match document.resolved.1 {
                 // A directory without Git has no revision to name.
                 _ if document.without_git => spec.title.to_string(),
-                Some(oid) => format!(
+                Rev::Commit(oid) => format!(
                     "{} · {} · {}",
                     spec.title,
                     document.head,
                     &oid.to_string()[..7]
                 ),
-                None => format!("{} · {}", spec.title, document.head),
+                _ => format!("{} · {}", spec.title, document.head),
             };
             self.view
                 .dock(cx, ids!(dock))

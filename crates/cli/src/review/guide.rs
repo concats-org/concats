@@ -44,7 +44,7 @@ pub(crate) fn submit(
     }
     // WORKTREE endpoints key as the zero oid — the app looks worktree guides up
     // under the same convention.
-    let (base, head) = store::guide_key(loaded.merge_base, loaded.head);
+    let (base, head) = store::guide_key(loaded.base, loaded.head);
     let rec = store::Guide {
         base,
         head,

@@ -743,8 +743,8 @@ mod tests {
             Row::context(1, 10, 11),
         ];
         Loaded {
-            merge_base: Some(oid(1)),
-            head: Some(oid(2)),
+            base: concats_diff::load::Rev::Commit(oid(1)),
+            head: concats_diff::load::Rev::Commit(oid(2)),
             root: std::path::PathBuf::new(),
             git_dir: std::path::PathBuf::new(),
             workdir: None,

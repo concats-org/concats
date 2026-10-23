@@ -35,7 +35,7 @@ use std::{
 
 use concats_diff::{
     LoadStats, Row,
-    load::{self, Change, FileLowerer, Loaded},
+    load::{self, Change, FileLowerer, Loaded, Rev},
 };
 use concats_message::{SESSION_REF_PREFIX, SNAPSHOT_REF_PREFIX, TurnEntryKind};
 use gix::{ObjectId, Repository};
@@ -122,8 +122,8 @@ impl RangeDiff {
 }
 
 pub fn review_diff(repo: &Repository, loaded: &Loaded) -> RangeDiff {
-    match (loaded.merge_base, loaded.head) {
-        (Some(base), Some(head)) => range_diff(repo, &base, &head),
+    match (loaded.base, loaded.head) {
+        (Rev::Commit(base), Rev::Commit(head)) => range_diff(repo, &base, &head),
         // NOTE: only a WORKTREE load lacks a commit endpoint, and only it has
         // stage files: their new blobs are the range.
         _ => RangeDiff {
@@ -573,9 +573,7 @@ pub fn mine(loaded: &mut Loaded) -> Mined {
     // The Commits tab is independent of sessions — build it before the
     // no-turns bail-out. A WORKTREE review has no head commit of its own, so
     // its tab lists HEAD's commits since the base, then what is uncommitted.
-    let worktree = loaded
-        .head
-        .is_none()
+    let worktree = (loaded.head == Rev::Worktree)
         .then(|| worktree_commits(&repo, loaded))
         .flatten();
     let commits = worktree.as_ref().map_or(&range, |(commits, _)| commits);
@@ -644,7 +642,9 @@ fn commits_stream(
 /// meets the base, and HEAD, which the uncommitted changes sit on. `None` for
 /// `INDEX...WORKTREE`.
 fn worktree_commits(repo: &Repository, loaded: &Loaded) -> Option<(RangeDiff, ObjectId)> {
-    let merge_base = loaded.merge_base?;
+    let Rev::Commit(merge_base) = loaded.base else {
+        return None;
+    };
     let head = repo.head_id().ok()?.detach();
     Some((range_diff(repo, &merge_base, &head), head))
 }

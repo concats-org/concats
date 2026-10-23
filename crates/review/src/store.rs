@@ -26,7 +26,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use concats_diff::{Blob, Row, Side};
+use concats_diff::{Blob, Row, Side, load::Rev};
 use gix::ObjectId;
 use rusqlite::{Connection, OptionalExtension};
 
@@ -840,9 +840,12 @@ pub fn any_guide(git_dir: &Path) -> bool {
 /// up as a `Row::Warning` in the render, never silently.
 // NOTE: (merge base, head), the range's own order, as `base...head` and the guides table spell it.
 // coland-ignore: @coland/same_typed_tuple_return
-pub fn guide_key(merge_base: Option<ObjectId>, head: Option<ObjectId>) -> (ObjectId, ObjectId) {
-    let zero = ObjectId::null(gix::hash::Kind::Sha1);
-    (merge_base.unwrap_or(zero), head.unwrap_or(zero))
+pub fn guide_key(base: Rev, head: Rev) -> (ObjectId, ObjectId) {
+    let key = |rev| match rev {
+        Rev::Commit(oid) => oid,
+        Rev::Index | Rev::Worktree => ObjectId::null(gix::hash::Kind::Sha1),
+    };
+    (key(base), key(head))
 }
 
 /// The newest guide submitted for exactly this range — the one the app loads.

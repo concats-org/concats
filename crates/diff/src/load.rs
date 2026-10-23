@@ -96,12 +96,33 @@ pub fn read_worktree(root: &Path, path: &str) -> Result<Vec<u8>, Error> {
 pub const INDEX_REV: &str = "INDEX";
 pub const WORKTREE_REV: &str = "WORKTREE";
 
+/// One end of a range, resolved: a commit, the index, or the files on disk.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Rev {
+    Commit(ObjectId),
+    Index,
+    /// Also both ends of a directory without Git, whose files are all there is.
+    #[default]
+    Worktree,
+}
+
+/// How a range names the end: the full oid, `INDEX` or `WORKTREE`.
+impl std::fmt::Display for Rev {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Rev::Commit(oid) => oid.fmt(f),
+            Rev::Index => f.write_str(INDEX_REV),
+            Rev::Worktree => f.write_str(WORKTREE_REV),
+        }
+    }
+}
+
 pub struct Loaded {
-    /// The resolved base: where the base meets the head commit, or HEAD for a
-    /// `<commit>...WORKTREE` load; `None` for `INDEX...WORKTREE`.
-    pub merge_base: Option<ObjectId>,
-    /// The resolved head commit; `None` for a WORKTREE load.
-    pub head: Option<ObjectId>,
+    /// The resolved base: where the base meets the head commit (HEAD for a
+    /// `<commit>...WORKTREE` load), or the index.
+    pub base: Rev,
+    /// The resolved head: a commit, or the working tree.
+    pub head: Rev,
     /// The checkout's root, canonical: what every link into the repository
     /// is relative to.
     pub root: PathBuf,
@@ -197,8 +218,8 @@ pub fn directory(dir: &Path) -> Result<Loaded, Error> {
         .collect();
     tree.sort();
     Ok(Loaded {
-        merge_base: None,
-        head: None,
+        base: Rev::Worktree,
+        head: Rev::Worktree,
         git_dir: concats_dir(&root),
         root,
         workdir: None,
@@ -317,8 +338,8 @@ pub fn load(repo_path: &Path, base_rev: &str, head_rev: &str) -> Result<Loaded, 
     st.total_ms = t_total.elapsed().as_secs_f64() * 1000.0;
 
     Ok(Loaded {
-        merge_base: Some(merge_base),
-        head: Some(head),
+        base: Rev::Commit(merge_base),
+        head: Rev::Commit(head),
         root,
         git_dir: repo.common_dir().to_path_buf(),
         workdir: None,
@@ -359,14 +380,14 @@ fn load_worktree(root: PathBuf, base_rev: &str) -> Result<Loaded, Error> {
     // The old side: what the hunks' line numbers and del rows are measured
     // against — the index's blobs, or the tree where the base meets HEAD.
     let base_is_index = base_rev.trim() == INDEX_REV;
-    let mut base_commit = None;
+    let mut base = Rev::Index;
     let base_tree;
     let base_of: &HashMap<String, ObjectId> = if base_is_index {
         &index_of
     } else {
         let (oid, _) = merge_base(&repo, base_rev, "HEAD")?;
         let tree = commit_tree(&repo, oid)?;
-        base_commit = Some(oid);
+        base = Rev::Commit(oid);
         base_tree = flatten_tree(&repo, tree)?;
         &base_tree
     };
@@ -465,8 +486,8 @@ fn load_worktree(root: PathBuf, base_rev: &str) -> Result<Loaded, Error> {
     st.total_ms = t_total.elapsed().as_secs_f64() * 1000.0;
 
     Ok(Loaded {
-        merge_base: base_commit,
-        head: None,
+        base,
+        head: Rev::Worktree,
         root: root.clone(),
         git_dir: repo.common_dir().to_path_buf(),
         workdir: Some(root),
@@ -537,7 +558,7 @@ pub fn uncommitted(
     loaded: &Loaded,
     head: ObjectId,
 ) -> Result<(Vec<Change>, Overlay), Error> {
-    let (Some(root), Some(base)) = (loaded.workdir.as_deref(), loaded.merge_base) else {
+    let (Some(root), Rev::Commit(base)) = (loaded.workdir.as_deref(), loaded.base) else {
         return Ok((Vec::new(), HashMap::new()));
     };
     let mut paths: Vec<String> = loaded
@@ -1131,64 +1152,43 @@ pub(crate) fn read(
     }
 }
 
-/// One file's whole content at the range's head: the blob out of `head`'s tree,
-/// or, with no head commit, the working file itself.
+/// One file's whole content at `rev`: the blob out of a commit's tree or the
+/// index, or the file on disk. `None` when the file is not there.
 ///
 /// The worktree bytes are hashed the way `load_worktree` hashes them, so a
 /// comment left in the file view lands on the same oid the diff recorded and
 /// one thread renders in both views.
-pub fn read_at_head(
+pub fn read_at(
     repo: &Repository,
-    head: Option<ObjectId>,
-    path: &str,
-) -> Result<(ObjectId, Vec<u8>), Error> {
-    let Some(head) = head else {
-        let root = repo
-            .workdir()
-            .ok_or_else(|| Error::NoRepository(repo.git_dir().to_path_buf()))?;
-        let bytes = read_worktree(root, path)?;
-        return Ok((hash_object(&bytes), bytes));
-    };
-    let entry = repo
-        .find_commit(head)
-        .map_err(|e| Error::git("commit", e))?
-        .tree()
-        .map_err(|e| Error::git("tree", e))?
-        .lookup_entry_by_path(path)
-        .map_err(|e| Error::git("tree", e))?
-        .ok_or_else(|| Error::NotInTree {
-            path: path.to_string(),
-        })?;
-    let oid = entry.object_id();
-    let bytes = read(repo, None, Some(oid))?;
-    Ok((oid, bytes))
-}
-
-/// The same file at the range's base: the blob out of `base`'s tree, or the
-/// index entry when there is no base commit (the `INDEX...WORKTREE` range).
-///
-/// `None` when the file was not there, which makes the whole file read as
-/// added. An unchanged file resolves to the same oid as the head and the diff
-/// against it is empty, so one code path marks every file, changed or not.
-pub fn read_at_base(
-    repo: &Repository,
-    base: Option<ObjectId>,
+    rev: Rev,
     path: &str,
 ) -> Result<Option<(ObjectId, Vec<u8>)>, Error> {
-    let oid = match base {
-        Some(base) => repo
-            .find_commit(base)
+    let oid = match rev {
+        Rev::Commit(commit) => repo
+            .find_commit(commit)
             .map_err(|e| Error::git("commit", e))?
             .tree()
             .map_err(|e| Error::git("tree", e))?
             .lookup_entry_by_path(path)
             .map_err(|e| Error::git("tree", e))?
             .map(|entry| entry.object_id()),
-        None => repo
+        Rev::Index => repo
             .index_or_empty()
             .map_err(|e| Error::git("index", e))?
             .entry_by_path(path.into())
             .map(|e| e.id),
+        Rev::Worktree => {
+            let root = repo
+                .workdir()
+                .ok_or_else(|| Error::NoRepository(repo.git_dir().to_path_buf()))?;
+            return match read_worktree(root, path) {
+                Ok(bytes) => Ok(Some((hash_object(&bytes), bytes))),
+                Err(Error::Io { source, .. }) if source.kind() == std::io::ErrorKind::NotFound => {
+                    Ok(None)
+                }
+                Err(error) => Err(error),
+            };
+        }
     };
     let Some(oid) = oid else { return Ok(None) };
     let bytes = read(repo, None, Some(oid))?;
@@ -1481,7 +1481,7 @@ mod tests {
             "/etc/passwd",
         ] {
             assert!(matches!(
-                read_at_head(&open_repo(&root).unwrap(), None, path),
+                read_at(&open_repo(&root).unwrap(), Rev::Worktree, path),
                 Err(Error::UnsafeWorktreePath(_))
             ));
         }
@@ -1497,7 +1497,7 @@ mod tests {
         std::os::unix::fs::symlink(outside.path().join("private"), root.join("file")).unwrap();
         for path in ["linked/private", "file"] {
             assert!(matches!(
-                read_at_head(&open_repo(&root).unwrap(), None, path),
+                read_at(&open_repo(&root).unwrap(), Rev::Worktree, path),
                 Err(Error::UnsafeWorktreePath(_))
             ));
         }
@@ -1511,7 +1511,7 @@ mod tests {
             .set_len(MAX_FILE_BYTES + 1)
             .unwrap();
         assert!(matches!(
-            read_at_head(&open_repo(&root).unwrap(), None, "large"),
+            read_at(&open_repo(&root).unwrap(), Rev::Worktree, "large"),
             Err(Error::TooLarge { .. })
         ));
         let repo = gix::open(&root).unwrap();
@@ -1618,8 +1618,7 @@ mod tests {
         std::fs::write(root.join("b.txt"), "untracked\n").unwrap();
 
         let loaded = load(&root, INDEX_REV, WORKTREE_REV).unwrap();
-        assert_eq!(loaded.merge_base, None);
-        assert_eq!(loaded.head, None);
+        assert_eq!((loaded.base, loaded.head), (Rev::Index, Rev::Worktree));
         assert_eq!(loaded.workdir.as_deref(), Some(root.as_path()));
         let mut paths: Vec<&str> = loaded.files.iter().map(|f| f.path.as_str()).collect();
         paths.sort();
@@ -1658,7 +1657,7 @@ mod tests {
 
         let loaded = load(&root, "trunk", WORKTREE_REV).unwrap();
         let base = concats_fixture::git(&root, &["merge-base", "trunk", "HEAD"]);
-        assert_eq!(loaded.merge_base.map(|oid| oid.to_string()), Some(base));
+        assert_eq!(loaded.base, Rev::Commit(base.parse().unwrap()));
         let paths: Vec<&str> = loaded.files.iter().map(|f| f.path.as_str()).collect();
         assert_eq!(paths, ["a.txt"], "trunk's later.txt is not the branch's");
     }
@@ -1679,8 +1678,8 @@ mod tests {
         assert_eq!(branch_point(&root), "main");
         let on_main = load(&root, "main", WORKTREE_REV).unwrap();
         assert_eq!(
-            on_main.merge_base.map(|oid| oid.to_string()),
-            Some(git(&["rev-parse", "HEAD"]))
+            on_main.base,
+            Rev::Commit(git(&["rev-parse", "HEAD"]).parse().unwrap())
         );
 
         git(&["checkout", "-q", "-b", "feature"]);
@@ -1695,7 +1694,7 @@ mod tests {
         ]);
         assert_eq!(branch_point(&root), "origin/main");
         let feature = load(&root, &branch_point(&root), WORKTREE_REV).unwrap();
-        assert_eq!(feature.merge_base.map(|oid| oid.to_string()), Some(main));
+        assert_eq!(feature.base, Rev::Commit(main.parse().unwrap()));
         assert_eq!(feature.files[0].path, "a.txt");
     }
 

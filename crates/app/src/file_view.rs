@@ -7,7 +7,10 @@
 //! mechanism, because editable, highlighted TOML is a file view over text that
 //! just doesn't come from git.
 
-use concats_diff::{Blob, Row, load};
+use concats_diff::{
+    Blob, Row,
+    load::{self, Rev},
+};
 use concats_review::store::{self, Comment};
 
 use crate::{
@@ -24,7 +27,7 @@ use crate::{
 /// diff marks nothing.
 pub(crate) fn read_file_sides(
     repo: &str,
-    range: (Option<gix::ObjectId>, Option<gix::ObjectId>),
+    range: (Rev, Rev),
     path: &str,
 ) -> Result<(Option<Blob>, Blob), concats_diff::Error> {
     let repo = std::path::Path::new(repo);
@@ -53,7 +56,9 @@ pub(crate) fn read_file_sides(
     };
 
     let (head_oid, head_bytes) = if let Some(repo) = &repo {
-        load::read_at_head(repo, head, path)?
+        load::read_at(repo, head, path)?.ok_or_else(|| concats_diff::Error::NotInTree {
+            path: path.to_string(),
+        })?
     } else {
         let bytes = load::read_worktree(&root, path)?;
         (concats_sync::hash_object(&bytes), bytes)
@@ -65,7 +70,7 @@ pub(crate) fn read_file_sides(
     // `--repo` argument, which may be relative or a symlink: `origin` is the
     // key an open buffer is carried across reloads by, and two spellings of one
     // file would silently drop the buffer and every comment cursor in it.
-    let origin = if head.is_none() {
+    let origin = if head == Rev::Worktree {
         Some(load::worktree_file(&root, path)?)
     } else {
         None
@@ -78,7 +83,7 @@ pub(crate) fn read_file_sides(
         });
     }
     let base = match &repo {
-        Some(repo) => load::read_at_base(repo, base, path)?,
+        Some(repo) => load::read_at(repo, base, path)?,
         None => Some((head_oid, head_bytes.clone())),
     }
     .filter(|(_, bytes)| !bytes.contains(&0))
@@ -167,11 +172,11 @@ pub(crate) fn open_file(
 /// The revision sits here rather than over the text because the tab is the only
 /// chrome an editor has. A worktree range has no commit to name, and that is
 /// also when the file can be typed into.
-pub(crate) fn file_tab_title(path: &str, head: Option<gix::ObjectId>, dirty: bool) -> String {
+pub(crate) fn file_tab_title(path: &str, head: Rev, dirty: bool) -> String {
     let name = path.rsplit('/').next().unwrap_or(path);
     let at = match head {
-        Some(oid) => oid.to_string()[..7].to_string(),
-        None => "worktree".into(),
+        Rev::Commit(oid) => oid.to_string()[..7].to_string(),
+        _ => "worktree".into(),
     };
     format!("{}{name} · {at}", if dirty { "• " } else { "" })
 }
@@ -420,7 +425,7 @@ mod tests {
         let same = || Blob::new(oid(1), "rs".into(), "a\nb\nc\n".into());
         let mut d = ReviewDoc {
             head: "HEAD".into(),
-            head_oid: Some(oid(9)),
+            resolved: (Rev::Commit(oid(9)), Rev::Commit(oid(9))),
             ..Default::default()
         };
         let at_rest = d.rows_rev;
@@ -443,7 +448,7 @@ mod tests {
             "no header, no caption and no card cap — just the file"
         );
         // What the header used to say, said by the tab instead.
-        let title = file_tab_title("src/a.rs", d.head_oid, false);
+        let title = file_tab_title("src/a.rs", d.resolved.1, false);
         assert!(title.starts_with("a.rs"), "{title}");
         assert!(title.contains(&oid(9).to_string()[..7]), "{title}");
         assert!(

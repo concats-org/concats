@@ -864,11 +864,8 @@ impl AppWindow {
         // probes are I/O. This tick only has to ask. An explicit `--guide`
         // wins over stored guides, so the guide half is skipped while one is
         // set; a worktree review keys its guides by the zero-oid convention.
-        let key = if snap.workdir.is_some() {
-            Some(store::guide_key(snap.merge_base_oid, snap.head_oid))
-        } else {
-            snap.merge_base_oid.zip(snap.head_oid)
-        };
+        // NOTE: a directory without Git has no range a guide could be for.
+        let key = (!snap.without_git).then(|| store::guide_key(snap.resolved.0, snap.resolved.1));
         let guide = match (&snap.guide_path, key) {
             (None, Some((merge_base, head))) => Some(service::GuideProbe {
                 merge_base,

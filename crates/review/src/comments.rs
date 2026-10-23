@@ -14,7 +14,7 @@ use std::{
 
 use concats_diff::{
     Blob, FileChange,
-    load::{self, INDEX_REV, Loaded, WORKTREE_REV},
+    load::{self, INDEX_REV, Loaded, Rev, WORKTREE_REV},
 };
 use gix::ObjectId;
 
@@ -56,14 +56,14 @@ pub fn resolve_anchor(spec: &str, loaded: &Loaded) -> Result<(String, Anchor), E
     let (path_part, side) = match old {
         None => (at, Side::New),
         Some((path, rev)) => {
-            let ours = match loaded.merge_base {
-                Some(oid) => oid.to_string()[..rev.len()].eq_ignore_ascii_case(rev),
-                None => rev == INDEX_REV,
+            let ours = match loaded.base {
+                Rev::Commit(oid) => oid.to_string()[..rev.len()].eq_ignore_ascii_case(rev),
+                other => rev == old_rev(other),
             };
             if !ours {
                 return Err(Error::AnchorOldSide {
                     named: rev.to_string(),
-                    old: old_rev(loaded.merge_base),
+                    old: old_rev(loaded.base),
                 });
             }
             (path, Side::Old)
@@ -93,16 +93,15 @@ pub fn anchor_spec(c: &Comment, old: Option<&str>) -> String {
     format!("{}{side}:{start}-{end}", c.path)
 }
 
-/// How an anchor names a diff's old side, its [`Loaded::merge_base`]: the
-/// commit's first seven hex digits, or `INDEX`. A fixed length rather than
-/// git's unique abbreviation: [`resolve_anchor`] only compares it with the
-/// loaded diff's own old side, so uniqueness in the object database never
-/// matters.
-pub fn old_rev(old: Option<ObjectId>) -> String {
-    old.map_or_else(
-        || INDEX_REV.to_string(),
-        |oid| oid.to_hex_with_len(7).to_string(),
-    )
+/// How an anchor names a diff's old side, its [`Loaded::base`]: the commit's
+/// first seven hex digits, or `INDEX`. A fixed length rather than git's unique
+/// abbreviation: [`resolve_anchor`] only compares it with the loaded diff's own
+/// old side, so uniqueness in the object database never matters.
+pub fn old_rev(old: Rev) -> String {
+    match old {
+        Rev::Commit(oid) => oid.to_hex_with_len(7).to_string(),
+        other => other.to_string(),
+    }
 }
 
 /// Which side of `loaded` each of its blobs is on.
@@ -130,28 +129,30 @@ pub fn on_old_side(
         return Ok((String::new(), HashSet::new()));
     };
     let repo = load::open_repo(&root)?;
-    let head = (head.trim() != WORKTREE_REV)
-        .then(|| load::resolve(&repo, head))
-        .transpose()?;
+    let head = if head.trim() == WORKTREE_REV {
+        Rev::Worktree
+    } else {
+        Rev::Commit(load::resolve(&repo, head)?)
+    };
     // NOTE: the side `load` numbers deleted lines on: the index, the base
     // itself against the worktree, else the merge base.
     let old = match (base.trim() == INDEX_REV, head) {
-        (true, _) => None,
-        (false, None) => Some(load::resolve(&repo, base)?),
-        (false, Some(head)) => Some(
+        (true, _) => Rev::Index,
+        (false, Rev::Commit(head)) => Rev::Commit(
             repo.merge_base(load::resolve(&repo, base)?, head)
                 .map_err(|e| concats_diff::Error::git("merge_base", e))?
                 .detach(),
         ),
+        (false, _) => Rev::Commit(load::resolve(&repo, base)?),
     };
 
     // NOTE: every blob of the old side, not the one at a comment's path: a file
     // renamed in the range has its old blob under its old path.
     let old_blobs: HashSet<ObjectId> = match old {
-        Some(commit) => load::flatten_tree(&repo, load::commit_tree(&repo, commit)?)?
+        Rev::Commit(commit) => load::flatten_tree(&repo, load::commit_tree(&repo, commit)?)?
             .into_values()
             .collect(),
-        None => repo
+        _ => repo
             .index_or_empty()
             .map_err(|e| concats_diff::Error::git("index", e))?
             .entries()
@@ -167,17 +168,8 @@ pub fn on_old_side(
     let mut changed = HashMap::new();
     for c in &was_old {
         if !changed.contains_key(c.path.as_str()) {
-            let now = match load::read_at_head(&repo, head, &c.path) {
-                Ok((oid, _)) => Some(oid),
-                // NOTE: not at the head — the range deleted the file.
-                Err(concats_diff::Error::NotInTree { .. }) => None,
-                Err(concats_diff::Error::Io { source, .. })
-                    if source.kind() == std::io::ErrorKind::NotFound =>
-                {
-                    None
-                }
-                Err(error) => return Err(error),
-            };
+            // NOTE: None when the range deleted the file.
+            let now = load::read_at(&repo, head, &c.path)?.map(|(oid, _)| oid);
             changed.insert(c.path.as_str(), now != Some(c.anchor.blob));
         }
     }
@@ -256,7 +248,7 @@ pub fn reply(
 pub fn added(c: &Comment, anchored: Option<&Loaded>) -> String {
     let old = anchored
         .filter(|loaded| sides(loaded).get(&c.anchor.blob) == Some(&Side::Old))
-        .map(|loaded| old_rev(loaded.merge_base));
+        .map(|loaded| old_rev(loaded.base));
     let place = anchor_spec(c, old.as_deref());
     match (c.parent, anchored) {
         (None, _) => format!("added comment #{} on {place}", c.id),
@@ -410,16 +402,14 @@ pub fn entries(loaded: &Loaded, comments: &[Comment], scope: Scope) -> (Vec<Entr
 /// anchors were resolved against.
 pub fn meta(loaded: &Loaded) -> Meta {
     // NOTE: a directory without Git has no range to name.
-    let endpoint = |oid: Option<ObjectId>, sentinel: &str| {
-        (!loaded.without_git).then(|| oid.map_or_else(|| sentinel.to_string(), |o| o.to_string()))
-    };
+    let endpoint = |rev: Rev| (!loaded.without_git).then(|| rev.to_string());
     Meta {
         repo: loaded
             .root
             .file_name()
             .map(|n| n.to_string_lossy().into_owned()),
-        base: endpoint(loaded.merge_base, INDEX_REV),
-        head: endpoint(loaded.head, WORKTREE_REV),
+        base: endpoint(loaded.base),
+        head: endpoint(loaded.head),
     }
 }
 
@@ -643,8 +633,8 @@ mod tests {
         std::fs::write(repo.join("init.txt"), "a\nb\n").unwrap();
         let loaded = load::load(repo, "HEAD", WORKTREE_REV).unwrap();
         let mut store = Store::open(&loaded.git_dir);
-        let rev = old_rev(loaded.merge_base);
-        assert_eq!(rev, loaded.merge_base.unwrap().to_string()[..7]);
+        let rev = old_rev(loaded.base);
+        assert_eq!(rev, loaded.base.to_string()[..7]);
 
         let deleted = format!("init.txt@{rev}:1");
         for (spec, side, shown) in [
@@ -710,7 +700,7 @@ mod tests {
         let check = |base: &str, head: &str, specs: &[&str]| {
             let loaded = load::load(repo, base, head).unwrap();
             let mut store = Store::open(&loaded.git_dir);
-            let rev = old_rev(loaded.merge_base);
+            let rev = old_rev(loaded.base);
             for spec in specs {
                 add(&mut store, &loaded, &spec.replace("{rev}", &rev), "c", None).unwrap();
             }
@@ -750,7 +740,7 @@ mod tests {
         init_repo_with_commit(repo);
         std::fs::write(repo.join("init.txt"), "a\n").unwrap();
         let loaded = load::load(repo, "HEAD", WORKTREE_REV).unwrap();
-        let rev = old_rev(loaded.merge_base);
+        let rev = old_rev(loaded.base);
         let other = if rev.starts_with('0') { "1111" } else { "0000" };
 
         for named in [other, INDEX_REV] {

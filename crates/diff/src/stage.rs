@@ -11,12 +11,11 @@ use std::{
     path::Path,
 };
 
-use concats_sync::hash_object;
 use gix::{ObjectId, Repository, bstr::BStr};
 
 use crate::{
     Error,
-    load::{open_repo, read, read_worktree, worktree_file, worktree_status},
+    load::{Rev, open_repo, read, read_at, read_worktree, worktree_file, worktree_status},
 };
 
 /// One file of a WORKTREE load, as `stage_seen` needs it: the exact endpoint
@@ -104,20 +103,13 @@ pub fn stage_seen(
                 unstage_file(&mut index, entry_path);
             }
             Some(new_oid) => {
-                let disk = match read_worktree(workdir, &f.path) {
-                    Ok(bytes) => Some(bytes),
-                    Err(Error::Io { source, .. })
-                        if source.kind() == std::io::ErrorKind::NotFound =>
-                    {
-                        None
-                    }
-                    Err(error) => return Err(error),
-                };
-                if disk.as_deref().map(hash_object) != Some(new_oid) {
+                let Some((_, disk)) =
+                    read_at(&repo, Rev::Worktree, &f.path)?.filter(|(oid, _)| *oid == new_oid)
+                else {
                     rep.skipped
                         .push(format!("{} — changed on disk since load", f.path));
                     continue;
-                }
+                };
                 if f.old.is_some() && entry_oid != f.old {
                     rep.skipped
                         .push(format!("{} — index changed since load", f.path));
@@ -139,8 +131,7 @@ pub fn stage_seen(
                         continue;
                     };
                     let old_bytes = read(&repo, None, Some(old_oid))?;
-                    let blended =
-                        blend(&old_bytes, disk.as_deref().unwrap_or(&[]), &f.hunks, &take);
+                    let blended = blend(&old_bytes, &disk, &f.hunks, &take);
                     let oid = repo
                         .write_blob(&blended)
                         .map_err(|e| Error::git("write blob", e))?
@@ -423,7 +414,7 @@ mod tests {
         let repo = gix::open(&root).unwrap();
         let index = repo.open_index().unwrap();
         let e = index.entry_by_path(BStr::new("a.txt")).unwrap();
-        assert_eq!(e.id, hash_object(b"one\n"));
+        assert_eq!(e.id, concats_sync::hash_object(b"one\n"));
     }
 
     /// Only a missing index is an empty one. Writing an empty index back over

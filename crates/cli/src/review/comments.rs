@@ -218,7 +218,7 @@ fn export(prompt: bool, all: bool, out: Option<&str>, range: &RangeArgs) -> Outc
     }
 
     let text = if prompt {
-        interchange::render_prompt(&comments::old_rev(loaded.merge_base), &entries)
+        interchange::render_prompt(&comments::old_rev(loaded.base), &entries)
     } else {
         interchange::render(&comments::meta(&loaded), &entries)
     };
