@@ -1005,6 +1005,7 @@ fn fills(c: char, size: Vec2d, dpi: f64) -> Option<Vec<(Rect, f32)>> {
         '\u{2550}'..='\u{256c}' => line_fills(DOUBLES[c as usize - 0x2550], px)?,
         '\u{2574}'..='\u{257f}' => line_fills(HALVES[c as usize - 0x2574], px)?,
         '\u{256d}'..='\u{2570}' => arc_fills(c, px),
+        '\u{2571}'..='\u{2573}' => diagonal_fills(c, px),
         '\u{e0b0}'..='\u{e0b3}' => powerline_fills(c, px),
         _ => return None,
     };
@@ -1219,6 +1220,27 @@ fn arc_fills(c: char, px: Vec2d) -> Vec<(Rect, f32)> {
                 far.max(near).round(),
                 y + 1.0,
             ))
+        })
+        .collect()
+}
+
+/// The diagonals (U+2571 to U+2573) in a cell of `px` device pixels: a light
+/// stroke from corner to corner, one device pixel row at a time, so cells
+/// down a slope join at their corners.
+fn diagonal_fills(c: char, px: Vec2d) -> Vec<(Rect, f32)> {
+    let (w, h) = (px.x, px.y);
+    let light = (w / 8.0).round().max(1.0);
+    // A slanted stroke cuts each row wider than it is thick.
+    let half = light / 2.0 * w.hypot(h) / h;
+    (0..h as u16)
+        .map(f64::from)
+        .flat_map(|y| {
+            // Where ╱ crosses this row; ╲ is its mirror image.
+            let x0 = (w * (1.0 - (y + 1.0) / h) - half).max(0.0).round();
+            let x1 = (w * (1.0 - y / h) + half).min(w).round();
+            let rising = (c != '\u{2572}').then(|| fill(x0, y, x1, y + 1.0));
+            let falling = (c != '\u{2571}').then(|| fill(w - x1, y, w - x0, y + 1.0));
+            rising.into_iter().chain(falling)
         })
         .collect()
 }
@@ -1984,6 +2006,17 @@ mod tests {
         assert!(corner.iter().all(|f| f.1 >= 16.0), "nothing above the line");
         let other = device_fills('╯');
         assert_eq!(other.first(), Some(&(7.0, 0.0, 9.0, 1.0, 1.0)));
+    }
+
+    #[test]
+    fn a_diagonal_runs_corner_to_corner() {
+        let rising = device_fills('╱');
+        assert_eq!(rising.len(), 34, "one row per device pixel");
+        assert_eq!(rising[0], (14.0, 0.0, 16.0, 1.0, 1.0));
+        assert_eq!(rising[33], (0.0, 33.0, 2.0, 34.0, 1.0));
+        let falling = device_fills('╲');
+        assert_eq!((falling[0].0, falling[33].2), (0.0, 16.0));
+        assert_eq!(device_fills('╳').len(), 68, "both strokes on every row");
     }
 
     #[test]
