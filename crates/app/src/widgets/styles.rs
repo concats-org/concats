@@ -115,50 +115,6 @@ script_mod! {
         spacing: 4
     }
 
-    // Find, inline in a tab bar: the query, previous and next, the tally, a
-    // replacement where the view can replace, and close.
-    mod.widgets.FindRow = View {
-        width: Fit height: Fit
-        flow: Right
-        align: Align{y: 0.5}
-        spacing: 4
-        find_input := mod.widgets.DarkInput {
-            width: 220
-            is_multiline: false
-            submit_on_enter: true
-            empty_text: "Find"
-        }
-        find_prev := mod.widgets.BarButton {
-            icon_walk: Walk{width: 6 height: Fit}
-            draw_icon.svg: crate_resource("self:resources/icons/chevron_left.svg")
-        }
-        find_next := mod.widgets.BarButton {
-            icon_walk: Walk{width: 6 height: Fit}
-            draw_icon.svg: crate_resource("self:resources/icons/chevron_right.svg")
-        }
-        find_count := Label {
-            width: Fit height: Fit
-            margin: Inset{left: 2 right: 6}
-            draw_text.color: mod.app_theme.color_faint
-            draw_text.text_style: mod.widgets.FONT{font_size: 8.25}
-        }
-        // A text input ignores `visible`, so the box around it is what hides.
-        replace_box := View {
-            visible: false
-            width: Fit height: Fit
-            replace_input := mod.widgets.DarkInput {
-                width: 180
-                is_multiline: false
-                submit_on_enter: true
-                empty_text: "Replace"
-            }
-        }
-        find_close := mod.widgets.BarButton {
-            icon_walk: Walk{width: 9 height: Fit}
-            draw_icon.svg: crate_resource("self:resources/icons/x.svg")
-        }
-    }
-
     // The per-file "viewed" tick box, shared by the card header and its
     // pinned (sticky) copy.
     mod.widgets.SeenBox = CheckBox {

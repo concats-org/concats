@@ -13,7 +13,8 @@ use concats_diff::{Blob, LineKind, Row};
 use concats_review::store::{self, LineKey, Seen};
 
 use super::{
-    DiffLine, Gutter, collapsed_run::CollapsedRun, drop_shadow::DropShadow, gutter::RowMarks,
+    DiffLine, Gutter, collapsed_run::CollapsedRun, drop_shadow::DropShadow, find_row,
+    gutter::RowMarks,
 };
 #[allow(
     clippy::wildcard_imports,
@@ -1454,6 +1455,9 @@ impl ReviewList {
             self.view.view(cx, bar).set_visible(cx, cards || finding);
         }
         self.view.view(cx, ids!(find_row)).set_visible(cx, finding);
+        if let Some(find) = &self.find {
+            find_row::show(&self.view, cx, find.options(), find.invalid());
+        }
         let on = pass.doc.collapse_seen;
         self.view
             .button(cx, ids!(collapse_seen))

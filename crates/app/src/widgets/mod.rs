@@ -8,6 +8,7 @@ pub mod collapsed_run;
 pub mod diff_line;
 pub mod drop_shadow;
 pub mod file_browser;
+pub mod find_row;
 pub mod gutter;
 pub mod header_rule;
 pub mod review_list;
@@ -32,6 +33,7 @@ use crate::makepad_widgets::ScriptVm;
 /// before the app window layout that embeds `ReviewPane`.
 pub fn script_mod(vm: &mut ScriptVm) {
     styles::script_mod(vm);
+    find_row::script_mod(vm);
     crate::terminal_view::script_mod(vm);
     card_cap::script_mod(vm);
     drop_shadow::script_mod(vm);

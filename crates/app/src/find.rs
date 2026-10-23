@@ -70,6 +70,12 @@ impl Find {
         self.options
     }
 
+    /// Whether the query cannot be searched for: regex is on and it does not
+    /// parse.
+    pub(crate) fn invalid(&self) -> bool {
+        matches!(self.regex, Some(Err(_)))
+    }
+
     /// Every match in `text`, as byte ranges in order. An empty match is not a
     /// find result, so `a*` does not hit between every pair of characters.
     pub(crate) fn hits(&self, text: &str) -> Vec<(usize, usize)> {
@@ -128,7 +134,7 @@ mod tests {
     }
 
     #[test]
-    fn regex_matches_a_pattern() {
+    fn regex_matches_a_pattern_and_reports_one_that_does_not_parse() {
         let regex = Options {
             regex: true,
             ..Options::default()
@@ -139,11 +145,14 @@ mod tests {
         );
         assert_eq!(hits(r"find\w*", Options::default()), []);
         assert_eq!(hits("x*", regex), [], "empty matches are not hits");
+        let broken = Find::new("(".to_owned(), regex);
+        assert!(broken.invalid());
         assert_eq!(
-            hits("(", regex),
+            broken.hits(TEXT),
             [],
             "a regex that does not parse finds nothing"
         );
+        assert!(!Find::new("(".to_owned(), Options::default()).invalid());
     }
 
     #[test]

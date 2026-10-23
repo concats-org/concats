@@ -25,6 +25,7 @@ use crate::{
         file_tree::{FileTree, GitStatusDotKind},
         *,
     },
+    widgets::find_row,
 };
 
 script_mod! {
@@ -46,7 +47,7 @@ script_mod! {
             visible: false
             find_row := mod.widgets.FindRow {
                 width: Fill
-                find_input +: { width: Fill empty_text: "Find files" }
+                find_field +: { width: Fill find_input +: { empty_text: "Find files" } }
                 find_prev +: { visible: false }
                 find_next +: { visible: false }
             }
@@ -358,6 +359,9 @@ impl Widget for FileBrowser {
         self.view
             .view(cx, ids!(find_bar))
             .set_visible(cx, self.find.is_some());
+        if let Some(find) = &self.find {
+            find_row::show(&self.view, cx, find.options(), find.invalid());
+        }
         while let Some(step) = self.view.draw_walk(cx, scope, walk).step() {
             if let Some(mut tree) = step.as_file_tree().borrow_mut() {
                 // A fresh tree starts every folder shut, which for the repo row
@@ -418,9 +422,12 @@ impl Widget for FileBrowser {
 
 impl WidgetMatchEvent for FileBrowser {
     fn handle_actions(&mut self, cx: &mut Cx, actions: &Actions, _scope: &mut Scope) {
-        if let Some(query) = self.view.text_input(cx, ids!(find_input)).changed(actions) {
-            let options = self.find.as_ref().map(Find::options).unwrap_or_default();
-            self.find = Some(Find::new(query, options));
+        if let Some(find) = self
+            .find
+            .as_ref()
+            .and_then(|find| find_row::changed(&self.view, cx, actions, find))
+        {
+            self.find = Some(find);
             self.built = 0;
             self.redraw(cx);
         }

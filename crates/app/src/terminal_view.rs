@@ -41,9 +41,10 @@ use alacritty_terminal::{
     reason = "Makepad macros and derives expand against the widget prelude in this scope."
 )]
 use crate::{
-    find::{self, Options},
+    find::{self, Find},
     makepad_widgets::{text::geom::Point as TextPoint, *},
     terminal::{Proxy, Session, SharedTerm, Size, blink::Blink, colors, keys, mouse},
+    widgets::find_row,
     window::WindowState,
 };
 
@@ -131,7 +132,7 @@ script_mod! {
         }
         find_bar: mod.widgets.TabBar {
             find_row := mod.widgets.FindRow {
-                find_input +: { empty_text: "Find in terminal" }
+                find_field +: { find_input +: { empty_text: "Find in terminal" } }
             }
         }
         link_tooltip: mod.widgets.Tooltip {
@@ -247,7 +248,7 @@ pub struct TerminalView {
     #[find]
     find_bar: View,
     #[rust]
-    find: Option<String>,
+    find: Option<Find>,
     #[rust]
     focus_find: bool,
     #[rust]
@@ -943,7 +944,8 @@ impl Widget for TerminalView {
         }
         // NOTE: over the top rows rather than above them: giving the bar its
         // own room would resize the PTY each time find opens or closes.
-        if self.find.is_some() {
+        if let Some(find) = &self.find {
+            find_row::show(&self.find_bar, cx, find.options(), find.invalid());
             self.find_bar.draw_walk(
                 cx,
                 scope,
@@ -955,7 +957,7 @@ impl Widget for TerminalView {
             )?;
             if std::mem::take(&mut self.focus_find) {
                 let input = self.find_bar.text_input(cx, ids!(find_input));
-                input.set_text(cx, self.find.as_deref().unwrap_or_default());
+                input.set_text(cx, self.find.as_ref().map(Find::query).unwrap_or_default());
                 input.set_key_focus(cx);
             }
         }
@@ -1006,29 +1008,33 @@ impl Widget for TerminalView {
         if self.find.is_some() {
             self.find_bar.handle_event(cx, event, scope);
             if let Event::Actions(actions) = event {
-                if let Some(query) = input.changed(actions) {
+                if let Some(find) = self
+                    .find
+                    .as_ref()
+                    .and_then(|find| find_row::changed(&self.find_bar, cx, actions, find))
+                {
+                    let regex = find::pattern(find.query(), find.options(), find::ASCII_WORD)
+                        .map_err(|error| error.to_string())
+                        .and_then(|pattern| {
+                            RegexSearch::new(&pattern).map_err(|error| error.to_string())
+                        });
                     self.find_match = None;
                     self.find_regex = None;
-                    if query.is_empty() {
-                        self.find_bar.label(cx, ids!(find_count)).set_text(cx, "");
-                    } else {
-                        let regex = find::pattern(&query, Options::default(), find::ASCII_WORD)
-                            .map_err(|error| error.to_string())
-                            .and_then(|pattern| {
-                                RegexSearch::new(&pattern).map_err(|error| error.to_string())
-                            });
-                        match regex {
-                            Ok(regex) => {
-                                self.find_regex = Some(regex);
-                                self.seek_match(cx, Direction::Right);
-                            }
-                            Err(error) => self
-                                .find_bar
-                                .label(cx, ids!(find_count))
-                                .set_text(cx, &format!("Cannot search: {error}")),
+                    match regex {
+                        // NOTE: the bar itself says when a regex does not parse.
+                        _ if find.query().is_empty() || find.invalid() => {
+                            self.find_bar.label(cx, ids!(find_count)).set_text(cx, "");
                         }
+                        Ok(regex) => {
+                            self.find_regex = Some(regex);
+                            self.seek_match(cx, Direction::Right);
+                        }
+                        Err(error) => self
+                            .find_bar
+                            .label(cx, ids!(find_count))
+                            .set_text(cx, &format!("Cannot search: {error}")),
                     }
-                    self.find = Some(query);
+                    self.find = Some(find);
                     self.redraw(cx);
                 }
                 let back = self.find_bar.button(cx, ids!(find_prev)).clicked(actions);
@@ -1329,6 +1335,7 @@ mod tests {
     use alacritty_terminal::{term::Config, vte::ansi::Processor};
 
     use super::*;
+    use crate::find::Options;
 
     #[test]
     fn terminal_search_visits_scrollback_and_wraps_in_both_directions() {

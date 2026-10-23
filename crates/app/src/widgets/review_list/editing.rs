@@ -12,28 +12,27 @@ use super::ReviewList;
 use crate::{
     editor,
     file_view::{relower_edited, save_plan},
-    find::Find,
     makepad_widgets::*,
     service::{ReviewCmd, review},
+    widgets::find_row,
 };
 
 impl ReviewList {
     /// Find in the tab bar: the query as it is typed, Enter or the arrows to
     /// walk the matches, Enter in the second field to replace, × to close.
     pub(super) fn handle_find(&mut self, cx: &mut Cx, actions: &Actions) {
-        if self.find.is_none() {
+        let Some(current) = &self.find else {
             return;
-        }
-        let find = self.view.text_input(cx, ids!(find_input));
-        // Every keystroke: the hits are recomputed per row per draw, so simply
-        // redrawing is what makes them follow what you have typed so far.
-        if let Some(query) = find.changed(actions) {
-            let options = self.find.as_ref().map(Find::options).unwrap_or_default();
-            self.find = Some(Find::new(query, options));
+        };
+        // Every keystroke or flip: the hits are recomputed per row per draw, so
+        // simply redrawing is what makes them follow the query so far.
+        if let Some(changed) = find_row::changed(&self.view, cx, actions, current) {
+            self.find = Some(changed);
             self.find_at = None;
             self.count_hits(cx);
             self.redraw(cx);
         }
+        let find = self.view.text_input(cx, ids!(find_input));
         let back = self.view.button(cx, ids!(find_prev)).clicked(actions);
         let walked = find.returned(actions).map(|(_, modifiers)| modifiers.shift);
         let next = self.view.button(cx, ids!(find_next)).clicked(actions);
