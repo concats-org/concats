@@ -963,8 +963,8 @@ impl TerminalView {
 // the same reason. A new range is a new arm of `fills`.
 
 /// How a box line's arms reach out of a cell, as up, right, down and left: 0
-/// none, 1 light, 2 heavy, 3 double. Empty for one the font draws: the dashed
-/// lines.
+/// none, 1 light, 2 heavy, 3 double. Empty for a dashed line, which
+/// [`dash_fills`] draws.
 #[rustfmt::skip]
 const LINES: [&str; 76] = [
     "0101", "0202", "1010", "2020", "", "", "", "", "", "", "", "",
@@ -1000,6 +1000,7 @@ fn fills(c: char, size: Vec2d, dpi: f64) -> Option<Vec<(Rect, f32)>> {
     let device = match c {
         '\u{2800}'..='\u{28ff}' => return Some(braille_fills(c, size)),
         '\u{2580}'..='\u{259f}' => block_fills(c, px),
+        '\u{2504}'..='\u{250b}' | '\u{254c}'..='\u{254f}' => dash_fills(c, px),
         '\u{2500}'..='\u{254b}' => line_fills(LINES[c as usize - 0x2500], px)?,
         '\u{2550}'..='\u{256c}' => line_fills(DOUBLES[c as usize - 0x2550], px)?,
         '\u{2574}'..='\u{257f}' => line_fills(HALVES[c as usize - 0x2574], px)?,
@@ -1063,7 +1064,7 @@ fn block_fills(c: char, px: Vec2d) -> Vec<(Rect, f32)> {
 /// the other direction's stroke, so a corner or a tee closes without a notch.
 /// A light stroke is an eighth of the cell's width, a heavy one twice that,
 /// and a double line two light strokes a light stroke apart. `None` for an
-/// entry the font draws.
+/// empty entry.
 #[expect(
     clippy::cognitive_complexity,
     reason = "The four arms, single or double, are joined in one place, where each can see the others."
@@ -1139,6 +1140,43 @@ fn line_fills(arms: &str, px: Vec2d) -> Option<Vec<(Rect, f32)>> {
         }
     }
     Some(fills)
+}
+
+/// The dashed lines (U+2504 to U+250B, U+254C to U+254F) in a cell of `px`
+/// device pixels: a light or heavy line in three, four or two dashes, set in
+/// half a gap from each edge so a run of cells dashes evenly. Gaps take at
+/// most half the line, and a leftover pixel lengthens a dash rather than a
+/// gap, as in Ghostty.
+fn dash_fills(c: char, px: Vec2d) -> Vec<(Rect, f32)> {
+    // Each group runs light across, heavy across, light down, heavy down.
+    let (count, n) = match c {
+        '\u{2504}'..='\u{2507}' => (3, c as u32 - 0x2504),
+        '\u{2508}'..='\u{250b}' => (4, c as u32 - 0x2508),
+        _ => (2, c as u32 - 0x254c),
+    };
+    let down = n >= 2;
+    let (along, across) = if down { (px.y, px.x) } else { (px.x, px.y) };
+    let light = (px.x / 8.0).round().max(1.0);
+    let t = light * f64::from(n % 2 + 1);
+    let at = ((across - t) / 2.0).floor();
+    let dashes = f64::from(count);
+    let gap = light.max(4.0).min((along / (2.0 * dashes)).floor());
+    let (dash, extra) = (
+        ((along - gap * dashes) / dashes).floor(),
+        (along - gap * dashes) % dashes,
+    );
+    (0..count)
+        .map(f64::from)
+        .map(|i| {
+            let from = (gap / 2.0).floor() + i * (dash + gap) + i.min(extra);
+            let to = from + dash + if i < extra { 1.0 } else { 0.0 };
+            if down {
+                fill(at, from, at + t, to)
+            } else {
+                fill(from, at, to, at + t)
+            }
+        })
+        .collect()
 }
 
 /// The rounded corners (U+256D to U+2570) in a cell of `px` device pixels: a
@@ -1886,9 +1924,34 @@ mod tests {
         let corner = device_fills('┍');
         let (down, right) = (corner[0], corner[1]);
         assert!(down.1 <= right.1 && right.0 <= down.0, "{corner:?}");
-        // Dashed lines stay with the font.
-        assert!(fills('┄', SIZE, 2.0).is_none());
         assert!(fills('a', SIZE, 2.0).is_none());
+    }
+
+    #[test]
+    fn dashes_keep_an_even_rhythm_across_cells() {
+        // ┄ on ─'s row: dashes of 4, 3 and 3 with gaps of 2, half a gap at
+        // each edge, so the gap between two cells is a whole one.
+        assert_eq!(
+            device_fills('┄'),
+            [
+                (1.0, 16.0, 5.0, 18.0, 1.0),
+                (7.0, 16.0, 10.0, 18.0, 1.0),
+                (12.0, 16.0, 15.0, 18.0, 1.0),
+            ]
+        );
+        // ┆ in │'s column, its gaps 4 tall, top and bottom edge together too.
+        let down = device_fills('┆');
+        assert_eq!(
+            down.iter().map(|d| (d.1, d.3)).collect::<Vec<_>>(),
+            [(2.0, 10.0), (14.0, 21.0), (25.0, 32.0)]
+        );
+        assert!(down.iter().all(|d| (d.0, d.2) == (7.0, 9.0)));
+        assert_eq!(device_fills('┉').len(), 4);
+        assert_eq!(
+            (device_fills('┉')[0].1, device_fills('┉')[0].3),
+            (15.0, 19.0)
+        );
+        assert_eq!(device_fills('╎').len(), 2);
     }
 
     #[test]
