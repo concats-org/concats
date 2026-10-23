@@ -639,8 +639,23 @@ impl TerminalView {
                     colors::foreground(color, flags, content.colors, &theme)
                 });
                 self.draw_cell_bg.color = rule;
-                if flags.intersects(Flags::ALL_UNDERLINES) {
-                    self.draw_rule(cx, x, y + cell_height - RULE_HEIGHT * 2.0, width);
+                // A wide character underlines both of its cells.
+                let columns = if flags.contains(Flags::WIDE_CHAR) {
+                    2
+                } else {
+                    1
+                };
+                for column in 0..columns {
+                    let left = x + f64::from(column) * cell_width;
+                    for rect in underline_fills(flags, dvec2(cell_width, cell_height), self.dpi) {
+                        self.draw_cell_bg.draw_abs(
+                            cx,
+                            Rect {
+                                pos: rect.pos + dvec2(left, y),
+                                size: rect.size,
+                            },
+                        );
+                    }
                 }
                 if flags.contains(Flags::STRIKEOUT) {
                     self.draw_rule(cx, x, y + cell_height * 0.5, width);
@@ -996,6 +1011,45 @@ fn line_fills(arms: &str, px: Vec2d) -> Option<Vec<(Rect, f32)>> {
         }
     }
     Some(fills)
+}
+
+/// The underline `flags` ask for (SGR 4:1 to 4:5) under one cell of `size` at
+/// `dpi`, on whole device pixels: straight, double, curly, dotted or dashed,
+/// each a pattern that repeats from cell to cell. Nothing without one.
+fn underline_fills(flags: Flags, size: Vec2d, dpi: f64) -> Vec<Rect> {
+    let (w, h) = ((size.x * dpi).round(), (size.y * dpi).round());
+    let t = (RULE_HEIGHT * dpi).round().max(1.0);
+    let top = h - 2.0 * t;
+    let rule = |x0: f64, y0: f64, x1: f64| Rect {
+        pos: dvec2(x0, y0) / dpi,
+        size: dvec2(x1 - x0, t) / dpi,
+    };
+    let columns = (0_u16..).map(f64::from).take_while(|x| *x < w);
+    if flags.contains(Flags::DOUBLE_UNDERLINE) {
+        vec![rule(0.0, top, w), rule(0.0, top - 2.0 * t, w)]
+    } else if flags.contains(Flags::UNDERCURL) {
+        // One period of a wave per cell, a device pixel column at a time.
+        columns
+            .map(|x| {
+                rule(
+                    x,
+                    top + (t * (x / w * std::f64::consts::TAU).sin()).round(),
+                    x + 1.0,
+                )
+            })
+            .collect()
+    } else if flags.contains(Flags::DOTTED_UNDERLINE) {
+        columns
+            .filter(|x| x % (2.0 * t) == 0.0)
+            .map(|x| rule(x, top, (x + t).min(w)))
+            .collect()
+    } else if flags.contains(Flags::DASHED_UNDERLINE) {
+        vec![rule(0.0, top, (w / 2.0).round())]
+    } else if flags.contains(Flags::UNDERLINE) {
+        vec![rule(0.0, top, w)]
+    } else {
+        Vec::new()
+    }
 }
 
 /// A solid rectangle between two corners.
@@ -1640,6 +1694,35 @@ mod tests {
         // Dashed lines stay with the font.
         assert!(fills('┄', SIZE, 2.0).is_none());
         assert!(fills('a', SIZE, 2.0).is_none());
+    }
+
+    #[test]
+    fn each_underline_style_has_its_own_rule() {
+        let rules = |flags| {
+            underline_fills(flags, SIZE, 2.0)
+                .into_iter()
+                .map(|r| {
+                    let (p, s) = (r.pos * 2.0, r.size * 2.0);
+                    (p.x, p.y, p.x + s.x, p.y + s.y)
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(rules(Flags::UNDERLINE), [(0.0, 30.0, 16.0, 32.0)]);
+        assert_eq!(
+            rules(Flags::DOUBLE_UNDERLINE),
+            [(0.0, 30.0, 16.0, 32.0), (0.0, 26.0, 16.0, 28.0)]
+        );
+        assert_eq!(rules(Flags::DASHED_UNDERLINE), [(0.0, 30.0, 8.0, 32.0)]);
+        let dots = rules(Flags::DOTTED_UNDERLINE);
+        assert_eq!(
+            dots.iter().map(|d| d.0).collect::<Vec<_>>(),
+            [0.0, 4.0, 8.0, 12.0]
+        );
+        let curl = rules(Flags::UNDERCURL);
+        assert_eq!(curl.len(), 16, "one column per device pixel");
+        assert!(curl.iter().all(|c| c.1 >= 28.0 && c.3 <= 34.0), "{curl:?}");
+        assert!(curl.iter().any(|c| c.1 < 30.0) && curl.iter().any(|c| c.1 > 30.0));
+        assert_eq!(rules(Flags::empty()), []);
     }
 
     #[test]
