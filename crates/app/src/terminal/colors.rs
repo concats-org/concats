@@ -22,7 +22,8 @@ use crate::theme::{Theme, paint};
 /// What a dim cell keeps of its colour.
 const DIM: f32 = 0.66;
 
-/// A cell's foreground, with bold and dim folded into the colour.
+/// A cell's foreground, with dim folded into the colour. Bold keeps its
+/// colour, as in Ghostty and Alacritty: the bold face is what sets it apart.
 // NOTE: every cell colour resolves through it; the tests pin each rule.
 // coland-ignore: @coland/high_call_degree
 pub fn foreground(color: Color, flags: Flags, colors: &Colors, theme: &Theme) -> Vec4f {
@@ -42,14 +43,14 @@ pub fn background(color: Color, colors: &Colors, theme: &Theme) -> Option<Vec4f>
         .then(|| foreground(color, Flags::empty(), colors, theme))
 }
 
-/// The palette slot for a named colour once bold and dim have had their say.
-// NOTE: the bold/dim rule for named colours, apart from the slot lookup.
+/// The palette slot for a named colour once dim has had its say.
+// NOTE: the dim rule for named colours, apart from the slot lookup.
 // coland-ignore: @coland/single_caller_private_function
 fn shade(named: NamedColor, flags: Flags) -> NamedColor {
-    match flags & (Flags::BOLD | Flags::DIM) {
-        Flags::BOLD => named.to_bright(),
-        Flags::DIM => named.to_dim(),
-        _ => named,
+    if flags.contains(Flags::DIM) {
+        named.to_dim()
+    } else {
+        named
     }
 }
 
@@ -58,10 +59,9 @@ fn shade(named: NamedColor, flags: Flags) -> NamedColor {
 // coland-ignore: @coland/single_caller_private_function
 fn shade_indexed(idx: u8, flags: Flags) -> usize {
     let idx = idx as usize;
-    match (flags & (Flags::BOLD | Flags::DIM), idx) {
-        (Flags::BOLD, 0..=7) => idx + 8,
-        (Flags::DIM, 8..=15) => idx - 8,
-        (Flags::DIM, 0..=7) => NamedColor::DimBlack as usize + idx,
+    match (flags.contains(Flags::DIM), idx) {
+        (true, 8..=15) => idx - 8,
+        (true, 0..=7) => NamedColor::DimBlack as usize + idx,
         _ => idx,
     }
 }
@@ -129,13 +129,13 @@ mod tests {
     }
 
     #[test]
-    fn bold_reaches_for_the_bright_half_of_the_palette() {
+    fn bold_keeps_its_colour() {
         let theme = theme();
         let colors = Colors::default();
         let bold = foreground(Color::Named(NamedColor::Red), Flags::BOLD, &colors, &theme);
-        assert_eq!(bold, paint(theme.ansi[9]));
+        assert_eq!(bold, paint(theme.ansi[1]));
         let bold_indexed = foreground(Color::Indexed(1), Flags::BOLD, &colors, &theme);
-        assert_eq!(bold_indexed, paint(theme.ansi[9]));
+        assert_eq!(bold_indexed, paint(theme.ansi[1]));
     }
 
     #[test]
