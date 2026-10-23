@@ -91,7 +91,7 @@ script_mod! {
     // `mod.app_font`, at the terminal's own size (`terminal_font_size`), so
     // the cell grid stays put when the app font size changes. (This module's
     // script scope can't see the `FONT` `let` in `main.rs`.) Braille is drawn,
-    // not shaped — `draw_braille`.
+    // not shaped — `fills`.
     //
     // No emoji member, unlike `FONT`: the symbols an agent draws its status
     // with (⏺ ✳ ✔ ⏸) are in Noto Color Emoji, which paints them in its own
@@ -207,32 +207,6 @@ fn scroll_pos_for(offset: usize, max_scroll: f64, cell_height: f64) -> f64 {
 /// How far back the display is for a bar sitting at `scroll_y`.
 fn display_offset_for(scroll_y: f64, max_scroll: f64, cell_height: f64) -> usize {
     ((max_scroll - scroll_y) / cell_height).round().max(0.0) as usize
-}
-
-/// The Braille block, which an agent's spinner is made of.
-fn is_braille(c: char) -> bool {
-    ('\u{2800}'..='\u{28ff}').contains(&c)
-}
-
-/// The lit dots of a Braille cell as (row, column) in a two by four grid.
-///
-/// The low eight bits of the codepoint are the pattern: dots one to three run
-/// down the left column, four to six down the right, and seven and eight add
-/// the fourth row — the order the standard assigns, not raster order.
-fn braille_dots(c: char) -> impl Iterator<Item = (usize, usize)> {
-    const DOTS: [(u32, usize, usize); 8] = [
-        (0x01, 0, 0),
-        (0x02, 1, 0),
-        (0x04, 2, 0),
-        (0x40, 3, 0),
-        (0x08, 0, 1),
-        (0x10, 1, 1),
-        (0x20, 2, 1),
-        (0x80, 3, 1),
-    ];
-    let pattern = c as u32 - 0x2800;
-    DOTS.into_iter()
-        .filter_map(move |(bit, row, column)| (pattern & bit != 0).then_some((row, column)))
 }
 
 #[derive(Script, Widget)]
@@ -611,9 +585,23 @@ impl TerminalView {
             // A tab lands in the grid as U+0009 (`Term::put_tab` writes the
             // character it advanced over), and no control character has a
             // glyph: those cells are spacing, and shaping them draws .notdef.
-            if is_braille(indexed.cell.c) && !flags.contains(Flags::HIDDEN) {
-                self.draw_cell_bg.color = fg;
-                self.draw_braille(cx, indexed.cell.c, x, y);
+            let drawn = (!flags.contains(Flags::HIDDEN))
+                .then(|| fills(indexed.cell.c, dvec2(cell_width, cell_height), self.dpi))
+                .flatten();
+            if let Some(fills) = drawn {
+                for (rect, ink) in fills {
+                    self.draw_cell_bg.color = Vec4f {
+                        w: fg.w * ink,
+                        ..fg
+                    };
+                    self.draw_cell_bg.draw_abs(
+                        cx,
+                        Rect {
+                            pos: rect.pos + dvec2(x, y),
+                            size: rect.size,
+                        },
+                    );
+                }
             } else if (indexed.cell.c != ' ' || indexed.cell.zerowidth().is_some())
                 && !indexed.cell.c.is_control()
                 && !flags.contains(Flags::HIDDEN)
@@ -670,28 +658,6 @@ impl TerminalView {
                 size: dvec2(width, RULE_HEIGHT),
             },
         );
-    }
-
-    /// Braille is drawn rather than shaped. No font we bundle carries the
-    /// block, the one on this platform that does is a proportional symbol face
-    /// whose dots do not line up between adjacent cells — and the pattern is
-    /// already in the codepoint. Alacritty draws its own for the same reasons.
-    fn draw_braille(&mut self, cx: &mut Cx2d, c: char, x: f64, y: f64) {
-        let (cell_width, cell_height) = (self.cell_width, self.cell_height);
-        let (step_x, step_y) = (cell_width / 2.0, cell_height / 4.0);
-        let dot = (step_x.min(step_y) * 0.7).max(1.0);
-        for (row, column) in braille_dots(c) {
-            self.draw_cell_bg.draw_abs(
-                cx,
-                Rect {
-                    pos: dvec2(
-                        x + column as f64 * step_x + (step_x - dot) / 2.0,
-                        y + row as f64 * step_y + (step_y - dot) / 2.0,
-                    ),
-                    size: dvec2(dot, dot),
-                },
-            );
-        }
     }
 
     fn draw_cursor_at(
@@ -906,6 +872,180 @@ impl TerminalView {
             _ => false,
         }
     }
+}
+
+// The ranges the terminal draws itself instead of shaping from a font:
+// Braille, block elements and box lines. These glyphs have to meet at the
+// edges of their cells, and a font's, a little smaller than the cell and
+// antialiased, leaves seams between them. Ghostty and Alacritty draw them for
+// the same reason. A new range is a new arm of `fills`.
+
+/// How a box line's arms reach out of a cell, as up, right, down and left: 0
+/// none, 1 light, 2 heavy. Empty for one the font draws: the dashed lines.
+#[rustfmt::skip]
+const LINES: [&str; 76] = [
+    "0101", "0202", "1010", "2020", "", "", "", "", "", "", "", "",
+    "0110", "0210", "0120", "0220", "0011", "0012", "0021", "0022",
+    "1100", "1200", "2100", "2200", "1001", "1002", "2001", "2002",
+    "1110", "1210", "2110", "1120", "2120", "2210", "1220", "2220",
+    "1011", "1012", "2011", "1021", "2021", "2012", "1022", "2022",
+    "0111", "0112", "0211", "0212", "0121", "0122", "0221", "0222",
+    "1101", "1102", "1201", "1202", "2101", "2102", "2201", "2202",
+    "1111", "1112", "1211", "1212", "2111", "1121", "2121", "2112",
+    "2211", "1122", "1221", "2212", "1222", "2122", "2221", "2222",
+];
+
+/// The half lines, U+2574 to U+257F, in the same notation as [`LINES`].
+const HALVES: [&str; 12] = [
+    "0001", "1000", "0100", "0010", "0002", "2000", "0200", "0020", "0201", "1020", "0102", "2010",
+];
+
+/// The filled rectangles of `c` in a cell of `size` at `dpi`, each relative to
+/// the cell's corner and with the share of the ink it takes (a shade takes
+/// less than all of it). `None` for a character the font draws.
+fn fills(c: char, size: Vec2d, dpi: f64) -> Option<Vec<(Rect, f32)>> {
+    // NOTE: worked in whole device pixels, so a run of cells meets edge to edge.
+    let px = dvec2((size.x * dpi).round(), (size.y * dpi).round());
+    let device = match c {
+        '\u{2800}'..='\u{28ff}' => return Some(braille_fills(c, size)),
+        '\u{2580}'..='\u{259f}' => block_fills(c, px),
+        '\u{2500}'..='\u{254b}' => line_fills(LINES[c as usize - 0x2500], px)?,
+        '\u{2574}'..='\u{257f}' => line_fills(HALVES[c as usize - 0x2574], px)?,
+        _ => return None,
+    };
+    let to_cell = |(rect, ink): (Rect, f32)| {
+        let rect = Rect {
+            pos: rect.pos / dpi,
+            size: rect.size / dpi,
+        };
+        (rect, ink)
+    };
+    Some(device.into_iter().map(to_cell).collect())
+}
+
+/// Block elements in a cell of `px` device pixels: eighths of the cell, shades
+/// and quadrants.
+fn block_fills(c: char, px: Vec2d) -> Vec<(Rect, f32)> {
+    /// The quadrants of U+2596 to U+259F: upper left 1, upper right 2, lower
+    /// left 4, lower right 8.
+    const QUADRANTS: [u8; 10] = [4, 8, 1, 13, 9, 7, 11, 2, 6, 14];
+    let (w, h) = (px.x, px.y);
+    let eighths = |n: u32, of: f64| (of * f64::from(n) / 8.0).round();
+    let n = c as u32 - 0x2580;
+    match n {
+        0x0 => vec![fill(0.0, 0.0, w, eighths(4, h))],
+        0x1..=0x8 => vec![fill(0.0, h - eighths(n, h), w, h)],
+        0x9..=0xf => vec![fill(0.0, 0.0, eighths(16 - n, w), h)],
+        0x10 => vec![fill(eighths(4, w), 0.0, w, h)],
+        0x11..=0x13 => {
+            let ink = match n {
+                0x11 => 0.25,
+                0x12 => 0.5,
+                _ => 0.75,
+            };
+            vec![(fill(0.0, 0.0, w, h).0, ink)]
+        }
+        0x14 => vec![fill(0.0, 0.0, w, eighths(1, h))],
+        0x15 => vec![fill(w - eighths(1, w), 0.0, w, h)],
+        _ => {
+            let (mx, my) = (eighths(4, w), eighths(4, h));
+            let quadrants = QUADRANTS[n as usize - 0x16];
+            [
+                (1, (0.0, 0.0, mx, my)),
+                (2, (mx, 0.0, w, my)),
+                (4, (0.0, my, mx, h)),
+                (8, (mx, my, w, h)),
+            ]
+            .into_iter()
+            .filter(|(bit, _)| quadrants & bit != 0)
+            .map(|(_, (x0, y0, x1, y1))| fill(x0, y0, x1, y1))
+            .collect()
+        }
+    }
+}
+
+/// A box line, given by its [`LINES`] or [`HALVES`] entry, in a cell of `px`
+/// device pixels: each arm a stroke from its edge to the centre and on across
+/// the other direction's stroke, so a corner or a tee closes without a notch.
+/// A light stroke is an eighth of the cell's width, a heavy one twice that.
+/// `None` for an entry the font draws.
+fn line_fills(arms: &str, px: Vec2d) -> Option<Vec<(Rect, f32)>> {
+    let &[up, right, down, left] = arms.as_bytes() else {
+        return None;
+    };
+    let [up, right, down, left] = [up, right, down, left].map(|digit| digit - b'0');
+    let (w, h) = (px.x, px.y);
+    let light = (w / 8.0).round().max(1.0);
+    let thick = |weight: u8| light * f64::from(weight);
+    // Where a stroke of width `t` starts when it is centred across `of`.
+    let start = |of: f64, t: f64| ((of - t) / 2.0).floor();
+    let (vertical, horizontal) = (thick(up.max(down)), thick(left.max(right)));
+    let (x0, x1) = (start(w, vertical), start(w, vertical) + vertical);
+    let (y0, y1) = (start(h, horizontal), start(h, horizontal) + horizontal);
+    let mut fills = Vec::new();
+    for (weight, along) in [(up, (0.0, y1)), (down, (y0, h))] {
+        if weight > 0 {
+            let t = thick(weight);
+            fills.push(fill(start(w, t), along.0, start(w, t) + t, along.1));
+        }
+    }
+    for (weight, along) in [(left, (0.0, x1)), (right, (x0, w))] {
+        if weight > 0 {
+            let t = thick(weight);
+            fills.push(fill(along.0, start(h, t), along.1, start(h, t) + t));
+        }
+    }
+    Some(fills)
+}
+
+/// A solid rectangle between two corners.
+fn fill(x0: f64, y0: f64, x1: f64, y1: f64) -> (Rect, f32) {
+    let rect = Rect {
+        pos: dvec2(x0, y0),
+        size: dvec2(x1 - x0, y1 - y0),
+    };
+    (rect, 1.0)
+}
+
+/// Braille: the pattern is in the codepoint, and no font we bundle carries the
+/// block — the one on this platform that does is a proportional symbol face
+/// whose dots do not line up between adjacent cells.
+fn braille_fills(c: char, size: Vec2d) -> Vec<(Rect, f32)> {
+    let (step_x, step_y) = (size.x / 2.0, size.y / 4.0);
+    let dot = (step_x.min(step_y) * 0.7).max(1.0);
+    braille_dots(c)
+        .map(|(row, column)| {
+            let rect = Rect {
+                pos: dvec2(
+                    f64::from(column) * step_x + (step_x - dot) / 2.0,
+                    f64::from(row) * step_y + (step_y - dot) / 2.0,
+                ),
+                size: dvec2(dot, dot),
+            };
+            (rect, 1.0)
+        })
+        .collect()
+}
+
+/// The lit dots of a Braille cell as (row, column) in a two by four grid.
+///
+/// The low eight bits of the codepoint are the pattern: dots one to three run
+/// down the left column, four to six down the right, and seven and eight add
+/// the fourth row — the order the standard assigns, not raster order.
+fn braille_dots(c: char) -> impl Iterator<Item = (u8, u8)> {
+    const DOTS: [(u32, u8, u8); 8] = [
+        (0x01, 0, 0),
+        (0x02, 1, 0),
+        (0x04, 2, 0),
+        (0x40, 3, 0),
+        (0x08, 0, 1),
+        (0x10, 1, 1),
+        (0x20, 2, 1),
+        (0x80, 3, 1),
+    ];
+    let pattern = c as u32 - 0x2800;
+    DOTS.into_iter()
+        .filter_map(move |(bit, row, column)| (pattern & bit != 0).then_some((row, column)))
 }
 
 /// `lpxs` moved down onto the device pixel grid at `dpi`, the way Ghostty and
@@ -1445,6 +1585,76 @@ mod tests {
         assert_eq!(snap(8.0, 2.0), 8.0);
     }
 
+    /// A cell of 8 by 17 points at 2x: 16 by 34 device pixels, a light stroke
+    /// 2 wide.
+    const SIZE: Vec2d = Vec2d { x: 8.0, y: 17.0 };
+
+    /// The fills of `c` in device pixels, as (x0, y0, x1, y1, ink).
+    fn device_fills(c: char) -> Vec<(f64, f64, f64, f64, f32)> {
+        fills(c, SIZE, 2.0)
+            .unwrap()
+            .into_iter()
+            .map(|(r, ink)| {
+                let (p, s) = (r.pos * 2.0, r.size * 2.0);
+                (p.x, p.y, p.x + s.x, p.y + s.y, ink)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn blocks_fill_whole_device_pixels_to_the_cell_edges() {
+        assert_eq!(device_fills('█'), [(0.0, 0.0, 16.0, 34.0, 1.0)]);
+        assert_eq!(device_fills('▀'), [(0.0, 0.0, 16.0, 17.0, 1.0)]);
+        assert_eq!(device_fills('▄'), [(0.0, 17.0, 16.0, 34.0, 1.0)]);
+        assert_eq!(device_fills('▌'), [(0.0, 0.0, 8.0, 34.0, 1.0)]);
+        assert_eq!(device_fills('▐'), [(8.0, 0.0, 16.0, 34.0, 1.0)]);
+        assert_eq!(device_fills('▁'), [(0.0, 30.0, 16.0, 34.0, 1.0)]);
+        assert_eq!(device_fills('▏'), [(0.0, 0.0, 2.0, 34.0, 1.0)]);
+        assert_eq!(device_fills('▒'), [(0.0, 0.0, 16.0, 34.0, 0.5)]);
+        assert_eq!(
+            device_fills('▚'),
+            [(0.0, 0.0, 8.0, 17.0, 1.0), (8.0, 17.0, 16.0, 34.0, 1.0)]
+        );
+    }
+
+    #[test]
+    fn box_lines_cross_the_cell_and_close_their_corners() {
+        // A straight line runs edge to edge, centred, so neighbours join.
+        assert_eq!(
+            device_fills('─'),
+            [(0.0, 16.0, 8.0, 18.0, 1.0), (8.0, 16.0, 16.0, 18.0, 1.0)]
+        );
+        assert_eq!(
+            device_fills('│'),
+            [(7.0, 0.0, 9.0, 17.0, 1.0), (7.0, 17.0, 9.0, 34.0, 1.0)]
+        );
+        assert_eq!(
+            device_fills('━')[0].1..device_fills('━')[0].3,
+            15.0..19.0,
+            "heavy is twice light"
+        );
+        // A corner's arms overlap where they meet: no notch.
+        let corner = device_fills('┍');
+        let (down, right) = (corner[0], corner[1]);
+        assert!(down.1 <= right.1 && right.0 <= down.0, "{corner:?}");
+        // Dashed lines stay with the font.
+        assert!(fills('┄', SIZE, 2.0).is_none());
+        assert!(fills('a', SIZE, 2.0).is_none());
+    }
+
+    #[test]
+    fn braille_reads_its_dots_off_the_codepoint() {
+        let dots = |c| braille_dots(c).collect::<Vec<_>>();
+        // One dot in each corner of the two by four grid.
+        assert_eq!(dots('\u{2801}'), [(0, 0)]);
+        assert_eq!(dots('\u{2808}'), [(0, 1)]);
+        assert_eq!(dots('\u{2840}'), [(3, 0)]);
+        assert_eq!(dots('\u{2880}'), [(3, 1)]);
+        // The blank cell draws nothing, the full one all eight.
+        assert_eq!(dots('\u{2800}'), [] as [(u8, u8); 0]);
+        assert_eq!(dots('\u{28ff}').len(), 8);
+    }
+
     #[test]
     fn bracketed_paste_cannot_inject_nested_markers_or_controls() {
         assert_eq!(
@@ -1481,10 +1691,6 @@ mod tests {
         assert_eq!(TerminalView::dropped_text_payload(&[tab]), None);
     }
 
-    fn dots(c: char) -> Vec<(usize, usize)> {
-        braille_dots(c).collect()
-    }
-
     /// The bar and the scrollback are the same number in two units, so the
     /// trip out and back has to land where it started. It did not: the offset
     /// used to be derived from the bar's own position, which made it always
@@ -1504,24 +1710,6 @@ mod tests {
         assert_eq!(
             display_offset_for(max_scroll / 2.0, max_scroll, cell_height),
             50
-        );
-    }
-
-    #[test]
-    fn braille_reads_its_dots_off_the_codepoint() {
-        assert!(is_braille('\u{2801}') && !is_braille('a'));
-        // One dot in each corner of the two by four grid.
-        assert_eq!(dots('\u{2801}'), [(0, 0)]);
-        assert_eq!(dots('\u{2808}'), [(0, 1)]);
-        assert_eq!(dots('\u{2840}'), [(3, 0)]);
-        assert_eq!(dots('\u{2880}'), [(3, 1)]);
-        // The blank cell draws nothing, the full one all eight.
-        assert_eq!(dots('\u{2800}'), []);
-        assert_eq!(dots('\u{28ff}').len(), 8);
-        // Six dots, the top three rows of both columns.
-        assert_eq!(
-            dots('\u{283f}'),
-            [(0, 0), (1, 0), (2, 0), (0, 1), (1, 1), (2, 1)]
         );
     }
 }
