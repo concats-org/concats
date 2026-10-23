@@ -1006,7 +1006,7 @@ fn fills(c: char, size: Vec2d, dpi: f64) -> Option<Vec<(Rect, f32)>> {
         '\u{2574}'..='\u{257f}' => line_fills(HALVES[c as usize - 0x2574], px)?,
         '\u{256d}'..='\u{2570}' => arc_fills(c, px),
         '\u{2571}'..='\u{2573}' => diagonal_fills(c, px),
-        '\u{e0b0}'..='\u{e0b3}' => powerline_fills(c, px),
+        '\u{e0b0}'..='\u{e0b7}' => powerline_fills(c, px),
         _ => return None,
     };
     let to_cell = |(rect, ink): (Rect, f32)| {
@@ -1245,25 +1245,36 @@ fn diagonal_fills(c: char, px: Vec2d) -> Vec<(Rect, f32)> {
         .collect()
 }
 
-/// The powerline separators in a cell of `px` device pixels: a solid or an
-/// outlined arrow pointing right (U+E0B0, U+E0B1) or left (U+E0B2, U+E0B3),
-/// one device pixel row at a time, its point at the cell's middle.
+/// The powerline separators in a cell of `px` device pixels, one device pixel
+/// row at a time: an arrow (U+E0B0 to U+E0B3) or a half ellipse (U+E0B4 to
+/// U+E0B7), solid or outlined, pointing right and then left, and reaching
+/// across the whole cell at its middle.
 fn powerline_fills(c: char, px: Vec2d) -> Vec<(Rect, f32)> {
     let (w, h) = (px.x, px.y);
     let light = (w / 8.0).round().max(1.0);
+    let n = c as u32 - 0xe0b0;
+    let (rounded, right, solid) = (n >= 4, n % 4 < 2, n.is_multiple_of(2));
     (0..h as u16)
         .map(f64::from)
         .map(|y| {
-            // How far the arrow reaches across this row: the whole cell at
-            // its middle, nothing at the top and bottom edges.
-            let reach = (w * (1.0 - ((2.0 * y + 1.0) / h - 1.0).abs())).round();
-            let (x0, x1) = match c {
-                '\u{e0b0}' => (0.0, reach),
-                '\u{e0b1}' => ((reach - light).max(0.0), reach),
-                '\u{e0b2}' => (w - reach, w),
-                _ => (w - reach, (w - reach + light).min(w)),
+            // How far the shape reaches into this row from its flat side, and
+            // how far an outline's inside does.
+            let (outer, inner) = if rounded {
+                let reach = |rx: f64, ry: f64| {
+                    let dy = (y + 0.5 - h / 2.0) / ry;
+                    (rx * (1.0 - dy * dy).max(0.0).sqrt()).round()
+                };
+                (reach(w, h / 2.0), reach(w - light, h / 2.0 - light))
+            } else {
+                let reach = (w * (1.0 - ((2.0 * y + 1.0) / h - 1.0).abs())).round();
+                (reach, (reach - light).max(0.0))
             };
-            fill(x0, y, x1, y + 1.0)
+            let from = if solid { 0.0 } else { inner };
+            if right {
+                fill(from, y, outer, y + 1.0)
+            } else {
+                fill(w - outer, y, w - from, y + 1.0)
+            }
         })
         .collect()
 }
@@ -2030,6 +2041,16 @@ mod tests {
             (arrow[0], arrow[33])
         );
         assert_eq!(device_fills('\u{e0b2}')[17].0, 0.0);
+    }
+
+    #[test]
+    fn a_rounded_powerline_cap_is_half_an_ellipse() {
+        let cap = device_fills('\u{e0b4}');
+        assert_eq!(cap[17], (0.0, 17.0, 16.0, 18.0, 1.0), "the whole cell");
+        assert_eq!(cap[0], (0.0, 0.0, 4.0, 1.0, 1.0));
+        assert_eq!(device_fills('\u{e0b6}')[0], (12.0, 0.0, 16.0, 1.0, 1.0));
+        // An outline is a light line thick where it crosses the middle.
+        assert_eq!(device_fills('\u{e0b5}')[17], (14.0, 17.0, 16.0, 18.0, 1.0));
     }
 
     #[test]
