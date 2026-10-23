@@ -926,6 +926,7 @@ fn fills(c: char, size: Vec2d, dpi: f64) -> Option<Vec<(Rect, f32)>> {
         '\u{2580}'..='\u{259f}' => block_fills(c, px),
         '\u{2500}'..='\u{254b}' => line_fills(LINES[c as usize - 0x2500], px)?,
         '\u{2574}'..='\u{257f}' => line_fills(HALVES[c as usize - 0x2574], px)?,
+        '\u{e0b0}'..='\u{e0b3}' => powerline_fills(c, px),
         _ => return None,
     };
     let to_cell = |(rect, ink): (Rect, f32)| {
@@ -1013,6 +1014,29 @@ fn line_fills(arms: &str, px: Vec2d) -> Option<Vec<(Rect, f32)>> {
     Some(fills)
 }
 
+/// The powerline separators in a cell of `px` device pixels: a solid or an
+/// outlined arrow pointing right (U+E0B0, U+E0B1) or left (U+E0B2, U+E0B3),
+/// one device pixel row at a time, its point at the cell's middle.
+fn powerline_fills(c: char, px: Vec2d) -> Vec<(Rect, f32)> {
+    let (w, h) = (px.x, px.y);
+    let light = (w / 8.0).round().max(1.0);
+    (0..h as u16)
+        .map(f64::from)
+        .map(|y| {
+            // How far the arrow reaches across this row: the whole cell at
+            // its middle, nothing at the top and bottom edges.
+            let reach = (w * (1.0 - ((2.0 * y + 1.0) / h - 1.0).abs())).round();
+            let (x0, x1) = match c {
+                '\u{e0b0}' => (0.0, reach),
+                '\u{e0b1}' => ((reach - light).max(0.0), reach),
+                '\u{e0b2}' => (w - reach, w),
+                _ => (w - reach, (w - reach + light).min(w)),
+            };
+            fill(x0, y, x1, y + 1.0)
+        })
+        .collect()
+}
+
 /// The underline `flags` ask for (SGR 4:1 to 4:5) under one cell of `size` at
 /// `dpi`, on whole device pixels: straight, double, curly, dotted or dashed,
 /// each a pattern that repeats from cell to cell. Nothing without one.
@@ -1024,7 +1048,7 @@ fn underline_fills(flags: Flags, size: Vec2d, dpi: f64) -> Vec<Rect> {
         pos: dvec2(x0, y0) / dpi,
         size: dvec2(x1 - x0, t) / dpi,
     };
-    let columns = (0_u16..).map(f64::from).take_while(|x| *x < w);
+    let columns = (0..w as u16).map(f64::from);
     if flags.contains(Flags::DOUBLE_UNDERLINE) {
         vec![rule(0.0, top, w), rule(0.0, top - 2.0 * t, w)]
     } else if flags.contains(Flags::UNDERCURL) {
@@ -1694,6 +1718,19 @@ mod tests {
         // Dashed lines stay with the font.
         assert!(fills('┄', SIZE, 2.0).is_none());
         assert!(fills('a', SIZE, 2.0).is_none());
+    }
+
+    #[test]
+    fn a_powerline_arrow_reaches_across_the_cell_at_its_middle() {
+        let arrow = device_fills('\u{e0b0}');
+        assert_eq!(arrow.len(), 34, "one row per device pixel");
+        assert_eq!(arrow[17].2, 16.0);
+        assert!(
+            arrow[0].2 <= 1.0 && arrow[33].2 <= 1.0,
+            "{:?}",
+            (arrow[0], arrow[33])
+        );
+        assert_eq!(device_fills('\u{e0b2}')[17].0, 0.0);
     }
 
     #[test]
