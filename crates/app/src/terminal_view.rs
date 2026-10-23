@@ -92,6 +92,13 @@ script_mod! {
     // the cell grid stays put when the app font size changes. (This module's
     // script scope can't see the `FONT` `let` in `main.rs`.) Braille is drawn,
     // not shaped — `draw_braille`.
+    //
+    // No emoji member, unlike `FONT`: the symbols an agent draws its status
+    // with (⏺ ✳ ✔ ⏸) are in Noto Color Emoji, which paints them in its own
+    // colours, wider than a cell. Past the CJK face the system fallback takes
+    // over, which draws them as text in the cell's colour and still finds the
+    // system's emoji for real emoji. The CJK face stays because what CoreText
+    // picks for CJK does not draw through makepad.
     let TERM_FONT = TextStyle{
         font_family: FontFamily{
             first := FontMember{res: mod.app_font.first asc: 0.0 desc: 0.0}
@@ -100,7 +107,6 @@ script_mod! {
             fourth := FontMember{res: mod.app_font.fourth asc: 0.0 desc: 0.0}
             mono := FontMember{res: mod.app_font.mono asc: 0.0 desc: 0.0}
             cjk := FontMember{res: mod.app_font.cjk asc: 0.0 desc: 0.0}
-            emoji := FontMember{res: mod.app_font.emoji asc: 0.0 desc: 0.0}
         }
         font_size: mod.app_font.terminal_size
         // A terminal cell is the glyph box, with no leading added: box-drawing
