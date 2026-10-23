@@ -658,6 +658,29 @@ fn terminal_search_finds_literal_text_in_scrollback() {
 
 #[test]
 #[ignore = "needs a macOS window server"]
+fn escape_closes_terminal_search() {
+    let shot = capture(
+        "terminal-search-escaped",
+        &[
+            ("CONCATS_APP_TERM", "1"),
+            ("CONCATS_APP_CLICK", "300,690"),
+            (
+                "CONCATS_APP_TERM_SCRIPT",
+                "printf 'a needle in history\\n'\nread -r answer\n",
+            ),
+            ("CONCATS_APP_FIND", "needle"),
+            ("CONCATS_APP_FIND_KEEP_FOCUS", "1"),
+            ("CONCATS_APP_KEY", "Escape"),
+        ],
+        |_| {},
+    );
+    // The query reached the bar, and the frame shows the bar gone.
+    assert_eq!(state(&shot, "state.json")["terminal_find_query"], "needle");
+    assert_matches("terminal-search-escaped", &shot, BLINKING_CURSOR);
+}
+
+#[test]
+#[ignore = "needs a macOS window server"]
 fn terminal_draws_combining_marks_and_unicode() {
     let shot = capture(
         "terminal_unicode",

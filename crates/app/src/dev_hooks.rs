@@ -67,6 +67,20 @@ fn shortcut(key_code: KeyCode) -> Event {
     })
 }
 
+/// The key `name` names, pressed on its own: `Escape` closes a find bar,
+/// `Return` posts a composer.
+fn key(name: &str) -> Event {
+    let key_code = match name {
+        "Escape" => KeyCode::Escape,
+        "Return" => KeyCode::ReturnKey,
+        _ => KeyCode::Unknown,
+    };
+    Event::KeyDown(KeyEvent {
+        key_code,
+        ..Default::default()
+    })
+}
+
 /// Text at the caret, through the same `Event::TextInput` an IME or a keyboard
 /// delivers. `\n` in it is a real newline, so a multi-line edit is drivable too.
 fn typed(text: &str) -> Event {
@@ -402,6 +416,8 @@ impl App {
             6 | 7 => {
                 if self.click_tick == 6 {
                     self.event_hook(cx, "CONCATS_APP_FIND", typed);
+                    // Last, so it acts on whatever the hooks before it left.
+                    self.event_hook(cx, "CONCATS_APP_KEY", key);
                 }
                 if let Some(path) = var("CONCATS_APP_SHOT") {
                     self.request_shot(cx, path.into());
