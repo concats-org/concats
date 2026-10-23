@@ -154,6 +154,9 @@ impl DiffLine {
         self.spans.extend_from_slice(spans);
         self.selected = selected;
         self.caret = caret;
+        // NOTE: the rect is where the last line's caret drew; this line's
+        // comes from its own draw.
+        self.caret_rect = None;
     }
 
     /// The caret as a thin quad, taken from the geometry of the character it
