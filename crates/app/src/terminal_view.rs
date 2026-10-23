@@ -953,6 +953,7 @@ fn fills(c: char, size: Vec2d, dpi: f64) -> Option<Vec<(Rect, f32)>> {
         '\u{2580}'..='\u{259f}' => block_fills(c, px),
         '\u{2500}'..='\u{254b}' => line_fills(LINES[c as usize - 0x2500], px)?,
         '\u{2574}'..='\u{257f}' => line_fills(HALVES[c as usize - 0x2574], px)?,
+        '\u{256d}'..='\u{2570}' => arc_fills(c, px),
         '\u{e0b0}'..='\u{e0b3}' => powerline_fills(c, px),
         _ => return None,
     };
@@ -1039,6 +1040,50 @@ fn line_fills(arms: &str, px: Vec2d) -> Option<Vec<(Rect, f32)>> {
         }
     }
     Some(fills)
+}
+
+/// The rounded corners (U+256D to U+2570) in a cell of `px` device pixels: a
+/// quarter circle from one arm to the other, then straight on to the cell's
+/// edge. As thick as a light line and centred where [`line_fills`] puts one,
+/// so a corner meets the lines beside it, one device pixel row at a time.
+fn arc_fills(c: char, px: Vec2d) -> Vec<(Rect, f32)> {
+    let (w, h) = (px.x, px.y);
+    let stroke = (w / 8.0).round().max(1.0);
+    let (cx, cy) = (
+        ((w - stroke) / 2.0).floor() + stroke / 2.0,
+        ((h - stroke) / 2.0).floor() + stroke / 2.0,
+    );
+    // Which way the arms leave the cell: right or left, down or up.
+    let (sx, sy) = match c {
+        '\u{256d}' => (1.0, 1.0),
+        '\u{256e}' => (-1.0, 1.0),
+        '\u{256f}' => (-1.0, -1.0),
+        _ => (1.0, -1.0),
+    };
+    let radius = cx.min(w - cx).min(cy).min(h - cy);
+    let (ox, oy) = (cx + sx * radius, cy + sy * radius);
+    let (outer, inner) = (radius + stroke / 2.0, (radius - stroke / 2.0).max(0.0));
+    (0..h as u16)
+        .map(f64::from)
+        .filter_map(|y| {
+            let dy = y + 0.5 - oy;
+            if dy * sy > 0.0 {
+                // Past the circle's centre: the straight run to the edge.
+                return Some(fill(cx - stroke / 2.0, y, cx + stroke / 2.0, y + 1.0));
+            }
+            if dy.abs() > outer {
+                return None;
+            }
+            let far = ox - sx * (outer * outer - dy * dy).sqrt();
+            let near = ox - sx * (inner * inner - dy * dy).max(0.0).sqrt();
+            Some(fill(
+                far.min(near).round(),
+                y,
+                far.max(near).round(),
+                y + 1.0,
+            ))
+        })
+        .collect()
 }
 
 /// The powerline separators in a cell of `px` device pixels: a solid or an
@@ -1745,6 +1790,19 @@ mod tests {
         // Dashed lines stay with the font.
         assert!(fills('┄', SIZE, 2.0).is_none());
         assert!(fills('a', SIZE, 2.0).is_none());
+    }
+
+    #[test]
+    fn a_rounded_corner_meets_the_lines_beside_it() {
+        let corner = device_fills('╭');
+        // Straight down into the cell below, where │ runs.
+        assert_eq!(corner.last(), Some(&(7.0, 33.0, 9.0, 34.0, 1.0)));
+        // Out to the right edge on the rows ─ runs on.
+        let right = |row: f64| corner.iter().find(|f| (f.1 - row).abs() < 0.5).map(|f| f.2);
+        assert_eq!((right(16.0), right(17.0)), (Some(16.0), Some(16.0)));
+        assert!(corner.iter().all(|f| f.1 >= 16.0), "nothing above the line");
+        let other = device_fills('╯');
+        assert_eq!(other.first(), Some(&(7.0, 0.0, 9.0, 1.0, 1.0)));
     }
 
     #[test]
