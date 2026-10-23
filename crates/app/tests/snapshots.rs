@@ -658,6 +658,31 @@ fn terminal_search_finds_literal_text_in_scrollback() {
 
 #[test]
 #[ignore = "needs a macOS window server"]
+fn find_opens_in_every_pane_at_once() {
+    let shot = capture(
+        "find-everywhere",
+        &[
+            ("CONCATS_APP_TERM", "1"),
+            (
+                "CONCATS_APP_TERM_SCRIPT",
+                "printf 'a needle in history\\n'\nread -r answer\n",
+            ),
+            (
+                "CONCATS_APP_STEPS",
+                "click 400,200; find names; click 1100,70; find edit; click 300,690; find needle",
+            ),
+        ],
+        |_| {},
+    );
+    // Each query reached the find of the pane it was typed in.
+    let data = state(&shot, "state.json");
+    assert_eq!(data["find_query"], "names");
+    assert_eq!(data["file_find_query"], "edit");
+    assert_eq!(data["terminal_find_query"], "needle");
+}
+
+#[test]
+#[ignore = "needs a macOS window server"]
 fn escape_closes_terminal_search() {
     let shot = capture(
         "terminal-search-escaped",

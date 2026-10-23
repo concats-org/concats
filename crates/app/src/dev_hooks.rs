@@ -13,8 +13,10 @@
 //!   at row N, `TERM` opens the terminal, `FILE=path[,path…]` opens a File tab
 //!   each, `TAB=name` (or `file:path`) selects a tab, and `SHOT=path.png`
 //!   captures the frame.
-//! - Then one step per poll tick: `SHOT_BEFORE=path.png` captures the frame
-//!   before any input, `CLICK=x,y` presses there (`HOVER=x,y` only moves,
+//! - Then one step per poll tick: `STEPS=…` runs its `;`-separated steps
+//!   first (`click x,y`, `key name`, `find text`, `type text`), then
+//!   `SHOT_BEFORE=path.png` captures the frame before any other input,
+//!   `CLICK=x,y` presses there (`HOVER=x,y` only moves,
 //!   `DRAG_TO=x,y` drags, `CLICK_SEEN` presses the pinned tick box), `TYPE=text`
 //!   types, `SAVE` presses Cmd-S, `COMPOSER_REFRESH` lands a comment mid-draft,
 //!   `FIND=text` searches (`FIND_KEEP_FOCUS` leaves the focus alone),
@@ -28,67 +30,6 @@ use concats_diff::{Row, Side};
 )]
 use super::*;
 use crate::review_doc::{Compose, Composing, splice_composer};
-
-// NOTE: click_hook reads both the click and the drag-to point through it.
-// coland-ignore: @coland/single_caller_private_function
-fn pointer_position(spec: &str) -> Option<Vec2d> {
-    let (x, y) = spec.split_once(',')?;
-    Some(dvec2(x.trim().parse().ok()?, y.trim().parse().ok()?))
-}
-
-// NOTE: the one gate every hook reads the environment through; its fan-in and input are the point.
-// coland-ignore: @coland/high_call_degree, @coland/implicit_global_input
-pub(crate) fn var(name: &str) -> Option<String> {
-    cfg!(feature = "dev-hooks")
-        .then(|| std::env::var(name).ok())
-        .flatten()
-        .filter(|value| !value.is_empty())
-}
-
-/// The dock item that renders `tab` in `window`.
-fn tab_item(window: &AppWindow, cx: &Cx, tab: Stream) -> WidgetRef {
-    window
-        .pane(cx)
-        .dock(cx, ids!(dock))
-        .item(stream_tab_spec(tab).id)
-}
-
-/// Cmd plus `key_code`, the way a shortcut arrives.
-// NOTE: how a shortcut arrives, for each one a hook presses.
-// coland-ignore: @coland/single_caller_private_function
-fn shortcut(key_code: KeyCode) -> Event {
-    Event::KeyDown(KeyEvent {
-        key_code,
-        modifiers: KeyModifiers {
-            logo: true,
-            ..Default::default()
-        },
-        ..Default::default()
-    })
-}
-
-/// The key `name` names, pressed on its own: `Escape` closes a find bar,
-/// `Return` posts a composer.
-fn key(name: &str) -> Event {
-    let key_code = match name {
-        "Escape" => KeyCode::Escape,
-        "Return" => KeyCode::ReturnKey,
-        _ => KeyCode::Unknown,
-    };
-    Event::KeyDown(KeyEvent {
-        key_code,
-        ..Default::default()
-    })
-}
-
-/// Text at the caret, through the same `Event::TextInput` an IME or a keyboard
-/// delivers. `\n` in it is a real newline, so a multi-line edit is drivable too.
-fn typed(text: &str) -> Event {
-    Event::TextInput(TextInputEvent {
-        input: text.replace("\\n", "\n"),
-        ..Default::default()
-    })
-}
 
 /// Dev affordance, pairs with `CONCATS_APP_SHOT`: `CONCATS_APP_COMPOSE=path:start:end`
 /// (0-based) pre-opens the composer on those lines, so the comment dialog can
@@ -261,19 +202,12 @@ impl App {
     /// platform event loop does around a real mouse event. Without it the hits
     /// still fire but the digit is captured and never released, the hover never
     /// leaves, and the frame after the gesture is wrong.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "Pointer setup, move, press, and release must stay in event order."
-    )]
     pub(super) fn click_hook(&mut self, cx: &mut Cx) {
-        // The pointer position, when there is one. This sequence drives the type,
-        // save, find, capture and exit hooks as well, so it runs with no click to
-        // dispatch — a scenario that only opens a file still has to reach the
-        // tick that captures and the one that leaves.
-        let hover_only = var("CONCATS_APP_HOVER").is_some();
-        let at = var("CONCATS_APP_CLICK")
-            .or_else(|| var("CONCATS_APP_HOVER"))
-            .and_then(|spec| pointer_position(&spec));
+        // This sequence drives the type, save, find, capture and exit hooks as
+        // well as the click, so it runs with no click to dispatch: a scenario
+        // that only opens a file still has to reach the tick that captures and
+        // the one that leaves.
+        //
         // Nothing to hit until a load has landed and drawn.
         let Some(state) = self.primary().map(|w| w.state.clone()) else {
             return;
@@ -311,55 +245,7 @@ impl App {
                     self.ui.redraw(cx);
                 }
             }
-            2 => {
-                let at = at.or_else(|| {
-                    var("CONCATS_APP_CLICK_SEEN")?;
-                    let tab = state.read(|d| d.tab);
-                    let area = tab_item(self.primary()?, cx, tab)
-                        .check_box(cx, ids!(sticky.seen_box))
-                        .area();
-                    let rect = area.rect(cx);
-                    (rect.size.x > 0.0 && rect.size.y > 0.0).then_some(rect.center())
-                });
-                let Some(abs) = at else {
-                    return;
-                };
-                // Move the pointer there before pressing, the way a real one
-                // arrives. Without this no hover state was reachable from a
-                // capture at all — press and release alone never raise
-                // FingerHoverIn, so the gutter's + affordance could not be
-                // screenshotted.
-                let now = cx.seconds_since_app_start();
-                self.pointer_move(cx, abs, now);
-                if hover_only {
-                    return;
-                }
-                let down = MouseDownEvent {
-                    abs,
-                    button: MouseButton::PRIMARY,
-                    window_id: CxWindowPool::id_zero(),
-                    modifiers: KeyModifiers::default(),
-                    handled: std::cell::Cell::new(Area::Empty),
-                    time: now,
-                };
-                cx.begin_mouse_down(&down);
-                self.ui
-                    .handle_event(cx, &Event::MouseDown(down), &mut Scope::empty());
-                let abs = match var("CONCATS_APP_DRAG_TO").and_then(|spec| pointer_position(&spec))
-                {
-                    Some(end) => {
-                        self.pointer_move(cx, end, now + 0.05);
-                        end
-                    }
-                    None => abs,
-                };
-                // NOTE: a button reads the first action its batch holds for
-                // it, and a press and release sent in one event arrive as one
-                // batch that reads as a press. A real click spans two events,
-                // close enough together to be a tap; so does this one.
-                self.release = Some(abs);
-                self.release_timer = cx.start_timeout(0.05);
-            }
+            2 => self.click(cx, &state),
             3 => self.event_hook(cx, "CONCATS_APP_TYPE", typed),
             4 => {
                 self.state_hook(cx, "state-before-refresh.json");
@@ -440,6 +326,117 @@ impl App {
             }
             _ => {}
         }
+    }
+
+    /// The click hooks, in the window `state` renders: `CLICK=x,y` presses
+    /// there, `HOVER=x,y` only moves there, `CLICK_SEEN` presses the pinned
+    /// tick box, and `DRAG_TO=x,y` drags on before the release.
+    fn click(&mut self, cx: &mut Cx, state: &WindowState) {
+        let hover_only = var("CONCATS_APP_HOVER").is_some();
+        let at = var("CONCATS_APP_CLICK")
+            .or_else(|| var("CONCATS_APP_HOVER"))
+            .and_then(|spec| pointer_position(&spec))
+            .or_else(|| {
+                var("CONCATS_APP_CLICK_SEEN")?;
+                let tab = state.read(|d| d.tab);
+                let area = tab_item(self.primary()?, cx, tab)
+                    .check_box(cx, ids!(sticky.seen_box))
+                    .area();
+                let rect = area.rect(cx);
+                (rect.size.x > 0.0 && rect.size.y > 0.0).then_some(rect.center())
+            });
+        let Some(abs) = at else {
+            return;
+        };
+        if hover_only {
+            let now = cx.seconds_since_app_start();
+            self.pointer_move(cx, abs, now);
+            return;
+        }
+        self.press(cx, abs);
+        if let Some(end) = var("CONCATS_APP_DRAG_TO").and_then(|spec| pointer_position(&spec)) {
+            self.pointer_move(cx, end, cx.seconds_since_app_start() + 0.05);
+            self.release = Some(end);
+        }
+    }
+
+    /// Press at `abs`, the pointer arriving there first, and release a moment
+    /// later from `release_hook`.
+    fn press(&mut self, cx: &mut Cx, abs: Vec2d) {
+        // Move the pointer there before pressing, the way a real one arrives.
+        // Without this no hover state was reachable from a capture at all —
+        // press and release alone never raise FingerHoverIn, so the gutter's +
+        // affordance could not be screenshotted.
+        let now = cx.seconds_since_app_start();
+        self.pointer_move(cx, abs, now);
+        let down = MouseDownEvent {
+            abs,
+            button: MouseButton::PRIMARY,
+            window_id: CxWindowPool::id_zero(),
+            modifiers: KeyModifiers::default(),
+            handled: std::cell::Cell::new(Area::Empty),
+            time: now,
+        };
+        cx.begin_mouse_down(&down);
+        self.ui
+            .handle_event(cx, &Event::MouseDown(down), &mut Scope::empty());
+        // NOTE: a button reads the first action its batch holds for it, and a
+        // press and release sent in one event arrive as one batch that reads
+        // as a press. A real click spans two events, close enough together to
+        // be a tap; so does this one.
+        self.release = Some(abs);
+        self.release_timer = cx.start_timeout(0.05);
+    }
+
+    /// Run the next of `CONCATS_APP_STEPS` once the first load has drawn,
+    /// each click letting go before the step after it. `find text` presses
+    /// Cmd-F and leaves `type text` for the next tick, once the field is open.
+    /// Whether the steps still hold back the per-tick hooks.
+    pub(super) fn step(&mut self, cx: &mut Cx) -> bool {
+        let steps = self.steps.get_or_insert_with(|| {
+            var("CONCATS_APP_STEPS")
+                .unwrap_or_default()
+                .split(';')
+                .map(|step| step.trim().to_string())
+                .filter(|step| !step.is_empty())
+                .collect()
+        });
+        if steps.is_empty() {
+            return false;
+        }
+        let drawn = self
+            .primary()
+            .is_some_and(|window| window.state.read(|d| !d.files_rows.is_empty()));
+        if !drawn || self.release.is_some() {
+            self.ui.redraw(cx);
+            return true;
+        }
+        let Some(step) = self.steps.as_mut().and_then(VecDeque::pop_front) else {
+            return false;
+        };
+        let (verb, arg) = step.split_once(' ').unwrap_or((&step, ""));
+        let event = match verb {
+            "click" => {
+                if let Some(abs) = pointer_position(arg) {
+                    self.press(cx, abs);
+                }
+                return true;
+            }
+            "find" => {
+                if let Some(steps) = self.steps.as_mut() {
+                    steps.push_front(format!("type {arg}"));
+                }
+                shortcut(KeyCode::KeyF)
+            }
+            "key" => key(arg),
+            "type" => typed(arg),
+            _ => {
+                eprintln!("concats-app: unknown step `{step}`");
+                return true;
+            }
+        };
+        self.ui.handle_event(cx, &event, &mut Scope::empty());
+        true
     }
 
     /// Move the pointer to `abs`, with the bookkeeping a real move gets.
@@ -605,4 +602,69 @@ impl App {
             std::process::exit(1);
         }
     }
+}
+
+// NOTE: click_hook reads both the click and the drag-to point through it.
+// coland-ignore: @coland/single_caller_private_function
+fn pointer_position(spec: &str) -> Option<Vec2d> {
+    let (x, y) = spec.split_once(',')?;
+    Some(dvec2(x.trim().parse().ok()?, y.trim().parse().ok()?))
+}
+
+// NOTE: the one gate every hook reads the environment through; its fan-in and input are the point.
+// coland-ignore: @coland/high_call_degree, @coland/implicit_global_input
+pub(crate) fn var(name: &str) -> Option<String> {
+    cfg!(feature = "dev-hooks")
+        .then(|| std::env::var(name).ok())
+        .flatten()
+        .filter(|value| !value.is_empty())
+}
+
+/// The dock item that renders `tab` in `window`.
+fn tab_item(window: &AppWindow, cx: &Cx, tab: Stream) -> WidgetRef {
+    window
+        .pane(cx)
+        .dock(cx, ids!(dock))
+        .item(stream_tab_spec(tab).id)
+}
+
+/// Cmd plus `key_code`, the way a shortcut arrives.
+// NOTE: how a shortcut arrives, for each one a hook presses.
+// coland-ignore: @coland/single_caller_private_function
+fn shortcut(key_code: KeyCode) -> Event {
+    Event::KeyDown(KeyEvent {
+        key_code,
+        modifiers: KeyModifiers {
+            logo: true,
+            ..Default::default()
+        },
+        ..Default::default()
+    })
+}
+
+/// The key `name` names, pressed on its own: `Escape` closes a find bar,
+/// `Return` posts a composer.
+// NOTE: the KEY hook takes it as its event, and a `key` step calls it.
+// coland-ignore: @coland/single_caller_private_function
+fn key(name: &str) -> Event {
+    let key_code = match name {
+        "Escape" => KeyCode::Escape,
+        "Return" => KeyCode::ReturnKey,
+        _ => KeyCode::Unknown,
+    };
+    Event::KeyDown(KeyEvent {
+        key_code,
+        ..Default::default()
+    })
+}
+
+/// Text at the caret, through the same `Event::TextInput` an IME or a keyboard
+/// delivers. `\n` in it is a real newline, so a multi-line edit is drivable too.
+// NOTE: the TYPE and FIND hooks take it as their event, and a `type` step calls it.
+// coland-ignore: @coland/single_caller_private_function
+fn typed(text: &str) -> Event {
+    Event::TextInput(TextInputEvent {
+        input: text.replace("\\n", "\n"),
+        ..Default::default()
+    })
 }

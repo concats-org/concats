@@ -27,7 +27,7 @@
 //! drive the app for captures: no pointer, and no macOS screen-recording
 //! permission needed.
 
-use std::{path::PathBuf, sync::Arc};
+use std::{collections::VecDeque, path::PathBuf, sync::Arc};
 
 use clap::Parser;
 use concats_diff::LineKind;
@@ -282,6 +282,9 @@ pub struct App {
     release: Option<Vec2d>,
     #[rust]
     release_timer: Timer,
+    /// `CONCATS_APP_STEPS` still to run, read when the first one does.
+    #[rust]
+    steps: Option<VecDeque<String>>,
 }
 
 /// One open window: the document it renders, the widget subtree it renders
@@ -503,7 +506,10 @@ impl MatchEvent for App {
     fn handle_timer(&mut self, cx: &mut Cx, e: &TimerEvent) {
         self.release_hook(cx, e);
         if self.poll.is_timer(e).is_some() {
-            self.click_hook(cx);
+            // NOTE: the steps run first; the hooks after act on what they left.
+            if !self.step(cx) {
+                self.click_hook(cx);
+            }
             for window in &mut self.windows {
                 window.poll_tick(cx);
             }
