@@ -1446,10 +1446,12 @@ impl ReviewList {
     /// The tab bar for this pass: whether it shows, and which of its parts.
     /// A view of file cards keeps its bar; any other has one while finding.
     fn fill_bar(&self, cx: &mut Cx2d, pass: &DrawPass) {
-        let cards = matches!(
-            pass.tab,
-            Stream::Guide | Stream::Files | Stream::Sessions | Stream::Commits
-        );
+        // NOTE: a directory without Git shows a message where the cards would be.
+        let cards = !pass.doc.without_git
+            && matches!(
+                pass.tab,
+                Stream::Guide | Stream::Files | Stream::Sessions | Stream::Commits
+            );
         let finding = self.find.is_some();
         for bar in [ids!(tab_bar), ids!(bar_rule)] {
             self.view.view(cx, bar).set_visible(cx, cards || finding);

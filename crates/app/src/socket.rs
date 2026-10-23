@@ -45,7 +45,7 @@ impl Drop for Socket {
 /// Answer for the checkout `repo` is in, letting go of whatever this window
 /// answered for before. A no-op while it already answers there.
 pub(crate) fn serve(state: &Arc<WindowState>, repo: &str) {
-    let Some(root) = concats_diff::load::discover(Path::new(repo)) else {
+    let Some(root) = concats_diff::load::root(Path::new(repo)) else {
         return;
     };
     let mut socket = state.socket.lock().unwrap();

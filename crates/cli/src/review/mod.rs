@@ -279,7 +279,7 @@ impl RangeArgs {
 /// What the app shows for `repo`, asked over the socket in its root. `None`
 /// when no app answers there.
 fn shown_range(repo: &str) -> Option<Target> {
-    let socket = load::discover(Path::new(repo))?.join(concats_state::SOCKET);
+    let socket = load::root(Path::new(repo))?.join(concats_state::SOCKET);
     let mut stream = match UnixStream::connect(&socket) {
         Ok(stream) => stream,
         // NOTE: No socket, or one a crashed app left behind: no app open here.
@@ -361,8 +361,11 @@ pub(crate) fn load(target: &Target) -> Result<Loaded, ExitCode> {
 pub(crate) fn open_store(repo: Option<&str>) -> Result<concats_review::store::Store, ExitCode> {
     let repo = repo.unwrap_or(".");
     let Some(root) = load::discover(Path::new(&repo)) else {
-        eprintln!("error: no git repository at {repo}");
-        return Err(ExitCode::from(BAD_INPUT));
+        let Some(dir) = load::root(Path::new(&repo)) else {
+            eprintln!("error: no directory at {repo}");
+            return Err(ExitCode::from(BAD_INPUT));
+        };
+        return Ok(concats_review::store::Store::open(&load::concats_dir(&dir)));
     };
     let Ok(opened) = gix::open(&root) else {
         eprintln!("error: cannot open {}", root.display());

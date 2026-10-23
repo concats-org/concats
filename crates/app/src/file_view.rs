@@ -28,9 +28,16 @@ pub(crate) fn read_file_sides(
     path: &str,
 ) -> Result<(Option<Blob>, Blob), concats_diff::Error> {
     let repo = std::path::Path::new(repo);
-    let root = load::discover(repo)
-        .ok_or_else(|| concats_diff::Error::NoRepository(repo.to_path_buf()))?;
-    let repo = load::open_repo(&root)?;
+    // NOTE: a directory without Git has only the file on disk, which stands in
+    // for its own base, so nothing draws as changed.
+    let (root, repo) = if let Some(root) = load::discover(repo) {
+        let opened = load::open_repo(&root)?;
+        (root, Some(opened))
+    } else {
+        let dir = load::root(repo)
+            .ok_or_else(|| concats_diff::Error::NoRepository(repo.to_path_buf()))?;
+        (dir, None)
+    };
     let (base, head) = range;
     let ext = std::path::Path::new(path)
         .extension()
@@ -45,7 +52,12 @@ pub(crate) fn read_file_sides(
         )
     };
 
-    let (head_oid, head_bytes) = load::read_at_head(&repo, head, path)?;
+    let (head_oid, head_bytes) = if let Some(repo) = &repo {
+        load::read_at_head(repo, head, path)?
+    } else {
+        let bytes = load::read_worktree(&root, path)?;
+        (concats_sync::hash_object(&bytes), bytes)
+    };
     // With no head commit the bytes came off the working tree, so this side is
     // the file itself and can be written back; with one they came out of the
     // object database, and there is nothing to write to. The path is taken off
@@ -65,9 +77,12 @@ pub(crate) fn read_file_sides(
             path: path.to_string(),
         });
     }
-    let base = load::read_at_base(&repo, base, path)?
-        .filter(|(_, bytes)| !bytes.contains(&0))
-        .map(|(oid, bytes)| blob(oid, bytes));
+    let base = match &repo {
+        Some(repo) => load::read_at_base(repo, base, path)?,
+        None => Some((head_oid, head_bytes.clone())),
+    }
+    .filter(|(_, bytes)| !bytes.contains(&0))
+    .map(|(oid, bytes)| blob(oid, bytes));
     let mut head = blob(head_oid, head_bytes);
     head.origin = origin;
     Ok((base, head))

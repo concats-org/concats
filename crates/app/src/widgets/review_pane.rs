@@ -333,24 +333,30 @@ script_mod! {
                     text_style: FONT{font_size: 8.25}
                 }
             }
-            Divider {}
             // The range as a breadcrumb, `base / head`: each end is a chip
             // that drops down its own picker. The App's WindowDragQuery
             // handler carves the chips out of the header's drag band so the
-            // clicks actually arrive.
-            base_button := RangeChip {
-                icon_walk: Walk{width: 12 height: Fit}
-                draw_icon +: {
-                    svg: crate_resource("self:resources/icons/git_branch.svg")
-                    color: C_DIM
+            // clicks actually arrive. One view, so a directory without Git
+            // can leave the whole range out.
+            range := View {
+                width: Fit height: Fit
+                flow: Right
+                align: Align{y: 0.5}
+                Divider {}
+                base_button := RangeChip {
+                    icon_walk: Walk{width: 12 height: Fit}
+                    draw_icon +: {
+                        svg: crate_resource("self:resources/icons/git_branch.svg")
+                        color: C_DIM
+                    }
                 }
+                Label {
+                    text: "/"
+                    draw_text.color: C_FAINT
+                    draw_text.text_style: FONT{font_size: 8.25}
+                }
+                head_button := RangeChip {}
             }
-            Label {
-                text: "/"
-                draw_text.color: C_FAINT
-                draw_text.text_style: FONT{font_size: 8.25}
-            }
-            head_button := RangeChip {}
             // Sits right after the diff chip: click to reload the open repo
             // at its current range. Icon color is the theme's (C_DIM/C_TEXT),
             // so it tracks light/dark.
@@ -1870,12 +1876,18 @@ impl Widget for ReviewPane {
         // NOTE: Every draw, because a restored layout brings back the title it
         // was saved with.
         if document.generation > 0 {
-            let rev = match document.head_oid {
-                Some(oid) => format!("{} · {}", document.head, &oid.to_string()[..7]),
-                None => document.head.clone(),
-            };
             let spec = browser_tab_spec();
-            let title = format!("{} · {rev}", spec.title);
+            let title = match document.head_oid {
+                // A directory without Git has no revision to name.
+                _ if document.without_git => spec.title.to_string(),
+                Some(oid) => format!(
+                    "{} · {} · {}",
+                    spec.title,
+                    document.head,
+                    &oid.to_string()[..7]
+                ),
+                None => format!("{} · {}", spec.title, document.head),
+            };
             self.view
                 .dock(cx, ids!(dock))
                 .set_tab_title(cx, spec.id, title);

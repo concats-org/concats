@@ -719,6 +719,8 @@ impl AppWindow {
                 .set_text(cx, if dir.is_empty() { "concats app" } else { &dir });
             pane.button(cx, ids!(base_button)).set_text(cx, &s.base);
             pane.button(cx, ids!(head_button)).set_text(cx, &s.head);
+            // A directory without Git has no range to pick: just its name.
+            pane.view(cx, ids!(range)).set_visible(cx, !s.without_git);
             let root = concats_diff::load::discover(std::path::Path::new(&s.repo))
                 .unwrap_or_else(|| PathBuf::from(&s.repo));
             if let Some(mut rule) = pane

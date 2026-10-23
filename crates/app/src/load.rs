@@ -93,6 +93,19 @@ fn load_document(target: &Target, guide: Option<String>) -> ReviewDoc {
             let guide = guide_for(next.guide_path.as_deref(), &loaded);
             next.applied_guide_at = guide.as_ref().and_then(|(_, at)| *at);
             build_review(&mut next, loaded, target, guide.map(|(md, _)| md));
+            if next.without_git {
+                next.files_rows = vec![
+                    Row::Title {
+                        text: "# No Git history here".into(),
+                    },
+                    Row::Prose {
+                        md: "This directory is not a Git repository, so there is nothing to \
+                             diff. Open its files from the file browser: they edit in place, \
+                             and comments on their lines are kept in `.concats/`."
+                            .into(),
+                    },
+                ];
+            }
         }
         Err(error) => {
             next.error = Some(error.to_string());
@@ -330,6 +343,7 @@ pub(crate) fn build_review(
     guide_md: Option<String>,
 ) {
     d.git_dir = Some(loaded.git_dir.clone());
+    d.without_git = loaded.without_git;
 
     // The recorded agent sessions next to the diff: the Sessions and Commits
     // tabs. Costs one refs listing when there are none.

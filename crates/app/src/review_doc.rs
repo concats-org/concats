@@ -88,6 +88,10 @@ pub(crate) const STREAMS: [Stream; 5] = [
 ];
 
 #[derive(Clone, Default)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "Unrelated facts about one window's document, not the states of one thing."
+)]
 pub struct ReviewDoc {
     /// The Guide tab: the agent's guide.
     pub guide_rows: Vec<Row>,
@@ -131,8 +135,11 @@ pub struct ReviewDoc {
     /// The paths this range creates. Subset of `tree`; the browser dots these
     /// differently from the ones it merely edits.
     pub added: HashSet<String>,
-    /// The repo's .git dir — the review store's identity.
+    /// The repo's .git dir — the review store's identity; `.concats/` in a
+    /// directory without Git.
     pub git_dir: Option<std::path::PathBuf>,
+    /// A directory without Git: files to open, nothing to diff, no range.
+    pub without_git: bool,
     /// Set on a WORKTREE load: the working directory. `Some` is what marks
     /// this pane's review as a worktree review (enables "stage seen hunks",
     /// drives the staleness poll).
