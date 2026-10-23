@@ -96,6 +96,9 @@ const FILE_HEADER_TOP_PADDING: f64 = 16.0;
 /// is filled by the tab strip's shadow, not by bare page — see the design's
 /// `02-header-pinned`, where the strip's falloff is cut short by the header.
 const STICKY_TOP_GAP: f64 = 8.0;
+/// Where a row lands when the list scrolls to it: just below the pinned
+/// header, which would otherwise cover it.
+const BELOW_STICKY: f64 = STICKY_TOP_GAP + STICKY_HEIGHT;
 /// Height of the pinned header's shadow, above it and below it alike.
 const STICKY_SHADOW: f64 = 12.0;
 /// The `CardEnd` row draws the card's bottom edge in its first 9pt (8pt of card
@@ -1117,8 +1120,7 @@ impl ReviewList {
             }
         });
         if let Some(row) = target {
-            // Below the pinned header, which would otherwise cover the hunk.
-            self.seek_row = Some((row, STICKY_TOP_GAP + STICKY_HEIGHT));
+            self.seek_row = Some((row, BELOW_STICKY));
             self.redraw(cx);
         }
     }
@@ -1381,7 +1383,7 @@ impl Widget for ReviewList {
                             .position(|row| matches!(row, Row::Composer))
                     })
                     .flatten();
-                let composer = composer.map(|row| (row, 0.0));
+                let composer = composer.map(|row| (row, BELOW_STICKY));
                 for (row, below) in [composer, self.seek_row.take()].into_iter().flatten() {
                     if let Some(entry) = self.entry_of(row) {
                         list.set_first_id_and_scroll(entry, below);
@@ -1399,7 +1401,7 @@ impl Widget for ReviewList {
                         Some(Band { entry, top, height })
                     })
                     .collect();
-                self.arrow_pivots = arrow_pivots(&bands, STICKY_TOP_GAP + STICKY_HEIGHT);
+                self.arrow_pivots = arrow_pivots(&bands, BELOW_STICKY);
                 self.place_sticky(&list, &bands, &range, &pass)
             };
             self.draw_sticky(cx, &pass, push, lift);
