@@ -13,6 +13,10 @@
 
 use serde::{Deserialize, Serialize};
 
+/// What concats keeps in a checkout's root: the socket, and in a directory
+/// without Git the review state as well.
+pub const DIR: &str = ".concats";
+
 /// Where the app answers, relative to a checkout's root.
 ///
 /// NOTE: macOS caps a socket path at 104 bytes; a checkout nested deeper than
@@ -38,4 +42,16 @@ pub struct Target {
     pub repo: String,
     pub base: String,
     pub head: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use super::*;
+
+    #[test]
+    fn the_socket_lives_in_the_concats_directory() {
+        assert_eq!(Path::new(SOCKET).parent(), Some(Path::new(DIR)));
+    }
 }

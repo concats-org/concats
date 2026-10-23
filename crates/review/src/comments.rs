@@ -125,8 +125,10 @@ pub fn on_old_side(
     head: &str,
     comments: &[Comment],
 ) -> Result<(String, HashSet<u64>), concats_diff::Error> {
-    let root =
-        load::discover(repo).ok_or_else(|| concats_diff::Error::NoRepository(repo.into()))?;
+    // NOTE: a directory without Git has no old side for a comment to be on.
+    let Some(root) = load::discover(repo) else {
+        return Ok((String::new(), HashSet::new()));
+    };
     let repo = load::open_repo(&root)?;
     let head = (head.trim() != WORKTREE_REV)
         .then(|| load::resolve(&repo, head))
@@ -374,9 +376,10 @@ pub fn entries(loaded: &Loaded, comments: &[Comment], scope: Scope) -> (Vec<Entr
             ..c.clone()
         })
         .collect();
+    // NOTE: a directory without Git has no range for a thread to fall outside of.
     let anchored: HashSet<u64> = comments
         .iter()
-        .filter(|c| !interchange::outside_range(c, &sides))
+        .filter(|c| loaded.without_git || !interchange::outside_range(c, &sides))
         .map(store::thread_key)
         .collect();
     let elsewhere: HashSet<u64> = comments
@@ -406,16 +409,17 @@ pub fn entries(loaded: &Loaded, comments: &[Comment], scope: Scope) -> (Vec<Entr
 /// The frontmatter a document carries: what repository, and which two oids the
 /// anchors were resolved against.
 pub fn meta(loaded: &Loaded) -> Meta {
+    // NOTE: a directory without Git has no range to name.
     let endpoint = |oid: Option<ObjectId>, sentinel: &str| {
-        oid.map_or_else(|| sentinel.to_string(), |o| o.to_string())
+        (!loaded.without_git).then(|| oid.map_or_else(|| sentinel.to_string(), |o| o.to_string()))
     };
     Meta {
         repo: loaded
             .root
             .file_name()
             .map(|n| n.to_string_lossy().into_owned()),
-        base: Some(endpoint(loaded.merge_base, INDEX_REV)),
-        head: Some(endpoint(loaded.head, WORKTREE_REV)),
+        base: endpoint(loaded.merge_base, INDEX_REV),
+        head: endpoint(loaded.head, WORKTREE_REV),
     }
 }
 

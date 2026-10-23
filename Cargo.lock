@@ -714,10 +714,12 @@ version = "0.0.0"
 dependencies = [
  "concats-fixture",
  "concats-languages",
+ "concats-state",
  "concats-sync",
  "concats-syntax",
  "concats-text",
  "gix",
+ "ignore",
  "loro",
  "tempfile",
  "thiserror 2.0.20",

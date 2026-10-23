@@ -60,7 +60,7 @@ pub fn worktree_file(root: &Path, path: &str) -> Result<PathBuf, Error> {
     Ok(target)
 }
 
-pub(crate) fn read_worktree(root: &Path, path: &str) -> Result<Vec<u8>, Error> {
+pub fn read_worktree(root: &Path, path: &str) -> Result<Vec<u8>, Error> {
     let file = worktree_file(root, path)?;
     let io = |source| Error::Io {
         path: file.clone(),
@@ -118,6 +118,8 @@ pub struct Loaded {
     /// For a main worktree the two paths are the same, so this only differs
     /// inside a `git worktree`. The per-worktree git dir is still used where it
     /// belongs — the index fingerprint the reload watches.
+    ///
+    /// A directory without Git keeps its review state in `.concats/` instead.
     pub git_dir: PathBuf,
     /// Set on a WORKTREE load: the working directory. `Some` is what marks a
     /// worktree review, and it is where "stage seen hunks" writes back to.
@@ -131,6 +133,9 @@ pub struct Loaded {
     /// lists, and the reason it can reach a file this range never touched. A
     /// WORKTREE load has no head commit, so this is the working tree instead.
     pub tree: Vec<String>,
+    /// A directory without Git: its listing and nothing to diff — see
+    /// [`directory`].
+    pub without_git: bool,
 }
 
 /// A WORKTREE load's working-tree bytes, keyed by the blob hash git would give
@@ -148,6 +153,62 @@ pub fn discover(start: &Path) -> Option<PathBuf> {
             return None;
         }
     }
+}
+
+/// The checkout `start` is in, or `start` itself when it is a directory
+/// without Git: where a window answers, and where its review state is kept.
+pub fn root(start: &Path) -> Option<PathBuf> {
+    discover(start).or_else(|| start.canonicalize().ok().filter(|dir| dir.is_dir()))
+}
+
+/// Where a directory without Git keeps its review state: beside the socket,
+/// where a repo keeps it in `.git`.
+pub fn concats_dir(root: &Path) -> PathBuf {
+    root.join(concats_state::DIR)
+}
+
+/// A directory without Git, loaded as its file listing alone: nothing to diff,
+/// and the review state in [`concats_dir`]. The listing follows `.gitignore`
+/// and `.ignore` files as a repo's would.
+pub fn directory(dir: &Path) -> Result<Loaded, Error> {
+    let root = dir
+        .canonicalize()
+        .ok()
+        .filter(|root| root.is_dir())
+        .ok_or_else(|| Error::NoRepository(dir.to_path_buf()))?;
+    let mut tree: Vec<String> = ignore::WalkBuilder::new(&root)
+        .hidden(false)
+        .require_git(false)
+        .filter_entry(|entry| {
+            entry.file_name() != concats_state::DIR && entry.file_name() != ".git"
+        })
+        .build()
+        // NOTE: an entry that cannot be read is left out, as git status leaves it out.
+        .filter_map(|entry| {
+            entry
+                .inspect_err(|error| eprintln!("concats: {error}"))
+                .ok()
+        })
+        .filter(|entry| entry.file_type().is_some_and(|kind| kind.is_file()))
+        .filter_map(|entry| {
+            let relative = entry.path().strip_prefix(&root).ok()?;
+            Some(relative.to_str()?.replace(std::path::MAIN_SEPARATOR, "/"))
+        })
+        .collect();
+    tree.sort();
+    Ok(Loaded {
+        merge_base: None,
+        head: None,
+        git_dir: concats_dir(&root),
+        root,
+        workdir: None,
+        files: Vec::new(),
+        blobs: Vec::new(),
+        stats: LoadStats::default(),
+        stage: Vec::new(),
+        tree,
+        without_git: true,
+    })
 }
 
 /// The base of the branch so far: the default branch HEAD left, by name —
@@ -217,7 +278,9 @@ pub fn worktrees(root: &Path) -> Vec<(PathBuf, String)> {
 // NOTE: the loader's entry for the CLI, the app, the socket and tests; its callees are its steps.
 // coland-ignore: @coland/high_fan_in_complex_function, @coland/high_call_degree
 pub fn load(repo_path: &Path, base_rev: &str, head_rev: &str) -> Result<Loaded, Error> {
-    let root = discover(repo_path).ok_or_else(|| Error::NoRepository(repo_path.to_path_buf()))?;
+    let Some(root) = discover(repo_path) else {
+        return directory(repo_path);
+    };
     if head_rev.trim() == WORKTREE_REV {
         return load_worktree(root, base_rev);
     }
@@ -264,6 +327,7 @@ pub fn load(repo_path: &Path, base_rev: &str, head_rev: &str) -> Result<Loaded, 
         stats: st,
         stage: Vec::new(),
         tree,
+        without_git: false,
     })
 }
 
@@ -411,6 +475,7 @@ fn load_worktree(root: PathBuf, base_rev: &str) -> Result<Loaded, Error> {
         stats: st,
         stage,
         tree,
+        without_git: false,
     })
 }
 
@@ -1499,6 +1564,50 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn a_directory_without_git_lists_what_its_ignore_files_keep() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        for (path, text) in [
+            ("a.txt", "a\n"),
+            ("src/main.rs", "fn main() {}\n"),
+            (".gitignore", "*.log\nbuild/\n"),
+            (".ignore", "secret.txt\n"),
+            ("debug.log", "x\n"),
+            ("build/out.o", "x\n"),
+            ("secret.txt", "x\n"),
+            (".concats/app.sock", ""),
+        ] {
+            std::fs::create_dir_all(root.join(path).parent().unwrap()).unwrap();
+            std::fs::write(root.join(path), text).unwrap();
+        }
+        let loaded = load(root, "HEAD", WORKTREE_REV).unwrap();
+        assert!(loaded.without_git);
+        assert!(loaded.files.is_empty());
+        assert_eq!(
+            loaded.tree,
+            [".gitignore", ".ignore", "a.txt", "src/main.rs"]
+        );
+    }
+
+    #[test]
+    fn review_state_lives_in_git_or_else_in_concats() {
+        let plain = tempfile::tempdir().unwrap();
+        let loaded = load(plain.path(), "HEAD", WORKTREE_REV).unwrap();
+        let dir = plain.path().canonicalize().unwrap();
+        assert_eq!(loaded.git_dir, dir.join(".concats"));
+        assert_eq!(root(plain.path()), Some(dir));
+
+        let (_tmp, repo) = init_repo();
+        add(&repo, "a.txt", "a\n");
+        let loaded = load(&repo, INDEX_REV, WORKTREE_REV).unwrap();
+        assert!(!loaded.without_git);
+        assert_eq!(
+            loaded.git_dir.file_name(),
+            Some(std::ffi::OsStr::new(".git"))
+        );
     }
 
     #[test]

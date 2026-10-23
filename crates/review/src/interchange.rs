@@ -750,6 +750,7 @@ mod tests {
             workdir: None,
             stage: Vec::new(),
             tree: vec!["src/a.rs".into()],
+            without_git: false,
             files: vec![FileChange {
                 id: "f0".into(),
                 path: "src/a.rs".into(),

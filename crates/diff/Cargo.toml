@@ -13,6 +13,7 @@ name = "concats_diff"
 path = "src/lib.rs"
 
 [dependencies]
+concats_state = { workspace = true }
 concats_sync = { workspace = true }
 concats_syntax = { workspace = true }
 concats_text = { workspace = true }
@@ -20,6 +21,7 @@ concats_text = { workspace = true }
 # anything can highlight it, and you need no grammar to say "rust".
 concats_languages = { workspace = true }
 gix = { workspace = true }
+ignore = { workspace = true }
 loro = { workspace = true }
 thiserror = { workspace = true }
 
