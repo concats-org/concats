@@ -303,7 +303,7 @@ pub(crate) fn save_plan(d: &ReviewDoc, blob: u32) -> Option<SavePlan> {
     let tip = b.doc.as_ref()?.oplog_frontiers();
     let lines = b.line_moves(&b.disk, &tip);
     Some(SavePlan {
-        root: d.worktree_review().then(|| d.root.clone())?,
+        root: d.root.clone(),
         version: tip,
         path,
         text: b.text.clone(),
@@ -520,6 +520,26 @@ mod tests {
         assert_eq!(plan.lines.get(&0), Some(&0), "the line above is untouched");
         assert_eq!(plan.lines.get(&1), Some(&2), "'b' was pushed down one");
         assert_eq!(plan.lines.get(&2), Some(&3), "and so was 'c'");
+    }
+
+    #[test]
+    fn a_directory_without_git_saves_its_file_tabs() {
+        let mut d = ReviewDoc {
+            root: "/tmp".into(),
+            without_git: true,
+            ..ReviewDoc::default()
+        };
+        let mut head = Blob::new(oid(2), "txt".into(), "a\n".into());
+        head.origin = Some("/tmp/a.txt".into());
+        d.blobs.push(head);
+        d.caret = Some(Caret {
+            blob: 0,
+            line: 0,
+            byte: 0,
+        });
+        assert!(type_at(&mut d, "X", 0));
+        let plan = save_plan(&d, 0).expect("a dirty buffer has a plan");
+        assert_eq!(plan.text, "Xa\n");
     }
 
     #[test]
