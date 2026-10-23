@@ -285,6 +285,9 @@ pub struct TerminalView {
     cell_height: f64,
     #[rust]
     cell_offset_y: f64,
+    /// The device pixel scale the cell metrics were snapped to.
+    #[rust(1.0)]
+    dpi: f64,
     #[rust]
     session: Option<Session>,
     #[rust]
@@ -448,9 +451,15 @@ impl TerminalView {
             .and_then(|row| row.glyphs.first())
             .expect("the bundled terminal font contains M");
         let glyph_height = (glyph.ascender_in_lpxs() - glyph.descender_in_lpxs()) * font_scale;
-        self.cell_width = f64::from(glyph.advance_in_lpxs() * font_scale);
-        self.cell_height = f64::from(glyph_height * self.draw_text.text_style.line_spacing);
-        self.cell_offset_y = ((self.cell_height - f64::from(glyph_height)) * 0.5).max(0.0);
+        // NOTE: down, not to the nearest pixel: box and block glyphs still come
+        // from the font at its own size, and a cell a fraction smaller than
+        // one overlaps its neighbour where a larger cell would show a seam.
+        let dpi = cx.current_dpi_factor();
+        self.dpi = dpi;
+        let line = glyph_height * self.draw_text.text_style.line_spacing;
+        self.cell_width = snap(f64::from(glyph.advance_in_lpxs() * font_scale), dpi);
+        self.cell_height = snap(f64::from(line), dpi);
+        self.cell_offset_y = snap((self.cell_height - f64::from(glyph_height)) * 0.5, dpi).max(0.0);
         self.glyph_cache.clear();
         self.metrics_for = Some(metrics_for);
     }
@@ -482,8 +491,8 @@ impl TerminalView {
     /// Where the top left cell is drawn.
     fn origin(&self) -> Vec2d {
         dvec2(
-            self.unscrolled_rect.pos.x + self.pad_x,
-            self.unscrolled_rect.pos.y + self.pad_y,
+            snap(self.unscrolled_rect.pos.x + self.pad_x, self.dpi),
+            snap(self.unscrolled_rect.pos.y + self.pad_y, self.dpi),
         )
     }
 
@@ -611,7 +620,10 @@ impl TerminalView {
                 key.1 = flags & Flags::BOLD_ITALIC;
                 self.cache_terminal_glyphs(cx, &key);
                 if let Some(run) = self.glyph_cache.get(&key) {
-                    let baseline_y = y + self.cell_offset_y + f64::from(run.ascender_in_lpxs);
+                    let baseline_y = snap(
+                        y + self.cell_offset_y + f64::from(run.ascender_in_lpxs),
+                        self.dpi,
+                    );
                     for glyph in &run.glyphs {
                         self.draw_text.draw_rasterized_glyph_abs(
                             cx,
@@ -888,6 +900,13 @@ impl TerminalView {
             _ => false,
         }
     }
+}
+
+/// `lpxs` moved down onto the device pixel grid at `dpi`, the way Ghostty and
+/// Alacritty place their cells, so a stem or a row edge never lands between
+/// two pixels.
+fn snap(lpxs: f64, dpi: f64) -> f64 {
+    (lpxs * dpi).floor() / dpi
 }
 
 impl Widget for TerminalView {
@@ -1410,6 +1429,14 @@ mod tests {
             RegexSearch::new(r"\bfiller\b").is_err(),
             "the terminal's search cannot bound a Unicode word"
         );
+    }
+
+    #[test]
+    fn cells_snap_down_onto_device_pixels() {
+        assert_eq!(snap(7.8, 2.0), 7.5);
+        assert_eq!(snap(15.84, 2.0), 15.5);
+        assert_eq!(snap(7.8, 1.0), 7.0);
+        assert_eq!(snap(8.0, 2.0), 8.0);
     }
 
     #[test]
