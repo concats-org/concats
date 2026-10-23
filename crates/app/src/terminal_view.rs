@@ -117,6 +117,21 @@ script_mod! {
         line_spacing: 1.0
     }
 
+    // The same chain at a bold weight, for the cells a program makes bold. A
+    // variable face takes it on its `wght` axis; a fixed one stays regular.
+    let TERM_FONT_BOLD = TextStyle{
+        font_family: FontFamily{
+            first := FontMember{res: mod.app_font.first asc: 0.0 desc: 0.0 weight: 700.0}
+            second := FontMember{res: mod.app_font.second asc: 0.0 desc: 0.0 weight: 700.0}
+            third := FontMember{res: mod.app_font.third asc: 0.0 desc: 0.0 weight: 700.0}
+            fourth := FontMember{res: mod.app_font.fourth asc: 0.0 desc: 0.0 weight: 700.0}
+            mono := FontMember{res: mod.app_font.mono asc: 0.0 desc: 0.0 weight: 700.0}
+            cjk := FontMember{res: mod.app_font.cjk asc: 0.0 desc: 0.0 weight: 700.0}
+        }
+        font_size: mod.app_font.terminal_size
+        line_spacing: 1.0
+    }
+
     mod.widgets.TerminalView = set_type_default() do mod.widgets.TerminalViewBase {
         width: Fill
         height: Fill
@@ -136,6 +151,9 @@ script_mod! {
         draw_text +: {
             draw_call_group: @text
             text_style: TERM_FONT
+        }
+        draw_bold +: {
+            text_style: TERM_FONT_BOLD
         }
         find_bar: mod.widgets.TabBar {
             find_row := mod.widgets.FindRow {
@@ -243,6 +261,10 @@ pub struct TerminalView {
     draw_bg: DrawQuad,
     #[live]
     draw_text: DrawText,
+    /// Lays out the bold cells only: their glyphs draw through `draw_text`
+    /// with the rest.
+    #[live]
+    draw_bold: DrawText,
     #[live]
     draw_cursor: DrawTerminalCursor,
     #[live]
@@ -480,7 +502,12 @@ impl TerminalView {
         if self.glyph_cache.contains_key(key) {
             return;
         }
-        let Some(run) = self.draw_text.prepare_single_line_run(cx, &key.0) else {
+        let layout = if key.1.contains(Flags::BOLD) {
+            &mut self.draw_bold
+        } else {
+            &mut self.draw_text
+        };
+        let Some(run) = layout.prepare_single_line_run(cx, &key.0) else {
             return;
         };
         self.glyph_cache.insert(key.clone(), run);
