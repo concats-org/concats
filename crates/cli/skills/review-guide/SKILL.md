@@ -77,9 +77,9 @@ the user gave you:
 2. **No arguments.** Run every `concats` command **without any
    `--repo`/`--base`/`--head` flags**, from inside the checkout. When the
    review app has it open, the bare commands target exactly the diff its
-   window shows (the app answers on `.concats/app.sock` in the checkout's
-   root); anywhere else they review the branch so far, from where HEAD left
-   the default branch to the working tree. Never invent a range.
+   window shows (the app reads `.concats/app.pipe` in the checkout's root);
+   anywhere else they review the branch so far, from where HEAD left the
+   default branch to the working tree. Never invent a range.
 
 This is the tightest loop: the reviewer opens the checkout in the app,
 starts an agent anywhere in it, and says `/review-guide` — the bare commands

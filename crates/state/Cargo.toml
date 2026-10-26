@@ -13,4 +13,8 @@ name = "concats_state"
 path = "src/lib.rs"
 
 [dependencies]
+nix = { workspace = true }
 serde = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

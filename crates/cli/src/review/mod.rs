@@ -9,13 +9,13 @@
 //!
 //! Every command works on `base...head` and takes it the same way:
 //! `--repo`/`--base`/`--head`, falling back to what the app shows for the repo.
-//! A window answers on a socket in the root of the checkout it shows
-//! ([`concats_state::SOCKET`]) and reads its range off the document at the
-//! moment it is asked. So an agent anywhere in that checkout reviews the diff on
-//! screen with no flags at all, across range switches, and a linked worktree
-//! never answers for another. Without an app, the review is the branch so far:
-//! from where HEAD left the default branch to the working tree, staged or not.
-//! `--repo` defaults to the cwd, like git.
+//! A window reads a pipe in the root of the checkout it shows
+//! ([`concats_state::PIPE`]) and answers with its range as the document has
+//! it at the moment it is asked. So an agent anywhere in that checkout reviews
+//! the diff on screen with no flags at all, across range switches, and a
+//! linked worktree never answers for another. Without an app, the review is
+//! the branch so far: from where HEAD left the default branch to the working
+//! tree, staged or not. `--repo` defaults to the cwd, like git.
 //!
 //! ## Exit codes
 //!
@@ -26,16 +26,11 @@
 //! - `1` findings — broken links, coverage below the gate, nothing to act on;
 //! - `2` bad arguments, or no diff to load.
 
-use std::{
-    io::{Read, Write},
-    os::unix::net::UnixStream,
-    path::Path,
-    process::ExitCode,
-};
+use std::{path::Path, process::ExitCode};
 
 use clap::{Args, Subcommand, ValueEnum};
 use concats_diff::load::{self, Loaded};
-use concats_state::Target;
+use concats_state::{Method, Request, Target};
 
 mod comments;
 mod guide;
@@ -276,64 +271,38 @@ impl RangeArgs {
     }
 }
 
-/// What the app shows for `repo`, asked over the socket in its root. `None`
-/// when no app answers there.
+/// What the app shows for `repo`, asked over the pipe in its root. `None`
+/// when no app reads it.
 fn shown_range(repo: &str) -> Option<Target> {
-    let socket = load::root(Path::new(repo))?.join(concats_state::SOCKET);
-    let mut stream = match UnixStream::connect(&socket) {
-        Ok(stream) => stream,
-        // NOTE: No socket, or one a crashed app left behind: no app open here.
-        Err(error)
-            if matches!(
-                error.kind(),
-                std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
-            ) =>
-        {
-            return None;
-        }
+    let root = load::root(Path::new(repo))?;
+    let pipe = root.join(concats_state::PIPE);
+    let request = Request {
+        method: Method::Get,
+        target: concats_state::RANGE.to_string(),
+        body: String::new(),
+    };
+    let answer = match concats_state::ask(&root, &request) {
+        Ok(answer) => answer?,
         Err(error) => {
-            // A sandbox that does not allow the socket fails here; say so,
-            // or the missing range reads as a missing app.
+            // A sandbox that does not allow the pipe fails here; say so, or
+            // the missing range reads as a missing app.
             eprintln!(
                 "warning: cannot reach concats-app on {}: {error}",
-                socket.display()
+                pipe.display()
             );
             return None;
         }
     };
-    let mut response = Vec::new();
-    let asked = write!(
-        stream,
-        "GET {} HTTP/1.1\r\nHost: concats\r\nConnection: close\r\n\r\n",
-        concats_state::RANGE
-    )
-    .and_then(|()| stream.read_to_end(&mut response));
-    if let Err(error) = asked {
-        eprintln!(
-            "warning: concats-app on {} did not answer: {error}",
-            socket.display()
-        );
-        return None;
-    }
-    let mut headers = [httparse::EMPTY_HEADER; 16];
-    let mut head = httparse::Response::new(&mut headers);
-    let Ok(httparse::Status::Complete(body)) = head.parse(&response) else {
-        eprintln!(
-            "warning: concats-app on {} sent a malformed response",
-            socket.display()
-        );
-        return None;
-    };
-    if head.code != Some(200) {
+    if answer.status != 200 {
         eprintln!(
             "warning: concats-app on {}: {}",
-            socket.display(),
-            String::from_utf8_lossy(&response[body..]).trim()
+            pipe.display(),
+            answer.body.trim()
         );
         return None;
     }
-    serde_json::from_slice(&response[body..])
-        .inspect_err(|error| eprintln!("warning: concats-app on {}: {error}", socket.display()))
+    serde_json::from_str(&answer.body)
+        .inspect_err(|error| eprintln!("warning: concats-app on {}: {error}", pipe.display()))
         .ok()
 }
 

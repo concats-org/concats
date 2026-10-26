@@ -1,6 +1,6 @@
 # /address-comments — answer the review comments on a diff, in the review.
 # The skill text is injected below so the model needs zero extra steps to
-# see it; in a checkout the app has open, the app's socket picks the range.
+# see it; in a checkout the app has open, the app's pipe picks the range.
 
 description = "Fix and answer the review comments on a diff (concats-app); args: [base] [head]"
 
@@ -9,7 +9,7 @@ Follow the skill below exactly, especially its Hard rules. Arguments given
 to this command are `[base] [head]` overrides: "{{args}}". If they are
 empty, run every concats command WITHOUT --repo/--base/--head flags:
 while the review app has the checkout open, bare commands target the diff
-its window shows (the app answers on .concats/app.sock in the checkout), and
+its window shows (the app reads .concats/app.pipe in the checkout), and
 anywhere else the CLI errors and tells you what to pass — relay that and
 ask; never invent a range.
 

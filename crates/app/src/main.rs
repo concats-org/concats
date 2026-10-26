@@ -58,11 +58,11 @@ mod find;
 mod links;
 /// Driving a load on a worker thread and landing it as a whole new document.
 mod load;
+mod pipe;
 /// The recent-repos list behind the header's picker.
 mod recents;
 mod review_doc;
 mod service;
-mod socket;
 /// The in-app terminal: PTY session + emulation (terminal.rs) and the
 /// renderer copied from makepad-studio (terminal_view.rs).
 mod terminal;
@@ -671,8 +671,8 @@ impl App {
     fn retire_window(&mut self, window_id: WindowId) {
         let closed = |w: &AppWindow| w.window.as_window().window_id() == Some(window_id);
         if let Some(window) = self.windows.iter().find(|w| closed(w)) {
-            // NOTE: The pane may outlive the window; its socket must not.
-            window.state.socket.lock().unwrap().take();
+            // NOTE: The pane may outlive the window; its pipe must not.
+            window.state.pipe.lock().unwrap().take();
         }
         self.windows.retain(|w| !closed(w));
     }

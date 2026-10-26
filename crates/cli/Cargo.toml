@@ -33,8 +33,6 @@ concats_languages = { workspace = true, optional = true }
 concats_state = { workspace = true, optional = true }
 concats_review = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
-# Reads the app's answer on its socket (`concats_state::SOCKET`).
-httparse = { version = "1", optional = true }
 
 [dev-dependencies]
 concats_fixture = { workspace = true }
@@ -53,5 +51,4 @@ review = [
     "dep:concats_state",
     "dep:concats_review",
     "dep:serde_json",
-    "dep:httparse",
 ]

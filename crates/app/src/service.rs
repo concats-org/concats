@@ -95,7 +95,7 @@ pub(crate) enum ReviewCmd {
         last: u64,
     },
     /// Share → copy: the threads the window shows, exported the way the CLI
-    /// and the socket export them, for the pane to put on the clipboard.
+    /// and the pipe export them, for the pane to put on the clipboard.
     Share {
         window: LiveId,
         target: concats_state::Target,
@@ -355,7 +355,7 @@ impl AppService {
     }
 
     /// The threads in `shown`, loaded and exported the way `concats comments
-    /// export` and the socket export them: the text to copy, when there is
+    /// export` and the pipe export them: the text to copy, when there is
     /// any, and what the status bar says.
     fn share(
         &mut self,
@@ -821,7 +821,7 @@ mod tests {
     }
 
     /// Share exports the threads on screen and nothing else, the way the
-    /// socket does, in either text form.
+    /// pipe does, in either text form.
     #[test]
     fn share_exports_the_threads_on_screen() {
         let (tmp, mut svc, _) = service();

@@ -2,8 +2,7 @@
 
 use std::{
     fs,
-    io::{BufRead, BufReader, Write},
-    os::unix::net::UnixListener,
+    io::{BufRead, BufReader},
     path::Path,
     process::{Command, Output},
 };
@@ -240,28 +239,27 @@ fn a_bare_command_reviews_what_the_app_shows_for_the_checkout() {
     let repo = sandbox.path().canonicalize().unwrap();
 
     // The app's side of it: one answer, the way it answers `GET /range`.
-    let socket = repo.join(concats_state::SOCKET);
-    fs::create_dir_all(socket.parent().unwrap()).unwrap();
-    let listener = UnixListener::bind(&socket).unwrap();
+    let pipe = concats_state::listen(&repo).unwrap().unwrap();
+    let root = repo.clone();
     let app = std::thread::spawn(move || {
-        let (mut stream, _) = listener.accept().unwrap();
-        let mut request = String::new();
-        BufReader::new(&stream).read_line(&mut request).unwrap();
+        let mut id = String::new();
+        BufReader::new(pipe).read_line(&mut id).unwrap();
+        let id = id.trim_end();
+        let request = concats_state::read_request(&root, id).unwrap();
         let range = r#"{"repo":".","base":"HEAD","head":"WORKTREE"}"#;
-        write!(
-            stream,
-            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\
-             Connection: close\r\n\r\n{range}",
-            range.len()
-        )
-        .unwrap();
+        let answer = concats_state::Answer {
+            status: 200,
+            body: range.to_string(),
+        };
+        concats_state::answer(&root, id, &answer).unwrap();
         request
     });
 
     let shown = manifest(&repo);
+    let asked = app.join().unwrap();
     assert_eq!(
-        app.join().unwrap().trim(),
-        format!("GET {} HTTP/1.1", concats_state::RANGE)
+        (asked.method, asked.target.as_str()),
+        (concats_state::Method::Get, concats_state::RANGE)
     );
     let stdout = String::from_utf8_lossy(&shown.stdout);
     assert!(

@@ -179,7 +179,7 @@ pub fn root(start: &Path) -> Option<PathBuf> {
     discover(start).or_else(|| start.canonicalize().ok().filter(|dir| dir.is_dir()))
 }
 
-/// Where a directory without Git keeps its review state: beside the socket,
+/// Where a directory without Git keeps its review state: beside the pipe,
 /// where a repo keeps it in `.git`.
 pub fn concats_dir(root: &Path) -> PathBuf {
     root.join(concats_state::DIR)
@@ -292,7 +292,7 @@ pub fn worktrees(root: &Path) -> Vec<(PathBuf, String)> {
         .collect()
 }
 
-// NOTE: the loader's entry for the CLI, the app, the socket and tests; its callees are its steps.
+// NOTE: the loader's entry for the CLI, the app, its pipe and tests; its callees are its steps.
 // coland-ignore: @coland/high_fan_in_complex_function, @coland/high_call_degree
 pub fn load(repo_path: &Path, base_rev: &str, head_rev: &str) -> Result<Loaded, Error> {
     let Some(root) = discover(repo_path) else {
@@ -1573,7 +1573,7 @@ mod tests {
             ("debug.log", "x\n"),
             ("build/out.o", "x\n"),
             ("secret.txt", "x\n"),
-            (".concats/app.sock", ""),
+            (".concats/app.pipe", ""),
         ] {
             std::fs::create_dir_all(root.join(path).parent().unwrap()).unwrap();
             std::fs::write(root.join(path), text).unwrap();

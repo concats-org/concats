@@ -1,5 +1,5 @@
 //! Comments against a loaded diff: what `concats comments` and the app's
-//! socket share, so the two answer an agent the same way.
+//! pipe share, so the two answer an agent the same way.
 //!
 //! Everything here anchors to content: a comment names a blob and a line range,
 //! so it renders in every view that shows those lines. Line numbers come in as
@@ -241,8 +241,8 @@ pub fn reply(
     })
 }
 
-/// What the CLI and the socket answer a new comment with. A root always says
-/// where it went; a reply only when it was moved off its root's lines.
+/// What the CLI and the app's pipe answer a new comment with. A root always
+/// says where it went; a reply only when it was moved off its root's lines.
 /// `anchored` is the diff its lines were resolved in: always there for a root,
 /// for a reply only when it moved.
 pub fn added(c: &Comment, anchored: Option<&Loaded>) -> String {

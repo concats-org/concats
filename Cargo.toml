@@ -74,6 +74,8 @@ makepad-platform = { git = "https://github.com/concats-org/makepad", branch = "i
 makepad-service = { path = "crates/makepad-service" }
 makepad-widgets = { git = "https://github.com/concats-org/makepad", branch = "int" }
 miette = { version = "7.6.0", features = ["fancy"] }
+# mkfifo and fcntl without unsafe, for the pipe the app reads.
+nix = { version = "0.31", features = ["fs"] }
 pest = "2.8.3"
 pest_derive = "2.8.3"
 rusqlite = { version = "0.37", features = ["bundled"] }

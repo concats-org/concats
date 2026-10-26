@@ -55,10 +55,10 @@ pub(crate) fn spawn_load(
             return;
         }
         // NOTE: The document lock also orders new load requests, so an older
-        // worker cannot move the socket after a newer one has started.
+        // worker cannot move the pipe after a newer one has started.
         let document = state.write();
         if state.load_is_current(request) && document.error.is_none() {
-            crate::socket::serve(&state, &document.repo);
+            crate::pipe::serve(&state, &document.repo);
         }
         drop(document);
         SignalToUI::set_ui_signal();

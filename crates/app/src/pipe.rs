@@ -1,7 +1,7 @@
-//! The socket a window answers on in the checkout it shows, so `concats` and
-//! any agent working there can ask what is on screen — the range, and the
-//! threads it shows — and answer them. Plain HTTP, so `curl --unix-socket` is
-//! a client; the routes are `concats_state`'s.
+//! The pipe a window reads in the checkout it shows, so `concats` and any
+//! agent working there can ask what is on screen — the range, and the threads
+//! it shows — and answer them. How a request travels, and the routes, are
+//! `concats_state`'s.
 //!
 //! Every request reads the document as it stands when it arrives: an answer
 //! follows the window across range switches with nothing to republish.
@@ -11,10 +11,10 @@
 //! ever reviewed in the repo; an agent asking for "the comments" means these.
 
 use std::{
-    io::Cursor,
-    os::unix::net::UnixStream,
+    fs::File,
+    io::{BufRead, BufReader, Write},
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, Weak},
 };
 
 use concats_review::{
@@ -23,22 +23,31 @@ use concats_review::{
     interchange,
     store::Store,
 };
-use concats_state::{COMMENTS, RANGE, REPLIES};
-use tiny_http::{Header, Method, Request, Response};
+use concats_state::{Answer, COMMENTS, Method, RANGE, REPLIES, Request};
 
 use crate::{review_doc::ReviewDoc, window::WindowState};
 
-/// A bound socket. Dropping it stops the server, which removes the socket file.
-pub(crate) struct Socket {
+/// A pipe a window reads. Dropping it removes the pipe and ends the thread
+/// reading it.
+pub(crate) struct Pipe {
     root: PathBuf,
-    server: Arc<tiny_http::Server>,
+    /// The reading thread's pipe, to stop it with an empty line — never a
+    /// request id.
+    wake: File,
 }
 
-impl Drop for Socket {
+impl Drop for Pipe {
     fn drop(&mut self) {
-        // NOTE: The serving thread holds the other handle; whichever goes last
-        // removes the file.
-        self.server.unblock();
+        let path = self.root.join(concats_state::PIPE);
+        if let Err(error) = std::fs::remove_file(&path) {
+            eprintln!("concats-app: cannot remove {}: {error}", path.display());
+        }
+        if let Err(error) = self.wake.write_all(b"\n") {
+            eprintln!(
+                "concats-app: cannot stop reading {}: {error}",
+                path.display()
+            );
+        }
     }
 }
 
@@ -48,82 +57,83 @@ pub(crate) fn serve(state: &Arc<WindowState>, repo: &str) {
     let Some(root) = concats_diff::load::root(Path::new(repo)) else {
         return;
     };
-    let mut socket = state.socket.lock().unwrap();
-    if socket.as_ref().is_some_and(|s| s.root == root) {
+    let mut pipe = state.pipe.lock().unwrap();
+    if pipe.as_ref().is_some_and(|p| p.root == root) {
         return;
     }
-    *socket = None;
-    let Some(server) = bind(&root) else {
-        return;
-    };
-    let window = Arc::downgrade(state);
-    let serving = server.clone();
-    std::thread::spawn(move || {
-        for mut request in serving.incoming_requests() {
-            let Some(state) = window.upgrade() else {
-                break;
-            };
-            let response = respond(&state.snapshot(), &mut request);
-            if let Err(error) = request.respond(response) {
-                // NOTE: The client hung up; there is no one left to tell.
-                eprintln!("concats-app: socket response not sent: {error}");
-            }
-        }
-    });
-    *socket = Some(Socket { root, server });
-}
-
-/// Bind `root`'s socket, unless another window — in this app or another one —
-/// already answers there: the first to open a checkout keeps it.
-fn bind(root: &Path) -> Option<Arc<tiny_http::Server>> {
-    let path = root.join(concats_state::SOCKET);
-    let dir = path.parent()?;
-    if let Err(error) = std::fs::create_dir_all(dir) {
-        eprintln!("concats-app: cannot create {}: {error}", dir.display());
-        return None;
-    }
-    if UnixStream::connect(&path).is_ok() {
-        return None;
-    }
-    // NOTE: Nothing answers, so the file is absent or left by a crash; bind
-    // will not take the path while it exists.
-    if let Err(error) = std::fs::remove_file(&path)
-        && error.kind() != std::io::ErrorKind::NotFound
-    {
-        eprintln!(
-            "concats-app: cannot remove the stale socket {}: {error}",
-            path.display()
-        );
-        return None;
-    }
-    tiny_http::Server::http_unix(&path)
-        .map(Arc::new)
-        .inspect_err(|error| {
+    *pipe = None;
+    let reading = match concats_state::listen(&root) {
+        Ok(Some(reading)) => reading,
+        // NOTE: Another window reads it: the first to open a checkout keeps it.
+        Ok(None) => return,
+        Err(error) => {
+            let path = root.join(concats_state::PIPE);
             eprintln!("concats-app: cannot answer on {}: {error}", path.display());
-        })
-        .ok()
+            return;
+        }
+    };
+    let wake = match reading.try_clone() {
+        Ok(wake) => wake,
+        Err(error) => {
+            eprintln!("concats-app: cannot answer on {}: {error}", root.display());
+            return;
+        }
+    };
+    let (window, answering) = (Arc::downgrade(state), root.clone());
+    std::thread::spawn(move || read(reading, &answering, &window));
+    *pipe = Some(Pipe { root, wake });
 }
 
-type Answer = Response<Cursor<Vec<u8>>>;
+/// Answer each request id clients write to the pipe, until the window lets go
+/// of it or goes away.
+// NOTE: the reading thread's body, apart from the setup `serve` does on the
+// caller's thread.
+// coland-ignore: @coland/single_caller_private_function
+fn read(pipe: File, root: &Path, window: &Weak<WindowState>) {
+    for line in BufReader::new(pipe).split(b'\n') {
+        // NOTE: A read that fails will fail again; this window stops answering.
+        let Ok(line) = line else {
+            break;
+        };
+        let Some(state) = window.upgrade().filter(|_| !line.is_empty()) else {
+            break;
+        };
+        if let Ok(id) = std::str::from_utf8(&line) {
+            respond_to(&state.snapshot(), root, id);
+        }
+    }
+}
 
-fn respond(doc: &ReviewDoc, request: &mut Request) -> Answer {
-    let Ok(url) = url::Url::parse("http://concats").and_then(|base| base.join(request.url()))
+/// Answer the request left under `id`; when it cannot be read, the client
+/// hears why.
+// NOTE: the reading loop's one step, apart so the loop only says when to stop.
+// coland-ignore: @coland/single_caller_private_function
+fn respond_to(doc: &ReviewDoc, root: &Path, id: &str) {
+    let answer = match concats_state::read_request(root, id) {
+        Ok(request) => respond(doc, &request),
+        Err(error) => text(400, &format!("cannot read the request: {error}")),
+    };
+    if let Err(error) = concats_state::answer(root, id, &answer) {
+        // NOTE: The client hung up; there is no one left to tell.
+        eprintln!("concats-app: answer to {id} not sent: {error}");
+    }
+}
+
+fn respond(doc: &ReviewDoc, request: &Request) -> Answer {
+    let Ok(url) = url::Url::parse("http://concats").and_then(|base| base.join(&request.target))
     else {
         return text(400, "malformed request target");
     };
-    match (request.method(), url.path(), reply_to(url.path())) {
+    match (request.method, url.path(), reply_to(url.path())) {
         (Method::Get, RANGE, _) => match serde_json::to_string(&doc.target()) {
-            Ok(json) => typed(200, "application/json", json),
+            Ok(json) => Answer {
+                status: 200,
+                body: json,
+            },
             Err(error) => text(500, &error.to_string()),
         },
         (Method::Get, COMMENTS, _) => shown_comments(doc, query(&url, "all").is_some()),
-        (Method::Post, _, Some(to)) => {
-            let mut body = String::new();
-            if request.as_reader().read_to_string(&mut body).is_err() {
-                return text(400, "the reply body must be UTF-8 text");
-            }
-            reply(doc, to, body.trim(), &url)
-        }
+        (Method::Post, _, Some(to)) => reply(doc, to, request.body.trim(), &url),
         _ => text(
             404,
             &format!(
@@ -162,11 +172,10 @@ fn shown_comments(doc: &ReviewDoc, all: bool) -> Answer {
         Scope::Shown(&doc.placed_threads)
     };
     let (entries, _) = comments::entries(&loaded, &Store::open(&loaded.git_dir).comments, scope);
-    typed(
-        200,
-        "application/json",
-        interchange::render(&comments::meta(&loaded), &entries),
-    )
+    Answer {
+        status: 200,
+        body: interchange::render(&comments::meta(&loaded), &entries),
+    }
 }
 
 /// Answer the thread `to` is in, the way `concats comments reply` does: by
@@ -211,22 +220,15 @@ fn load(doc: &ReviewDoc) -> Result<concats_diff::load::Loaded, Answer> {
 }
 
 fn text(status: u16, body: &str) -> Answer {
-    typed(status, "text/plain; charset=utf-8", format!("{body}\n"))
-}
-
-fn typed(status: u16, content_type: &str, body: String) -> Answer {
-    let header = Header::from_bytes("Content-Type", content_type).expect("a valid header");
-    Response::from_string(body)
-        .with_status_code(status)
-        .with_header(header)
+    Answer {
+        status,
+        body: format!("{body}\n"),
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        collections::HashSet,
-        io::{Read, Write},
-    };
+    use std::collections::HashSet;
 
     use concats_fixture::git;
     use concats_review::store::{Anchor, Comment};
@@ -234,22 +236,25 @@ mod tests {
     use super::*;
     use crate::makepad_widgets::LiveId;
 
-    /// One request on a fresh connection, as `curl --unix-socket` sends it:
-    /// the status and the body.
-    fn ask(socket: &Path, method: &str, target: &str, body: &str) -> (u16, String) {
-        let mut stream = UnixStream::connect(socket).unwrap();
-        write!(
-            stream,
-            "{method} {target} HTTP/1.1\r\nHost: concats\r\nConnection: close\r\n\
-             Content-Length: {}\r\n\r\n{body}",
-            body.len()
+    /// One request, as `concats` asks it: the status and the body.
+    fn ask(root: &Path, method: Method, target: &str, body: &str) -> (u16, String) {
+        let request = Request {
+            method,
+            target: target.into(),
+            body: body.into(),
+        };
+        let answer = concats_state::ask(root, &request).unwrap().unwrap();
+        (answer.status, answer.body)
+    }
+
+    /// A reply to comment `to`, posted with `query`.
+    fn post_reply(root: &Path, to: u64, query: &str, body: &str) -> (u16, String) {
+        ask(
+            root,
+            Method::Post,
+            &format!("{COMMENTS}/{to}/{REPLIES}{query}"),
+            body,
         )
-        .unwrap();
-        let mut response = String::new();
-        stream.read_to_string(&mut response).unwrap();
-        let (head, body) = response.split_once("\r\n\r\n").unwrap();
-        let status = head.split(' ').nth(1).unwrap().parse().unwrap();
-        (status, body.to_string())
     }
 
     fn comment(path: &str, text: &str, body: &str) -> Comment {
@@ -274,7 +279,7 @@ mod tests {
     #[test]
     #[expect(
         clippy::cognitive_complexity,
-        reason = "One window's socket, asked every route in turn against one store."
+        reason = "One window's pipe, asked every route in turn against one store."
     )]
     fn a_window_answers_for_its_checkout_with_the_threads_it_shows() {
         let tmp = tempfile::tempdir().unwrap();
@@ -306,9 +311,8 @@ mod tests {
             d.placed_threads = HashSet::from([shown]);
         });
         serve(&state, &root.display().to_string());
-        let socket = root.join(concats_state::SOCKET);
 
-        let (status, range) = ask(&socket, "GET", RANGE, "");
+        let (status, range) = ask(&root, Method::Get, RANGE, "");
         assert_eq!(status, 200);
         let range: concats_state::Target = serde_json::from_str(&range).unwrap();
         assert_eq!(
@@ -316,52 +320,27 @@ mod tests {
             ("HEAD", "WORKTREE")
         );
 
-        let (status, threads) = ask(&socket, "GET", COMMENTS, "");
+        let (status, threads) = ask(&root, Method::Get, COMMENTS, "");
         assert_eq!(status, 200);
         assert!(threads.contains("on screen"), "{threads}");
         assert!(!threads.contains("another range"), "{threads}");
 
-        let (_, every) = ask(&socket, "GET", &format!("{COMMENTS}?all"), "");
+        let (_, every) = ask(&root, Method::Get, &format!("{COMMENTS}?all"), "");
         assert!(every.contains("on screen") && every.contains("another range"));
 
-        let (status, said) = ask(
-            &socket,
-            "POST",
-            &format!("{COMMENTS}/{shown}/{REPLIES}?author=claude"),
-            "fixed\n",
-        );
+        let (status, said) = post_reply(&root, shown, "?author=claude", "fixed\n");
         assert_eq!(status, 201, "{said}");
-        let (status, said) = ask(
-            &socket,
-            "POST",
-            &format!("{COMMENTS}/{elsewhere}/{REPLIES}?at=file.rs:7"),
-            "moved",
-        );
+        let (status, said) = post_reply(&root, elsewhere, "?at=file.rs:7", "moved");
         assert_eq!(status, 422);
         assert!(said.contains("not part of this diff"), "{said}");
-        let (status, said) = ask(
-            &socket,
-            "POST",
-            &format!("{COMMENTS}/{shown}/{REPLIES}?at=file.rs@INDEX:1"),
-            "moved",
-        );
+        let (status, said) = post_reply(&root, shown, "?at=file.rs@INDEX:1", "moved");
         assert_eq!(status, 422);
         assert!(said.contains("not this diff's old side"), "{said}");
-        let (status, _) = ask(&socket, "POST", &format!("{COMMENTS}/999/{REPLIES}"), "x");
+        let (status, _) = post_reply(&root, 999, "", "x");
         assert_eq!(status, 404);
-        let (status, _) = ask(
-            &socket,
-            "POST",
-            &format!("{COMMENTS}/999/{REPLIES}?at=file.rs:1"),
-            "x",
-        );
+        let (status, _) = post_reply(&root, 999, "?at=file.rs:1", "x");
         assert_eq!(status, 404);
-        let (status, said) = ask(
-            &socket,
-            "POST",
-            &format!("{COMMENTS}/{shown}/{REPLIES}"),
-            " \n",
-        );
+        let (status, said) = post_reply(&root, shown, "", " \n");
         assert_eq!((status, said.as_str()), (400, "empty comment body\n"));
 
         let replies: Vec<Comment> = Store::open(&git_dir)
@@ -379,12 +358,17 @@ mod tests {
             (Some(shown), "fixed", Some("claude"))
         );
 
-        state.socket.lock().unwrap().take();
-        let gone = (0..100).any(|_| {
-            std::thread::sleep(std::time::Duration::from_millis(10));
-            !socket.exists()
-        });
-        assert!(gone, "closing the window leaves no socket behind");
+        state.pipe.lock().unwrap().take();
+        assert!(
+            !root.join(concats_state::PIPE).exists(),
+            "closing the window leaves no pipe behind"
+        );
+        let request = Request {
+            method: Method::Get,
+            target: RANGE.into(),
+            body: String::new(),
+        };
+        assert!(concats_state::ask(&root, &request).unwrap().is_none());
     }
 
     #[test]

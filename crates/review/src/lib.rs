@@ -14,7 +14,7 @@
 //!   review-comment shape, in and out, so a pull request's comments import
 //!   as they are;
 //! - [`comments`] — comments against a loaded diff: anchors, cursors, and
-//!   the export, shared by the CLI and the app's socket;
+//!   the export, shared by the CLI and the app's pipe;
 
 //! - [`sessions`] — concats sessions read natively, which is the "why"
 //!   column;

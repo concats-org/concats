@@ -2,7 +2,7 @@
 //! answer them, and they can be exported and imported from a pull request.
 //!
 //! What a comment anchors to, and how it exports, is
-//! [`concats_review::comments`]' — the app's socket answers through the same
+//! [`concats_review::comments`]' — the app's pipe answers through the same
 //! functions.
 
 use std::{collections::HashSet, path::Path, process::ExitCode};

@@ -980,7 +980,7 @@ impl ReviewPane {
     /// Share: the threads on screen in whichever form the dropdown row picked
     /// — the JSON document `concats comments import` reads back, or text to
     /// paste into an agent session. The service renders it the way the CLI and
-    /// the socket export, and the App puts it on the clipboard.
+    /// the pipe export, and the App puts it on the clipboard.
     fn share_comments(
         &mut self,
         cx: &mut Cx,
@@ -1306,7 +1306,7 @@ impl ReviewPane {
     /// Spawn this tab's shell in the loaded repo. A running session is never
     /// restarted — opening is idempotent.
     ///
-    /// The shell needs nothing else: the window answers on a socket in the
+    /// The shell needs nothing else: the window answers on a pipe in the
     /// checkout's root, so `concats manifest` (or an agent running the
     /// review-guide skill) anywhere in it targets the diff on screen with no
     /// flags, even after the reviewer switches ranges.

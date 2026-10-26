@@ -1,5 +1,5 @@
 //! One window's own state: the review document it renders, the load that
-//! produced it, and the socket it answers on.
+//! produced it, and the pipe it answers on.
 //!
 //! All of this was process-wide while there was one window. What stayed global
 //! is what is genuinely shared — the worker threads, and the review store's
@@ -43,8 +43,8 @@ pub(crate) struct WindowState {
     /// key-focus area.
     terminal_tab: AtomicU64,
     /// Where this window answers for the checkout it shows, so a bare
-    /// `concats` command — or an agent's `curl` — there follows this window.
-    pub(crate) socket: Mutex<Option<crate::socket::Socket>>,
+    /// `concats` command there follows this window.
+    pub(crate) pipe: Mutex<Option<crate::pipe::Pipe>>,
 }
 
 impl WindowState {
@@ -57,7 +57,7 @@ impl WindowState {
             load_request: AtomicU64::new(0),
             focused: AtomicBool::new(false),
             terminal_tab: AtomicU64::new(0),
-            socket: Mutex::new(None),
+            pipe: Mutex::new(None),
         })
     }
 

@@ -69,10 +69,8 @@ Run from the repo under review. Where the threads come from depends on what
 the user gave you:
 
 - **No arguments, and the review app has this checkout open** —
-  `.concats/app.sock` exists in the checkout's root. Ask the app: it answers
-  with exactly the threads its window shows, and stores your replies itself,
-  so this works from a sandbox that cannot write `.git`. Every `concats`
-  command runs **without range flags** and follows the window too.
+  `.concats/app.pipe` exists in the checkout's root. Every `concats` command
+  runs **without range flags** and follows the range the window shows.
 - **Explicit arguments** — e.g. `/address-comments INDEX WORKTREE` — go on
   every `concats` command as `--base <BASE> --head <HEAD>`.
 - **Neither** — run the commands without range flags too: the CLI then
@@ -80,22 +78,16 @@ the user gave you:
   working tree. Never invent a range.
 
 ```sh
-# 0. The conversation. If curl cannot connect, report the error verbatim and
-#    STOP — a sandbox has to allow the socket (Claude Code:
-#    sandbox.network.allowUnixSockets).
-curl -s --fail-with-body --unix-socket .concats/app.sock http://concats/comments
-
-# With a range instead. If this errors ("command not found", or a usage
-# dump), the installed binary is missing or stale — report that verbatim and
-# STOP. (`concats --help` lists every command it has.)
-concats comments export --base <BASE> --head <HEAD>
+# 0. The conversation. If this errors ("command not found", or a usage
+#    dump), the installed binary is missing or stale — report that verbatim
+#    and STOP. (`concats --help` lists every command it has.)
+concats comments export [--base <BASE> --head <HEAD>]
 ```
 
-Both leave out threads that belong elsewhere — other worktrees, or ranges
-reviewed before: the app's answer has the threads its window shows, the export
-the threads that anchor in its range. `http://concats/comments?all` and
-`concats comments export --all` include them; ask for those only when the user
-means them.
+The export leaves out threads that belong elsewhere — other worktrees, or
+ranges reviewed before: it has the threads that anchor in its range.
+`concats comments export --all` includes them; ask for that only when the user
+means it.
 
 That is the whole input: one JSON document whose `comments` are the
 threads in file order, each conversation kept whole, every comment in
@@ -157,9 +149,6 @@ Then, per thread: verify → act → answer.
 ```sh
 # 3. Answer in the thread. <id> is any comment in it — replying to a reply
 #    answers the thread, like GitHub. The author is your agent name.
-curl -s --fail-with-body --unix-socket .concats/app.sock \
-    --data-binary "<what you did, or why not>" \
-    "http://concats/comments/<id>/replies?author=<your-name>"
 concats comments reply <id> -m "<what you did, or why not>" --author <your-name>
 
 # 3b. IF YOU CHANGED THE COMMENTED LINES, say where they are now. A comment is
@@ -171,9 +160,6 @@ concats comments reply <id> -m "<what you did, or why not>" --author <your-name>
 #     and the lines are the manifest's, never computed by hand. Deleted lines
 #     take `<path>@<rev>:<start>[-<end>]`, <rev> naming the diff's old side
 #     the way `concats comments` prints it.
-curl -s --fail-with-body --unix-socket .concats/app.sock \
-    --data-binary "fixed: <what you changed>" \
-    "http://concats/comments/<id>/replies?author=<your-name>&at=<path>:<start>[-<end>]"
 concats comments reply <id> <path>:<start>[-<end>] \
     -m "fixed: <what you changed>" --author <your-name>
 ```
