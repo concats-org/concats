@@ -9,6 +9,7 @@ use std::{
 
 use concats_fixture::git;
 use concats_review::store::{Comment, Store};
+use concats_state::{Answer, Method, Request};
 
 /// A repo with `file.rs` committed as "old" and edited to "new", so the
 /// worktree range has a diff.
@@ -232,34 +233,47 @@ fn import_policies_preserve_atomicity_dry_runs_and_thread_identity() {
     assert_eq!(Store::open(&repo.join(".git")).comments.len(), 3);
 }
 
+/// The app's side of the pipe in `repo`: it gives `answers` in turn and hands
+/// back what it was asked.
+fn fake_app(repo: &Path, answers: Vec<Answer>) -> std::thread::JoinHandle<Vec<Request>> {
+    let pipe = concats_state::listen(repo).unwrap().unwrap();
+    let root = repo.to_path_buf();
+    std::thread::spawn(move || {
+        let mut ids = BufReader::new(pipe);
+        answers
+            .into_iter()
+            .map(|answer| {
+                let mut id = String::new();
+                ids.read_line(&mut id).unwrap();
+                let id = id.trim_end();
+                let request = concats_state::read_request(&root, id).unwrap();
+                concats_state::answer(&root, id, &answer).unwrap();
+                request
+            })
+            .collect()
+    })
+}
+
+fn answer(status: u16, body: &str) -> Answer {
+    Answer {
+        status,
+        body: body.to_string(),
+    }
+}
+
 /// A bare command takes its range from the app open on the checkout.
 #[test]
 fn a_bare_command_reviews_what_the_app_shows_for_the_checkout() {
     let sandbox = fixture();
     let repo = sandbox.path().canonicalize().unwrap();
-
-    // The app's side of it: one answer, the way it answers `GET /range`.
-    let pipe = concats_state::listen(&repo).unwrap().unwrap();
-    let root = repo.clone();
-    let app = std::thread::spawn(move || {
-        let mut id = String::new();
-        BufReader::new(pipe).read_line(&mut id).unwrap();
-        let id = id.trim_end();
-        let request = concats_state::read_request(&root, id).unwrap();
-        let range = r#"{"repo":".","base":"HEAD","head":"WORKTREE"}"#;
-        let answer = concats_state::Answer {
-            status: 200,
-            body: range.to_string(),
-        };
-        concats_state::answer(&root, id, &answer).unwrap();
-        request
-    });
+    let range = r#"{"repo":".","base":"HEAD","head":"WORKTREE"}"#;
+    let app = fake_app(&repo, vec![answer(200, range)]);
 
     let shown = manifest(&repo);
     let asked = app.join().unwrap();
     assert_eq!(
-        (asked.method, asked.target.as_str()),
-        (concats_state::Method::Get, concats_state::RANGE)
+        (asked[0].method, asked[0].target.as_str()),
+        (Method::Get, concats_state::RANGE)
     );
     let stdout = String::from_utf8_lossy(&shown.stdout);
     assert!(
@@ -268,4 +282,68 @@ fn a_bare_command_reviews_what_the_app_shows_for_the_checkout() {
         String::from_utf8_lossy(&shown.stderr)
     );
     assert!(stdout.contains("file.rs"), "{stdout}");
+}
+
+/// `concats comments` with `args` and no range flags, run in `dir`.
+fn bare_comments(dir: &Path, args: &[&str]) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_concats"))
+        .current_dir(dir)
+        .arg("comments")
+        .args(args)
+        .output()
+        .unwrap()
+}
+
+/// With the app on the checkout, a bare reply goes through it: an agent that
+/// cannot write `.git` reaches the store that way.
+#[test]
+fn a_bare_reply_goes_through_the_app() {
+    let sandbox = fixture();
+    let repo = sandbox.path().canonicalize().unwrap();
+    let app = fake_app(
+        &repo,
+        vec![
+            answer(201, "replied to #7\n"),
+            answer(404, "no comment with id 9\n"),
+        ],
+    );
+
+    let replied = bare_comments(
+        &repo,
+        &["reply", "7", "-m", "fixed it", "--author", "Ada Lovelace"],
+    );
+    assert_eq!(String::from_utf8_lossy(&replied.stdout), "replied to #7\n");
+    let refused = bare_comments(
+        &repo,
+        &["reply", "9", "-m", "x", "--author", "Ada Lovelace"],
+    );
+    assert_eq!(refused.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("no comment with id 9"));
+
+    let asked = app.join().unwrap();
+    assert_eq!(
+        asked[0],
+        Request {
+            method: Method::Post,
+            target: "/comments/7/replies?author=Ada+Lovelace".into(),
+            body: "fixed it".into(),
+        }
+    );
+    assert!(
+        Store::open(&repo.join(".git")).comments.is_empty(),
+        "the app stores a reply, not the CLI"
+    );
+}
+
+/// With the app on the checkout, a bare export has the threads it answers with.
+#[test]
+fn a_bare_export_has_what_the_app_shows() {
+    let sandbox = fixture();
+    let repo = sandbox.path().canonicalize().unwrap();
+    let document = r#"{"schema":"concats-app/2","comments":[]}"#;
+    let app = fake_app(&repo, vec![answer(200, document)]);
+
+    let exported = bare_comments(&repo, &["export", "--all"]);
+    assert_eq!(String::from_utf8_lossy(&exported.stdout), document);
+    assert_eq!(app.join().unwrap()[0].target, "/comments?all");
 }

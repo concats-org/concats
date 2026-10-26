@@ -13,6 +13,7 @@ name = "concats_state"
 path = "src/lib.rs"
 
 [dependencies]
+form_urlencoded = { workspace = true }
 nix = { workspace = true }
 serde = { workspace = true }
 

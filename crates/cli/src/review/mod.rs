@@ -30,7 +30,7 @@ use std::{path::Path, process::ExitCode};
 
 use clap::{Args, Subcommand, ValueEnum};
 use concats_diff::load::{self, Loaded};
-use concats_state::{Method, Request, Target};
+use concats_state::{Answer, Method, Request, Target};
 
 mod comments;
 mod guide;
@@ -153,6 +153,9 @@ pub enum CommentsAction {
     /// anchored to content, so fixing the line it is about strands the thread;
     /// a thread renders under the newest of its comments the diff can place, so
     /// saying where the code lives now brings the whole conversation along.
+    ///
+    /// With no range given and the app open on the checkout, the app stores the
+    /// reply — so it lands even from a sandbox that cannot write `.git`.
     Reply {
         /// The comment to answer (`3` or `#3`).
         #[arg(value_name = "ID")]
@@ -174,7 +177,8 @@ pub enum CommentsAction {
     /// review-comment shape.
     ///
     /// You can paste it, diff it and import it back — importing an export is a
-    /// no-op.
+    /// no-op. With no range given and the app open on the checkout, it has the
+    /// threads the app's window shows.
     Export {
         /// Emit text to paste into an agent session instead; it does not
         /// import.
@@ -269,41 +273,50 @@ impl RangeArgs {
             .unwrap_or_else(|| load::branch_point(Path::new(&repo)));
         Target { repo, base, head }
     }
+
+    /// Neither end given: the command does what the app would, when one reads
+    /// the checkout.
+    pub(crate) const fn follows_app(&self) -> bool {
+        self.base.is_none() && self.head.is_none()
+    }
 }
 
-/// What the app shows for `repo`, asked over the pipe in its root. `None`
-/// when no app reads it.
+/// What the app shows for `repo`. `None` when no app reads its checkout.
+// NOTE: kept out of `resolve` so its chain — flags, app, branch so far —
+// reads one step per line.
+// coland-ignore: @coland/single_caller_private_function
 fn shown_range(repo: &str) -> Option<Target> {
+    let answer = ask_app(repo, Method::Get, concats_state::RANGE, String::new())?;
+    if answer.status != 200 {
+        eprintln!("warning: concats-app: {}", answer.body.trim());
+        return None;
+    }
+    serde_json::from_str(&answer.body)
+        .inspect_err(|error| eprintln!("warning: concats-app: {error}"))
+        .ok()
+}
+
+/// Ask the app reading the checkout `repo` is in. `None` when no app reads its
+/// pipe, or when it cannot be reached — said on stderr, or the caller's
+/// fallback would read as a missing app.
+pub(crate) fn ask_app(repo: &str, method: Method, target: &str, body: String) -> Option<Answer> {
     let root = load::root(Path::new(repo))?;
-    let pipe = root.join(concats_state::PIPE);
     let request = Request {
-        method: Method::Get,
-        target: concats_state::RANGE.to_string(),
-        body: String::new(),
+        method,
+        target: target.to_string(),
+        body,
     };
-    let answer = match concats_state::ask(&root, &request) {
-        Ok(answer) => answer?,
-        Err(error) => {
-            // A sandbox that does not allow the pipe fails here; say so, or
-            // the missing range reads as a missing app.
+    concats_state::ask(&root, &request)
+        .inspect_err(|error| {
+            // NOTE: A sandbox that does not allow the pipe fails here.
+            let pipe = root.join(concats_state::PIPE);
             eprintln!(
                 "warning: cannot reach concats-app on {}: {error}",
                 pipe.display()
             );
-            return None;
-        }
-    };
-    if answer.status != 200 {
-        eprintln!(
-            "warning: concats-app on {}: {}",
-            pipe.display(),
-            answer.body.trim()
-        );
-        return None;
-    }
-    serde_json::from_str(&answer.body)
-        .inspect_err(|error| eprintln!("warning: concats-app on {}: {error}", pipe.display()))
+        })
         .ok()
+        .flatten()
 }
 
 /// A count as a float, for arithmetic that only ever lands in printed text —

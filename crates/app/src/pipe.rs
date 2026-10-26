@@ -23,7 +23,7 @@ use concats_review::{
     interchange,
     store::Store,
 };
-use concats_state::{Answer, COMMENTS, Method, RANGE, REPLIES, Request};
+use concats_state::{ALL, AT, AUTHOR, Answer, COMMENTS, Method, RANGE, REPLIES, Request};
 
 use crate::{review_doc::ReviewDoc, window::WindowState};
 
@@ -132,7 +132,7 @@ fn respond(doc: &ReviewDoc, request: &Request) -> Answer {
             },
             Err(error) => text(500, &error.to_string()),
         },
-        (Method::Get, COMMENTS, _) => shown_comments(doc, query(&url, "all").is_some()),
+        (Method::Get, COMMENTS, _) => shown_comments(doc, query(&url, ALL).is_some()),
         (Method::Post, _, Some(to)) => reply(doc, to, request.body.trim(), &url),
         _ => text(
             404,
@@ -184,14 +184,14 @@ fn reply(doc: &ReviewDoc, to: u64, body: &str, url: &url::Url) -> Answer {
     let Some(git_dir) = &doc.git_dir else {
         return text(503, "this window has no repository open");
     };
-    let at = query(url, "at");
+    let at = query(url, AT);
     let loaded = match at.as_ref().map(|_| load(doc)).transpose() {
         Ok(loaded) => loaded,
         Err(answer) => return answer,
     };
     let moved = loaded.as_ref().zip(at.as_deref());
     let mut store = Store::open(git_dir);
-    match comments::reply(&mut store, to, body, query(url, "author"), moved) {
+    match comments::reply(&mut store, to, body, query(url, AUTHOR), moved) {
         Ok(c) => text(201, &comments::added(&c, loaded.as_ref())),
         Err(error) => {
             let status = match error {
@@ -247,14 +247,10 @@ mod tests {
         (answer.status, answer.body)
     }
 
-    /// A reply to comment `to`, posted with `query`.
-    fn post_reply(root: &Path, to: u64, query: &str, body: &str) -> (u16, String) {
-        ask(
-            root,
-            Method::Post,
-            &format!("{COMMENTS}/{to}/{REPLIES}{query}"),
-            body,
-        )
+    /// A reply to comment `to`, as `concats comments reply` posts it.
+    fn post_reply(root: &Path, to: u64, at: Option<&str>, body: &str) -> (u16, String) {
+        let target = concats_state::reply_target(to, Some("Ada Lovelace"), at);
+        ask(root, Method::Post, &target, body)
     }
 
     fn comment(path: &str, text: &str, body: &str) -> Comment {
@@ -328,19 +324,19 @@ mod tests {
         let (_, every) = ask(&root, Method::Get, &format!("{COMMENTS}?all"), "");
         assert!(every.contains("on screen") && every.contains("another range"));
 
-        let (status, said) = post_reply(&root, shown, "?author=claude", "fixed\n");
+        let (status, said) = post_reply(&root, shown, None, "fixed\n");
         assert_eq!(status, 201, "{said}");
-        let (status, said) = post_reply(&root, elsewhere, "?at=file.rs:7", "moved");
+        let (status, said) = post_reply(&root, elsewhere, Some("file.rs:7"), "moved");
         assert_eq!(status, 422);
         assert!(said.contains("not part of this diff"), "{said}");
-        let (status, said) = post_reply(&root, shown, "?at=file.rs@INDEX:1", "moved");
+        let (status, said) = post_reply(&root, shown, Some("file.rs@INDEX:1"), "moved");
         assert_eq!(status, 422);
         assert!(said.contains("not this diff's old side"), "{said}");
-        let (status, _) = post_reply(&root, 999, "", "x");
+        let (status, _) = post_reply(&root, 999, None, "x");
         assert_eq!(status, 404);
-        let (status, _) = post_reply(&root, 999, "?at=file.rs:1", "x");
+        let (status, _) = post_reply(&root, 999, Some("file.rs:1"), "x");
         assert_eq!(status, 404);
-        let (status, said) = post_reply(&root, shown, "", " \n");
+        let (status, said) = post_reply(&root, shown, None, " \n");
         assert_eq!((status, said.as_str()), (400, "empty comment body\n"));
 
         let replies: Vec<Comment> = Store::open(&git_dir)
@@ -355,7 +351,7 @@ mod tests {
                 replies[0].body.as_str(),
                 replies[0].author.as_deref()
             ),
-            (Some(shown), "fixed", Some("claude"))
+            (Some(shown), "fixed", Some("Ada Lovelace"))
         );
 
         state.pipe.lock().unwrap().take();

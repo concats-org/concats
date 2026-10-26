@@ -14,6 +14,7 @@ use concats_review::{
     interchange,
     store::{self, Comment, Store},
 };
+use concats_state::{ALL, COMMENTS, Method};
 
 use super::{BAD_INPUT, CommentsAction, FINDINGS, Outcome, RangeArgs};
 
@@ -156,6 +157,13 @@ fn reply(
         eprintln!("error: `{id}` is not a comment id — run `concats comments` for the stored ones");
         return Err(ExitCode::from(BAD_INPUT));
     };
+    // With an app on the checkout, the app stores it: from a sandbox that
+    // cannot write `.git`, the one way a reply lands.
+    let target = concats_state::reply_target(parent, author.as_deref(), moved);
+    if let Some(said) = answered_by_app(range, Method::Post, &target, body.to_string()) {
+        print!("{}", said?);
+        return Ok(());
+    }
 
     // Only a reply written elsewhere needs the diff — its anchor is validated
     // against it like `add`'s. A plain reply takes the root's place and stays
@@ -172,6 +180,25 @@ fn reply(
         .map_err(|error| report(&error))?;
     println!("{}", comments::added(&c, loaded.as_ref()));
     Ok(())
+}
+
+/// What the app says to `target` when it reads the checkout and the command
+/// names no range: its text, or — said on stderr — why it would not.
+fn answered_by_app(
+    range: &RangeArgs,
+    method: Method,
+    target: &str,
+    body: String,
+) -> Option<Result<String, ExitCode>> {
+    if !range.follows_app() {
+        return None;
+    }
+    let answer = super::ask_app(range.repo.as_deref().unwrap_or("."), method, target, body)?;
+    if (200..300).contains(&answer.status) {
+        return Some(Ok(answer.body));
+    }
+    eprintln!("error: {}", answer.body.trim());
+    Some(Err(ExitCode::from(FINDINGS)))
 }
 
 /// A comment `add` or `reply` could not leave, said on stderr.
@@ -194,6 +221,18 @@ fn report(error: &Error) -> ExitCode {
 /// `--prompt` emits text to paste into an agent session instead. Stdout by
 /// default so it pipes.
 fn export(prompt: bool, all: bool, out: Option<&str>, range: &RangeArgs) -> Outcome {
+    // With an app on the checkout, the threads its window shows.
+    let shown = if all {
+        format!("{COMMENTS}?{ALL}")
+    } else {
+        COMMENTS.to_string()
+    };
+    if !prompt && let Some(text) = answered_by_app(range, Method::Get, &shown, String::new()) {
+        let text = text?;
+        let count = interchange::parse(&text).map_or(0, |document| document.entries.len());
+        return write_export(&text, count, out);
+    }
+
     let target = range.resolve();
     let loaded = super::load(&target)?;
     let store = Store::open(&loaded.git_dir);
@@ -223,13 +262,21 @@ fn export(prompt: bool, all: bool, out: Option<&str>, range: &RangeArgs) -> Outc
         interchange::render(&comments::meta(&loaded), &entries)
     };
 
+    write_export(&text, entries.len(), out)
+}
+
+/// An export of `count` comments to `out`, or to stdout so it pipes.
+// NOTE: where both of `export`'s sources end — the app's answer and the
+// store's render.
+// coland-ignore: @coland/single_caller_private_function
+fn write_export(text: &str, count: usize, out: Option<&str>) -> Outcome {
     match out {
         Some(path) => {
             if let Err(error) = std::fs::write(path, text) {
                 eprintln!("error: cannot write {path}: {error}");
                 return Err(ExitCode::from(BAD_INPUT));
             }
-            println!("exported {} comment(s) to {path}", entries.len());
+            println!("exported {count} comment(s) to {path}");
         }
         None => print!("{text}"),
     }

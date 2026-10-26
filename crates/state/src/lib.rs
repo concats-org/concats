@@ -54,9 +54,12 @@ pub const RANGE: &str = "/range";
 /// `GET`: the threads the window shows, as an interchange document; `?all`
 /// for every thread in the store. `POST {COMMENTS}/{id}/{REPLIES}` answers
 /// one: the body is the reply, `?author=` who wrote it, and `?at=path:lines`
-/// where the code lives now.
+/// where the code lives now — [`reply_target`] writes it.
 pub const COMMENTS: &str = "/comments";
 pub const REPLIES: &str = "replies";
+pub const ALL: &str = "all";
+pub const AUTHOR: &str = "author";
+pub const AT: &str = "at";
 
 /// The two files of a request, named `<id>` and these suffixes beside the
 /// pipe.
@@ -133,6 +136,19 @@ impl FromStr for Request {
 pub struct Answer {
     pub status: u16,
     pub body: String,
+}
+
+/// The target that answers comment `to`, by `author` and at `at` when given,
+/// escaped so a name with spaces or an anchor with `@` arrives as written.
+#[must_use]
+pub fn reply_target(to: u64, author: Option<&str>, at: Option<&str>) -> String {
+    let mut query = form_urlencoded::Serializer::new(String::new());
+    for (key, value) in [(AUTHOR, author), (AT, at)] {
+        if let Some(value) = value {
+            query.append_pair(key, value);
+        }
+    }
+    format!("{COMMENTS}/{to}/{REPLIES}?{}", query.finish())
 }
 
 /// Ask the app reading `root`'s pipe, and wait for its answer. `None` when no

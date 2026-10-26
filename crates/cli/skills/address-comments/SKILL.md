@@ -70,7 +70,9 @@ the user gave you:
 
 - **No arguments, and the review app has this checkout open** —
   `.concats/app.pipe` exists in the checkout's root. Every `concats` command
-  runs **without range flags** and follows the range the window shows.
+  runs **without range flags** and follows the window: the export has exactly
+  the threads it shows, and the app stores your replies itself, so this works
+  from a sandbox that cannot write `.git`.
 - **Explicit arguments** — e.g. `/address-comments INDEX WORKTREE` — go on
   every `concats` command as `--base <BASE> --head <HEAD>`.
 - **Neither** — run the commands without range flags too: the CLI then
@@ -85,9 +87,9 @@ concats comments export [--base <BASE> --head <HEAD>]
 ```
 
 The export leaves out threads that belong elsewhere — other worktrees, or
-ranges reviewed before: it has the threads that anchor in its range.
-`concats comments export --all` includes them; ask for that only when the user
-means it.
+ranges reviewed before: with the app open it has the threads the window shows,
+without one the threads that anchor in its range. `concats comments export
+--all` includes them; ask for that only when the user means it.
 
 That is the whole input: one JSON document whose `comments` are the
 threads in file order, each conversation kept whole, every comment in
