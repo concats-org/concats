@@ -46,11 +46,17 @@ resources = [
     { src = "./dist/resources/concats-app", target = "concats_app" },
 ]
 
+# NOTE: makepad-widgets writes its `.path` into the build dir, robius reads it
+# next to the binary. The link resolves once robius' own build has run.
 before-each-package-command = """
+meta=$(cargo metadata --no-deps --format-version 1)
+release="$(printf '%s' "$meta" | jq -r .target_directory)/release"
+build="$(printf '%s' "$meta" | jq -r .build_directory)/release"
+[ "$build" = "$release" ] || ln -sf "$build/makepad-widgets.path" "$release/"
 robius-packaging-commands before-each-package \
     --force-makepad \
     --binary-name concats-app \
-    --path-to-binary "$(cargo metadata --no-deps --format-version 1 | jq -r .target_directory)/release/concats-app"
+    --path-to-binary "$release/concats-app"
 """
 
 [package.metadata.packager.macos]
