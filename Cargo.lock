@@ -637,6 +637,7 @@ dependencies = [
  "mac-notification-sys",
  "makepad-service",
  "makepad-widgets",
+ "nix",
  "regex",
  "rfd",
  "rusqlite",

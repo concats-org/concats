@@ -1,14 +1,19 @@
-//! A terminal's bell as a desktop notification: how an agent says it has
-//! finished while you are looking at another window.
+//! A terminal's bell, and the notifications programs send, as desktop
+//! notifications: how an agent says it has finished while you are looking at
+//! another window.
 
 use std::{
     path::Path,
     time::{Duration, Instant},
 };
 
-/// How long one terminal's bells merge into one notification, so a program
-/// that rings in a loop raises one rather than one per bell.
+/// How long the same notification stays merged into the one it repeats, so a
+/// program that rings in a loop raises one rather than one per bell.
 const MERGE: Duration = Duration::from_secs(5);
+
+/// How long any notification holds off the next, so a program that sends them
+/// in a loop does not bury the desktop.
+const FLOOD: Duration = Duration::from_secs(1);
 
 /// The identity a notification is posted under: the app's own when it runs
 /// bundled, the installed app's for a development build, which has none.
@@ -16,14 +21,15 @@ const MERGE: Duration = Duration::from_secs(5);
 #[cfg(target_os = "macos")]
 const BUNDLE: &str = "dev.concats.app";
 
-/// One terminal's bell: what its notifications are named after, and when it
-/// last raised one.
+/// One terminal's notifications: what they are named after, and the last one
+/// raised.
 pub struct Bell {
     /// The directory the shell started in, by name: the window's repo.
     place: String,
     /// What the program last called itself (OSC 0/2).
     title: Option<String>,
-    rung: Option<Instant>,
+    /// When the last notification went up, and what it said.
+    raised: Option<(Instant, String)>,
 }
 
 impl Bell {
@@ -34,7 +40,7 @@ impl Bell {
                 |name| name.to_string_lossy().into_owned(),
             ),
             title: None,
-            rung: None,
+            raised: None,
         }
     }
 
@@ -43,27 +49,40 @@ impl Bell {
         self.title = (!title.is_empty()).then(|| title.to_owned());
     }
 
-    /// The program rang at `now`: a notification, unless this terminal
-    /// raised one moments ago.
+    /// The program rang at `now`: a notification with nothing to say.
     pub fn ring(&mut self, now: Instant) {
-        if !due(self.rung, now) {
+        self.notify(now, None, "Bell");
+    }
+
+    /// The program asked at `now` to show `body`, under `title` when it gave
+    /// one (OSC 9/777) — unless that would repeat or flood.
+    pub fn notify(&mut self, now: Instant, title: Option<&str>, body: &str) {
+        let said = format!("{}\n{body}", title.unwrap_or_default());
+        if !due(self.raised.as_ref(), now, &said) {
             return;
         }
-        self.rung = Some(now);
-        let title = self.title.as_deref().unwrap_or("Terminal");
-        notify(format!("{} — {title}", self.place));
+        self.raised = Some((now, said));
+        let terminal = self.title.as_deref().unwrap_or("Terminal");
+        post(
+            format!("{} — {terminal}", self.place),
+            title.map(str::to_owned),
+            body.to_owned(),
+        );
     }
 }
 
-/// Whether a bell at `now` raises a notification, given when this terminal's
-/// last one did.
-fn due(last: Option<Instant>, now: Instant) -> bool {
-    last.is_none_or(|last| now.duration_since(last) >= MERGE)
+/// Whether a notification saying `said` at `now` goes up, given the last one
+/// raised: not the same one within [`MERGE`], nor any within [`FLOOD`].
+fn due(raised: Option<&(Instant, String)>, now: Instant, said: &str) -> bool {
+    raised.is_none_or(|(at, last)| {
+        let since = now.duration_since(*at);
+        since >= MERGE || (since >= FLOOD && last != said)
+    })
 }
 
-/// Raise a notification titled `title` for a bell, off the caller's thread:
-/// delivery can block.
-fn notify(title: String) {
+/// Post a notification off the caller's thread — delivery can block. The
+/// program's own title, when it gave one, goes under the terminal's.
+fn post(title: String, subtitle: Option<String>, message: String) {
     #[cfg(target_os = "macos")]
     std::thread::spawn(move || {
         static IDENTITY: std::sync::Once = std::sync::Once::new();
@@ -72,36 +91,54 @@ fn notify(title: String) {
                 eprintln!("concats-app: cannot post as {BUNDLE}: {error}");
             }
         });
-        if let Err(error) = mac_notification_sys::Notification::new()
-            .title(&title)
-            .message("Bell")
-            .send()
-        {
+        let mut notification = mac_notification_sys::Notification::new();
+        notification.title(&title).message(&message);
+        if let Some(subtitle) = &subtitle {
+            notification.subtitle(subtitle);
+        }
+        if let Err(error) = notification.send() {
             eprintln!("concats-app: cannot raise a notification: {error}");
         }
     });
     #[cfg(not(target_os = "macos"))]
-    drop(title);
+    drop((title, subtitle, message));
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn a_burst_of_bells_raises_one_notification() {
+    /// Feed `said` at each offset (ms from now) and count what goes up.
+    fn raised(at: &[(u64, &str)]) -> usize {
         let start = Instant::now();
         let mut last = None;
-        let mut raised = 0;
-        for i in 0..20 {
-            let now = start + Duration::from_millis(10 * i);
-            if due(last, now) {
-                last = Some(now);
-                raised += 1;
-            }
-        }
-        assert_eq!(raised, 1);
-        let later = start + MERGE + Duration::from_millis(500);
-        assert!(due(last, later), "a bell after the burst rings again");
+        at.iter()
+            .filter(|(ms, said)| {
+                let now = start + Duration::from_millis(*ms);
+                let up = due(last.as_ref(), now, said);
+                if up {
+                    last = Some((now, (*said).to_owned()));
+                }
+                up
+            })
+            .count()
+    }
+
+    #[test]
+    fn a_burst_of_bells_raises_one_notification() {
+        let burst: Vec<_> = (0..20).map(|i| (10 * i, "Bell")).collect();
+        assert_eq!(raised(&burst), 1);
+        assert_eq!(
+            raised(&[(0, "Bell"), (5_500, "Bell")]),
+            2,
+            "after the burst"
+        );
+    }
+
+    #[test]
+    fn different_messages_each_go_up_once_the_flood_passes() {
+        assert_eq!(raised(&[(0, "done"), (1_500, "needs you")]), 2);
+        assert_eq!(raised(&[(0, "done"), (500, "needs you")]), 1, "a flood");
+        assert_eq!(raised(&[(0, "done"), (1_500, "done")]), 1, "a repeat");
     }
 }

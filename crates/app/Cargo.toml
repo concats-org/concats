@@ -81,6 +81,8 @@ concats_theme = { workspace = true }
 makepad-service = { workspace = true }
 makepad-widgets = { workspace = true }
 alacritty_terminal = { workspace = true }
+# The terminal's PTY thread waits on the shell and the view with poll(2).
+nix = { workspace = true, features = ["poll"] }
 
 gix = { workspace = true }
 bitflags = "2"
@@ -98,8 +100,9 @@ regex = "1"
 # Native folder picker behind the header's repo name.
 rfd = { workspace = true }
 
-# A terminal's bell as a desktop notification. No unsafe on our side, and it
-# posts from a development build too, under the installed app's identity.
+# A terminal's bell, and the notifications programs send, as desktop
+# notifications. No unsafe on our side, and it posts from a development build
+# too, under the installed app's identity.
 [target.'cfg(target_os = "macos")'.dependencies]
 mac-notification-sys = { workspace = true }
 

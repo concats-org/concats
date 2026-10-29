@@ -1,7 +1,7 @@
 //! The in-app terminal: one shell session per dock tab.
 //!
 //! A session is an `alacritty_terminal` [`Term`] behind a [`FairMutex`], plus
-//! the `EventLoop` thread that owns its PTY. That thread reads the shell,
+//! the thread in [`pty`] that owns its PTY. That thread reads the shell,
 //! parses into the term and wakes the UI; the UI thread never parses. It locks
 //! the term in the draw path and reads the grid.
 //!
@@ -23,7 +23,7 @@ use std::{
 
 use alacritty_terminal::{
     event::{Event, EventListener, WindowSize},
-    event_loop::{EventLoop, EventLoopSender, Msg},
+    event_loop::Msg,
     grid::Dimensions,
     sync::FairMutex,
     term::{ClipboardType, Config, Term},
@@ -38,6 +38,8 @@ pub mod colors;
 pub mod environment;
 pub mod keys;
 pub mod mouse;
+pub mod osc;
+pub mod pty;
 pub mod queries;
 
 /// The term a view renders, shared with the thread parsing into it.
@@ -116,14 +118,12 @@ impl From<Size> for WindowSize {
     }
 }
 
-/// What the parser thread reports back. Every call arrives on the `EventLoop`
-/// thread with the term locked, so nothing here may reach for the session map.
+/// What the parser thread reports back. Every call arrives on the PTY thread
+/// with the term locked, so nothing here may reach for the session map.
 #[derive(Clone)]
 pub struct Proxy {
     session: Session,
-    /// Filled right after the loop is built — `EventLoop::new` wants the proxy
-    /// before there is a channel to hand it.
-    sender: Arc<OnceLock<EventLoopSender>>,
+    sender: pty::Sender,
     exited: Arc<AtomicBool>,
     report: Arc<Mutex<Report>>,
     bell: Arc<Mutex<bell::Bell>>,
@@ -133,15 +133,12 @@ impl EventListener for Proxy {
     fn send_event(&self, event: Event) {
         match event {
             // The term answered a query (device attributes, cursor report, a
-            // colour) and wants the bytes on the PTY. Straight down the loop's
-            // own channel — see the lock order note above.
+            // colour) and wants the bytes on the PTY. Straight down the PTY
+            // thread's own queue — see the lock order note above.
             Event::PtyWrite(text) => {
-                if let Some(sender) = self.sender.get() {
-                    let _ = sender.send(Msg::Input(text.into_bytes().into()));
-                }
+                self.sender.send(Msg::Input(text.into_bytes().into()));
                 return;
             }
-            Event::ChildExit(_) => self.exited.store(true, Ordering::Relaxed),
             Event::Title(title) => {
                 self.bell.lock().unwrap().titled(&title);
                 self.report.lock().unwrap().title = Some(title);
@@ -159,9 +156,8 @@ impl EventListener for Proxy {
             Event::TextAreaSizeRequest(reply) => {
                 self.report.lock().unwrap().size_queries.push(reply);
             }
-            // TODO: OSC 9 and OSC 777 carry a message with a bell, but the
-            // library does not parse them, and its PTY loop offers no place to
-            // see the bytes without unsafe code.
+            // A program's own notification (OSC 9/777) comes from the PTY
+            // thread, which reads what this parser drops.
             Event::Bell => self.bell.lock().unwrap().ring(Instant::now()),
             // The view reads whether the cursor blinks off the term itself;
             // a change only has to redraw it.
@@ -176,7 +172,7 @@ impl EventListener for Proxy {
 
 struct Shell {
     term: SharedTerm,
-    sender: EventLoopSender,
+    sender: pty::Sender,
     size: Size,
     exited: Arc<AtomicBool>,
     report: Arc<Mutex<Report>>,
@@ -245,7 +241,7 @@ pub fn take_report(session: Session) -> Report {
 // its fan-in); its clones are shared handles.
 // coland-ignore: @coland/clone_heavy_function, @coland/high_fan_in_complex_function
 // coland-ignore: @coland/cross_file_call_coupling, @coland/high_call_degree
-// coland-ignore: @coland/function_too_large
+// coland-ignore: @coland/function_too_large, @coland/high_callee_count
 pub fn open(session: Session, cwd: &Path) {
     let mut guard = sessions().lock().unwrap();
     if guard.contains_key(&session) {
@@ -304,26 +300,24 @@ pub fn open(session: Session, cwd: &Path) {
         kitty_keyboard: true,
         ..Config::default()
     };
+    let (sender, inbox) = match pty::channel() {
+        Ok(channel) => channel,
+        Err(err) => {
+            eprintln!("terminal: failed to start the pty thread: {err}");
+            return;
+        }
+    };
     let exited = Arc::new(AtomicBool::new(false));
     let report = Arc::new(Mutex::new(Report::default()));
     let proxy = Proxy {
         session,
-        sender: Arc::new(OnceLock::new()),
+        sender: sender.clone(),
         exited: exited.clone(),
         report: report.clone(),
         bell: Arc::new(Mutex::new(bell::Bell::new(cwd))),
     };
     let term = Arc::new(FairMutex::new(Term::new(config, &size, proxy.clone())));
-    let event_loop = match EventLoop::new(term.clone(), proxy.clone(), pty, false, false) {
-        Ok(event_loop) => event_loop,
-        Err(err) => {
-            eprintln!("terminal: failed to start the pty loop: {err}");
-            return;
-        }
-    };
-    let sender = event_loop.channel();
-    let _ = proxy.sender.set(sender.clone());
-    event_loop.spawn();
+    pty::spawn(pty, term.clone(), proxy, inbox);
 
     guard.insert(
         session,
@@ -337,7 +331,7 @@ pub fn open(session: Session, cwd: &Path) {
     );
 }
 
-/// End a session: the loop thread shuts down its PTY and the child shell gets
+/// End a session: the PTY thread shuts down its PTY and the child shell gets
 /// hung up on.
 // NOTE: the teardown every PTY test ends with; its fan-in is the tests.
 // coland-ignore: @coland/high_call_degree
@@ -345,7 +339,7 @@ pub fn close(session: Session) {
     let Some(shell) = sessions().lock().unwrap().remove(&session) else {
         return;
     };
-    let _ = shell.sender.send(Msg::Shutdown);
+    shell.sender.send(Msg::Shutdown);
 }
 
 /// Keystrokes/paste from the view, already encoded to terminal bytes.
@@ -358,7 +352,7 @@ pub fn input(session: Session, data: Vec<u8>) {
     let Some(sender) = shell(session, |s| s.sender.clone()) else {
         return;
     };
-    let _ = sender.send(Msg::Input(data.into()));
+    sender.send(Msg::Input(data.into()));
 }
 
 /// The view's geometry, from the draw path on every frame. A no-op unless it
@@ -376,7 +370,7 @@ pub fn resize(session: Session, size: Size) {
     drop(guard);
 
     term.lock().resize(size);
-    let _ = sender.send(Msg::Resize(size.into()));
+    sender.send(Msg::Resize(size.into()));
 }
 
 /// The sessions whose terms changed since the last call — redraw those tabs.
@@ -590,6 +584,45 @@ mod tests {
             term(session).is_some_and(|term| !term.lock().mode().contains(TermMode::ALT_SCREEN))
         }));
         assert!(screen(session).contains("returned=:q"));
+        close(session);
+    }
+
+    /// The term answers a cursor report from inside the parse, on the PTY
+    /// thread itself; the answer still reaches the program that asked.
+    #[test]
+    fn an_answer_from_the_term_reaches_the_program() {
+        let session = session(0xC0FF_EE0D);
+        open(session, Path::new("."));
+        assert!(is_open(session), "shell failed to spawn");
+        // The echoed command line holds the arithmetic, not its result.
+        input(
+            session,
+            b"printf '\\033[6n'; read -rs -d R pos; echo answered=$(( ${#pos} > 3 ))1\r".to_vec(),
+        );
+        assert!(
+            until(|| screen(session).contains("answered=11")),
+            "{}",
+            screen(session)
+        );
+        close(session);
+    }
+
+    /// A synchronized update holds what follows until it ends; one that never
+    /// does shows anyway once it times out.
+    #[test]
+    fn an_unended_synchronized_update_shows_after_its_timeout() {
+        let session = session(0xC0FF_EE0E);
+        open(session, Path::new("."));
+        assert!(is_open(session), "shell failed to spawn");
+        input(
+            session,
+            b"printf '\\033[?2026hheld=%s\\n' $((6*7))\r".to_vec(),
+        );
+        assert!(
+            until(|| screen(session).contains("held=42")),
+            "{}",
+            screen(session)
+        );
         close(session);
     }
 
