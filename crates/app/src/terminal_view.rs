@@ -93,12 +93,10 @@ script_mod! {
     // script scope can't see the `FONT` `let` in `main.rs`.) Braille is drawn,
     // not shaped — `fills`.
     //
-    // No emoji member, unlike `FONT`: the symbols an agent draws its status
-    // with (⏺ ✳ ✔ ⏸) are in Noto Color Emoji, which paints them in its own
-    // colours, wider than a cell. Past the CJK face the system fallback takes
-    // over, which draws them as text in the cell's colour and still finds the
-    // system's emoji for real emoji. The CJK face stays because what CoreText
-    // picks for CJK does not draw through makepad.
+    // Menlo has some of the status symbols an agent prints (✳ ✔) and draws
+    // them as text in the cell's colour. Past the CJK face the system fallback
+    // takes the rest (⏺ ⏸) and real emoji. The CJK face stays because CoreText
+    // picks PingFang for Chinese, whose `hvgl` outlines ttf-parser cannot read.
     let TERM_FONT = TextStyle{
         font_family: FontFamily{
             first := FontMember{res: mod.app_font.first asc: 0.0 desc: 0.0}
@@ -106,6 +104,7 @@ script_mod! {
             third := FontMember{res: mod.app_font.third asc: 0.0 desc: 0.0}
             fourth := FontMember{res: mod.app_font.fourth asc: 0.0 desc: 0.0}
             mono := FontMember{res: mod.app_font.mono asc: 0.0 desc: 0.0}
+            symbols := FontMember{res: mod.app_font.symbols asc: 0.0 desc: 0.0}
             cjk := FontMember{res: mod.app_font.cjk asc: 0.0 desc: 0.0}
         }
         font_size: mod.app_font.terminal_size
@@ -126,6 +125,7 @@ script_mod! {
             third := FontMember{res: mod.app_font.third asc: 0.0 desc: 0.0 weight: 700.0}
             fourth := FontMember{res: mod.app_font.fourth asc: 0.0 desc: 0.0 weight: 700.0}
             mono := FontMember{res: mod.app_font.mono asc: 0.0 desc: 0.0 weight: 700.0}
+            symbols := FontMember{res: mod.app_font.symbols asc: 0.0 desc: 0.0 weight: 700.0}
             cjk := FontMember{res: mod.app_font.cjk asc: 0.0 desc: 0.0 weight: 700.0}
         }
         font_size: mod.app_font.terminal_size
@@ -142,6 +142,7 @@ script_mod! {
             third := FontMember{res: mod.app_font.third asc: 0.0 desc: 0.0}
             fourth := FontMember{res: mod.app_font.fourth asc: 0.0 desc: 0.0}
             mono := FontMember{res: mod.app_font.mono asc: 0.0 desc: 0.0}
+            symbols := FontMember{res: mod.app_font.symbols asc: 0.0 desc: 0.0}
             cjk := FontMember{res: mod.app_font.cjk asc: 0.0 desc: 0.0}
         }
         font_size: mod.app_font.terminal_size
@@ -156,6 +157,7 @@ script_mod! {
             third := FontMember{res: mod.app_font.third asc: 0.0 desc: 0.0 weight: 700.0}
             fourth := FontMember{res: mod.app_font.fourth asc: 0.0 desc: 0.0 weight: 700.0}
             mono := FontMember{res: mod.app_font.mono asc: 0.0 desc: 0.0 weight: 700.0}
+            symbols := FontMember{res: mod.app_font.symbols asc: 0.0 desc: 0.0 weight: 700.0}
             cjk := FontMember{res: mod.app_font.cjk asc: 0.0 desc: 0.0 weight: 700.0}
         }
         font_size: mod.app_font.terminal_size

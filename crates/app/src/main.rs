@@ -1000,10 +1000,12 @@ fn install_app_theme(vm: &mut ScriptVm) {
 /// so the family literal stays in each `TextStyle` and this fills its slots.
 ///
 /// The embedded fonts always follow the user's, so no setting can leave the app
-/// without box drawing, CJK or emoji. The user's own faces occupy a fixed four
-/// slots because the script block's text is compiled, not generated; a shorter
-/// list repeats, which costs the shaper a duplicate miss on a glyph nobody has
-/// and keeps the block readable.
+/// without box drawing or CJK. Menlo draws the symbols a code font lacks
+/// (✳ ✻ ✽ ✢) in the text's colour, as Ghostty and Zed do; emoji come from
+/// makepad's system fallback past the end of the chain. The user's own faces
+/// occupy a fixed four slots because the script block's text is compiled, not
+/// generated; a shorter list repeats, which costs the shaper a duplicate miss on
+/// a glyph nobody has and keeps the block readable.
 ///
 /// `italic` heads the terminal's italic chain: the bundled italic face, or
 /// with faces of the user's own their first, which stays upright.
@@ -1022,9 +1024,9 @@ fn install_app_font(vm: &mut ScriptVm) {
                 third: mod.res.crate_resource("makepad_widgets:resources/jetbrains_mono_variable.ttf")
                 fourth: mod.res.crate_resource("makepad_widgets:resources/jetbrains_mono_variable.ttf")
                 mono: mod.res.crate_resource("makepad_widgets:resources/jetbrains_mono_variable.ttf")
+                symbols: mod.res.file_resource("/System/Library/Fonts/Menlo.ttc")
                 italic: mod.res.crate_resource("self:resources/fonts/jetbrains_mono_italic_variable.ttf")
                 cjk: mod.res.crate_resource("makepad_widgets:resources/LXGWWenKaiRegular.ttf")
-                emoji: mod.res.crate_resource("makepad_widgets:resources/NotoColorEmoji.ttf")
             }
         });
         return;
@@ -1046,9 +1048,9 @@ fn install_app_font(vm: &mut ScriptVm) {
             third: mod.res.file_resource(#(third))
             fourth: mod.res.file_resource(#(fourth))
             mono: mod.res.crate_resource("makepad_widgets:resources/jetbrains_mono_variable.ttf")
+            symbols: mod.res.file_resource("/System/Library/Fonts/Menlo.ttc")
             italic: mod.res.file_resource(#(italic))
             cjk: mod.res.crate_resource("makepad_widgets:resources/LXGWWenKaiRegular.ttf")
-            emoji: mod.res.crate_resource("makepad_widgets:resources/NotoColorEmoji.ttf")
         }
     });
 }

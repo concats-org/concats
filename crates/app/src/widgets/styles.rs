@@ -47,8 +47,8 @@ script_mod! {
             third := FontMember{res: mod.app_font.third asc: 0.0 desc: 0.0}
             fourth := FontMember{res: mod.app_font.fourth asc: 0.0 desc: 0.0}
             mono := FontMember{res: mod.app_font.mono asc: 0.0 desc: 0.0}
+            symbols := FontMember{res: mod.app_font.symbols asc: 0.0 desc: 0.0}
             cjk := FontMember{res: mod.app_font.cjk asc: 0.0 desc: 0.0}
-            emoji := FontMember{res: mod.app_font.emoji asc: 0.0 desc: 0.0}
         }
         font_size: mod.app_font.size
         line_spacing: 1.4
