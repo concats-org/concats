@@ -1,6 +1,7 @@
 //! The review pane: one whole review — the caption/toolbar header, the diff
-//! picker, the dock (Guide / Sessions / Commits / File Diff tabs plus the
-//! bottom terminal panel) and the status bar — bound to one document. It owns
+//! picker, the dock (Guide / Sessions / Commits / File Diff tabs in the center,
+//! and a left, right and bottom panel) and the status bar — bound to one
+//! document. It owns
 //! its own chrome actions and dock/gesture routing, so the App drives it
 //! through a few public entry points (layout restore, the status-bar buttons,
 //! the diff-picker hooks), and a second pane could sit next to it without the
@@ -11,7 +12,7 @@
 mod pickers;
 
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -33,8 +34,8 @@ use super::{
 use crate::{
     FrameData, WindowScope,
     dock::{
-        TabSpec, browser_tab_spec, drag_source_tab_id, file_tab_id, in_panel, model_tab_of,
-        open_tab, settings_tab_spec, stream_tab_spec, stream_tabs, terminal_tab_spec,
+        TabSpec, browser_tab_spec, drag_source_tab_id, file_tab_id, holds, model_tab_of, open_tab,
+        settings_tab_spec, shown_tabs, stream_tab_spec, stream_tabs, terminal_tab_spec,
         terminal_tabs,
     },
     file_view::{caret_to_line, open_file, read_file_sides},
@@ -387,9 +388,9 @@ script_mod! {
 
             // The dock owns the tab strip and every pane: tabs drag to
             // reorder, drop on an edge to split, drop on a bar to merge. The
-            // bottom panel hosts the terminal and the right one the file
-            // browser, each collapsed until toggled — both on the dock's own
-            // splitters, so both slide and both drag by the same handle.
+            // bottom panel hosts the terminal, the right one the file browser,
+            // and the left one starts empty. All three ride the dock's own
+            // splitters, so all slide and drag by the same handle.
             dock := ReviewDock {
                 width: Fill
                 height: Fill
@@ -406,16 +407,25 @@ script_mod! {
                     BrowserTab := BrowserTab{}
                 }
 
-                // The browser hangs off the outermost splitter so it spans the
-                // terminal too, like an editor's side panel. Both panels
-                // collapse to FromB(0).
+                // Four areas: the center, and a left, right and bottom panel.
+                // The side panels hang off the two outer splitters so they
+                // span the bottom one, like an editor's; each panel's
+                // splitter spans the dock along its axis, which is what lets
+                // a panel's size be read off its splitter's position. A shut
+                // panel is its side at 0.
                 root := DockSplitter {
                     axis: SplitterAxis.Horizontal
-                    // Open by default, unlike the terminal: the browser is how
+                    // Open by default, unlike the others: the browser is how
                     // you reach a file, so hiding it hides the way in.
                     align: SplitterAlign.FromB(260.0)
-                    a: @body_split
-                    b: @sidebar_tabs
+                    a: @inner
+                    b: @right_tabs
+                }
+                inner := DockSplitter {
+                    axis: SplitterAxis.Horizontal
+                    align: SplitterAlign.FromA(0.0)
+                    a: @left_tabs
+                    b: @body_split
                 }
                 body_split := DockSplitter {
                     axis: SplitterAxis.Vertical
@@ -423,7 +433,12 @@ script_mod! {
                     a: @main_tabs
                     b: @bottom_tabs
                 }
-                sidebar_tabs := DockTabs {
+                left_tabs := DockTabs {
+                    tabs: []
+                    selected: 0
+                    closable: false
+                }
+                right_tabs := DockTabs {
                     tabs: [@browser_tab]
                     selected: 0
                     closable: false
@@ -610,6 +625,10 @@ script_mod! {
             guide_button := BarButton {
                 draw_icon.svg: crate_resource("self:resources/icons/guide.svg")
             }
+            // The file browser: reopen it, select it, show its panel.
+            browser_button := BarButton {
+                draw_icon.svg: crate_resource("self:resources/icons/folder.svg")
+            }
             Divider {}
             // The terminal: opens the bottom panel on the shell.
             terminal_button := BarButton {
@@ -626,34 +645,59 @@ script_mod! {
                 draw_icon.svg: crate_resource("self:resources/icons/settings.svg")
             }
             Divider {}
-            // The bottom panel itself, whatever it currently holds.
-            panel_button := BarButton {
+            // The three panels, each shown or hidden with whatever it holds,
+            // empty or not.
+            left_panel_button := BarButton {
+                draw_icon.svg: crate_resource("self:resources/icons/panel_left.svg")
+            }
+            bottom_panel_button := BarButton {
                 draw_icon.svg: crate_resource("self:resources/icons/panel_bottom.svg")
             }
-            // The file browser on the right.
-            sidebar_button := BarButton {
+            right_panel_button := BarButton {
                 draw_icon.svg: crate_resource("self:resources/icons/panel_right.svg")
             }
         }
     }
 }
 
-/// One of the pane's two sliding panels. Both are their splitter's `b`, both
-/// collapse to `FromB(0)`, and both reopen to the size the user last dragged —
-/// so they behave identically and share the machinery below.
+/// One of the pane's three sliding panels. Each is one side of a splitter
+/// that spans the dock along its axis, shuts to 0 on that side, and reopens
+/// to the size the user last dragged, so all three share the machinery below.
 #[derive(Clone, Copy, PartialEq)]
 enum Panel {
+    Left,
+    Right,
     Bottom,
-    Sidebar,
 }
 
 impl Panel {
-    /// The dock splitter this panel rides. The sidebar is on the outermost one
-    /// so it spans the bottom panel too.
+    const ALL: [Panel; 3] = [Panel::Left, Panel::Right, Panel::Bottom];
+
+    /// The dock splitter this panel rides.
     fn splitter(self) -> LiveId {
         match self {
+            Panel::Left => id!(inner),
+            Panel::Right => id!(root),
             Panel::Bottom => id!(body_split),
-            Panel::Sidebar => id!(root),
+        }
+    }
+
+    /// The splitter alignment that makes this panel `size` wide or tall: the
+    /// left panel is its splitter's `a`, measured from the start, the others
+    /// its `b`.
+    fn align(self, size: f64) -> SplitterAlign {
+        match self {
+            Panel::Left => SplitterAlign::FromA(size),
+            Panel::Right | Panel::Bottom => SplitterAlign::FromB(size),
+        }
+    }
+
+    /// The dock item on this panel's side of its splitter: what it shows.
+    fn side(self, items: &HashMap<LiveId, DockItem>) -> Option<LiveId> {
+        match (self, items.get(&self.splitter())?) {
+            (Panel::Left, DockItem::Splitter { a, .. }) => Some(*a),
+            (_, DockItem::Splitter { b, .. }) => Some(*b),
+            _ => None,
         }
     }
 }
@@ -695,9 +739,11 @@ pub struct ReviewPane {
     /// Sizes to restore each panel to on reopen (0 = never opened yet, so the
     /// default). Written by the App from the persisted layout on load.
     #[rust]
-    pub bottom_restore: f64,
+    pub left_restore: f64,
     #[rust]
-    pub sidebar_restore: f64,
+    pub right_restore: f64,
+    #[rust]
+    pub bottom_restore: f64,
     /// Stream tabs the user closed: reconciliation must not resurrect them
     /// on the next load — only their status-bar button reopens them. The App
     /// reads and seeds it during dock reconciliation.
@@ -1437,7 +1483,7 @@ impl ReviewPane {
         dock.select_tab(cx, tab_id);
         self.open_terminal(cx, tab_id);
         self.state().set_terminal_tab(Some(tab_id));
-        self.reveal_panel(cx, Panel::Bottom, tab_id);
+        self.reveal_tab(cx, tab_id);
     }
 
     /// A status-bar view button: reopen the stream's tab if it was closed,
@@ -1481,21 +1527,29 @@ impl ReviewPane {
         self.open_terminal(cx, spec.id);
         self.state().set_terminal_tab(Some(spec.id));
         dock.select_tab(cx, spec.id);
-        self.reveal_panel(cx, Panel::Bottom, spec.id);
+        self.reveal_tab(cx, spec.id);
     }
 
-    /// A panel's current size: the dock's extent along its axis minus its
-    /// splitter position — both panels are their splitter's `b`, so both are
-    /// measured the same way.
+    /// A panel's current size, off its splitter's position. Each panel's
+    /// splitter spans the dock along its axis, so a `b` side is the dock's
+    /// extent past that position and the left panel, an `a` side, is the
+    /// position itself.
     fn panel_size(&mut self, cx: &mut Cx, panel: Panel) -> Option<f64> {
         let dock = self.view.dock(cx, ids!(dock));
         let rect = dock.area().rect(cx).size;
-        let extent = match panel {
-            Panel::Bottom => rect.y,
-            Panel::Sidebar => rect.x,
-        };
         let position = dock.splitter_position(panel.splitter())?;
-        Some((extent.max(0.0) - position).max(0.0))
+        let size = match panel {
+            Panel::Left => position,
+            Panel::Right => rect.x - position,
+            Panel::Bottom => rect.y - position,
+        };
+        Some(size.max(0.0))
+    }
+
+    /// Each panel's size, left, right and bottom: what the visual tests assert
+    /// a toggle did.
+    pub(crate) fn panel_sizes(&mut self, cx: &mut Cx) -> [f64; 3] {
+        Panel::ALL.map(|panel| self.panel_size(cx, panel).unwrap_or_default())
     }
 
     /// `save` marks the dock layout dirty — passed only on the final set of a
@@ -1504,17 +1558,24 @@ impl ReviewPane {
         self.view.dock(cx, ids!(dock)).set_splitter_align(
             cx,
             panel.splitter(),
-            SplitterAlign::FromB(size.max(0.0)),
+            panel.align(size.max(0.0)),
             save,
         )
     }
 
+    /// Where a panel's size is kept while it is shut.
+    fn restore_slot(&mut self, panel: Panel) -> &mut f64 {
+        match panel {
+            Panel::Left => &mut self.left_restore,
+            Panel::Right => &mut self.right_restore,
+            Panel::Bottom => &mut self.bottom_restore,
+        }
+    }
+
     /// The size a panel reopens at: wherever the user last dragged it.
-    fn restore_size(&self, panel: Panel) -> f64 {
-        let (last, default) = match panel {
-            Panel::Bottom => (self.bottom_restore, 220.0),
-            Panel::Sidebar => (self.sidebar_restore, 260.0),
-        };
+    fn restore_size(&mut self, panel: Panel) -> f64 {
+        let last = *self.restore_slot(panel);
+        let default = if panel == Panel::Bottom { 220.0 } else { 260.0 };
         if last > 1.0 { last } else { default }
     }
 
@@ -1553,32 +1614,48 @@ impl ReviewPane {
         }
     }
 
+    /// A panel button: slide the panel open with whatever it holds, empty or
+    /// not, or shut it. A terminal it opens onto starts its shell, as
+    /// pressing that tab does.
     fn toggle_panel(&mut self, cx: &mut Cx, panel: Panel) {
         let Some(current) = self.panel_size(cx, panel) else {
             return;
         };
-        let target = if current <= 1.0 {
-            self.restore_size(panel)
-        } else {
-            match panel {
-                Panel::Bottom => self.bottom_restore = current,
-                Panel::Sidebar => self.sidebar_restore = current,
-            }
-            0.0
-        };
-        self.start_slide(cx, panel, target);
+        if current > 1.0 {
+            *self.restore_slot(panel) = current;
+            return self.start_slide(cx, panel, 0.0);
+        }
+        let dock = self.view.dock(cx, ids!(dock));
+        let shown = dock
+            .clone_state()
+            .and_then(|items| Some(shown_tabs(&items, panel.side(&items)?)))
+            .unwrap_or_default();
+        for tab in shown
+            .into_iter()
+            .filter(|tab| terminal_tabs(&dock).contains(tab))
+        {
+            self.open_terminal(cx, tab);
+        }
+        let to = self.restore_size(panel);
+        self.start_slide(cx, panel, to);
     }
 
-    /// Slide `panel` open when `tab` sits in it: a terminal the user keeps
-    /// elsewhere does not need the bottom panel.
-    fn reveal_panel(&mut self, cx: &mut Cx, panel: Panel, tab: LiveId) {
-        let holds = self
-            .view
-            .dock(cx, ids!(dock))
-            .clone_state()
-            .is_some_and(|items| in_panel(&items, panel.splitter(), tab));
-        if holds && self.panel_size(cx, panel).is_none_or(|size| size <= 1.0) {
-            self.start_slide(cx, panel, self.restore_size(panel));
+    /// Slide open the panel `tab` sits in, if it is in a shut one: a terminal
+    /// the user keeps in the center does not need the bottom panel.
+    fn reveal_tab(&mut self, cx: &mut Cx, tab: LiveId) {
+        let Some(items) = self.view.dock(cx, ids!(dock)).clone_state() else {
+            return;
+        };
+        let Some(panel) = Panel::ALL.into_iter().find(|panel| {
+            panel
+                .side(&items)
+                .is_some_and(|side| holds(&items, side, tab))
+        }) else {
+            return;
+        };
+        if self.panel_size(cx, panel).is_none_or(|size| size <= 1.0) {
+            let to = self.restore_size(panel);
+            self.start_slide(cx, panel, to);
         }
     }
 
@@ -1690,31 +1767,21 @@ impl ReviewPane {
         if self.view.button(cx, ids!(terminal_button)).clicked(actions) {
             self.reveal_terminal(cx);
         }
-        if self.view.button(cx, ids!(panel_button)).clicked(actions) {
-            if self
-                .panel_size(cx, Panel::Bottom)
-                .is_some_and(|size| size <= 1.0)
-                && terminal::count(self.state().id) == 0
-            {
-                self.reveal_terminal(cx);
-            } else {
-                self.toggle_panel(cx, Panel::Bottom);
+        for (button, panel) in [
+            (ids!(left_panel_button), Panel::Left),
+            (ids!(bottom_panel_button), Panel::Bottom),
+            (ids!(right_panel_button), Panel::Right),
+        ] {
+            if self.view.button(cx, button).clicked(actions) {
+                self.toggle_panel(cx, panel);
             }
         }
-        if self.view.button(cx, ids!(sidebar_button)).clicked(actions) {
+        if self.view.button(cx, ids!(browser_button)).clicked(actions) {
             let spec = browser_tab_spec();
             let dock = self.view.dock(cx, ids!(dock));
-            if self
-                .panel_size(cx, Panel::Sidebar)
-                .is_some_and(|size| size <= 1.0)
-                && dock.find_tab_bar_of_tab(spec.id).is_none()
-            {
-                open_tab(cx, &dock, spec, &[], id!(sidebar_tabs));
-                dock.select_tab(cx, spec.id);
-                self.reveal_panel(cx, Panel::Sidebar, spec.id);
-            } else {
-                self.toggle_panel(cx, Panel::Sidebar);
-            }
+            open_tab(cx, &dock, spec, &[], id!(right_tabs));
+            dock.select_tab(cx, spec.id);
+            self.reveal_tab(cx, spec.id);
         }
         if self
             .view

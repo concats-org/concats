@@ -257,7 +257,7 @@ fn capture(name: &str, hooks: &[(&str, &str)], setup: impl FnOnce(&Path)) -> Pat
                     "{name}: the app exited without a readable frame — see {}",
                     work.display()
                 );
-                let layout = repo.join(".git/concats-app-layout-4.ron");
+                let layout = repo.join(".git/concats-app-layout-5.ron");
                 if layout.exists() {
                     std::fs::copy(layout, work.join("layout.ron")).expect("capture saved layout");
                 }
@@ -406,7 +406,7 @@ fn a_click_places_a_caret() {
         "caret-placed",
         &[
             ("CONCATS_APP_FILE", "editor.rs"),
-            ("CONCATS_APP_CLICK", "200,104"),
+            ("CONCATS_APP_CLICK", "206,104"),
         ],
         18,
         0,
@@ -421,7 +421,7 @@ fn typing_at_the_caret_reaches_the_buffer() {
         "typed-edit",
         &[
             ("CONCATS_APP_FILE", "editor.rs"),
-            ("CONCATS_APP_CLICK", "200,104"),
+            ("CONCATS_APP_CLICK", "206,104"),
             ("CONCATS_APP_TYPE", " // edited"),
         ],
         28,
@@ -600,7 +600,7 @@ fn file_tab_titles_follow_typing_and_save_acknowledgements() {
             name,
             &[
                 ("CONCATS_APP_FILE", "editor.rs"),
-                ("CONCATS_APP_CLICK", "200,104"),
+                ("CONCATS_APP_CLICK", "206,104"),
                 ("CONCATS_APP_TYPE", " // edited"),
                 ("CONCATS_APP_SAVE", save),
             ],
@@ -808,7 +808,7 @@ fn restoring_the_sidebar_does_not_start_a_hidden_shell() {
             "printf 'unexpected shell startup'\nread -r answer\n",
         )],
         |repo| {
-            std::fs::write(repo.join(".git/concats-app-layout-4.ron"), layout)
+            std::fs::write(repo.join(".git/concats-app-layout-5.ron"), layout)
                 .expect("restore layout");
         },
     );
@@ -1110,4 +1110,97 @@ fn a_refused_save_leaves_the_tab_untitled() {
             "{name}"
         );
     }
+}
+
+/// Where the status bar's panel toggles and Files button sit.
+const LEFT_TOGGLE: &str = "1220,866";
+const RIGHT_TOGGLE: &str = "1262,866";
+const BOTTOM_TOGGLE: &str = "1241,866";
+const FILES_BUTTON: &str = "1106,866";
+
+/// The size `state.json` reports for one panel.
+fn panel(data: &serde_json::Value, side: &str) -> f64 {
+    data["panels"][side].as_f64().expect("panel sizes")
+}
+
+/// The left toggle slides an empty left panel open and creates nothing.
+#[test]
+#[ignore = "spawns a GPU process; run with --ignored on a desktop"]
+fn the_left_toggle_opens_an_empty_panel() {
+    let shot = capture(
+        "left-panel-open",
+        &[("CONCATS_APP_CLICK", LEFT_TOGGLE)],
+        |_| {},
+    );
+    let data = state(&shot, "state.json");
+    let before = state(&shot, "state-before-refresh.json");
+    assert_eq!(panel(&data, "left"), 260.0, "{data}");
+    assert_eq!(data["tab_titles"], before["tab_titles"], "nothing opened");
+    assert_matches("left-panel-open", &shot, EXACT);
+}
+
+/// The bottom toggle opens the panel on its terminal, whose shell starts as if
+/// its tab were pressed.
+#[test]
+#[ignore = "needs a macOS window server"]
+fn the_bottom_toggle_opens_onto_a_live_terminal() {
+    let shot = capture(
+        "bottom-panel-open",
+        &[
+            (
+                "CONCATS_APP_TERM_SCRIPT",
+                "printf 'ready'\nread -r answer\n",
+            ),
+            ("CONCATS_APP_CLICK", BOTTOM_TOGGLE),
+        ],
+        |_| {},
+    );
+    let data = state(&shot, "state.json");
+    assert_eq!(panel(&data, "bottom"), 220.0, "{data}");
+    assert_ne!(data["terminal_cursor"], serde_json::Value::Null, "{data}");
+}
+
+/// Files brings the browser back after its tab was closed and its panel shut.
+#[test]
+#[ignore = "spawns a GPU process; run with --ignored on a desktop"]
+fn files_reopens_the_browser_and_its_panel() {
+    // Close the browser's tab, shut the right panel, press Files.
+    let steps = format!("click 1046,45; click {RIGHT_TOGGLE}; click {FILES_BUTTON}");
+    let shot = capture("files-button", &[("CONCATS_APP_STEPS", &steps)], |_| {});
+    let data = state(&shot, "state.json");
+    assert_eq!(tabs_titled(&data, "Files · WORKTREE"), 1, "{data}");
+    assert_eq!(panel(&data, "right"), 260.0, "{data}");
+}
+
+/// A layout saved with the browser in the left panel comes back there, at its
+/// size; one under the old `-4` name is not read at all.
+#[test]
+#[ignore = "spawns a GPU process; run with --ignored on a desktop"]
+fn the_left_panel_restores_and_old_layouts_are_ignored() {
+    let baseline = capture("left-layout-baseline", &[], |_| {});
+    let saved = std::fs::read_to_string(baseline.with_file_name("layout.ron")).expect("layout");
+    let moved = saved
+        .replace(
+            "right_tabs:Tabs(\n            tabs:[\n                browser_tab,\n            ],",
+            "right_tabs:Tabs(\n            tabs:[\n            ],",
+        )
+        .replace(
+            "left_tabs:Tabs(\n            tabs:[\n            ],",
+            "left_tabs:Tabs(\n            tabs:[\n                browser_tab,\n            ],",
+        )
+        .replace("align:FromA(0)", "align:FromA(240)");
+    assert_ne!(moved, saved, "the fixture layout moved the browser");
+    let shot = capture("left-layout-restored", &[], |repo| {
+        std::fs::write(repo.join(".git/concats-app-layout-5.ron"), &moved).expect("seed -5");
+    });
+    let data = state(&shot, "state.json");
+    assert_eq!(panel(&data, "left"), 240.0, "{data}");
+    assert_matches("left-layout-restored", &shot, EXACT);
+
+    let shot = capture("old-layout-ignored", &[], |repo| {
+        std::fs::write(repo.join(".git/concats-app-layout-4.ron"), &moved).expect("seed -4");
+    });
+    let data = state(&shot, "state.json");
+    assert_eq!(panel(&data, "left"), 0.0, "{data}");
+    assert_eq!(panel(&data, "right"), 260.0, "{data}");
 }

@@ -164,16 +164,28 @@ pub(crate) fn open_tab(
     );
 }
 
-/// Whether `tab` sits on the `b` side of `splitter`, the side a panel slides.
-pub(crate) fn in_panel(items: &HashMap<LiveId, DockItem>, splitter: LiveId, tab: LiveId) -> bool {
-    matches!(items.get(&splitter), Some(DockItem::Splitter { b, .. }) if holds(items, *b, tab))
-}
-
-fn holds(items: &HashMap<LiveId, DockItem>, item: LiveId, tab: LiveId) -> bool {
+/// Whether `tab` is anywhere under `item`, however that part of the dock has
+/// been split since: how a panel knows it holds a tab.
+pub(crate) fn holds(items: &HashMap<LiveId, DockItem>, item: LiveId, tab: LiveId) -> bool {
     match items.get(&item) {
         Some(DockItem::Splitter { a, b, .. }) => holds(items, *a, tab) || holds(items, *b, tab),
         Some(DockItem::Tabs { tabs, .. }) => tabs.contains(&tab),
         _ => false,
+    }
+}
+
+/// The tab each tab bar under `item` has selected: what that part of the dock
+/// shows.
+pub(crate) fn shown_tabs(items: &HashMap<LiveId, DockItem>, item: LiveId) -> Vec<LiveId> {
+    match items.get(&item) {
+        Some(DockItem::Splitter { a, b, .. }) => [*a, *b]
+            .into_iter()
+            .flat_map(|side| shown_tabs(items, side))
+            .collect(),
+        Some(DockItem::Tabs { tabs, selected, .. }) => {
+            tabs.get(*selected).copied().into_iter().collect()
+        }
+        _ => Vec::new(),
     }
 }
 
@@ -187,15 +199,14 @@ pub(crate) fn drag_source_tab_id(items: &[DragItem]) -> Option<LiveId> {
 }
 
 /// The dock layout, persisted per repo next to the review store in `.git/`: tab
-/// arrangement, splits, terminal-panel height.
+/// arrangement, splits, panel sizes.
 ///
-/// The `-4` marks the shape of the dock tree and the names it saves. A saved
-/// tab bar records whether it hides its strip, and the right panel's did until
-/// the browser became an ordinary tab. A saved tab names its template and kind,
-/// and one this version no longer declares restores as an unstyled tab or a
-/// dead pane. A layout from another version has a name we don't read, so it is
-/// ignored; one reset beats a dock missing a panel.
-const LAYOUT_FILE: &str = "concats-app-layout-4.ron";
+/// The `-5` marks the shape of the dock tree and the names it saves: `-5` added
+/// the left panel and named the side panels by side. A saved tab names its
+/// template and kind, and one this version no longer declares restores as an
+/// unstyled tab or a dead pane. A layout from another version has a name we
+/// don't read, so it is ignored; one reset beats a dock missing a panel.
+const LAYOUT_FILE: &str = "concats-app-layout-5.ron";
 
 // NOTE: bare `pub`, not `pub(crate)`: makepad's hand-rolled SerRon/DeRon derive
 // parser does `eat_ident("pub")` then expects `struct`, so it accepts private
@@ -203,8 +214,10 @@ const LAYOUT_FILE: &str = "concats-app-layout-4.ron";
 #[derive(SerRon, DeRon)]
 pub struct DockLayoutRon {
     pub dock_items: HashMap<LiveId, DockItem>,
+    /// The size each panel reopens at.
+    pub left_restore: f64,
+    pub right_restore: f64,
     pub bottom_restore: f64,
-    pub sidebar_restore: f64,
 }
 
 /// Load the layout persisted for this repo. A file whose tabs reference a kind
@@ -254,16 +267,7 @@ pub(crate) fn load_layout(git_dir: &Path) -> Option<DockLayoutRon> {
     Some(state)
 }
 
-pub(crate) fn save_layout(
-    git_dir: &Path,
-    dock_items: HashMap<LiveId, DockItem>,
-    restores: (f64, f64),
-) -> std::io::Result<()> {
-    let state = DockLayoutRon {
-        dock_items,
-        bottom_restore: restores.0,
-        sidebar_restore: restores.1,
-    };
+pub(crate) fn save_layout(git_dir: &Path, state: &DockLayoutRon) -> std::io::Result<()> {
     let mut pending = tempfile::NamedTempFile::new_in(git_dir)?;
     pending.write_all(state.serialize_ron().as_bytes())?;
     pending.as_file().sync_all()?;
@@ -300,12 +304,18 @@ mod tests {
                 },
             ),
         ]);
-        save_layout(dir.path(), items, (220.0, 260.0)).unwrap();
+        let layout = DockLayoutRon {
+            dock_items: items,
+            left_restore: 260.0,
+            right_restore: 260.0,
+            bottom_restore: 220.0,
+        };
+        save_layout(dir.path(), &layout).unwrap();
         let layout = load_layout(dir.path()).expect("the saved layout loads");
         assert!(layout.dock_items.contains_key(&spec.id));
     }
 
-    /// A panel is its splitter's `b` side, however the user has split it since.
+    /// A panel is its splitter's side, however the user has split it since.
     #[test]
     fn a_tab_in_a_split_of_the_panel_is_in_the_panel() {
         let tabs = |tabs: Vec<LiveId>| DockItem::Tabs {
@@ -327,8 +337,12 @@ mod tests {
             (id!(bottom_tabs), tabs(vec![id!(terminal_tab)])),
             (id!(more), tabs(vec![id!(split)])),
         ]);
-        assert!(in_panel(&items, id!(body_split), id!(terminal_tab)));
-        assert!(in_panel(&items, id!(body_split), id!(split)));
-        assert!(!in_panel(&items, id!(body_split), id!(moved)));
+        assert!(holds(&items, id!(lower), id!(terminal_tab)));
+        assert!(holds(&items, id!(lower), id!(split)));
+        assert!(!holds(&items, id!(lower), id!(moved)));
+        assert_eq!(
+            shown_tabs(&items, id!(lower)),
+            [id!(terminal_tab), id!(split)]
+        );
     }
 }

@@ -23,7 +23,7 @@ use concats_review::{
 use concats_syntax::LineSpans;
 use gix::ObjectId;
 use makepad_service::{Service, Shared, Worker, notify};
-use makepad_widgets::{DockItem, LiveId};
+use makepad_widgets::LiveId;
 
 /// Disk work requested by the UI, performed in order on the app worker.
 pub(crate) enum ReviewCmd {
@@ -112,9 +112,7 @@ pub(crate) enum ReviewCmd {
     },
     SaveLayout {
         git_dir: PathBuf,
-        dock_items: HashMap<LiveId, DockItem>,
-        /// (bottom, sidebar): the size each panel reopens at.
-        restores: (f64, f64),
+        layout: crate::dock::DockLayoutRon,
     },
     RecordRecent(String),
     LoadRecents,
@@ -635,12 +633,8 @@ impl Service for AppService {
                     message: status,
                 });
             }
-            ReviewCmd::SaveLayout {
-                git_dir,
-                dock_items,
-                restores,
-            } => {
-                if let Err(error) = crate::dock::save_layout(&git_dir, dock_items, restores) {
+            ReviewCmd::SaveLayout { git_dir, layout } => {
+                if let Err(error) = crate::dock::save_layout(&git_dir, &layout) {
                     // NOTE: keep the last layout usable without interrupting the review.
                     eprintln!("cannot save dock layout in {}: {error}", git_dir.display());
                 }

@@ -14,9 +14,10 @@
 //! view buttons, and they drag to reorder, split and merge (makepad-studio's
 //! dock, restyled). File cards carry a per-file viewed tick box. The status bar
 //! shows how much of the diff is ticked seen, a line of transient status, the
-//! view buttons, the terminal toggle and its `+` (more shell sessions as
-//! closable tabs), and a `{ }` button that opens a Settings tab (theme and
-//! font, as editable highlighted TOML). The chip opens an autocomplete over the
+//! view buttons, the terminal button and its `+` (more shell sessions as
+//! closable tabs), a `{ }` button that opens a Settings tab (theme and font,
+//! as editable highlighted TOML), and a toggle for each of the left, bottom
+//! and right panels. The chip opens an autocomplete over the
 //! repo's refs: pick one to diff it against HEAD, or type an explicit
 //! `base...head`.
 //!
@@ -783,8 +784,9 @@ impl AppWindow {
                         }) if *h > 1.0
                     );
                     if let Some(mut p) = pane.borrow_mut::<ReviewPane>() {
+                        p.left_restore = layout.left_restore;
+                        p.right_restore = layout.right_restore;
                         p.bottom_restore = layout.bottom_restore;
-                        p.sidebar_restore = layout.sidebar_restore;
                         // Stream tabs absent from the saved layout stay
                         // closed. (A stream that was merely unavailable at
                         // save time lands here too — self-healing, its
@@ -856,17 +858,18 @@ impl AppWindow {
             let dock = pane.dock(cx, ids!(dock));
             if dock.check_and_clear_need_save()
                 && let Some(git_dir) = self.layout_git_dir.clone()
+                && let Some(dock_items) = dock.clone_state()
+                && let Some(p) = pane.borrow::<ReviewPane>()
             {
-                let restores = pane
-                    .borrow::<ReviewPane>()
-                    .map_or((0.0, 0.0), |p| (p.bottom_restore, p.sidebar_restore));
-                if let Some(items) = dock.clone_state() {
-                    review().send(ReviewCmd::SaveLayout {
-                        git_dir,
-                        dock_items: items,
-                        restores,
-                    });
-                }
+                review().send(ReviewCmd::SaveLayout {
+                    git_dir,
+                    layout: crate::dock::DockLayoutRon {
+                        dock_items,
+                        left_restore: p.left_restore,
+                        right_restore: p.right_restore,
+                        bottom_restore: p.bottom_restore,
+                    },
+                });
             }
         }
         let snap = self.state.snapshot();

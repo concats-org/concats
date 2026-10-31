@@ -1,4 +1,5 @@
-//! The file browser: the tree at the range's "to" position, docked right.
+//! The file browser: the tree at the range's "to" position, in the right panel
+//! until moved.
 //!
 //! A diff shows what a range changed; a review also needs the code around it,
 //! and a place to say something about a file the change *should* have touched.
@@ -59,7 +60,7 @@ script_mod! {
 
             // The stock node templates read makepad's own theme — a different
             // grey, and a zebra stripe this app doesn't use. Flatten both rows
-            // onto the chrome so the sidebar reads as one surface.
+            // onto the chrome so the panel reads as one surface.
             file_node +: {
                 padding: Inset{left: 12}
                 draw_bg +: {

@@ -209,17 +209,6 @@ pub fn is_open(session: Session) -> bool {
     sessions().lock().unwrap().contains_key(&session)
 }
 
-/// This window's live session count (its toggle spawns the first shell only
-/// when 0 — another window's terminals are not this window's business).
-pub fn count(window: LiveId) -> usize {
-    sessions()
-        .lock()
-        .unwrap()
-        .keys()
-        .filter(|s| s.window == window)
-        .count()
-}
-
 /// The term this tab renders, or None while it has no live session. The `Arc`
 /// leaves the map behind: lock it only after this returns.
 pub fn term(session: Session) -> Option<SharedTerm> {

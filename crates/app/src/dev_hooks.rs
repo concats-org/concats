@@ -561,6 +561,10 @@ impl App {
         let browser = dock.item(id!(browser_tab));
         let file_query = browser.text_input(cx, ids!(find_input)).text();
         let file_count = browser.label(cx, ids!(find_count)).text();
+        let panels = window
+            .pane(cx)
+            .borrow_mut::<ReviewPane>()
+            .map(|mut pane| pane.panel_sizes(cx));
         let terminal_tab = dock.item(id!(terminal_tab));
         let terminal_rect = terminal_tab.area().rect(cx);
         let terminal_query = terminal_tab.text_input(cx, ids!(find_input)).text();
@@ -591,6 +595,9 @@ impl App {
                 "terminal_selection": terminal_selection,
                 "terminal_offset": terminal_offset,
                 "terminal_height": terminal_rect.size.y,
+                "panels": panels.map(|[left, right, bottom]| {
+                    serde_json::json!({"left": left, "right": right, "bottom": bottom})
+                }),
                 "tab_titles": titles,
                 "caret": d.caret.map(|caret| (caret.blob, caret.line, caret.byte)),
                 "seen_lines": service::review_state(d.git_dir.as_deref()).load().seen.len(),
