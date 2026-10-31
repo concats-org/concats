@@ -1041,7 +1041,11 @@ fn saving_an_untitled_tab_names_it() {
     let shot = capture(
         "untitled-saved",
         &[
-            ("CONCATS_APP_STEPS", "menu new_file; type fn main() {}"),
+            // A draw for the new tab to take the keyboard before the typing.
+            (
+                "CONCATS_APP_STEPS",
+                "menu new_file; wait; wait; type fn main() {}",
+            ),
             ("CONCATS_APP_SAVE", "1"),
             ("CONCATS_APP_SAVE_AS", "new.rs"),
         ],
@@ -1067,7 +1071,10 @@ fn an_untouched_untitled_tab_saves_empty() {
     let shot = capture(
         "untitled-empty",
         &[
-            ("CONCATS_APP_STEPS", "menu new_file; menu new_file"),
+            (
+                "CONCATS_APP_STEPS",
+                "menu new_file; menu new_file; wait; wait",
+            ),
             ("CONCATS_APP_SAVE", "1"),
             ("CONCATS_APP_SAVE_AS", "empty.txt"),
         ],
@@ -1579,4 +1586,135 @@ fn rebound_keys_follow_the_config() {
         ["File Diff", "editor.rs · worktree"],
         "{data}"
     );
+}
+
+/// The panel keys only open and shut their panels.
+#[test]
+#[ignore = "spawns a GPU process; run with --ignored on a desktop"]
+fn panel_keys_toggle_their_panels() {
+    let steps = format!("key cmd-b; {SETTLE}; key cmd-j; {SETTLE}; key alt-cmd-b; {SETTLE}");
+    let shot = capture(
+        "panel-keys",
+        &[
+            (
+                "CONCATS_APP_TERM_SCRIPT",
+                "printf 'ready'\nread -r answer\n",
+            ),
+            ("CONCATS_APP_STEPS", &steps),
+        ],
+        |_| {},
+    );
+    let data = state(&shot, "state.json");
+    assert_eq!(panel(&data, "left"), 260.0, "{data}");
+    assert_eq!(panel(&data, "bottom"), 220.0, "{data}");
+    assert_eq!(panel(&data, "right"), 0.0, "{data}");
+    assert_eq!(bar(&data, "left"), Vec::<String>::new(), "{data}");
+}
+
+/// The terminal key opens the bottom panel on a running terminal; the new
+/// terminal key adds another.
+#[test]
+#[ignore = "needs a macOS window server"]
+fn terminal_keys_open_and_add_terminals() {
+    let shot = capture(
+        "terminal-keys",
+        &[
+            (
+                "CONCATS_APP_TERM_SCRIPT",
+                "printf 'ready'\nread -r answer\n",
+            ),
+            ("CONCATS_APP_STEPS", "key ctrl-`; wait; key ctrl-shift-`"),
+        ],
+        |_| {},
+    );
+    let data = state(&shot, "state.json");
+    assert_eq!(panel(&data, "bottom"), 220.0, "{data}");
+    assert_ne!(data["terminal_cursor"], serde_json::Value::Null, "{data}");
+    assert_eq!(bar(&data, "bottom"), ["Terminal", "Terminal 2"], "{data}");
+}
+
+/// ⇧⌘E puts the keyboard in the browser, so ⌘F opens its filter.
+#[test]
+#[ignore = "spawns a GPU process; run with --ignored on a desktop"]
+fn the_browser_key_takes_the_keyboard() {
+    let shot = capture(
+        "browser-key",
+        &[("CONCATS_APP_STEPS", "key cmd-shift-e; wait; find README")],
+        |_| {},
+    );
+    let data = state(&shot, "state.json");
+    assert_eq!(data["file_find_query"], "README", "{data}");
+}
+
+/// ⌘O opens the repo picker on the keyboard: arrows walk its rows, Enter
+/// opens one, Escape closes it untouched.
+#[test]
+#[ignore = "spawns a GPU process; run with --ignored on a desktop"]
+fn the_repo_picker_works_from_the_keyboard() {
+    // A second checkout with a change, so its review has a diff to land.
+    let linked = |repo: &Path| {
+        let _ = std::fs::remove_dir_all(repo.join("../linked"));
+        git(repo, &["worktree", "add", "-q", "-b", "side", "../linked"]);
+        std::fs::write(repo.join("../linked/README.md"), "changed\n").expect("dirty it");
+    };
+    let shot = capture(
+        "repo-picker-keys",
+        &[(
+            "CONCATS_APP_STEPS",
+            "key cmd-o; key down; key down; key enter; wait; wait; wait",
+        )],
+        linked,
+    );
+    let data = state(&shot, "state.json");
+    assert!(
+        data["range"]["repo"]
+            .as_str()
+            .is_some_and(|repo| repo.ends_with("linked")),
+        "{data}"
+    );
+    let shot = capture(
+        "repo-picker-escape",
+        &[(
+            "CONCATS_APP_STEPS",
+            "key cmd-o; key escape; key down; key enter; wait; wait",
+        )],
+        linked,
+    );
+    let data = state(&shot, "state.json");
+    assert!(
+        data["range"]["repo"]
+            .as_str()
+            .is_some_and(|repo| repo.ends_with("repo")),
+        "{data}"
+    );
+}
+
+/// The base picker, reached by its command, walks its rows by arrow and loads
+/// the highlighted one on Enter.
+#[test]
+#[ignore = "spawns a GPU process; run with --ignored on a desktop"]
+fn the_base_picker_walks_by_arrow() {
+    let shot = capture(
+        "base-picker-keys",
+        &[(
+            "CONCATS_APP_STEPS",
+            "menu pick_base; key down; key enter; wait; wait; wait",
+        )],
+        |_| {},
+    );
+    let data = state(&shot, "state.json");
+    assert_ne!(data["range"]["base"], "HEAD", "{data}");
+}
+
+/// ⌘R loads the range again, like ↻.
+#[test]
+#[ignore = "spawns a GPU process; run with --ignored on a desktop"]
+fn reload_key_loads_again() {
+    let shot = capture(
+        "reload-key",
+        &[("CONCATS_APP_STEPS", "key cmd-r; wait; wait; wait; wait")],
+        |_| {},
+    );
+    let data = state(&shot, "state.json");
+    assert!(data["range"]["loads"].as_u64() >= Some(2), "{data}");
 }

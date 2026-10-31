@@ -761,6 +761,9 @@ pub struct ReviewPane {
     /// holds the key focus.
     #[rust]
     last_tab: Option<LiveId>,
+    /// The open picker's row the arrow keys have walked to.
+    #[rust]
+    picker_cursor: Option<usize>,
     /// Sizes to restore each panel to on reopen (0 = never opened yet, so the
     /// default). Written by the App from the persisted layout on load.
     #[rust]
@@ -1059,6 +1062,56 @@ impl ReviewPane {
             dock.close_tab(cx, tab_id);
         } else if [settings_tab_spec().id, browser_tab_spec().id].contains(&tab_id) {
             dock.close_tab(cx, tab_id);
+        }
+    }
+
+    /// A command that opens a panel, a view or a picker, or reloads. A view
+    /// opened takes the keyboard, the way VS Code's and Zed's focus commands
+    /// do: the terminal takes typing, the browser and a list take find.
+    pub(crate) fn view_command(&mut self, cx: &mut Cx, command: Command) {
+        let dock = self.view.dock(cx, ids!(dock));
+        match command {
+            Command::TogglePanel(area) => {
+                let panel = match area {
+                    concats_config::Area::Left => Panel::Left,
+                    concats_config::Area::Right => Panel::Right,
+                    concats_config::Area::Bottom => Panel::Bottom,
+                    concats_config::Area::Center => return,
+                };
+                self.toggle_panel(cx, panel);
+            }
+            Command::OpenTerminal | Command::NewTerminal => {
+                if command == Command::OpenTerminal {
+                    self.reveal_terminal(cx);
+                } else {
+                    self.add_terminal_session(cx);
+                }
+                // With nothing focused, the window's terminal takes the keys.
+                cx.set_key_focus(Area::Empty);
+            }
+            Command::OpenBrowser => {
+                let spec = browser_tab_spec();
+                let area = crate::theme::active_placement().browser;
+                self.open_view(cx, spec, &[], area);
+                let tree = dock.item(spec.id).file_tree(cx, ids!(tree)).area();
+                cx.set_key_focus(tree);
+            }
+            Command::OpenStream(stream) => {
+                self.open_stream_tab(cx, stream);
+                let list = dock
+                    .item(stream_tab_spec(stream).id)
+                    .portal_list(cx, ids!(list))
+                    .area();
+                cx.set_key_focus(list);
+            }
+            Command::OpenRepo => {
+                self.repo_open(cx);
+                cx.set_key_focus(Area::Empty);
+            }
+            Command::PickBase => self.combo_open(cx, pickers::RangeEnd::Base),
+            Command::PickHead => self.combo_open(cx, pickers::RangeEnd::Head),
+            Command::Reload => self.reload(cx),
+            _ => {}
         }
     }
 
@@ -2260,6 +2313,12 @@ impl Widget for ReviewPane {
         // raw coordinates never consults it.
         if let Some(window_id) = pointer_window(event)
             && self.state().platform != Some(window_id)
+        {
+            return;
+        }
+        // An open picker walks its rows by key before anything focused does.
+        if let Event::KeyDown(ke) = event
+            && self.picker_key(cx, ke)
         {
             return;
         }

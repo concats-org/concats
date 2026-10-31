@@ -78,7 +78,7 @@ macro_rules! repo_rows {
 impl ReviewPane {
     /// Open the range picker for one end, under that end's chip: empty
     /// filter, everything that end can be listed, keyboard in the input.
-    fn combo_open(&mut self, cx: &mut Cx, end: RangeEnd) {
+    pub(super) fn combo_open(&mut self, cx: &mut Cx, end: RangeEnd) {
         self.repo_close(cx);
         let (target, refs) = self.state().read(|d| (d.target(), d.refs.clone()));
         let branch_point = load::branch_point(std::path::Path::new(&target.repo));
@@ -112,6 +112,7 @@ impl ReviewPane {
     /// basename), and the always-present "Open dir…".
     pub fn repo_open(&mut self, cx: &mut Cx) {
         self.combo_close(cx);
+        self.picker_cursor = None;
         review().send(ReviewCmd::LoadRecents);
         self.show_worktrees(cx);
         self.show_recents(cx);
@@ -168,6 +169,7 @@ impl ReviewPane {
 
     /// Fill the row slots with the rows matching the query.
     fn combo_filter(&mut self, cx: &mut Cx, query: &str) {
+        self.picker_cursor = None;
         let query = query.trim().to_lowercase();
         let slots = combo_rows!();
         let matches: Vec<&RangeRow> = self
@@ -221,20 +223,120 @@ impl ReviewPane {
         self.combo_load(cx, branch_so_far(path.to_string_lossy().into_owned()));
     }
 
+    /// Load the open repo again at its current range; one nothing has loaded
+    /// yet loads on its branch so far.
+    pub(super) fn reload(&mut self, cx: &mut Cx) {
+        let target = self.state().read(ReviewDoc::target);
+        let target = if target.base.is_empty() {
+            branch_so_far(target.repo)
+        } else {
+            target
+        };
+        self.combo_load(cx, target);
+    }
+
+    /// The rows of whichever picker is open, as shown, top to bottom.
+    fn picker_rows(&self, cx: &mut Cx) -> Vec<&'static [LiveId]> {
+        let repo = self.view.view(cx, ids!(repo_panel)).visible();
+        let combo = self.view.view(cx, ids!(combo_panel)).visible();
+        let rows: Vec<&'static [LiveId]> = if repo {
+            worktree_rows!()
+                .into_iter()
+                .chain(repo_rows!())
+                .chain([ids!(open_dir_row)])
+                .map(|ids| ids as &[LiveId])
+                .collect()
+        } else if combo {
+            combo_rows!().map(|ids| ids as &[LiveId]).to_vec()
+        } else {
+            Vec::new()
+        };
+        rows.into_iter()
+            .filter(|ids| self.view.button(cx, ids).visible())
+            .collect()
+    }
+
+    /// Arrow keys walk the open picker's rows, highlighting one, and Enter
+    /// picks the highlighted row; with none, the range picker's input takes
+    /// Enter for what was typed. Escape closes the repo picker (the range
+    /// picker's input closes its own). Whether a picker took the key.
+    pub(super) fn picker_key(&mut self, cx: &mut Cx, ke: &KeyEvent) -> bool {
+        let rows = self.picker_rows(cx);
+        if rows.is_empty() {
+            return false;
+        }
+        let repo = self.view.view(cx, ids!(repo_panel)).visible();
+        match ke.key_code {
+            KeyCode::ArrowDown | KeyCode::ArrowUp => {
+                let at = walk(self.picker_cursor, ke.key_code, rows.len());
+                self.picker_cursor = Some(at);
+                for (i, ids) in rows.iter().enumerate() {
+                    let row = self.view.button(cx, ids);
+                    if i != at {
+                        row.reset_hover(cx);
+                    } else if let Some(mut row) = row.borrow_mut() {
+                        row.animator_cut(cx, ids!(hover.on));
+                    }
+                }
+                self.view.redraw(cx);
+                true
+            }
+            KeyCode::ReturnKey if repo || self.picker_cursor.is_some() => {
+                self.pick_highlighted(cx, &rows, repo);
+                true
+            }
+            KeyCode::Escape if repo => {
+                self.repo_close(cx);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Pick the row the arrows highlighted, in the repo picker or a range
+    /// picker.
+    fn pick_highlighted(&mut self, cx: &mut Cx, rows: &[&[LiveId]], repo: bool) {
+        let Some(at) = self.picker_cursor else {
+            return;
+        };
+        if repo {
+            if let Some(row) = rows.get(at) {
+                self.pick_repo_row(cx, row);
+            }
+        } else if let Some(target) = self.range_shown.get(at).cloned() {
+            self.combo_load(cx, target);
+        }
+    }
+
+    /// Open what a repo picker row names: a checkout or a recent repo on its
+    /// branch so far, or the folder dialog.
+    fn pick_repo_row(&mut self, cx: &mut Cx, row: &[LiveId]) {
+        self.repo_close(cx);
+        if row == *ids!(open_dir_row) {
+            return self.pick_repo(cx);
+        }
+        let at = |rows: &[&[LiveId; 1]]| rows.iter().position(|ids| ids.as_slice() == row);
+        let checkout = at(&worktree_rows!()).and_then(|i| {
+            self.state().read(|d| {
+                d.worktrees
+                    .get(i)
+                    .map(|(path, _)| path.to_string_lossy().into_owned())
+            })
+        });
+        let picked =
+            checkout.or_else(|| at(&repo_rows!()).and_then(|i| self.recents.get(i).cloned()));
+        if let Some(repo) = picked {
+            self.combo_load(cx, branch_so_far(repo));
+        }
+    }
+
     /// The header Load button and the repo picker: the name toggles it, a
     /// checkout or recent row loads that one on its branch so far, and "Open
     /// dir…" browses for another.
     pub(super) fn handle_repo_picker(&mut self, cx: &mut Cx, actions: &Actions) {
         // The header Load button reloads the open repo at its current range.
         if self.view.button(cx, ids!(load_button)).clicked(actions) {
-            let target = self.state().read(ReviewDoc::target);
-            // A repo nothing has loaded yet reloads on its branch so far.
-            let target = if target.base.is_empty() {
-                branch_so_far(target.repo)
-            } else {
-                target
-            };
-            self.combo_load(cx, target);
+            self.reload(cx);
         }
 
         if self.view.button(cx, ids!(repo_button)).clicked(actions) {
@@ -244,26 +346,13 @@ impl ReviewPane {
                 self.repo_open(cx);
             }
         }
-        let clicked = |rows: &[&[LiveId]]| {
-            rows.iter()
-                .position(|ids| self.view.button(cx, ids).clicked(actions))
-        };
-        let checkout = clicked(&worktree_rows!()).and_then(|i| {
-            self.state().read(|d| {
-                d.worktrees
-                    .get(i)
-                    .map(|(path, _)| path.to_string_lossy().into_owned())
-            })
-        });
-        let picked =
-            checkout.or_else(|| clicked(&repo_rows!()).and_then(|i| self.recents.get(i).cloned()));
-        if let Some(repo) = picked {
-            self.repo_close(cx);
-            self.combo_load(cx, branch_so_far(repo));
-        }
-        if self.view.button(cx, ids!(open_dir_row)).clicked(actions) {
-            self.repo_close(cx);
-            self.pick_repo(cx);
+        let clicked = worktree_rows!()
+            .into_iter()
+            .chain(repo_rows!())
+            .chain([ids!(open_dir_row)])
+            .find(|ids| self.view.button(cx, *ids).clicked(actions));
+        if let Some(row) = clicked {
+            self.pick_repo_row(cx, row);
         }
     }
 
@@ -310,6 +399,18 @@ impl ReviewPane {
         if let Some(target) = picked {
             self.combo_load(cx, target);
         }
+    }
+}
+
+/// Where an arrow key moves a picker's highlight among `len` rows: the first
+/// or last row from none, then one row, stopping at the ends.
+fn walk(cursor: Option<usize>, key: KeyCode, len: usize) -> usize {
+    let last = len.saturating_sub(1);
+    match (cursor, key) {
+        (None, KeyCode::ArrowDown) => 0,
+        (None, _) => last,
+        (Some(at), KeyCode::ArrowDown) => (at + 1).min(last),
+        (Some(at), _) => at.saturating_sub(1),
     }
 }
 
@@ -511,5 +612,15 @@ mod tests {
             ["main · work/concats", "8a8ed6e · 276b/concats  (open)"]
         );
         assert_eq!(worktree_labels(&worktrees[..1], None), Vec::<String>::new());
+    }
+
+    #[test]
+    fn arrows_walk_a_picker_and_stop_at_its_ends() {
+        let (down, up) = (KeyCode::ArrowDown, KeyCode::ArrowUp);
+        assert_eq!(walk(None, down, 3), 0);
+        assert_eq!(walk(None, up, 3), 2);
+        assert_eq!(walk(Some(1), down, 3), 2);
+        assert_eq!(walk(Some(2), down, 3), 2);
+        assert_eq!(walk(Some(0), up, 3), 0);
     }
 }

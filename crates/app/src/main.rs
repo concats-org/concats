@@ -713,7 +713,14 @@ impl App {
         match command {
             Command::NewFile => pane.new_file(cx),
             Command::Settings | Command::Keymap => pane.open_settings_tab(cx),
-            _ => pane.tab_command(cx, command),
+            Command::CloseTab
+            | Command::CloseOtherTabs
+            | Command::CloseSavedTabs
+            | Command::CloseAllTabs
+            | Command::NextTab
+            | Command::PreviousTab
+            | Command::Tab(_) => pane.tab_command(cx, command),
+            _ => pane.view_command(cx, command),
         }
     }
 

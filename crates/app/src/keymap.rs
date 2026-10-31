@@ -8,7 +8,12 @@
 
 use std::collections::BTreeMap;
 
-use crate::makepad_widgets::{KeyCode, KeyModifiers};
+use concats_config::Area;
+
+use crate::{
+    makepad_widgets::{KeyCode, KeyModifiers},
+    review_doc::Stream,
+};
 
 /// An action a key, the menu or the palette can run.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -27,6 +32,24 @@ pub(crate) enum Command {
     Settings,
     /// Settings, where the key bindings are.
     Keymap,
+    /// Open or shut the panel on this side, whatever it holds.
+    TogglePanel(Area),
+    /// The terminal: reveal it and type into it.
+    OpenTerminal,
+    /// Another terminal, beside the others.
+    NewTerminal,
+    /// The file browser: reveal it, keyboard in its tree.
+    OpenBrowser,
+    /// A stream's tab: reveal it, keyboard in its list.
+    OpenStream(Stream),
+    /// The repo picker, under the repo name.
+    OpenRepo,
+    /// The range picker for the base.
+    PickBase,
+    /// The range picker for the head.
+    PickHead,
+    /// Load the range again.
+    Reload,
 }
 
 /// Every command: its name in config.toml, and its title in the menu and the
@@ -60,6 +83,53 @@ pub(crate) const COMMANDS: &[(Command, &str, &str)] = &[
     (Command::Tab(9), "tab_9", "Tab 9"),
     (Command::Settings, "settings", "Settings"),
     (Command::Keymap, "keymap", "Keymap"),
+    (
+        Command::TogglePanel(Area::Left),
+        "toggle_left_panel",
+        "Toggle Left Panel",
+    ),
+    (
+        Command::TogglePanel(Area::Right),
+        "toggle_right_panel",
+        "Toggle Right Panel",
+    ),
+    (
+        Command::TogglePanel(Area::Bottom),
+        "toggle_bottom_panel",
+        "Toggle Bottom Panel",
+    ),
+    (Command::OpenTerminal, "open_terminal", "Open Terminal"),
+    (Command::NewTerminal, "new_terminal", "New Terminal"),
+    (Command::OpenBrowser, "open_browser", "Open File Browser"),
+    (
+        Command::OpenStream(Stream::Guide),
+        "open_guide",
+        "Open Guide",
+    ),
+    (
+        Command::OpenStream(Stream::Sessions),
+        "open_sessions",
+        "Open Sessions",
+    ),
+    (
+        Command::OpenStream(Stream::Commits),
+        "open_commits",
+        "Open Commits",
+    ),
+    (
+        Command::OpenStream(Stream::Files),
+        "open_diff",
+        "Open File Diff",
+    ),
+    (
+        Command::OpenStream(Stream::Comments),
+        "open_comments",
+        "Open Comments",
+    ),
+    (Command::OpenRepo, "open_repo", "Open Repository"),
+    (Command::PickBase, "pick_base", "Pick Base"),
+    (Command::PickHead, "pick_head", "Pick Head"),
+    (Command::Reload, "reload", "Reload"),
 ];
 
 /// The keys every command has until config.toml says otherwise.
@@ -84,6 +154,21 @@ const DEFAULTS: &[(&str, &str)] = &[
     ("ctrl-9", "tab_9"),
     ("cmd-,", "settings"),
     ("cmd-k cmd-s", "keymap"),
+    ("cmd-b", "toggle_left_panel"),
+    ("alt-cmd-b", "toggle_right_panel"),
+    ("cmd-j", "toggle_bottom_panel"),
+    ("ctrl-`", "open_terminal"),
+    ("ctrl-shift-`", "new_terminal"),
+    ("cmd-shift-e", "open_browser"),
+    // The views, in the status bar's order left to right: starting points,
+    // to change in config.toml.
+    ("alt-cmd-1", "open_comments"),
+    ("alt-cmd-2", "open_diff"),
+    ("alt-cmd-3", "open_commits"),
+    ("alt-cmd-4", "open_sessions"),
+    ("alt-cmd-5", "open_guide"),
+    ("cmd-o", "open_repo"),
+    ("cmd-r", "reload"),
 ];
 
 impl Command {

@@ -500,6 +500,14 @@ impl App {
         true
     }
 
+    /// Each panel's size in the window the hooks drive.
+    // NOTE: split out of state_hook, which clippy holds to 100 lines.
+    fn panel_sizes(&self, cx: &mut Cx) -> Option<serde_json::Value> {
+        let pane = self.primary()?.pane(cx);
+        let [left, right, bottom] = pane.borrow_mut::<ReviewPane>()?.panel_sizes(cx);
+        Some(serde_json::json!({"left": left, "right": right, "bottom": bottom}))
+    }
+
     /// The title of the tab the keyboard is in, in the window the hooks
     /// drive.
     // NOTE: split out of state_hook, which clippy holds to 100 lines.
@@ -638,11 +646,6 @@ impl App {
         let browser = dock.item(id!(browser_tab));
         let file_query = browser.text_input(cx, ids!(find_input)).text();
         let file_count = browser.label(cx, ids!(find_count)).text();
-        let bars = dock.clone_state().map(|items| tab_bars(&items));
-        let panels = window
-            .pane(cx)
-            .borrow_mut::<ReviewPane>()
-            .map(|mut pane| pane.panel_sizes(cx));
         let terminal_tab = dock.item(id!(terminal_tab));
         let terminal_rect = terminal_tab.area().rect(cx);
         let terminal_query = terminal_tab.text_input(cx, ids!(find_input)).text();
@@ -673,13 +676,12 @@ impl App {
                 "terminal_selection": terminal_selection,
                 "terminal_offset": terminal_offset,
                 "terminal_height": terminal_rect.size.y,
-                "bars": bars,
+                "bars": dock.clone_state().map(|items| tab_bars(&items)),
                 "current_tab": self.current_tab_title(cx),
                 "pending_chord": self.pending_chord.is_some(),
-                "panels": panels.map(|[left, right, bottom]| {
-                    serde_json::json!({"left": left, "right": right, "bottom": bottom})
-                }),
+                "panels": self.panel_sizes(cx),
                 "tab_titles": titles,
+                "range": {"repo": d.repo, "base": d.base, "head": d.head, "loads": d.generation},
                 "caret": d.caret.map(|caret| (caret.blob, caret.line, caret.byte)),
                 "seen_lines": service::review_state(d.git_dir.as_deref()).load().seen.len(),
                 "find_query": query,
