@@ -1121,6 +1121,9 @@ fn install_app_theme(vm: &mut ScriptVm) {
             color_faint: #(paint(t.text_faint))
             color_yellow: #(paint(t.modified))
             color_accent: #(paint(t.accent))
+            // The comment blue, washed out: a thread from before this window
+            // loaded its range.
+            color_accent_earlier: #(paint(t.accent.mix(t.text_faint, 0.6)))
             color_on_accent: #(paint(t.on_accent))
             color_added: #(paint(t.added))
             color_deleted: #(paint(t.deleted))

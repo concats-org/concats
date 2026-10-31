@@ -220,6 +220,10 @@ pub struct ReviewDoc {
     pub selection_anchor: Option<Caret>,
     pub blobs: Vec<Blob>,
     pub generation: u64,
+    /// When this window loaded its checkout and range, in seconds: a thread
+    /// with nothing newer is from before, and its comment strip is dimmed. A
+    /// reload of the same range keeps it.
+    pub opened_at: u64,
     /// Invalidates row-index caches after edits, comment splices, or expansion.
     /// NOTE: `generation` changes only when a load lands.
     pub rows_rev: u64,

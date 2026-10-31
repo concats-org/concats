@@ -726,6 +726,19 @@ script_mod! {
                         padding: Inset{top: 12 bottom: 12 left: 36 right: 12}
                     } } }
                 }
+                // A thread from before the window loaded its range: the same
+                // strips, their bar in the washed-out comment blue.
+                EarlierComment := CommentStrip {
+                    cm_frame +: { cm_bar +: { draw_bg.color: C_ACCENT_EARLIER } }
+                }
+                EarlierReply := CommentStrip {
+                    cm_frame +: { cm_bar +: {
+                        draw_bg.color: C_ACCENT_EARLIER
+                        cm_strip +: {
+                            padding: Inset{top: 12 bottom: 12 left: 36 right: 12}
+                        }
+                    } }
+                }
 
                 // The row itself: the rail and the line, and nothing about the
                 // box around them. Hoisted so a card and an editor can differ in
@@ -1869,10 +1882,16 @@ impl ReviewList {
                 meta,
                 quote,
             } => {
-                let template = if parent.is_some() {
-                    id!(Reply)
-                } else {
-                    id!(Comment)
+                let earlier = crate::comments::is_earlier(
+                    &pass.review.comments,
+                    parent.unwrap_or(*id),
+                    pass.doc.opened_at,
+                );
+                let template = match (parent.is_some(), earlier) {
+                    (false, false) => id!(Comment),
+                    (true, false) => id!(Reply),
+                    (false, true) => id!(EarlierComment),
+                    (true, true) => id!(EarlierReply),
                 };
                 let item = list.item(cx, entry, template);
                 item.widget(cx, ids!(cm_reply))

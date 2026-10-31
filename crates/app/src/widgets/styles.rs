@@ -31,6 +31,7 @@ script_mod! {
     mod.widgets.C_FAINT = mod.app_theme.color_faint    // line numbers
     mod.widgets.C_YELLOW = mod.app_theme.color_yellow
     mod.widgets.C_ACCENT = mod.app_theme.color_accent  // comment markers, selection, +
+    mod.widgets.C_ACCENT_EARLIER = mod.app_theme.color_accent_earlier  // a thread from before the window opened
     mod.widgets.C_ON_ACCENT = mod.app_theme.color_on_accent
     mod.widgets.C_DELETED = mod.app_theme.color_deleted // "N lines removed"
     mod.widgets.C_ELEMENT_HOVER = mod.app_theme.color_element_hover

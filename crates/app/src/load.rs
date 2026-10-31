@@ -263,6 +263,12 @@ fn carry_side(d: &ReviewDoc, prev: &ReviewDoc, side: Side) -> Option<Side> {
 // coland-ignore: @coland/clone_heavy_function, @coland/high_call_degree
 // coland-ignore: @coland/mixed_abstraction_levels, @coland/cross_file_call_coupling
 pub(crate) fn carry_forward(d: &mut ReviewDoc, prev: &ReviewDoc) {
+    let same_range = (&d.repo, &d.base, &d.head) == (&prev.repo, &prev.base, &prev.head);
+    d.opened_at = if same_range && prev.opened_at > 0 {
+        prev.opened_at
+    } else {
+        store::now()
+    };
     if d.repo == prev.repo {
         carry_live_buffers(d, &prev.blobs);
         let fresh_files = std::mem::take(&mut d.files_open);
@@ -658,5 +664,25 @@ mod tests {
             blobs: vec![fresh],
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn a_window_keeps_when_it_opened_a_range_across_reloads() {
+        let range = |head: &str| ReviewDoc {
+            repo: "/repo".into(),
+            base: "main".into(),
+            head: head.into(),
+            ..ReviewDoc::default()
+        };
+        let prev = ReviewDoc {
+            opened_at: 5,
+            ..range("WORKTREE")
+        };
+        let mut reloaded = range("WORKTREE");
+        carry_forward(&mut reloaded, &prev);
+        assert_eq!(reloaded.opened_at, 5);
+        let mut switched = range("HEAD");
+        carry_forward(&mut switched, &prev);
+        assert!(switched.opened_at > 5);
     }
 }

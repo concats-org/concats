@@ -1887,3 +1887,44 @@ fn the_palette_runs_what_was_typed() {
     assert_eq!(bar(&data, "center"), ["File Diff"], "{data}");
     assert_eq!(data["picker_open"], false, "{data}");
 }
+
+/// A comment on editor.rs's 13th line, stored long before the app starts:
+/// stamped now, a launch within the same second would count it as current.
+fn earlier_comment(repo: &Path) {
+    let blob = git(repo, &["rev-parse", "HEAD:editor.rs"]);
+    let mut store = concats_review::store::Store::open(&repo.join(".git"));
+    store
+        .add_comment(concats_review::store::Comment {
+            body: "why hello?".into(),
+            created_at: 1,
+            ..concats_review::store::comment(
+                "editor.rs".into(),
+                concats_review::store::Anchor {
+                    blob: gix::ObjectId::from_hex(blob.trim().as_bytes()).expect("blob oid"),
+                    start: 12,
+                    end: 12,
+                },
+            )
+        })
+        .expect("store the comment");
+}
+
+/// A thread from before the window loaded its range draws its bar washed
+/// out; one posted since keeps the comment blue.
+#[test]
+#[ignore = "spawns a GPU process; run with --ignored on a desktop"]
+fn earlier_threads_are_washed_out() {
+    // The stored thread pushes line 13 down to here.
+    let select = "click 300,340; key shift-right; key shift-right; key cmd-k l";
+    let shot = capture(
+        "comments-earlier",
+        &[(
+            "CONCATS_APP_STEPS",
+            &format!("wait; wait; {select}; wait; wait; type now; key enter; wait"),
+        )],
+        earlier_comment,
+    );
+    assert_eq!(state(&shot, "state.json")["comments"], 2);
+    assert_matches("comments-earlier", &shot, EXACT);
+}
+

@@ -233,6 +233,16 @@ fn context_header(path: &str) -> Row {
     }
 }
 
+/// Whether the thread rooted at `root` is from before `opened_at`, when the
+/// window loaded its range: none of its comments is newer. A new reply makes
+/// it current again, as new activity does in a chat.
+pub(crate) fn is_earlier(comments: &[store::Comment], root: u64, opened_at: u64) -> bool {
+    comments
+        .iter()
+        .filter(|c| store::thread_key(c) == root)
+        .all(|c| c.created_at < opened_at)
+}
+
 /// Lines of context shown either side of a thread's code in the Comments tab —
 /// the same margin a standard hunk keeps.
 const COMMENT_CONTEXT: u32 = 3;
@@ -830,5 +840,21 @@ mod tests {
             "adopted"
         );
         assert!(elsewhere.blobs[0].holds(1));
+    }
+
+    #[test]
+    fn a_thread_is_earlier_until_something_in_it_is_newer() {
+        let at = |id, parent, created_at| Comment {
+            parent,
+            created_at,
+            ..stored(id, "a.rs", oid(1), 1, 1)
+        };
+        let comments = vec![at(1, None, 10), at(2, Some(1), 20), at(3, None, 50)];
+        // Opened at 30: the first thread's newest comment is older.
+        assert!(is_earlier(&comments, 1, 30));
+        assert!(!is_earlier(&comments, 3, 30));
+        // A reply after the window opened makes the thread current.
+        let replied = [comments.clone(), vec![at(4, Some(1), 40)]].concat();
+        assert!(!is_earlier(&replied, 1, 30));
     }
 }
