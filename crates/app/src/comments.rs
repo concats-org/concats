@@ -243,6 +243,27 @@ pub(crate) fn is_earlier(comments: &[store::Comment], root: u64, opened_at: u64)
         .all(|c| c.created_at < opened_at)
 }
 
+/// How long before `now` the moment `at` was, both in unix seconds, the way a
+/// chat says it: "just now", "5m ago", "3h ago", "2d ago", and past a month
+/// the day it was.
+pub(crate) fn ago(now: u64, at: u64) -> String {
+    const MINUTE: u64 = 60;
+    const HOUR: u64 = 60 * MINUTE;
+    const DAY: u64 = 24 * HOUR;
+    const MONTH: u64 = 30 * DAY;
+    let elapsed = now.saturating_sub(at);
+    match elapsed {
+        0..MINUTE => "just now".into(),
+        MINUTE..HOUR => format!("{}m ago", elapsed / MINUTE),
+        HOUR..DAY => format!("{}h ago", elapsed / HOUR),
+        DAY..MONTH => format!("{}d ago", elapsed / DAY),
+        _ => i64::try_from(at)
+            .ok()
+            .and_then(|at| time::OffsetDateTime::from_unix_timestamp(at).ok())
+            .map_or_else(String::new, |at| at.date().to_string()),
+    }
+}
+
 /// Lines of context either side of a thread's code in the Comments tab —
 /// the same margin a standard hunk keeps.
 const COMMENT_CONTEXT: u32 = 3;
@@ -908,6 +929,21 @@ mod tests {
             "adopted"
         );
         assert!(elsewhere.blobs[0].holds(1));
+    }
+
+    #[test]
+    fn ago_says_how_long_the_way_a_chat_does() {
+        let now = 1_700_000_000;
+        assert_eq!(ago(now, now - 20), "just now");
+        assert_eq!(ago(now, now - 5 * 60), "5m ago");
+        assert_eq!(ago(now, now - 3 * 3_600), "3h ago");
+        assert_eq!(ago(now, now - 2 * 86_400), "2d ago");
+        assert_eq!(ago(now, 1), "1970-01-01");
+        assert_eq!(
+            ago(now, now + 30),
+            "just now",
+            "a clock behind the comment's"
+        );
     }
 
     #[test]

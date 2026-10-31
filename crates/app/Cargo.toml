@@ -91,6 +91,7 @@ bitflags = "2"
 # `concats_review`'s.
 rusqlite = { workspace = true }
 serde_json = { workspace = true }
+time = { workspace = true }
 toml = { workspace = true }
 thiserror = { workspace = true }
 tempfile = { workspace = true }
