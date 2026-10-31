@@ -1848,3 +1848,42 @@ fn find_next_works_from_the_list() {
     assert_eq!(data["caret"][1], 29, "{data}");
     assert_eq!(data["caret"][2], 3, "{data}");
 }
+
+/// ⇧⌘P opens the palette with the keyboard in it; Escape closes it.
+#[test]
+#[ignore = "spawns a GPU process; run with --ignored on a desktop"]
+fn the_palette_opens_and_closes_by_key() {
+    let open = capture(
+        "palette-open",
+        &[(
+            "CONCATS_APP_STEPS",
+            "wait; wait; wait; key cmd-shift-p; wait",
+        )],
+        |_| {},
+    );
+    let data = state(&open, "state.json");
+    assert_eq!(data["picker_open"], true, "{data}");
+    assert_matches("palette-open", &open, BLINKING_CURSOR);
+    let closed = capture(
+        "palette-closed",
+        &[(
+            "CONCATS_APP_STEPS",
+            "wait; wait; wait; key cmd-shift-p; wait; key escape",
+        )],
+        |_| {},
+    );
+    let data = state(&closed, "state.json");
+    assert_eq!(data["picker_open"], false, "{data}");
+}
+
+/// Typing in the palette finds a command and Enter runs it.
+#[test]
+#[ignore = "spawns a GPU process; run with --ignored on a desktop"]
+fn the_palette_runs_what_was_typed() {
+    let data = center_after_keys(
+        "palette-run",
+        "wait; wait; wait; key cmd-shift-p; wait; type clo al; key enter; wait",
+    );
+    assert_eq!(bar(&data, "center"), ["File Diff"], "{data}");
+    assert_eq!(data["picker_open"], false, "{data}");
+}

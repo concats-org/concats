@@ -21,7 +21,7 @@ pub use file_browser::FileBrowserAction;
 pub use gutter::{Gutter, GutterAction};
 pub use header_rule::HeaderRule;
 pub use review_list::ReviewList;
-pub use review_pane::ReviewPane;
+pub use review_pane::{ReviewPane, ReviewPaneAction};
 pub use seen_bar::SeenBar;
 
 use crate::makepad_widgets::ScriptVm;

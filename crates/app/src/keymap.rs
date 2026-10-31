@@ -67,6 +67,8 @@ pub(crate) enum Command {
     /// The open find's next (or previous) match.
     FindNext,
     FindPrevious,
+    /// Find any command by name and run it.
+    Palette,
 }
 
 /// Every command: its name in config.toml, and its title in the menu and the
@@ -161,6 +163,7 @@ pub(crate) const COMMANDS: &[(Command, &str, &str)] = &[
     ),
     (Command::FindNext, "find_next", "Find Next"),
     (Command::FindPrevious, "find_previous", "Find Previous"),
+    (Command::Palette, "command_palette", "Command Palette"),
 ];
 
 /// The keys every command has until config.toml says otherwise.
@@ -211,6 +214,7 @@ const DEFAULTS: &[(&str, &str)] = &[
     ("cmd-k l", "comment_on_selection"),
     ("cmd-g", "find_next"),
     ("cmd-shift-g", "find_previous"),
+    ("cmd-shift-p", "command_palette"),
 ];
 
 impl Command {
@@ -472,6 +476,15 @@ impl Keymap {
             return Press::Pending;
         }
         Press::Unbound
+    }
+
+    /// The keys bound to `command` last: a key config.toml gives it over the
+    /// default.
+    pub(crate) fn binding(&self, command: Command) -> Option<&[Stroke]> {
+        self.bindings
+            .iter()
+            .rfind(|(_, bound)| *bound == command)
+            .map(|(keys, _)| keys.as_slice())
     }
 
     /// The key a macOS menu item can show for `command`: one stroke of Cmd,

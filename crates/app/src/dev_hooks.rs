@@ -697,6 +697,7 @@ impl App {
                 "current_tab": self.current_tab_title(cx),
                 "cards": self.cards_state(cx, d),
                 "pending_chord": self.pending_chord.is_some(),
+                "picker_open": window.pane(cx).view(cx, ids!(combo_panel)).visible(),
                 "panels": self.panel_sizes(cx),
                 "tab_titles": titles,
                 "range": {"repo": d.repo, "base": d.base, "head": d.head, "loads": d.generation},

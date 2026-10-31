@@ -45,7 +45,7 @@ pub use makepad_widgets;
 use makepad_widgets::*;
 use review_doc::{ReviewDoc, Stream, status_line};
 use service::{ReviewCmd, ReviewUpdate, review, review_state};
-use widgets::{HeaderRule, ReviewPane};
+use widgets::{HeaderRule, ReviewPane, ReviewPaneAction};
 use window::WindowState;
 
 use crate::theme::paint;
@@ -61,6 +61,7 @@ mod keymap;
 mod links;
 /// Driving a load on a worker thread and landing it as a whole new document.
 mod load;
+mod palette;
 mod pipe;
 /// The recent-repos list behind the header's picker.
 mod recents;
@@ -334,6 +335,12 @@ impl MatchEvent for App {
     )]
     fn handle_actions(&mut self, cx: &mut Cx, actions: &Actions) {
         for action in actions {
+            if let Some(ReviewPaneAction::Run(command)) = action
+                .as_widget_action()
+                .map(WidgetAction::cast::<ReviewPaneAction>)
+            {
+                self.run_command(cx, command);
+            }
             match action.downcast_ref::<ReviewUpdate>() {
                 // Repo state, not window state: every window on that repo
                 // wants it, and `review_state_changed` no-ops on the rest.

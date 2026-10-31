@@ -638,6 +638,7 @@ dependencies = [
  "makepad-service",
  "makepad-widgets",
  "nix",
+ "nucleo-matcher",
  "regex",
  "rfd",
  "rusqlite",
@@ -3734,6 +3735,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
  "windows-sys 0.59.0",
+]
+
+[[package]]
+name = "nucleo-matcher"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bf33f538733d1a5a3494b836ba913207f14d9d4a1d3cd67030c5061bdd2cac85"
+dependencies = [
+ "memchr 2.8.3",
+ "unicode-segmentation 1.13.3",
 ]
 
 [[package]]

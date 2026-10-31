@@ -514,7 +514,6 @@ script_mod! {
 
                 combo_input := DarkInput {
                     width: Fill
-                    empty_text: "filter, a rev, or base...head"
                     draw_text.text_style: FONT{font_size: 8.25}
                 }
                 combo_row0 := ComboRow {}
@@ -663,6 +662,15 @@ script_mod! {
     }
 }
 
+/// What a pane asks of the App: run the command its palette picked, in its
+/// window. Some commands are the App's to run, such as opening a window.
+#[derive(Clone, Debug, Default)]
+pub enum ReviewPaneAction {
+    Run(Command),
+    #[default]
+    None,
+}
+
 /// One of the pane's three sliding panels. Each is one side of a splitter
 /// that spans the dock along its axis, shuts to 0 on that side, and reopens
 /// to the size the user last dragged, so all three share the machinery below.
@@ -794,6 +802,22 @@ pub struct ReviewPane {
     /// The ranges behind the visible rows, in slot order.
     #[rust]
     range_shown: Vec<Target>,
+    /// The palette's rows while the dropdown is the palette: what this
+    /// window can run, each with its keys.
+    #[rust]
+    palette: Option<Vec<(Command, String)>>,
+    /// The commands behind the palette's visible rows, in slot order.
+    #[rust]
+    palette_shown: Vec<Command>,
+    /// Where the keyboard was when the palette opened.
+    #[rust]
+    palette_return: Area,
+    /// The commands the palette ran lately, most recent first.
+    #[rust]
+    recent_commands: Vec<Command>,
+    /// The dropdown just opened: focus its input after the next draw.
+    #[rust]
+    focus_combo: bool,
 }
 
 /// The status-bar view buttons, one per stream.
@@ -1110,6 +1134,7 @@ impl ReviewPane {
             }
             Command::PickBase => self.combo_open(cx, pickers::RangeEnd::Base),
             Command::PickHead => self.combo_open(cx, pickers::RangeEnd::Head),
+            Command::Palette => self.palette_open(cx),
             Command::Reload => self.reload(cx),
             _ => {}
         }
@@ -2339,8 +2364,17 @@ impl Widget for ReviewPane {
             document,
             state,
         };
-        self.view
-            .draw_walk(cx, &mut Scope::with_data(&mut frame), walk)
+        let step = self
+            .view
+            .draw_walk(cx, &mut Scope::with_data(&mut frame), walk);
+        // A dropdown opened since the last frame has an input to focus only
+        // once it is drawn.
+        if std::mem::take(&mut self.focus_combo) {
+            self.view
+                .text_input(cx, ids!(combo_input))
+                .set_key_focus(cx);
+        }
+        step
     }
 
     fn handle_event(&mut self, cx: &mut Cx, event: &Event, _scope: &mut Scope) {

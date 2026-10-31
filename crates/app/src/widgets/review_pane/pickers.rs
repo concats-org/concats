@@ -7,14 +7,16 @@
 use concats_diff::load::{self, INDEX_REV, WORKTREE_REV};
 use concats_state::Target;
 
-use super::ReviewPane;
+use super::{ReviewPane, ReviewPaneAction};
 #[allow(
     clippy::wildcard_imports,
     reason = "Makepad macros and derives expand against the widget prelude in this scope."
 )]
 use crate::{
+    keymap::Command,
     makepad_widgets::*,
-    review_doc::ReviewDoc,
+    palette,
+    review_doc::{ReviewDoc, Stream},
     service::{ReviewCmd, review},
 };
 
@@ -94,17 +96,65 @@ impl ReviewPane {
         if let Some(mut panel) = panel.borrow_mut() {
             panel.walk.margin.left = left;
         }
-        panel.set_visible(cx, true);
+        self.palette = None;
+        self.show_combo(cx, "filter, a rev, or base...head");
+    }
+
+    /// ⇧⌘P: the command palette, in the range picker's dropdown over the
+    /// middle of the window, listing what this window can run.
+    pub(super) fn palette_open(&mut self, cx: &mut Cx) {
+        self.repo_close(cx);
+        let available = self.state().read(|d| {
+            crate::review_doc::STREAMS
+                .into_iter()
+                .filter(|stream| *stream == Stream::Files || !d.stream(*stream).is_empty())
+                .collect::<Vec<_>>()
+        });
+        self.palette = Some(palette::rows(
+            &crate::theme::active_keymap(),
+            |command| match command {
+                Command::OpenStream(stream) => available.contains(&stream),
+                _ => true,
+            },
+        ));
+        self.palette_return = cx.key_focus();
+        let width = self.view.area().rect(cx).size.x;
+        if let Some(mut panel) = self.view.view(cx, ids!(combo_panel)).borrow_mut() {
+            panel.walk.margin.left = (width - 340.0).max(0.0) / 2.0;
+        }
+        self.show_combo(cx, "Run a command");
+    }
+
+    /// Show the dropdown empty, keyboard in its filter, every row listed.
+    fn show_combo(&mut self, cx: &mut Cx, placeholder: &str) {
+        self.view.view(cx, ids!(combo_panel)).set_visible(cx, true);
         let input = self.view.text_input(cx, ids!(combo_input));
         input.set_text(cx, "");
+        input.set_empty_text(cx, placeholder.to_string());
         input.set_key_focus(cx);
+        self.focus_combo = true;
         self.combo_filter(cx, "");
         self.view.redraw(cx);
     }
 
+    /// Close the dropdown; the palette gives the keyboard back to where it
+    /// was.
     fn combo_close(&mut self, cx: &mut Cx) {
         self.view.view(cx, ids!(combo_panel)).set_visible(cx, false);
+        if self.palette.take().is_some() {
+            cx.set_key_focus(self.palette_return);
+        }
         self.view.redraw(cx);
+    }
+
+    /// Run the command a palette row names, in this window, and remember it
+    /// for the next time the palette opens.
+    fn palette_run(&mut self, cx: &mut Cx, command: Command) {
+        self.combo_close(cx);
+        self.recent_commands.retain(|recent| *recent != command);
+        self.recent_commands.insert(0, command);
+        self.recent_commands.truncate(8);
+        cx.widget_action(self.widget_uid(), ReviewPaneAction::Run(command));
     }
 
     /// Open the repo picker under the repo name: this repository's checkouts
@@ -170,6 +220,26 @@ impl ReviewPane {
     /// Fill the row slots with the rows matching the query.
     fn combo_filter(&mut self, cx: &mut Cx, query: &str) {
         self.picker_cursor = None;
+        if let Some(rows) = &self.palette {
+            let ranked = palette::rank(query, rows, &self.recent_commands);
+            let labels: Vec<String> = ranked
+                .iter()
+                .filter_map(|command| rows.iter().find(|(c, _)| c == command))
+                .map(|(_, label)| label.clone())
+                .collect();
+            for (i, ids) in combo_rows!().into_iter().enumerate() {
+                let row = self.view.button(cx, ids);
+                match labels.get(i) {
+                    Some(label) => {
+                        row.set_text(cx, label);
+                        row.set_visible(cx, true);
+                    }
+                    None => row.set_visible(cx, false),
+                }
+            }
+            self.palette_shown = ranked;
+            return self.view.redraw(cx);
+        }
         let query = query.trim().to_lowercase();
         let slots = combo_rows!();
         let matches: Vec<&RangeRow> = self
@@ -303,6 +373,18 @@ impl ReviewPane {
             if let Some(row) = rows.get(at) {
                 self.pick_repo_row(cx, row);
             }
+        } else {
+            self.pick_combo_row(cx, at);
+        }
+    }
+
+    /// Pick the dropdown's row at `at`: run its command in the palette, load
+    /// its range in a range picker.
+    fn pick_combo_row(&mut self, cx: &mut Cx, at: usize) {
+        if self.palette.is_some() {
+            if let Some(command) = self.palette_shown.get(at).copied() {
+                self.palette_run(cx, command);
+            }
         } else if let Some(target) = self.range_shown.get(at).cloned() {
             self.combo_load(cx, target);
         }
@@ -382,7 +464,10 @@ impl ReviewPane {
             .returned(actions)
         {
             let text = text.trim().to_string();
-            if text.is_empty() {
+            if self.palette.is_some() {
+                // Enter runs the best match.
+                self.pick_combo_row(cx, 0);
+            } else if text.is_empty() {
                 self.combo_close(cx);
             } else {
                 let target = typed(self.state().read(ReviewDoc::target), self.range_end, &text);
@@ -392,12 +477,11 @@ impl ReviewPane {
         if self.view.text_input(cx, ids!(combo_input)).escaped(actions) {
             self.combo_close(cx);
         }
-        let picked = combo_rows!()
+        if let Some(at) = combo_rows!()
             .into_iter()
             .position(|ids| self.view.button(cx, ids).clicked(actions))
-            .and_then(|i| self.range_shown.get(i).cloned());
-        if let Some(target) = picked {
-            self.combo_load(cx, target);
+        {
+            self.pick_combo_row(cx, at);
         }
     }
 }
