@@ -93,7 +93,9 @@ pub(crate) fn splice_comments(
     let old = |c: &Comment| {
         (sides.get(&c.anchor.blob) == Some(&interchange::Side::Old)).then_some(d.old_rev.as_str())
     };
-    let (comments_rows, outdated_paths) = comments_stream(&d.blobs, &of_name, comments, old);
+    let here = d.git_dir.as_deref().map(store::worktree_of);
+    let (comments_rows, outdated_paths) =
+        comments_stream(&d.blobs, &of_name, comments, old, here.as_deref());
     d.comments_rows = comments_rows;
     // Union over the streams: every stream reads the same blob table, so a
     // thread that places in one places in every stream that shows its file.
@@ -236,11 +238,13 @@ fn context_header(path: &str) -> Row {
 const COMMENT_CONTEXT: u32 = 3;
 
 /// The Comments tab's rows: every thread as a card of its code with
-/// [`COMMENT_CONTEXT`] lines either side, overlapping threads sharing one card,
-/// and the threads whose content is not in this range listed last per file.
-/// Returns the rows and the paths whose outdated threads the injection must
-/// flush. `old` is the old-side rev a root's anchor prints with, for a root on
-/// deleted lines.
+/// [`COMMENT_CONTEXT`] lines either side, overlapping threads sharing one card.
+/// After them come the threads whose content is not in this range: those made
+/// in this checkout (`here`) shown, newest file first, then those from another
+/// checkout or from before checkouts were recorded, behind their card's
+/// outdated toggle. Returns the rows and the paths whose outdated threads the
+/// injection must show. `old` is the old-side rev a root's anchor prints
+/// with, for a root on deleted lines.
 ///
 /// Only the context rows are built here. The comment rows are spliced in by the
 /// same `inject_comments` pass every stream gets, so this tab cannot disagree
@@ -258,6 +262,7 @@ fn comments_stream<'a>(
     of_name: &std::collections::HashMap<&str, Vec<u32>>,
     comments: &[store::Comment],
     old: impl Fn(&store::Comment) -> Option<&'a str>,
+    here: Option<&str>,
 ) -> (Vec<Row>, HashSet<String>) {
     let mut outdated_paths: HashSet<String> = HashSet::new();
     if comments.is_empty() {
@@ -314,13 +319,8 @@ fn comments_stream<'a>(
         }
     }
     located.sort_by_key(|&(path, run, root)| (path, run.blob, run.start, root.id));
-    let paths: std::collections::BTreeSet<&str> = located
-        .iter()
-        .map(|&(path, ..)| path)
-        .chain(unplaced.iter().map(|c| c.path.as_str()))
-        .collect();
+    let paths: std::collections::BTreeSet<&str> = located.iter().map(|&(path, ..)| path).collect();
 
-    let mut outdated = 0usize;
     let mut cards: Vec<Row> = Vec::new();
     for path in paths {
         // Threads whose context overlaps share one card: the same line must not
@@ -362,19 +362,40 @@ fn comments_stream<'a>(
                 line,
             }));
         }
+    }
 
-        let stale: Vec<&store::Comment> = unplaced
-            .iter()
-            .copied()
-            .filter(|c| c.path == path)
-            .collect();
-        if !stale.is_empty() {
-            outdated += stale.len();
-            outdated_paths.insert(path.to_string());
-            let lines: Vec<String> = stale
-                .iter()
-                .map(|c| line(c, " · **content not in this range** — thread below"))
-                .collect();
+    // What the range can't place: this checkout's threads first, newest file
+    // first, then everyone else's.
+    let (mine, elsewhere): (Vec<&store::Comment>, Vec<&store::Comment>) = unplaced
+        .iter()
+        .partition(|c| here.is_some() && c.worktree.as_deref() == here);
+    for (stale, suffix, shown) in [
+        (
+            &mine,
+            " · **content not in this range** — thread below",
+            true,
+        ),
+        (
+            &elsewhere,
+            " · **from another checkout** — its card's toggle shows it",
+            false,
+        ),
+    ] {
+        let mut by_path: Vec<(&str, Vec<&store::Comment>)> = Vec::new();
+        for &c in stale {
+            match by_path.iter_mut().find(|(path, _)| *path == c.path) {
+                Some((_, threads)) => threads.push(c),
+                None => by_path.push((c.path.as_str(), vec![c])),
+            }
+        }
+        by_path.sort_by_key(|(_, threads)| {
+            std::cmp::Reverse(threads.iter().map(|c| c.created_at).max())
+        });
+        for (path, threads) in by_path {
+            if shown {
+                outdated_paths.insert(path.to_string());
+            }
+            let lines: Vec<String> = threads.iter().map(|c| line(c, suffix)).collect();
             cards.push(Row::Prose {
                 md: lines.join("  \n"),
             });
@@ -388,10 +409,11 @@ fn comments_stream<'a>(
         },
         Row::Prose {
             md: format!(
-                "**{} thread(s)** · {} unanswered · {} with content not in this range. Reply from any card; a reply with a new location moves its whole thread.",
+                "**{} thread(s)** · {} unanswered · {} with content not in this range · {} from other checkouts. Reply from any card; a reply with a new location moves its whole thread.",
                 roots.len(),
                 unanswered,
-                outdated,
+                mine.len(),
+                elsewhere.len(),
             ),
         },
     ];
@@ -538,7 +560,7 @@ mod tests {
         let blobs = vec![Blob::new(oid(1), "rs".into(), text)];
         let names = HashMap::from([("a.rs", vec![0])]);
         let comments = vec![stored(1, "a.rs", oid(1), 9, 10)];
-        let (rows, outdated) = comments_stream(&blobs, &names, &comments, |_| None);
+        let (rows, outdated) = comments_stream(&blobs, &names, &comments, |_| None, None);
         assert!(outdated.is_empty());
         assert!(matches!(&rows[0], Row::Title { .. }));
         let Row::Prose { md } = &rows[1] else {
@@ -583,7 +605,7 @@ mod tests {
         let blobs = vec![Blob::prose(name.into(), text)];
         let comments = vec![stored(1, name, blobs[0].oid, 1, 2)];
         let names = HashMap::from([(name, vec![0])]);
-        let (rows, outdated) = comments_stream(&blobs, &names, &comments, |_| None);
+        let (rows, outdated) = comments_stream(&blobs, &names, &comments, |_| None, None);
         assert!(outdated.is_empty());
         assert!(!rows.iter().any(|r| matches!(r, Row::FileHeader { .. })));
         let Row::Prose { md } = &rows[2] else {
@@ -617,7 +639,7 @@ mod tests {
             ..stored(2, "a.rs", oid(1), 8, 8)
         };
         for comments in [[root.clone(), reply.clone()], [reply, root]] {
-            let (rows, _) = comments_stream(&blobs, &names, &comments, |_| None);
+            let (rows, _) = comments_stream(&blobs, &names, &comments, |_| None, None);
             let lines: Vec<u32> = rows
                 .iter()
                 .filter_map(|row| match row {
@@ -649,7 +671,7 @@ mod tests {
             stored(2, "a.rs", oid(1), 8, 8),
             reply,
         ];
-        let (rows, _) = comments_stream(&blobs, &names, &comments, |_| None);
+        let (rows, _) = comments_stream(&blobs, &names, &comments, |_| None, None);
         let headers = rows
             .iter()
             .filter(|r| matches!(r, Row::FileHeader { .. }))
@@ -717,7 +739,7 @@ mod tests {
             ..stored(2, "new.rs", oid(2), 1, 1)
         };
         let comments = vec![stored(1, "old.rs", oid(1), 0, 0), reply];
-        let (rows, outdated) = comments_stream(&blobs, &names, &comments, |_| None);
+        let (rows, outdated) = comments_stream(&blobs, &names, &comments, |_| None, None);
         assert!(outdated.is_empty());
         let headers: Vec<&str> = rows
             .iter()
@@ -735,19 +757,38 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::cognitive_complexity,
+        reason = "The row assertions read the stream top to bottom in one place."
+    )]
     fn a_thread_left_behind_by_this_range_is_listed_for_the_flush() {
-        // The anchor names a blob this range does not carry, and no blob of
-        // the path exists to re-find it in: the thread is content-outdated.
-        let comments = vec![stored(1, "gone.rs", oid(9), 4, 4)];
-        let (rows, outdated) = comments_stream(&[], &HashMap::new(), &comments, |_| None);
+        // Anchors on blobs this range does not carry, and no blob of either
+        // path to re-find them in: both threads are content-outdated. One was
+        // made in this checkout, the other in another.
+        let comments = vec![
+            Comment {
+                worktree: Some("other".into()),
+                ..stored(1, "elsewhere.rs", oid(8), 2, 2)
+            },
+            Comment {
+                worktree: Some("here".into()),
+                ..stored(2, "gone.rs", oid(9), 4, 4)
+            },
+        ];
+        let (rows, outdated) =
+            comments_stream(&[], &HashMap::new(), &comments, |_| None, Some("here"));
+        // Only this checkout's thread is shown; the other waits behind its
+        // card's toggle.
         assert_eq!(outdated, HashSet::from(["gone.rs".to_string()]));
         let Row::Prose { md } = &rows[1] else {
             panic!("row 1 is not the summary");
         };
-        assert!(md.contains("1 with content not in this range"));
+        assert!(md.contains("1 with content not in this range · 1 from other checkouts"));
         assert!(matches!(&rows[2], Row::Prose { md } if md.contains("content not in this range")));
         // A bare card and no code: the injection flushes the thread under it.
         assert!(matches!(&rows[3], Row::FileHeader { path, .. } if path == "gone.rs"));
+        assert!(matches!(&rows[4], Row::Prose { md } if md.contains("from another checkout")));
+        assert!(matches!(&rows[5], Row::FileHeader { path, .. } if path == "elsewhere.rs"));
         assert!(!rows.iter().any(|r| matches!(r, Row::Code { .. })));
     }
 
