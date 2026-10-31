@@ -2020,10 +2020,13 @@ impl ReviewList {
             .set_text(cx, &header_title(path, from.as_deref()));
         root.check_box(cx, ids!(seen_box))
             .set_active(cx, seen == Seen::All, Animate::No);
-        root.label(cx, ids!(fh_stat)).set_text(
-            cx,
-            &header_stat(*adds, *dels, *similarity, seen == Seen::Partly),
-        );
+        // A Comments card is the code a thread is on, not a change to it.
+        let stat = if pass.tab == Stream::Comments {
+            String::new()
+        } else {
+            header_stat(*adds, *dels, *similarity, seen == Seen::Partly)
+        };
+        root.label(cx, ids!(fh_stat)).set_text(cx, &stat);
         // Conversations recorded against this file that this range cannot
         // place. Offered only when there are some; the label says which way
         // the click goes. What the last comment splice managed to place is
