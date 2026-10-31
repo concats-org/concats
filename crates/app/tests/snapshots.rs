@@ -854,3 +854,63 @@ fn a_file_tab_uses_the_light_palette() {
         ],
     );
 }
+
+/// How many of the dock's tabs carry `title`.
+fn tabs_titled(data: &serde_json::Value, title: &str) -> usize {
+    data["tab_titles"]
+        .as_array()
+        .expect("tab_titles")
+        .iter()
+        .filter(|t| *t == title)
+        .count()
+}
+
+#[test]
+#[ignore = "spawns a GPU process; run with --ignored on a desktop"]
+fn open_file_on_a_card_opens_one_file_tab() {
+    // Open file, back to File Diff, Open file again.
+    let shot = capture(
+        "open-file",
+        &[(
+            "CONCATS_APP_STEPS",
+            "click 899,119; click 77,45; click 899,119",
+        )],
+        |_| {},
+    );
+    let data = state(&shot, "state.json");
+    assert_eq!(tabs_titled(&data, "editor.rs · worktree"), 1, "{data}");
+}
+
+#[test]
+#[ignore = "spawns a GPU process; run with --ignored on a desktop"]
+#[expect(
+    clippy::format_collect,
+    reason = "Generated fixture lines give the card room to scroll under its header."
+)]
+fn the_pinned_header_opens_its_file() {
+    let shot = capture(
+        "open-file-pinned",
+        &[
+            ("CONCATS_APP_SCROLL", "60"),
+            ("CONCATS_APP_CLICK", "877,111"),
+        ],
+        |repo| {
+            let text = (1..=200)
+                .map(|n| format!("// changed line {n}\n"))
+                .collect::<String>();
+            std::fs::write(repo.join("editor.rs"), text).expect("long file fixture");
+        },
+    );
+    let data = state(&shot, "state.json");
+    assert_eq!(tabs_titled(&data, "editor.rs · worktree"), 1, "{data}");
+}
+
+/// A file the head no longer has offers nothing to open.
+#[test]
+#[ignore = "spawns a GPU process; run with --ignored on a desktop"]
+fn a_deleted_file_card_has_no_open_button() {
+    let actual = capture("deleted-card", &[], |repo| {
+        std::fs::remove_file(repo.join("README.md")).expect("delete README.md");
+    });
+    assert_matches("deleted-card", &actual, EXACT);
+}

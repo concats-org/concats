@@ -1718,6 +1718,9 @@ impl ReviewPane {
                 ReviewItemAction::Outdated { path } if clicked => {
                     self.toggle_card_outdated(cx, path);
                 }
+                ReviewItemAction::OpenFile { path } if clicked => {
+                    self.open_file_tab(cx, path);
+                }
                 ReviewItemAction::Gutter { tab, row } => match action.action.downcast_ref() {
                     Some(GutterAction::DragStart { blob, line }) => {
                         self.compose_start(cx, *tab, *row, *blob, *line);
@@ -1754,6 +1757,7 @@ impl ReviewPane {
                 | ReviewItemAction::Reply { .. }
                 | ReviewItemAction::Quote { .. }
                 | ReviewItemAction::Outdated { .. }
+                | ReviewItemAction::OpenFile { .. }
                 | ReviewItemAction::Reveal { .. }
                 | ReviewItemAction::Post
                 | ReviewItemAction::Cancel => {}

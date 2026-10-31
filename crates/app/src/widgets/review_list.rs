@@ -202,6 +202,10 @@ pub(super) enum ReviewItemAction {
     Outdated {
         path: String,
     },
+    /// The card's "Open file": the whole file at the head, in a File tab.
+    OpenFile {
+        path: String,
+    },
     Gutter {
         tab: Stream,
         row: usize,
@@ -285,11 +289,12 @@ script_mod! {
         draw_selection.color: mod.app_theme.color_sel_focus
     }
 
-    // The card header's toggle for the conversations this range cannot place.
-    // Hidden until there are some. The card header and its pinned twin share
-    // it, since either can be the one on screen. Every colour state is set;
-    // unset ones fall through to makepad's own theme instead of ours.
-    let OutdatedToggle = ButtonFlatter {
+    // A text button in the card header: the toggle for the conversations this
+    // range cannot place, and Open file. Hidden until filled. The card header
+    // and its pinned twin share them, since either can be the one on screen.
+    // Every colour state is set; unset ones fall through to makepad's own
+    // theme instead of ours.
+    let HeaderButton = ButtonFlatter {
         visible: false
         width: Fit height: Fit
         padding: Inset{top: 3 bottom: 3 left: 6 right: 6}
@@ -458,7 +463,11 @@ script_mod! {
                     // Conversations this range cannot place. Shown only when
                     // there are some, because a card with nothing hidden has
                     // nothing to offer.
-                    fh_outdated := OutdatedToggle {}
+                    fh_outdated := HeaderButton {}
+                    // Hidden for a file the head no longer has.
+                    fh_open := HeaderButton {
+                        text: "Open file"
+                    }
                     fh_stat := Label {
                         width: Fit
                         draw_text.color: C_FAINT
@@ -1888,6 +1897,10 @@ impl ReviewList {
             root.widget(cx, ids!(fh_outdated))
                 .set_action_data(ReviewItemAction::Outdated { path: path.clone() });
         }
+        let at_head = d.tree.binary_search(path).is_ok();
+        root.button(cx, ids!(fh_open)).set_visible(cx, at_head);
+        root.widget(cx, ids!(fh_open))
+            .set_action_data(ReviewItemAction::OpenFile { path: path.clone() });
         // Shut cards show the other caret and drop the hairline: the bottom
         // cap closes them instead.
         let folded = card_shut(d, path, seen == Seen::All);
