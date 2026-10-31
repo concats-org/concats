@@ -944,3 +944,40 @@ fn open_file_on_a_guide_card() {
     let data = state(&shot, "state.json");
     assert_eq!(tabs_titled(&data, "editor.rs · worktree"), 1, "{data}");
 }
+
+/// A file of `n` numbered lines, longer than the window.
+#[expect(
+    clippy::format_collect,
+    reason = "Numbered fixture lines make the landed line readable in the capture."
+)]
+fn numbered(repo: &Path, n: usize) {
+    let text: String = (1..=n).map(|i| format!("// line {i}\n")).collect();
+    std::fs::write(repo.join("long.rs"), text).expect("long file fixture");
+}
+
+/// Opening at a line scrolls there and puts the caret at its start, also when
+/// the tab is already open at the top.
+#[test]
+#[ignore = "spawns a GPU process; run with --ignored on a desktop"]
+fn a_file_opens_at_a_line() {
+    let shot = capture(
+        "open-at-line",
+        &[("CONCATS_APP_FILE", "long.rs,long.rs:120")],
+        |repo| numbered(repo, 200),
+    );
+    let data = state(&shot, "state.json");
+    assert_eq!(data["caret"][1], 119, "{data}");
+    assert_eq!(data["caret"][2], 0, "{data}");
+    assert_matches("open-at-line", &shot, EXACT);
+}
+
+#[test]
+#[ignore = "spawns a GPU process; run with --ignored on a desktop"]
+fn a_line_past_the_end_opens_at_the_last_line() {
+    let shot = capture(
+        "open-past-end",
+        &[("CONCATS_APP_FILE", "long.rs:999")],
+        |repo| numbered(repo, 200),
+    );
+    assert_eq!(state(&shot, "state.json")["caret"][1], 199);
+}

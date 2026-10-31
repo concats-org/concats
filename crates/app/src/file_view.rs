@@ -15,7 +15,7 @@ use concats_review::store::{self, Comment};
 
 use crate::{
     comments::{hold_comments, splice_stream},
-    review_doc::{FileView, ReviewDoc, strip_composer},
+    review_doc::{Caret, FileView, ReviewDoc, strip_composer},
 };
 
 /// Both sides of one file for the File tab: its content at the range's base
@@ -164,6 +164,38 @@ pub(crate) fn open_file(
         heading: None,
     };
     place(d, view, comments)
+}
+
+/// Put the caret of the File tab `tab` on `line` at `column` (both 1-based), and
+/// say which row that is. A line past the end lands on the last line; a column
+/// past the end of the line, at its end.
+pub(crate) fn caret_to_line(d: &mut ReviewDoc, tab: u64, line: u32, column: u32) -> Option<usize> {
+    let view = d.file(tab)?;
+    let head = view.head;
+    let mut lines = view
+        .rows
+        .iter()
+        .enumerate()
+        .filter_map(|(at, row)| match row {
+            Row::Code { blob, line, .. } if *blob == head => Some((at, *line)),
+            _ => None,
+        });
+    let (row, line) = lines
+        .clone()
+        .find(|(_, l)| l + 1 == line)
+        .or_else(|| lines.next_back())?;
+    let text = d.blobs[head as usize].line_text(line as usize);
+    let byte = text
+        .char_indices()
+        .nth(column.saturating_sub(1) as usize)
+        .map_or(text.len(), |(at, _)| at);
+    d.caret = Some(Caret {
+        blob: head,
+        line,
+        byte,
+    });
+    d.selection_anchor = None;
+    Some(row)
 }
 
 /// What a File tab is called: the file, the revision its content is at, and
@@ -837,5 +869,32 @@ mod tests {
             .position(|r| matches!(r, Row::Comment { id: 1, .. }))
             .expect("the thread renders");
         assert!(matches!(opened(&d)[at - 1], Row::Code { line: 1, .. }));
+    }
+
+    #[test]
+    fn opening_at_a_line_puts_the_caret_on_it() {
+        let mut d = ReviewDoc::default();
+        let blob = Blob::new(oid(1), "rs".into(), "first\nsécond\nlast\n".into());
+        open_file(&mut d, "a.rs", (None, blob), &[]);
+        let tab = d.files_open[0].tab;
+        let head = d.files_open[0].head;
+        let caret = |d: &ReviewDoc| d.caret.map(|c| (c.blob, c.line, c.byte));
+
+        let row = caret_to_line(&mut d, tab, 2, 3).expect("line 2 exists");
+        assert!(matches!(opened(&d)[row], Row::Code { line: 1, .. }));
+        // Column 3 of "sécond" is after the two-byte é.
+        assert_eq!(caret(&d), Some((head, 1, 3)));
+
+        caret_to_line(&mut d, tab, 2, 40);
+        assert_eq!(
+            caret(&d),
+            Some((head, 1, "sécond".len())),
+            "past the end of the line"
+        );
+
+        caret_to_line(&mut d, tab, 99, 1);
+        assert_eq!(caret(&d), Some((head, 2, 0)), "past the end of the file");
+
+        assert_eq!(caret_to_line(&mut d, tab + 1, 1, 1), None, "no such tab");
     }
 }

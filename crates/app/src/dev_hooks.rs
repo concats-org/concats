@@ -10,7 +10,7 @@
 //! - On each load: `COMPOSE=path:start:end` opens the composer on those lines.
 //! - Once the first load lands, in this order: `WINDOWS=N` opens N windows
 //!   (`WINDOWS_SIZE=WxH` sizes the ones it adds), `SCROLL=N` starts the list
-//!   at row N, `TERM` opens the terminal, `FILE=path[,path…]` opens a File tab
+//!   at row N, `TERM` opens the terminal, `FILE=path[:line][,path…]` opens a File tab
 //!   each, `TAB=name` (or `file:path`) selects a tab, and `SHOT=path.png`
 //!   captures the frame.
 //! - Then one step per poll tick: `STEPS=…` runs its `;`-separated steps
@@ -131,8 +131,15 @@ impl App {
         }
         if let Some(paths) = var("CONCATS_APP_FILE") {
             for path in paths.split(',').filter(|p| !p.is_empty()) {
+                // `path:line` opens it at that line.
+                let at = path
+                    .rsplit_once(':')
+                    .and_then(|(file, line)| Some((file, line.parse().ok()?)));
                 if let Some(mut p) = pane.borrow_mut::<ReviewPane>() {
-                    p.open_file_tab(cx, path);
+                    match at {
+                        Some((file, line)) => p.open_file_tab(cx, file, Some((line, 1))),
+                        None => p.open_file_tab(cx, path, None),
+                    }
                 }
             }
         }

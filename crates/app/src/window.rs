@@ -13,7 +13,7 @@ use std::sync::{
 
 use crate::{
     makepad_widgets::{LiveId, WindowId},
-    review_doc::ReviewDoc,
+    review_doc::{ReviewDoc, Stream},
 };
 
 /// Handed to the window's `ReviewPane` when the window opens, and from there
@@ -28,6 +28,11 @@ pub(crate) struct WindowState {
     /// before painting; writers replace or mutate the uniquely held snapshot.
     doc: RwLock<Arc<ReviewDoc>>,
     pub compose_draft: RwLock<String>,
+    /// A row to bring into view and give the keyboard to, waiting for the list
+    /// that draws its stream: a file opened at a line. It lives outside the
+    /// document because that list takes it mid-draw, and a draw holds the
+    /// document, so clearing a field of it there would clone it whole.
+    pub reveal: Mutex<Option<(Stream, usize)>>,
     /// Loads are superseded rather than cancelled: one that is no longer the
     /// newest drops its result instead of landing it.
     load_request: AtomicU64,
@@ -54,6 +59,7 @@ impl WindowState {
             platform,
             doc: RwLock::new(Arc::new(ReviewDoc::default())),
             compose_draft: RwLock::new(String::new()),
+            reveal: Mutex::new(None),
             load_request: AtomicU64::new(0),
             focused: AtomicBool::new(false),
             terminal_tab: AtomicU64::new(0),

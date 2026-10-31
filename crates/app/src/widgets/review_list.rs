@@ -99,6 +99,8 @@ const STICKY_TOP_GAP: f64 = 8.0;
 /// Where a row lands when the list scrolls to it: just below the pinned
 /// header, which would otherwise cover it.
 const BELOW_STICKY: f64 = STICKY_TOP_GAP + STICKY_HEIGHT;
+/// Lines kept above the one a file opens at, so it reads in context.
+const REVEAL_CONTEXT: usize = 3;
 /// Height of the pinned header's shadow, above it and below it alike.
 const STICKY_SHADOW: f64 = 12.0;
 /// The `CardEnd` row draws the card's bottom edge in its first 9pt (8pt of card
@@ -1336,6 +1338,17 @@ impl Widget for ReviewList {
         self.state = Some(frame.state.clone());
         let tab = self.tab_of(cx, &frame.document.files_open);
         self.drawn_tab = Some(tab);
+        // A file opened at a line: start the list a few lines above it, so it
+        // reads in context, and take the keyboard once drawn.
+        let reveal = frame
+            .state
+            .reveal
+            .lock()
+            .unwrap()
+            .take_if(|(stream, _)| *stream == tab);
+        if let Some((_, row)) = reveal {
+            self.seek_row = Some((row.saturating_sub(REVEAL_CONTEXT), 0.0));
+        }
         if self.find.is_some()
             && (self.mapped.0 != frame.document.generation
                 || self.mapped.2 != frame.document.rows_rev)
@@ -1415,6 +1428,10 @@ impl Widget for ReviewList {
             };
             self.draw_sticky(cx, &pass, push, lift);
             self.draw_chip(cx, &pass);
+        }
+        if reveal.is_some() {
+            let area = self.view.portal_list(cx, ids!(list)).area();
+            cx.set_key_focus(area);
         }
         if std::mem::take(&mut self.focus_find) {
             let input = self.view.text_input(cx, ids!(find_input));

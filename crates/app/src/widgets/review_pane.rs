@@ -34,7 +34,7 @@ use crate::{
         open_tab, settings_tab_spec, stream_tab_spec, stream_tabs, terminal_tab_spec,
         terminal_tabs,
     },
-    file_view::{open_file, read_file_sides},
+    file_view::{caret_to_line, open_file, read_file_sides},
     load::{hold_minted, resplice_comments, spawn_load},
     makepad_widgets::*,
     review_doc::{
@@ -774,7 +774,10 @@ impl ReviewPane {
     /// the ODB (or one `read` of a working file) plus a newline scan —
     /// single-digit milliseconds — and it must not bump `generation`, the only
     /// thing a landed background load could signal with.
-    pub fn open_file_tab(&mut self, cx: &mut Cx, path: &str) {
+    ///
+    /// `at` is a 1-based line and column to put the caret on and bring into
+    /// view; without it the tab opens where it was, at the top when new.
+    pub fn open_file_tab(&mut self, cx: &mut Cx, path: &str, at: Option<(u32, u32)>) {
         let (repo, range) = self.state().read(|d| (d.repo.clone(), d.resolved));
         let sides = match read_file_sides(&repo, range, path) {
             Ok(sides) => sides,
@@ -810,6 +813,12 @@ impl ReviewPane {
         );
         dock.select_tab(cx, tab_id);
         self.set_gesture_tab(cx, Stream::File(tab_id.0));
+        if let Some((line, column)) = at {
+            let row = self
+                .state()
+                .with(|d| caret_to_line(d, tab_id.0, line, column));
+            *self.state().reveal.lock().unwrap() = row.map(|row| (Stream::File(tab_id.0), row));
+        }
         self.redraw_streams(cx);
     }
 
@@ -1573,13 +1582,13 @@ impl ReviewPane {
                 _ => {}
             }
             match wa.cast() {
-                TerminalViewAction::OpenFile(path) => self.open_file_tab(cx, &path),
+                TerminalViewAction::OpenFile(path) => self.open_file_tab(cx, &path, None),
                 TerminalViewAction::None => {}
             }
             // The file browser names a path; the pane owns the dock, so
             // turning that into a tab is this side's job.
             match wa.cast() {
-                FileBrowserAction::OpenFile(path) => self.open_file_tab(cx, &path),
+                FileBrowserAction::OpenFile(path) => self.open_file_tab(cx, &path, None),
                 FileBrowserAction::None => {}
             }
         }
@@ -1719,7 +1728,7 @@ impl ReviewPane {
                     self.toggle_card_outdated(cx, path);
                 }
                 ReviewItemAction::OpenFile { path } if clicked => {
-                    self.open_file_tab(cx, path);
+                    self.open_file_tab(cx, path, None);
                 }
                 ReviewItemAction::Gutter { tab, row } => match action.action.downcast_ref() {
                     Some(GutterAction::DragStart { blob, line }) => {
