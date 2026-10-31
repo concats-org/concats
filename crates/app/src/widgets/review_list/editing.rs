@@ -13,6 +13,7 @@ use crate::{
     editor,
     file_view::{relower_edited, save_plan, untitled},
     makepad_widgets::*,
+    review_doc::fold_key,
     service::{ReviewCmd, review},
     widgets::find_row,
 };
@@ -286,15 +287,12 @@ impl ReviewList {
             d.tab = tab;
             d.caret = editor::caret_at(d, tab, row, byte);
             d.selection_anchor = None;
-            if let Some(path) = d.stream(tab)[..=row]
+            if let Some(key) = d.stream(tab)[..=row]
                 .iter()
-                .rev()
-                .find_map(|row| match row {
-                    Row::FileHeader { path, .. } => Some(path.clone()),
-                    _ => None,
-                })
+                .rposition(|row| matches!(row, Row::FileHeader { .. }))
+                .and_then(|header| fold_key(d.stream(tab), header, tab))
             {
-                d.folded.remove(&path);
+                d.folded.remove(&key);
             }
         });
         self.redraw(cx);

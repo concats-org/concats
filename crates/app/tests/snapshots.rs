@@ -2088,3 +2088,49 @@ fn a_comment_added_elsewhere_arrives_without_a_reload() {
     assert_eq!(data["range"]["loads"], 1, "no reload: {data}");
     assert_eq!(bar(&data, "left"), ["Comments"], "{data}");
 }
+
+/// A Comments card folds to its header on its own: the other card on the
+/// same file, and the file's card in the diff, stay open.
+#[test]
+#[ignore = "spawns a GPU process; run with --ignored on a desktop"]
+fn a_comments_card_folds_on_its_own() {
+    let home = home_with_placement("comments = \"center\"");
+    let home_path = home.path().to_str().expect("utf-8 temp path").to_owned();
+    let two_threads = |repo: &Path| {
+        comment_on(repo, &["hash-object", "editor.rs"], "why hello?");
+        let blob = git(repo, &["hash-object", "editor.rs"]);
+        concats_review::store::Store::open(&repo.join(".git"))
+            .add_comment(concats_review::store::Comment {
+                body: "Is HashMap the right map here?".into(),
+                created_at: 1,
+                ..concats_review::store::comment(
+                    "editor.rs".into(),
+                    concats_review::store::Anchor {
+                        blob: gix::ObjectId::from_hex(blob.trim().as_bytes()).expect("blob oid"),
+                        start: 0,
+                        end: 0,
+                    },
+                )
+            })
+            .expect("store the comment");
+    };
+    let shot = capture(
+        "comments-card-fold",
+        &[
+            ("HOME", &home_path),
+            (
+                "CONCATS_APP_STEPS",
+                "wait; wait; wait; key alt-cmd-1; wait; wait; click 37,205; wait; wait",
+            ),
+        ],
+        two_threads,
+    );
+    let data = state(&shot, "state.json");
+    // The first card's thread is the second comment stored.
+    assert_eq!(
+        data["cards"]["folded"],
+        serde_json::json!(["editor.rs#2"]),
+        "{data}"
+    );
+    assert_matches("comments-card-fold", &shot, EXACT);
+}

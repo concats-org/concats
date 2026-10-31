@@ -646,6 +646,33 @@ pub(crate) fn seen_progress(d: &ReviewDoc, st: &crate::service::ReviewState) -> 
     (seen, d.changed_keys.len())
 }
 
+/// What the card whose header is row `header` of `rows` folds by. A diff
+/// stream has one card per file, so its path. The Comments tab has a card
+/// per group of threads, several to a file, so there it is the path and the
+/// first thread in the card, and each folds on its own.
+pub(crate) fn fold_key(rows: &[Row], header: usize, tab: Stream) -> Option<String> {
+    let Row::FileHeader { path, .. } = rows.get(header)? else {
+        return None;
+    };
+    Some(match (tab, first_thread(rows, header)) {
+        (Stream::Comments, Some(root)) => format!("{path}#{root}"),
+        _ => path.clone(),
+    })
+}
+
+/// The first thread spliced into the card whose header is row `header`.
+pub(crate) fn first_thread(rows: &[Row], header: usize) -> Option<u64> {
+    rows[header + 1..]
+        .iter()
+        .take_while(|row| !matches!(row, Row::CardEnd))
+        .find_map(|row| match row {
+            Row::Comment {
+                id, parent: None, ..
+            } => Some(*id),
+            _ => None,
+        })
+}
+
 /// Whether the card for `path` is shut: folded by hand, or all `seen` while
 /// Collapse seen is on and no click has opened it.
 // NOTE: the read of the rule toggle_card writes; the two take the same card.
@@ -1011,6 +1038,45 @@ pub(crate) mod tests {
 
     pub(crate) fn oid(n: u8) -> ObjectId {
         ObjectId::from_hex(format!("{n:040x}").as_bytes()).expect("valid hex")
+    }
+
+    #[test]
+    fn a_comments_card_folds_by_its_first_thread_a_diff_card_by_its_file() {
+        let header = || Row::FileHeader {
+            path: "a.rs".into(),
+            lang: "rs",
+            adds: 0,
+            dels: 0,
+            from: None,
+            similarity: None,
+        };
+        let comment = |id, parent| Row::Comment {
+            id,
+            parent,
+            body: String::new(),
+            meta: String::new(),
+            quote: None,
+        };
+        let rows = [
+            header(),
+            Row::context(0, 0, 0),
+            comment(4, None),
+            comment(5, Some(4)),
+            Row::CardEnd,
+            header(),
+            comment(9, None),
+            Row::CardEnd,
+        ];
+        assert_eq!(
+            fold_key(&rows, 0, Stream::Comments).as_deref(),
+            Some("a.rs#4")
+        );
+        assert_eq!(
+            fold_key(&rows, 5, Stream::Comments).as_deref(),
+            Some("a.rs#9")
+        );
+        assert_eq!(fold_key(&rows, 0, Stream::Files).as_deref(), Some("a.rs"));
+        assert_eq!(fold_key(&rows, 1, Stream::Comments), None);
     }
 
     #[test]

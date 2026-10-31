@@ -44,8 +44,9 @@ use crate::{
     makepad_widgets::*,
     review_doc::{
         Compose, Composing, ReviewDoc, Stream, blob_label, card_keys, code_row_near,
-        comment_anchor, derive_compose, expand_collapsed, quoted, reveal_removed, seen_progress,
-        selected, splice_composer, stream_has_composer, strip_composer, widen_compose,
+        comment_anchor, derive_compose, expand_collapsed, fold_key, quoted, reveal_removed,
+        seen_progress, selected, splice_composer, stream_has_composer, strip_composer,
+        widen_compose,
     },
     service::{self, ReviewCmd, review, review_state},
     terminal,
@@ -1167,7 +1168,11 @@ impl ReviewPane {
                         .iter()
                         .all(|key| review.seen.contains(key))
                 });
-                self.toggle_card_fold(cx, &path, seen);
+                let key = self
+                    .state()
+                    .read(|d| fold_key(d.stream(tab), header, tab))
+                    .unwrap_or(path);
+                self.toggle_card_fold(cx, &key, seen);
             }
             (Command::CommentOnSelection, Some((_, _, near))) => self.compose_span(cx, tab, near),
             (Command::ToggleSeen | Command::FoldCard | Command::CommentOnSelection, None) => {}

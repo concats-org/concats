@@ -25,7 +25,10 @@ use crate::{
     find::Find,
     keymap::Command,
     makepad_widgets::{event::TouchState, *},
-    review_doc::{Composing, FileView, ReviewDoc, Stream, card_shut, compose_title, header_title},
+    review_doc::{
+        Composing, FileView, ReviewDoc, Stream, card_shut, compose_title, first_thread, fold_key,
+        header_title,
+    },
     service::{HighlightCmd, ReviewState, highlight},
 };
 
@@ -981,7 +984,7 @@ pub struct ReviewList {
     #[rust]
     mapped: (u64, u64, u64),
     #[rust]
-    mapped_folded: HashSet<String>,
+    mapped_folded: HashSet<usize>,
     #[rust]
     mapped_entries: usize,
     #[rust]
@@ -1286,7 +1289,7 @@ impl ReviewList {
     /// replies keep the row that stands in for them.
     // NOTE: every row between a header and its cap is the card's body, a new kind too.
     // coland-ignore: @coland/absorbing_default_branch
-    fn map_folded(&mut self, rows: &[Row], folded: &HashSet<String>, replies: &[(usize, usize)]) {
+    fn map_folded(&mut self, rows: &[Row], folded: &HashSet<usize>, replies: &[(usize, usize)]) {
         self.visible.clear();
         if folded.is_empty() && replies.is_empty() {
             return;
@@ -1298,8 +1301,8 @@ impl ReviewList {
         let mut hidden = false;
         for (i, row) in rows.iter().enumerate() {
             match row {
-                Row::FileHeader { path, .. } => {
-                    hidden = folded.contains(path);
+                Row::FileHeader { .. } => {
+                    hidden = folded.contains(&i);
                     self.visible.push(i);
                 }
                 Row::CardEnd => {
@@ -1799,18 +1802,16 @@ impl ReviewList {
         }
         // Which cards are shut follows the seen ticks as well as the folds:
         // with Collapse seen on, ticking a card's last line shuts it.
-        let shut: HashSet<String> = self
+        let shut: HashSet<usize> = self
             .cards
             .cards
             .iter()
-            .filter_map(|card| match &pass.rows[card.header] {
-                Row::FileHeader { path, .. }
-                    if card_shut(d, path, card.seen_state(&pass.review.seen) == Seen::All) =>
-                {
-                    Some(path.clone())
-                }
-                _ => None,
+            .filter(|card| {
+                fold_key(pass.rows, card.header, pass.tab).is_some_and(|key| {
+                    card_shut(d, &key, card.seen_state(&pass.review.seen) == Seen::All)
+                })
             })
+            .map(|card| card.header)
             .collect();
         let replies = if pass.tab == Stream::Comments {
             folded_replies(pass.rows, &d.expanded_threads)
@@ -2010,10 +2011,11 @@ impl ReviewList {
             .cards
             .at(r)
             .map_or(Seen::Unseen, |card| card.seen_state(&pass.review.seen));
+        let key = fold_key(pass.rows, r, pass.tab).unwrap_or_else(|| path.clone());
         for ids in [ids!(fold_button), ids!(unfold_button)] {
             root.widget(cx, ids)
                 .set_action_data(ReviewItemAction::Fold {
-                    path: path.clone(),
+                    path: key.clone(),
                     seen: seen == Seen::All,
                 });
         }
@@ -2052,15 +2054,7 @@ impl ReviewList {
         root.button(cx, ids!(fh_open)).set_visible(cx, at_head);
         // A Comments card opens its file at the first thread in it.
         let thread = if pass.tab == Stream::Comments {
-            pass.rows[r + 1..]
-                .iter()
-                .take_while(|row| !matches!(row, Row::CardEnd))
-                .find_map(|row| match row {
-                    Row::Comment {
-                        id, parent: None, ..
-                    } => Some(*id),
-                    _ => None,
-                })
+            first_thread(pass.rows, r)
         } else {
             None
         };
@@ -2071,7 +2065,7 @@ impl ReviewList {
             });
         // Shut cards show the other caret and drop the hairline: the bottom
         // cap closes them instead.
-        let folded = card_shut(d, path, seen == Seen::All);
+        let folded = card_shut(d, &key, seen == Seen::All);
         root.button(cx, ids!(fold_button)).set_visible(cx, !folded);
         root.button(cx, ids!(unfold_button)).set_visible(cx, folded);
         root.view(cx, ids!(fh_rule)).set_visible(cx, !folded);
@@ -2445,10 +2439,8 @@ impl ReviewList {
         // hovering over the next card.
         self.sticky_idx = card
             .filter(|card| {
-                !matches!(
-                    pass.rows.get(card.header),
-                    Some(Row::FileHeader { path, .. }) if pass.doc.folded.contains(path)
-                )
+                !fold_key(pass.rows, card.header, pass.tab)
+                    .is_some_and(|key| pass.doc.folded.contains(&key))
             })
             .map(|card| card.header);
 
