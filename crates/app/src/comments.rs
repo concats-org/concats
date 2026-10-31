@@ -101,11 +101,13 @@ pub(crate) fn splice_comments(
     // thread that places in one places in every stream that shows its file.
     let mut placed = std::collections::HashSet::new();
     d.for_each_stream(|rows, blobs, show_all, about, tab| {
-        // The Comments tab always shows every thread — an outdated conversation
-        // is what it exists to keep track of — so its cards reveal outdated
-        // threads without asking the per-card toggles.
+        // The Comments tab shows this checkout's outdated threads on its own —
+        // keeping track of them is what it is for — and another checkout's
+        // once their card's toggle asks, as every other stream does.
+        let shown: HashSet<String>;
         let show = if tab == Stream::Comments {
-            &outdated_paths
+            shown = outdated_paths.union(show_all).cloned().collect();
+            &shown
         } else {
             show_all
         };
@@ -929,6 +931,32 @@ mod tests {
             "adopted"
         );
         assert!(elsewhere.blobs[0].holds(1));
+    }
+
+    /// Another checkout's thread on content this range doesn't have waits
+    /// behind its card's toggle in the Comments tab, and the toggle shows it.
+    #[test]
+    fn another_checkouts_thread_shows_once_its_card_is_toggled() {
+        let mut d = ReviewDoc {
+            blobs: vec![Blob::new(oid(1), "rs".into(), "kept\n".into())],
+            blob_paths: HashMap::from([(0, "a.rs".to_string())]),
+            files_rows: vec![Row::add(0, 0)],
+            ..Default::default()
+        };
+        let comments = [Comment {
+            worktree: Some("/elsewhere/.git".into()),
+            ..stored(1, "a.rs", oid(9), 0, 0)
+        }];
+        let shows = |d: &ReviewDoc| {
+            d.comments_rows
+                .iter()
+                .any(|r| matches!(r, Row::Comment { id: 1, .. }))
+        };
+        splice_comments(&mut d, &comments);
+        assert!(!shows(&d));
+        d.show_all_comments.insert("a.rs".into());
+        splice_comments(&mut d, &comments);
+        assert!(shows(&d));
     }
 
     #[test]
