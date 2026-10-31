@@ -4,7 +4,12 @@ use std::path::{Component, Path};
 
 #[derive(Debug, PartialEq)]
 pub(crate) enum Target {
-    File(String),
+    /// A path inside the checkout, and the 1-based line and column the link
+    /// names, if any.
+    File {
+        path: String,
+        at: Option<(u32, u32)>,
+    },
     External(url::Url),
 }
 
@@ -22,9 +27,33 @@ pub(crate) fn target(uri: &str, root: &Path) -> Option<Target> {
             {
                 return None;
             }
-            Some(Target::File(relative.to_str()?.to_owned()))
+            let (path, suffix) = split_location(relative.to_str()?);
+            let fragment = url
+                .fragment()
+                .and_then(concats_review::guide::fragment_lines)
+                .map(|(line, _)| (line, 1));
+            Some(Target::File {
+                path: path.to_owned(),
+                at: fragment.or(suffix),
+            })
         }
         _ => None,
+    }
+}
+
+/// `path:line` or `path:line:column`, the way compilers and `rg -n` print a
+/// location, split into the path and where in it.
+pub(crate) fn split_location(text: &str) -> (&str, Option<(u32, u32)>) {
+    let number = |s: &str| s.parse::<u32>().ok().filter(|n| *n > 0);
+    let Some((rest, last)) = text.rsplit_once(':') else {
+        return (text, None);
+    };
+    let Some(last) = number(last) else {
+        return (text, None);
+    };
+    match rest.rsplit_once(':') {
+        Some((path, line)) if let Some(line) = number(line) => (path, Some((line, last))),
+        _ => (rest, Some((last, 1))),
     }
 }
 
@@ -60,13 +89,16 @@ mod tests {
     #[test]
     fn local_file_links_name_only_files_inside_the_repository() {
         let root = Path::new("/repo");
-        assert_eq!(
-            target("file:///repo/a%20b.rs", root),
-            Some(Target::File("a b.rs".into()))
-        );
+        let file = |path: &str, at| {
+            Some(Target::File {
+                path: path.into(),
+                at,
+            })
+        };
+        assert_eq!(target("file:///repo/a%20b.rs", root), file("a b.rs", None));
         assert_eq!(
             target("file://localhost/repo/src/a.rs", root),
-            Some(Target::File("src/a.rs".into()))
+            file("src/a.rs", None)
         );
         for uri in [
             "file://remote/repo/a",
@@ -78,5 +110,30 @@ mod tests {
         ] {
             assert!(target(uri, root).is_none(), "{uri}");
         }
+    }
+
+    #[test]
+    fn file_links_carry_the_line_they_name() {
+        let root = Path::new("/repo");
+        let at = |uri| match target(uri, root) {
+            Some(Target::File { path, at }) => Some((path, at)),
+            _ => None,
+        };
+        let a = |line, column| Some(("a.rs".to_string(), Some((line, column))));
+        assert_eq!(at("file:///repo/a.rs#L12"), a(12, 1));
+        assert_eq!(at("file:///repo/a.rs#L12-L20"), a(12, 1));
+        assert_eq!(at("file:///repo/a.rs#L12-20"), a(12, 1));
+        assert_eq!(at("file:///repo/a.rs:12"), a(12, 1));
+        assert_eq!(at("file:///repo/a.rs:12:3"), a(12, 3));
+        assert_eq!(at("file:///elsewhere/a.rs:12"), None);
+    }
+
+    #[test]
+    fn a_location_suffix_splits_off_its_path() {
+        assert_eq!(split_location("src/a.rs:12:5"), ("src/a.rs", Some((12, 5))));
+        assert_eq!(split_location("src/a.rs:12"), ("src/a.rs", Some((12, 1))));
+        assert_eq!(split_location("src/a.rs"), ("src/a.rs", None));
+        assert_eq!(split_location("src/a.rs:"), ("src/a.rs:", None));
+        assert_eq!(split_location("src/a.rs:0"), ("src/a.rs:0", None));
     }
 }

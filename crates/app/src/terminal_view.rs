@@ -218,7 +218,9 @@ script_mod! {
 
 #[derive(Clone, Debug, Default)]
 pub enum TerminalViewAction {
-    OpenFile(String),
+    /// A path inside the checkout, at a 1-based line and column when the link
+    /// names one.
+    OpenFile(String, Option<(u32, u32)>),
     #[default]
     None,
 }
@@ -1696,8 +1698,11 @@ impl Widget for TerminalView {
                         crate::links::Target::External(url) => {
                             cx.open_url(url.as_str(), OpenUrlInPlace::No);
                         }
-                        crate::links::Target::File(path) => {
-                            cx.widget_action(self.widget_uid(), TerminalViewAction::OpenFile(path));
+                        crate::links::Target::File { path, at } => {
+                            cx.widget_action(
+                                self.widget_uid(),
+                                TerminalViewAction::OpenFile(path, at),
+                            );
                         }
                     }
                     return;
@@ -1773,7 +1778,7 @@ impl Widget for TerminalView {
                 if let Some(target) = &target {
                     let label = match target {
                         crate::links::Target::External(url) => url.as_str(),
-                        crate::links::Target::File(path) => path,
+                        crate::links::Target::File { path, .. } => path,
                     };
                     let pos = dvec2(
                         e.abs

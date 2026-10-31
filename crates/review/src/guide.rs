@@ -436,28 +436,14 @@ fn resolve<'a>(locator: &str, loaded: &'a Loaded) -> Option<Resolved<'a>> {
     let path_part = path_part.trim_end_matches('/');
     let file = find_file(loaded, path_part)?;
 
-    let Some(frag) = frag else {
+    // No fragment, or one that doesn't parse: the whole file rather than
+    // nothing.
+    let Some((start, end)) = frag.and_then(fragment_lines) else {
         return Some(Resolved {
             file,
             hunks: file.hunks.iter().collect(),
         });
     };
-
-    // `L120-140`, `L120:140`, `L120`
-    let nums = frag.trim_start_matches(['L', 'l']);
-    let (a, b) = match nums.split_once(['-', ':']) {
-        Some((a, b)) => (a.trim(), b.trim()),
-        None => (nums.trim(), nums.trim()),
-    };
-    let (Ok(start), Ok(end)) = (a.parse::<u32>(), b.parse::<u32>()) else {
-        // Unparseable fragment: fall back to the whole file rather than to
-        // nothing.
-        return Some(Resolved {
-            file,
-            hunks: file.hunks.iter().collect(),
-        });
-    };
-    let (start, end) = (start.min(end), start.max(end));
 
     // Snap to every hunk the range touches. Forgiving on purpose: an agent that
     // is a line or two off still lands on the right hunk.
@@ -472,6 +458,20 @@ fn resolve<'a>(locator: &str, loaded: &'a Loaded) -> Option<Resolved<'a>> {
         .collect();
 
     Some(Resolved { file, hunks })
+}
+
+/// The lines a link's `#L…` fragment names, first and last: `L120-140`,
+/// `L120:140`, GitHub's `L120-L140`, or `L120` alone.
+pub fn fragment_lines(fragment: &str) -> Option<(u32, u32)> {
+    let nums = fragment.trim_start_matches(['L', 'l']);
+    let (a, b) = nums.split_once(['-', ':']).unwrap_or((nums, nums));
+    let start = a.trim().parse::<u32>().ok()?;
+    let end = b
+        .trim()
+        .trim_start_matches(['L', 'l'])
+        .parse::<u32>()
+        .ok()?;
+    Some((start.min(end), start.max(end)))
 }
 
 /// Render the agent's document into the row stream, and report on it.
@@ -563,5 +563,20 @@ pub fn render(guide: &str, loaded: &Loaded) -> Rendered {
         unresolved,
         hunks_placed: placed.len(),
         hunks_total: total,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fragments_name_a_line_or_a_range() {
+        assert_eq!(fragment_lines("L12"), Some((12, 12)));
+        assert_eq!(fragment_lines("L12-20"), Some((12, 20)));
+        assert_eq!(fragment_lines("L12:20"), Some((12, 20)));
+        assert_eq!(fragment_lines("L12-L20"), Some((12, 20)));
+        assert_eq!(fragment_lines("L20-12"), Some((12, 20)));
+        assert_eq!(fragment_lines("heading"), None);
     }
 }

@@ -1582,7 +1582,7 @@ impl ReviewPane {
                 _ => {}
             }
             match wa.cast() {
-                TerminalViewAction::OpenFile(path) => self.open_file_tab(cx, &path, None),
+                TerminalViewAction::OpenFile(path, at) => self.open_file_tab(cx, &path, at),
                 TerminalViewAction::None => {}
             }
             // The file browser names a path; the pane owns the dock, so
