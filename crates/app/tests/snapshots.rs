@@ -1326,7 +1326,7 @@ fn a_moved_view_opens_where_it_was_moved() {
 #[ignore = "spawns a GPU process; run with --ignored on a desktop"]
 fn comments_open_in_the_left_panel() {
     let shot = capture("comments-left", &[], |repo| {
-        comment_on(repo, &["rev-parse", "HEAD:editor.rs"]);
+        comment_on(repo, &["rev-parse", "HEAD:editor.rs"], "why hello?");
     });
     let data = state(&shot, "state.json");
     assert_eq!(bar(&data, "left"), ["Comments"], "{data}");
@@ -1874,15 +1874,15 @@ fn the_palette_runs_what_was_typed() {
     assert_eq!(data["picker_open"], false, "{data}");
 }
 
-/// A comment on the 13th line of the editor.rs blob `blob` names, stored
-/// long before the app starts: stamped now, a launch within the same second
-/// would count it as current.
-fn comment_on(repo: &Path, blob: &[&str]) {
+/// `body` on the 13th line of the editor.rs blob `blob` names, stored long
+/// before the app starts: stamped now, a launch within the same second would
+/// count it as current.
+fn comment_on(repo: &Path, blob: &[&str], body: &str) {
     let blob = git(repo, blob);
     let mut store = concats_review::store::Store::open(&repo.join(".git"));
     store
         .add_comment(concats_review::store::Comment {
-            body: "why hello?".into(),
+            body: body.into(),
             created_at: 1,
             ..concats_review::store::comment(
                 "editor.rs".into(),
@@ -1909,7 +1909,7 @@ fn earlier_threads_are_washed_out() {
             "CONCATS_APP_STEPS",
             &format!("wait; wait; {select}; wait; wait; type now; key enter; wait"),
         )],
-        |repo| comment_on(repo, &["rev-parse", "HEAD:editor.rs"]),
+        |repo| comment_on(repo, &["rev-parse", "HEAD:editor.rs"], "why hello?"),
     );
     assert_eq!(state(&shot, "state.json")["comments"], 2);
     assert_matches("comments-earlier", &shot, EXACT);
@@ -1930,9 +1930,66 @@ fn open_file_on_a_thread_card() {
                 "wait; wait; wait; key cmd-b; wait; wait; click 193,324; wait; wait",
             ),
         ],
-        |repo| comment_on(repo, &["hash-object", "editor.rs"]),
+        |repo| comment_on(repo, &["hash-object", "editor.rs"], "why hello?"),
     );
     let data = state(&shot, "state.json");
     assert_eq!(tabs_titled(&data, "editor.rs · worktree"), 1, "{data}");
     assert_eq!(data["caret"][1], 12, "{data}");
+}
+
+/// More than five lines at any width.
+const LONG_COMMENT: &str = "Three things before this lands:\n\
+    1. The fallback reads the environment on every miss, so a typo in a key silently \
+    picks up whatever the shell has.\n\
+    2. Make it explicit at the call site, say resolve_or_env, and keep resolve strict.\n\
+    3. The tests can then stop setting variables to reach the happy path, which is what \
+    made the last run flaky.\n\n\
+    Happy to pair on it.";
+
+/// A long comment stops at five lines in the Comments tab, with Show more;
+/// Show more lets the rest out. In the center: a panel slides open, and the
+/// list's scroll thumb ends wherever the slide's last frame left it.
+#[test]
+#[ignore = "spawns a GPU process; run with --ignored on a desktop"]
+fn a_long_comment_is_clamped_in_the_comments_tab() {
+    let home = home_with_placement("comments = \"center\"");
+    let home_path = home.path().to_str().expect("utf-8 temp path").to_owned();
+    let long = |repo: &Path| comment_on(repo, &["hash-object", "editor.rs"], LONG_COMMENT);
+    let hooks = |steps: &'static str| [("HOME", home_path.as_str()), ("CONCATS_APP_STEPS", steps)];
+    let shot = capture(
+        "comments-clamped",
+        &hooks("wait; wait; wait; key alt-cmd-1; wait; wait"),
+        long,
+    );
+    assert_eq!(
+        state(&shot, "state.json")["expanded_comments"],
+        serde_json::json!([])
+    );
+    assert_matches("comments-clamped", &shot, EXACT);
+
+    let shot = capture(
+        "comments-expanded",
+        &hooks("wait; wait; wait; key alt-cmd-1; wait; wait; click 77,490; wait; wait"),
+        long,
+    );
+    assert_eq!(
+        state(&shot, "state.json")["expanded_comments"],
+        serde_json::json!([1])
+    );
+    assert_matches("comments-expanded", &shot, EXACT);
+
+    // Show less puts it back. Not compared to the clamped golden: the button
+    // keeps the highlight the click left on it, as Open file does.
+    let shot = capture(
+        "comments-collapsed",
+        &hooks(
+            "wait; wait; wait; key alt-cmd-1; wait; wait; click 77,490; wait; wait; \
+             click 77,512; wait; wait",
+        ),
+        long,
+    );
+    assert_eq!(
+        state(&shot, "state.json")["expanded_comments"],
+        serde_json::json!([])
+    );
 }

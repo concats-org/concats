@@ -710,6 +710,7 @@ impl App {
                 "file_find_query": file_query,
                 "file_find_count": file_count,
                 "has_caret": d.caret.is_some(),
+                "expanded_comments": d.expanded_comments.iter().collect::<std::collections::BTreeSet<_>>(),
                 "draft": *state.compose_draft.read().unwrap(),
                 "composer_open": d.composer_tab.is_some(),
                 "compose_ranges": match d.compose {

@@ -2174,6 +2174,14 @@ impl ReviewPane {
                 ReviewItemAction::Outdated { path } if clicked => {
                     self.toggle_card_outdated(cx, path);
                 }
+                ReviewItemAction::More { id } if clicked => {
+                    self.state().with(|d| {
+                        if !d.expanded_comments.remove(id) {
+                            d.expanded_comments.insert(*id);
+                        }
+                    });
+                    self.redraw_streams(cx);
+                }
                 ReviewItemAction::OpenFile { path, thread } if clicked => {
                     self.open_file_tab(cx, path, None);
                     // Looked for once the tab is open: its file is where the
@@ -2226,6 +2234,7 @@ impl ReviewPane {
                 | ReviewItemAction::Quote { .. }
                 | ReviewItemAction::Outdated { .. }
                 | ReviewItemAction::OpenFile { .. }
+                | ReviewItemAction::More { .. }
                 | ReviewItemAction::Reveal { .. }
                 | ReviewItemAction::Post
                 | ReviewItemAction::Cancel => {}

@@ -213,6 +213,10 @@ pub(super) enum ReviewItemAction {
     Outdated {
         path: String,
     },
+    /// Show more or Show less under a long comment in the Comments tab.
+    More {
+        id: u64,
+    },
     /// The card's "Open file": the whole file at the head, in a File tab, at
     /// `thread` when the card is one of the Comments tab's.
     OpenFile {
@@ -403,9 +407,13 @@ script_mod! {
                 }
                 cm_body := Prose {
                     width: Fill
+                    text_overflow: Ellipsis
                     draw_text.color: C_TEXT
                     draw_text.text_style: FONT{font_size: 9}
                 }
+                // Under a long comment in the Comments tab: lets the rest
+                // of it out, and shuts it again.
+                cm_more := HeaderButton {}
             }
             cm_reply := BarButton {
                 draw_icon.svg: crate_resource("self:resources/icons/reply.svg")
@@ -1000,7 +1008,15 @@ pub struct ReviewList {
     /// [`ReviewList::owns_gesture`].
     #[rust]
     pressed_inside: bool,
+    /// The comments whose bodies ran past [`CLAMP_LINES`] when the Comments
+    /// tab last drew them: they get Show more. Read back after a body draws,
+    /// because the width it wraps at is only known then.
+    #[rust]
+    long_comments: HashSet<u64>,
 }
+
+/// The lines a comment shows in the Comments tab until Show more.
+const CLAMP_LINES: usize = 5;
 
 #[derive(Default)]
 struct CardIndex {
@@ -1773,10 +1789,6 @@ impl ReviewList {
     }
 
     /// One list entry: the row it maps to, drawn with that row's template.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "The exhaustive row dispatch keeps each template beside its row data."
-    )]
     // NOTE: the inner match's row is already one of the three label rows.
     // coland-ignore: @coland/absorbing_default_branch
     fn draw_row(&mut self, cx: &mut Cx2d, list: &mut PortalList, entry: usize, pass: &DrawPass) {
@@ -1873,17 +1885,8 @@ impl ReviewList {
                 let item = list.item(cx, entry, id!(HunkBar));
                 item.draw_all(cx, &mut Scope::with_props(theme));
             }
-            // A reply gets the indented twin of the same strip. `meta` is the
-            // byline, not the range — the blue bar spanning the range already
-            // tells that. The buttons carry the comment's id, not its row: a
-            // resplice between the draw and the click renumbers rows.
-            Row::Comment {
-                id,
-                parent,
-                body,
-                meta,
-                quote,
-            } => {
+            // A reply gets the indented twin of the same strip.
+            Row::Comment { id, parent, .. } => {
                 let earlier = crate::comments::is_earlier(
                     &pass.review.comments,
                     parent.unwrap_or(*id),
@@ -1896,22 +1899,7 @@ impl ReviewList {
                     (true, true) => id!(EarlierReply),
                 };
                 let item = list.item(cx, entry, template);
-                item.widget(cx, ids!(cm_reply))
-                    .set_action_data(ReviewItemAction::Reply {
-                        tab,
-                        id: *id,
-                        near: r,
-                    });
-                item.widget(cx, ids!(cm_delete))
-                    .set_action_data(ReviewItemAction::Delete { id: *id });
-                item.label(cx, ids!(cm_meta)).set_text(cx, meta);
-                let quoted = item.label(cx, ids!(cm_quote));
-                quoted.set_visible(cx, quote.is_some());
-                if let Some(quote) = quote {
-                    quoted.set_text(cx, &format!("“{quote}”"));
-                }
-                item.label(cx, ids!(cm_body)).set_text(cx, body);
-                item.draw_all(cx, &mut Scope::with_props(theme));
+                self.draw_comment(cx, &item, r, pass);
             }
             Row::CardEnd => {
                 let item = list.item(cx, entry, id!(CardEnd));
@@ -2034,6 +2022,84 @@ impl ReviewList {
         root.button(cx, ids!(fold_button)).set_visible(cx, !folded);
         root.button(cx, ids!(unfold_button)).set_visible(cx, folded);
         root.view(cx, ids!(fh_rule)).set_visible(cx, !folded);
+    }
+
+    /// A comment row: its strip filled and drawn. In the Comments tab a long
+    /// body stops at [`CLAMP_LINES`] with Show more; the strips under the code
+    /// show it whole.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "Makepad lays text out in f32 logical pixels."
+    )]
+    fn draw_comment(&mut self, cx: &mut Cx2d, item: &WidgetRef, r: usize, pass: &DrawPass) {
+        let Some(Row::Comment {
+            id,
+            body,
+            meta,
+            quote,
+            ..
+        }) = pass.rows.get(r)
+        else {
+            return;
+        };
+        // The buttons carry the comment's id, not its row: a resplice between
+        // the draw and the click renumbers rows.
+        item.widget(cx, ids!(cm_reply))
+            .set_action_data(ReviewItemAction::Reply {
+                tab: pass.tab,
+                id: *id,
+                near: r,
+            });
+        item.widget(cx, ids!(cm_delete))
+            .set_action_data(ReviewItemAction::Delete { id: *id });
+        // The byline, not the range: the blue bar spanning the range tells that.
+        item.label(cx, ids!(cm_meta)).set_text(cx, meta);
+        let quoted = item.label(cx, ids!(cm_quote));
+        quoted.set_visible(cx, quote.is_some());
+        if let Some(quote) = quote {
+            quoted.set_text(cx, &format!("“{quote}”"));
+        }
+        let clamp = pass.tab == Stream::Comments;
+        let open = pass.doc.expanded_comments.contains(id);
+        let text = item.label(cx, ids!(cm_body));
+        text.set_text(cx, body);
+        if let Some(mut label) = text.borrow_mut() {
+            label.max_lines = if clamp && !open { CLAMP_LINES } else { 0 };
+        }
+        let long = clamp && self.long_comments.contains(id);
+        let more = item.button(cx, ids!(cm_more));
+        more.set_visible(cx, long);
+        more.set_text(cx, if open { "Show less" } else { "Show more" });
+        item.widget(cx, ids!(cm_more))
+            .set_action_data(ReviewItemAction::More { id: *id });
+        item.draw_all(cx, &mut Scope::with_props(&pass.theme));
+        if !clamp {
+            return;
+        }
+        // Whether it runs long is read back from this draw, since the width
+        // the body wrapped at is only known now. It was drawn with the last
+        // answer, so a changed one draws again.
+        let width = text.area().rect(cx).size.x as f32;
+        let ran_past = text.borrow_mut().is_some_and(|label| {
+            let laid = label.draw_text.layout(
+                cx,
+                0.0,
+                0.0,
+                Some(width / label.draw_text.font_scale),
+                true,
+                Align::default(),
+                body,
+            );
+            laid.is_truncated || laid.rows.len() > CLAMP_LINES
+        });
+        if ran_past != long {
+            if ran_past {
+                self.long_comments.insert(*id);
+            } else {
+                self.long_comments.remove(id);
+            }
+            cx.redraw_area_in_draw(text.area());
+        }
     }
 
     /// A code row: the gutter's numbers and marks, the line's text and colours,
