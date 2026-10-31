@@ -383,7 +383,8 @@ script_mod! {
         cm_frame +: { cm_bar +: { cm_strip +: {
             flow: Right
             align: Align{x: 0.0, y: 0.0}
-            View {
+            // Named so the body's wrap width can be read back.
+            cm_column := View {
                 width: Fill height: Fit
                 flow: Down
                 spacing: 4
@@ -2079,7 +2080,7 @@ impl ReviewList {
         // Whether it runs long is read back from this draw, since the width
         // the body wrapped at is only known now. It was drawn with the last
         // answer, so a changed one draws again.
-        let width = text.area().rect(cx).size.x as f32;
+        let width = item.view(cx, ids!(cm_column)).area().rect(cx).size.x as f32;
         let ran_past = text.borrow_mut().is_some_and(|label| {
             let laid = label.draw_text.layout(
                 cx,
