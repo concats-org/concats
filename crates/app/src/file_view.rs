@@ -204,6 +204,24 @@ pub(crate) fn caret_to_line(d: &mut ReviewDoc, tab: u64, line: u32, column: u32)
     Some(row)
 }
 
+/// Put the caret of the File tab `tab` on the first line of the thread rooted
+/// at `root`, where the file holds it now, and say which row that is. `None`
+/// when the file no longer has the thread's content.
+pub(crate) fn caret_to_thread(
+    d: &mut ReviewDoc,
+    tab: u64,
+    comments: &[Comment],
+    root: u64,
+) -> Option<usize> {
+    let view = d.file(tab)?;
+    let head = [view.head];
+    let thread = comments.iter().filter(|c| store::thread_key(c) == root);
+    let (_, run) = store::thread_place(thread, &d.blobs, |path| {
+        if path == view.path { &head[..] } else { &[] }
+    })?;
+    caret_to_line(d, tab, run.start + 1, 1)
+}
+
 /// What a File tab is called: the file, the revision its content is at, and
 /// whether its buffer has unsaved edits.
 ///
@@ -992,6 +1010,40 @@ mod tests {
         assert_eq!(caret(&d), Some((head, 2, 0)), "past the end of the file");
 
         assert_eq!(caret_to_line(&mut d, tab + 1, 1, 1), None, "no such tab");
+    }
+
+    #[test]
+    fn opening_at_a_thread_puts_the_caret_where_its_content_is_now() {
+        let mut d = ReviewDoc::default();
+        let mut blob = Blob::new(oid(1), "rs".into(), "first\nmarked\nalso\nlast\n".into());
+        blob.origin = Some("/repo/a.rs".into());
+        let on = |id, parent, start, end| Comment {
+            id,
+            parent,
+            ..store::comment(
+                "a.rs".into(),
+                store::Anchor {
+                    blob: oid(1),
+                    start,
+                    end,
+                },
+            )
+        };
+        let comments = [on(1, None, 1, 2), on(2, Some(1), 1, 2), on(3, None, 3, 3)];
+        open_file(&mut d, "a.rs", (None, blob), &comments);
+        let tab = d.files_open[0].tab;
+        let head = d.files_open[0].head;
+        d.blobs[head as usize].edit(0..0, "inserted\n");
+        relower_edited(&mut d, &comments);
+
+        let row = caret_to_thread(&mut d, tab, &comments, 1).expect("the thread is held");
+        assert!(matches!(opened(&d)[row], Row::Code { line: 2, .. }));
+        assert_eq!(d.caret.map(|c| (c.line, c.byte)), Some((2, 0)));
+        assert_eq!(
+            caret_to_thread(&mut d, tab, &comments, 9),
+            None,
+            "no such thread"
+        );
     }
 
     /// Two Untitled tabs over a document that already holds a clean,

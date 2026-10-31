@@ -38,7 +38,7 @@ use crate::{
         open_tab, settings_tab_spec, shown_tabs, stream_area, stream_tab_spec, stream_tabs_in,
         terminal_tab_spec, terminal_tabs,
     },
-    file_view::{caret_to_line, open_file, read_file_sides},
+    file_view::{caret_to_line, caret_to_thread, open_file, read_file_sides},
     keymap::Command,
     load::{hold_minted, resplice_comments, spawn_load},
     makepad_widgets::*,
@@ -2174,8 +2174,20 @@ impl ReviewPane {
                 ReviewItemAction::Outdated { path } if clicked => {
                     self.toggle_card_outdated(cx, path);
                 }
-                ReviewItemAction::OpenFile { path } if clicked => {
+                ReviewItemAction::OpenFile { path, thread } if clicked => {
                     self.open_file_tab(cx, path, None);
+                    // Looked for once the tab is open: its file is where the
+                    // thread's content sits now, wherever the range put it.
+                    if let Some(root) = *thread {
+                        let git_dir = self.state().read(|d| d.git_dir.clone());
+                        let review = self.review_snapshot(git_dir.as_deref());
+                        let tab = file_tab_id(path).0;
+                        let row = self
+                            .state()
+                            .with(|d| caret_to_thread(d, tab, &review.comments, root));
+                        *self.state().reveal.lock().unwrap() =
+                            row.map(|row| (Stream::File(tab), row));
+                    }
                 }
                 ReviewItemAction::Gutter { tab, row } => match action.action.downcast_ref() {
                     Some(GutterAction::DragStart { blob, line }) => {

@@ -1326,21 +1326,7 @@ fn a_moved_view_opens_where_it_was_moved() {
 #[ignore = "spawns a GPU process; run with --ignored on a desktop"]
 fn comments_open_in_the_left_panel() {
     let shot = capture("comments-left", &[], |repo| {
-        let blob = git(repo, &["rev-parse", "HEAD:editor.rs"]);
-        let mut store = concats_review::store::Store::open(&repo.join(".git"));
-        store
-            .add_comment(concats_review::store::Comment {
-                body: "why hello?".into(),
-                ..concats_review::store::comment(
-                    "editor.rs".into(),
-                    concats_review::store::Anchor {
-                        blob: gix::ObjectId::from_hex(blob.trim().as_bytes()).expect("blob oid"),
-                        start: 12,
-                        end: 12,
-                    },
-                )
-            })
-            .expect("store the comment");
+        comment_on(repo, &["rev-parse", "HEAD:editor.rs"]);
     });
     let data = state(&shot, "state.json");
     assert_eq!(bar(&data, "left"), ["Comments"], "{data}");
@@ -1888,10 +1874,11 @@ fn the_palette_runs_what_was_typed() {
     assert_eq!(data["picker_open"], false, "{data}");
 }
 
-/// A comment on editor.rs's 13th line, stored long before the app starts:
-/// stamped now, a launch within the same second would count it as current.
-fn earlier_comment(repo: &Path) {
-    let blob = git(repo, &["rev-parse", "HEAD:editor.rs"]);
+/// A comment on the 13th line of the editor.rs blob `blob` names, stored
+/// long before the app starts: stamped now, a launch within the same second
+/// would count it as current.
+fn comment_on(repo: &Path, blob: &[&str]) {
+    let blob = git(repo, blob);
     let mut store = concats_review::store::Store::open(&repo.join(".git"));
     store
         .add_comment(concats_review::store::Comment {
@@ -1922,9 +1909,30 @@ fn earlier_threads_are_washed_out() {
             "CONCATS_APP_STEPS",
             &format!("wait; wait; {select}; wait; wait; type now; key enter; wait"),
         )],
-        earlier_comment,
+        |repo| comment_on(repo, &["rev-parse", "HEAD:editor.rs"]),
     );
     assert_eq!(state(&shot, "state.json")["comments"], 2);
     assert_matches("comments-earlier", &shot, EXACT);
 }
 
+/// A Comments card's Open file puts the caret on its thread's first line, in
+/// the checkout's file.
+#[test]
+#[ignore = "spawns a GPU process; run with --ignored on a desktop"]
+fn open_file_on_a_thread_card() {
+    let shot = capture(
+        "open-file-thread",
+        &[
+            // The left panel holds Comments, shut until ⌘B; its card's Open
+            // file is here then.
+            (
+                "CONCATS_APP_STEPS",
+                "wait; wait; wait; key cmd-b; wait; wait; click 193,324; wait; wait",
+            ),
+        ],
+        |repo| comment_on(repo, &["hash-object", "editor.rs"]),
+    );
+    let data = state(&shot, "state.json");
+    assert_eq!(tabs_titled(&data, "editor.rs · worktree"), 1, "{data}");
+    assert_eq!(data["caret"][1], 12, "{data}");
+}

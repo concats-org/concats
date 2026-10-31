@@ -213,9 +213,11 @@ pub(super) enum ReviewItemAction {
     Outdated {
         path: String,
     },
-    /// The card's "Open file": the whole file at the head, in a File tab.
+    /// The card's "Open file": the whole file at the head, in a File tab, at
+    /// `thread` when the card is one of the Comments tab's.
     OpenFile {
         path: String,
+        thread: Option<u64>,
     },
     Gutter {
         tab: Stream,
@@ -2007,8 +2009,25 @@ impl ReviewList {
         }
         let at_head = d.tree.binary_search(path).is_ok();
         root.button(cx, ids!(fh_open)).set_visible(cx, at_head);
+        // A Comments card opens its file at the first thread in it.
+        let thread = if pass.tab == Stream::Comments {
+            pass.rows[r + 1..]
+                .iter()
+                .take_while(|row| !matches!(row, Row::CardEnd))
+                .find_map(|row| match row {
+                    Row::Comment {
+                        id, parent: None, ..
+                    } => Some(*id),
+                    _ => None,
+                })
+        } else {
+            None
+        };
         root.widget(cx, ids!(fh_open))
-            .set_action_data(ReviewItemAction::OpenFile { path: path.clone() });
+            .set_action_data(ReviewItemAction::OpenFile {
+                path: path.clone(),
+                thread,
+            });
         // Shut cards show the other caret and drop the hairline: the bottom
         // cap closes them instead.
         let folded = card_shut(d, path, seen == Seen::All);
