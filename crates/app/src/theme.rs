@@ -94,6 +94,8 @@ pub enum SettingsError {
     Persist(String),
     #[error("unknown theme {name:?} — try one of: {known}")]
     UnknownTheme { name: String, known: String },
+    #[error("[app.keys]: {0}")]
+    Keys(String),
     #[error(
         "no font found in {spec:?} — list them the way CSS does, most wanted \
          first, each an absolute path to a .ttf/.otf/.ttc or a family name as \
@@ -118,10 +120,13 @@ pub fn apply_settings_text(text: &str) -> Result<String, SettingsError> {
     }
     let size = font_size("font_size", settings.font_size)?;
     let terminal_size = font_size("terminal_font_size", settings.terminal_font_size)?;
+    let keymap = crate::keymap::Keymap::new(&settings.keys).map_err(SettingsError::Keys)?;
     concats_config::save_config(&config)
         .map_err(|error| SettingsError::Persist(error.to_string()))?;
     set_active_theme(theme);
     *placement_slot().write().unwrap() = settings.placement;
+    *keymap_slot().write().unwrap() = Arc::new(keymap);
+    KEYMAP_REV.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     set_active_font(FontSetting {
         paths,
         size,
@@ -129,6 +134,31 @@ pub fn apply_settings_text(text: &str) -> Result<String, SettingsError> {
         wrap: settings.wrap,
     });
     Ok(settings.theme.clone())
+}
+
+/// Bumped whenever the keymap changes, so the menu can show the new keys.
+static KEYMAP_REV: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn keymap_slot() -> &'static RwLock<Arc<crate::keymap::Keymap>> {
+    static K: OnceLock<RwLock<Arc<crate::keymap::Keymap>>> = OnceLock::new();
+    K.get_or_init(|| {
+        let keymap = crate::keymap::Keymap::new(&settings().app.keys).unwrap_or_else(|error| {
+            // NOTE: a bad key in config.toml must not cost every other key.
+            eprintln!("concats-app: ignoring [app.keys]: {error}");
+            crate::keymap::Keymap::default()
+        });
+        RwLock::new(Arc::new(keymap))
+    })
+}
+
+/// Which keys run which commands, as last saved in Settings.
+pub fn active_keymap() -> Arc<crate::keymap::Keymap> {
+    keymap_slot().read().unwrap().clone()
+}
+
+/// How many times Settings changed the keymap.
+pub fn keymap_rev() -> u64 {
+    KEYMAP_REV.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 fn placement_slot() -> &'static RwLock<concats_config::Placement> {
@@ -358,6 +388,14 @@ mod tests {
             "[app]\nwrap = 'yes'",
         ] {
             assert!(apply_settings_text(text).is_err(), "{text}");
+        }
+        // A bad key binding says what it doesn't understand.
+        for (text, named) in [
+            ("[app.keys]\n'cmd-wat' = 'close_tab'", "wat"),
+            ("[app.keys]\n'cmd-e' = 'no_such_thing'", "no_such_thing"),
+        ] {
+            let error = apply_settings_text(text).expect_err(text).to_string();
+            assert!(error.contains(named), "{error}");
         }
         // A bad placement says which name it doesn't know.
         for (text, named) in [

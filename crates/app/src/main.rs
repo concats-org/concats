@@ -35,6 +35,7 @@ use concats_diff::LineKind;
 use concats_review::store;
 use concats_state::Target;
 use dock::{load_layout, stream_tab_spec};
+use keymap::{Command, Press, Stroke};
 use load::resplice_comments;
 pub use makepad_widgets;
 #[allow(
@@ -56,6 +57,7 @@ mod editor;
 /// One open file per tab, and the Settings tab that rides the same mechanism.
 mod file_view;
 mod find;
+mod keymap;
 mod links;
 /// Driving a load on a worker thread and landing it as a whole new document.
 mod load;
@@ -256,6 +258,15 @@ pub struct App {
     /// The window that last took focus — the one ⌘N copies its range from.
     #[rust]
     focused: Option<LiveId>,
+    /// A chord's first stroke, waiting for its second.
+    #[rust]
+    pending_chord: Option<Stroke>,
+    /// Whether the keymap took a plain key, whose typed text must not follow.
+    #[rust]
+    swallow_text: bool,
+    /// The keymap the menu shows, by `theme::keymap_rev`.
+    #[rust]
+    keymap_rev: u64,
     /// The range the app was started on, which ⌘N falls back to while the
     /// first load is still in flight and no document has a range yet.
     #[rust]
@@ -431,45 +442,7 @@ impl MatchEvent for App {
                 "concats app".to_string(),
             );
         }
-        // The platform installs a menu bar holding nothing but Quit
-        // (`init_quit_menu`), and `update_macos_menu` replaces it whole — so
-        // Quit has to be re-declared here beside what we add. macOS titles the
-        // first submenu from the bundle's CFBundleName whatever we pass; only
-        // the Quit item's own label is ours to keep in step with it.
-        #[cfg(target_os = "macos")]
-        cx.update_macos_menu(MacosMenu::Main {
-            items: vec![
-                MacosMenu::Sub {
-                    name: "Concats".to_string(),
-                    items: vec![MacosMenu::Item {
-                        command: live_id!(quit),
-                        key: KeyCode::KeyQ,
-                        shift: false,
-                        enabled: true,
-                        name: "Quit Concats".to_string(),
-                    }],
-                },
-                MacosMenu::Sub {
-                    name: "File".to_string(),
-                    items: vec![
-                        MacosMenu::Item {
-                            command: live_id!(new_file),
-                            key: KeyCode::KeyN,
-                            shift: false,
-                            enabled: true,
-                            name: "New File".to_string(),
-                        },
-                        MacosMenu::Item {
-                            command: live_id!(new_window),
-                            key: KeyCode::KeyN,
-                            shift: true,
-                            enabled: true,
-                            name: "New Window".to_string(),
-                        },
-                    ],
-                },
-            ],
-        });
+        self.install_menu(cx);
 
         let args = Args::parse();
         let guide = args.guide;
@@ -654,16 +627,137 @@ impl App {
             .or_else(|| self.windows.last())
     }
 
-    /// What a menu item does, by its command.
-    fn menu_command(&mut self, cx: &mut Cx, command: LiveId) {
-        if command == live_id!(new_window) {
-            self.open_new_window(cx);
-        } else if command == live_id!(new_file)
-            && let Some(window) = self.focused_window()
-            && let Some(mut pane) = window.pane(cx).borrow_mut::<ReviewPane>()
+    /// The menu bar, its key equivalents from the keymap. Installed again
+    /// whenever Settings change the keymap.
+    ///
+    /// The platform installs a menu bar holding nothing but Quit
+    /// (`init_quit_menu`), and `update_macos_menu` replaces it whole — so
+    /// Quit has to be re-declared here beside what we add. macOS titles the
+    /// first submenu from the bundle's `CFBundleName` whatever we pass; only
+    /// the Quit item's own label is ours to keep in step with it.
+    fn install_menu(&mut self, cx: &mut Cx) {
+        self.keymap_rev = theme::keymap_rev();
+        #[cfg(target_os = "macos")]
         {
-            pane.new_file(cx);
+            let keymap = theme::active_keymap();
+            // A menu item shows a command's Cmd key; one bound otherwise
+            // shows none, and its key goes through the keymap alone.
+            let item = |command: Command| {
+                let (key, shift) = keymap
+                    .menu_key(command)
+                    .unwrap_or((KeyCode::Unknown, false));
+                MacosMenu::Item {
+                    command: LiveId::from_str(command.name()),
+                    key,
+                    shift,
+                    enabled: true,
+                    name: command.title().to_string(),
+                }
+            };
+            cx.update_macos_menu(MacosMenu::Main {
+                items: vec![
+                    MacosMenu::Sub {
+                        name: "Concats".to_string(),
+                        items: vec![MacosMenu::Item {
+                            command: live_id!(quit),
+                            key: KeyCode::KeyQ,
+                            shift: false,
+                            enabled: true,
+                            name: "Quit Concats".to_string(),
+                        }],
+                    },
+                    MacosMenu::Sub {
+                        name: "File".to_string(),
+                        items: [
+                            Command::NewFile,
+                            Command::NewWindow,
+                            Command::CloseTab,
+                            Command::CloseWindow,
+                        ]
+                        .map(item)
+                        .to_vec(),
+                    },
+                ],
+            });
         }
+    }
+
+    /// What a menu item does: the command it names.
+    fn menu_command(&mut self, cx: &mut Cx, command: LiveId) {
+        if let Some((command, ..)) = keymap::COMMANDS
+            .iter()
+            .find(|(_, name, _)| LiveId::from_str(name) == command)
+        {
+            self.run_command(cx, *command);
+        }
+    }
+
+    /// Run `command` in the focused window.
+    fn run_command(&mut self, cx: &mut Cx, command: Command) {
+        if command == Command::NewWindow {
+            return self.open_new_window(cx);
+        }
+        let Some(window) = self.focused_window() else {
+            return;
+        };
+        if command == Command::CloseWindow {
+            if let Some(id) = window.window.as_window().window_id() {
+                cx.push_unique_platform_op(CxOsOp::CloseWindow(id));
+            }
+            return;
+        }
+        let pane = window.pane(cx);
+        let Some(mut pane) = pane.borrow_mut::<ReviewPane>() else {
+            return;
+        };
+        match command {
+            Command::NewFile => pane.new_file(cx),
+            Command::Settings | Command::Keymap => pane.open_settings_tab(cx),
+            _ => pane.tab_command(cx, command),
+        }
+    }
+
+    /// The keymap's turn at a key, before any widget's: run the command it
+    /// completes, or hold a chord's first stroke. Returns whether it took the
+    /// key; one it didn't goes on to the widgets unchanged.
+    fn key_command(&mut self, cx: &mut Cx, ke: &KeyEvent) -> bool {
+        // A modifier going down on its own is part of the next stroke.
+        if matches!(
+            ke.key_code,
+            KeyCode::Logo | KeyCode::Shift | KeyCode::Alt | KeyCode::Control
+        ) {
+            return false;
+        }
+        let stroke = Stroke {
+            key: ke.key_code,
+            modifiers: ke.modifiers,
+        };
+        let pending = self.pending_chord.take();
+        let press = theme::active_keymap().press(pending, stroke);
+        let label = match press {
+            Press::Unbound => return false,
+            Press::Pending => {
+                self.pending_chord = Some(stroke);
+                format!("{}…", keymap::label(&[stroke]))
+            }
+            Press::Cancelled => String::new(),
+            Press::Run(command) => {
+                self.run_command(cx, command);
+                String::new()
+            }
+        };
+        // While a chord waits, the status bar says so.
+        if (pending.is_some() || self.pending_chord.is_some())
+            && let Some(window) = self.focused_window()
+        {
+            window
+                .pane(cx)
+                .label(cx, ids!(status_label))
+                .set_text(cx, &label);
+        }
+        // A plain key the keymap took must not also type.
+        self.swallow_text = !ke.modifiers.logo && !ke.modifiers.control;
+        true
     }
 
     /// ⇧⌘N: another window on the range the focused one is showing, in this
@@ -1095,6 +1189,19 @@ impl AppMain for App {
         self::script_mod(vm)
     }
     fn handle_event(&mut self, cx: &mut Cx, event: &Event) {
+        if self.keymap_rev != theme::keymap_rev() {
+            self.install_menu(cx);
+        }
+        if let Event::KeyDown(ke) = event
+            && self.key_command(cx, ke)
+        {
+            return;
+        }
+        if let Event::TextInput(_) = event
+            && std::mem::take(&mut self.swallow_text)
+        {
+            return;
+        }
         if let Event::WindowGeomChange(e) = event
             && let Some(window) = self
                 .windows

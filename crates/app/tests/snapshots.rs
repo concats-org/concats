@@ -695,7 +695,7 @@ fn escape_closes_terminal_search() {
             ),
             ("CONCATS_APP_FIND", "needle"),
             ("CONCATS_APP_FIND_KEEP_FOCUS", "1"),
-            ("CONCATS_APP_KEY", "Escape"),
+            ("CONCATS_APP_KEY", "escape"),
         ],
         |_| {},
     );
@@ -1367,7 +1367,7 @@ fn placement_applies_to_the_next_opening() {
 }
 
 /// A few poll ticks for a panel's slide to finish before the next step.
-const SETTLE: &str = "key Unknown; key Unknown; key Unknown; key Unknown; key Unknown";
+const SETTLE: &str = "wait; wait; wait; wait; wait";
 
 /// A tab held over each area highlights its drop in that area's hue; the
 /// center keeps the accent. The left panel is open and empty. The bottom one
@@ -1434,6 +1434,149 @@ fn dropping_a_tab_in_a_panel_moves_it_there() {
     let data = state(&shot, "state.json");
     assert!(
         bar(&data, "right").contains(&"File Diff".to_string()),
+        "{data}"
+    );
+}
+
+/// A HOME whose config.toml holds `config`, for a test to point the app at.
+fn home_with_config(config: &str) -> tempfile::TempDir {
+    let home = tempfile::tempdir().expect("a temp HOME");
+    let dir = home.path().join("Library/Application Support/concats");
+    std::fs::create_dir_all(&dir).expect("config dir");
+    std::fs::write(dir.join("config.toml"), config).expect("write config");
+    home
+}
+
+/// Three File tabs and the keys pressed after them: what the center shows.
+fn center_after_keys(name: &str, keys: &str) -> serde_json::Value {
+    let shot = capture(
+        name,
+        &[
+            ("CONCATS_APP_FILE", "editor.rs,README.md,long.rs"),
+            ("CONCATS_APP_STEPS", keys),
+        ],
+        |repo| numbered(repo, 20),
+    );
+    state(&shot, "state.json")
+}
+
+/// ⌘W closes the current tab, one per press.
+#[test]
+#[ignore = "spawns a GPU process; run with --ignored on a desktop"]
+fn cmd_w_closes_one_tab_per_press() {
+    let once = center_after_keys("close-once", "key cmd-w");
+    assert_eq!(
+        bar(&once, "center"),
+        ["File Diff", "editor.rs · worktree", "README.md · worktree"],
+        "{once}"
+    );
+    let thrice = center_after_keys("close-thrice", "key cmd-w; key cmd-w; key cmd-w");
+    assert_eq!(bar(&thrice, "center"), ["File Diff"], "{thrice}");
+}
+
+/// ⌥⌘T keeps only the current tab (and the last stream tab, which always
+/// stays); ⌘K ⌘W closes all it can.
+#[test]
+#[ignore = "spawns a GPU process; run with --ignored on a desktop"]
+fn closing_others_and_all() {
+    let others = center_after_keys("close-others", "key alt-cmd-t");
+    assert_eq!(
+        bar(&others, "center"),
+        ["File Diff", "long.rs · worktree"],
+        "{others}"
+    );
+    let all = center_after_keys("close-all", "key cmd-k cmd-w");
+    assert_eq!(bar(&all, "center"), ["File Diff"], "{all}");
+    assert_eq!(all["pending_chord"], false, "{all}");
+}
+
+/// ⌘K U closes the File tabs with nothing unsaved and keeps the one typed in.
+#[test]
+#[ignore = "spawns a GPU process; run with --ignored on a desktop"]
+fn closing_saved_tabs_keeps_unsaved_work() {
+    let data = center_after_keys("close-saved", "click 206,104; type x; key cmd-k u");
+    assert_eq!(
+        bar(&data, "center"),
+        ["File Diff", "• long.rs · worktree"],
+        "{data}"
+    );
+}
+
+/// ⌥⌘→ and ⌥⌘← walk the current bar and wrap; ⌃2 picks its second tab.
+#[test]
+#[ignore = "spawns a GPU process; run with --ignored on a desktop"]
+fn keys_walk_and_pick_tabs() {
+    let next = center_after_keys("tab-next", "key alt-cmd-right");
+    assert_eq!(next["current_tab"], "File Diff", "wraps: {next}");
+    let back = center_after_keys("tab-previous", "key alt-cmd-left");
+    assert_eq!(back["current_tab"], "README.md · worktree", "{back}");
+    let second = center_after_keys("tab-second", "key ctrl-2");
+    assert_eq!(second["current_tab"], "editor.rs · worktree", "{second}");
+}
+
+/// With the terminal focused, ⌘W closes the terminal's tab.
+#[test]
+#[ignore = "needs a macOS window server"]
+fn cmd_w_closes_a_focused_terminal() {
+    let shot = capture(
+        "close-terminal",
+        &[
+            ("CONCATS_APP_TERM", "1"),
+            (
+                "CONCATS_APP_TERM_SCRIPT",
+                "printf 'ready'\nread -r answer\n",
+            ),
+            ("CONCATS_APP_STEPS", "click 300,690; key cmd-w"),
+        ],
+        |_| {},
+    );
+    let data = state(&shot, "state.json");
+    assert!(bar(&data, "bottom").is_empty(), "{data}");
+    assert_eq!(bar(&data, "center"), ["File Diff"], "{data}");
+}
+
+/// ⇧⌘N opens a window; ⇧⌘W closes the focused one.
+#[test]
+#[ignore = "needs a macOS window server"]
+fn shift_cmd_w_closes_the_focused_window() {
+    let opened = capture(
+        "open-window",
+        &[("CONCATS_APP_STEPS", "key cmd-shift-n; wait; wait")],
+        |_| {},
+    );
+    let data = state(&opened, "state.json");
+    assert_eq!(data["windows"].as_array().map(Vec::len), Some(2), "{data}");
+    let shot = capture(
+        "close-window",
+        &[(
+            "CONCATS_APP_STEPS",
+            "key cmd-shift-n; wait; wait; key cmd-shift-w; wait",
+        )],
+        |_| {},
+    );
+    let data = state(&shot, "state.json");
+    assert_eq!(data["windows"].as_array().map(Vec::len), Some(1), "{data}");
+}
+
+/// Keys rebound in config.toml: ⌘W unbound does nothing, ⌘E closes.
+#[test]
+#[ignore = "spawns a GPU process; run with --ignored on a desktop"]
+fn rebound_keys_follow_the_config() {
+    let home = home_with_config("[app.keys]\n\"cmd-w\" = \"\"\n\"cmd-e\" = \"close_tab\"\n");
+    let home_path = home.path().to_str().expect("utf-8 temp path").to_owned();
+    let shot = capture(
+        "rebound-keys",
+        &[
+            ("HOME", &home_path),
+            ("CONCATS_APP_FILE", "editor.rs,README.md"),
+            ("CONCATS_APP_STEPS", "key cmd-w; key cmd-e"),
+        ],
+        |_| {},
+    );
+    let data = state(&shot, "state.json");
+    assert_eq!(
+        bar(&data, "center"),
+        ["File Diff", "editor.rs · worktree"],
         "{data}"
     );
 }

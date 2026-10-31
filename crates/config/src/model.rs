@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 /// Top-level application configuration.
@@ -39,6 +41,9 @@ pub struct AppConfig {
     pub terminal_font_size: f64,
     pub wrap: bool,
     pub placement: Placement,
+    /// Keys over the built-in bindings, key to command name (`"cmd-w" =
+    /// "close_tab"`); an empty name unbinds the key.
+    pub keys: BTreeMap<String, String>,
 }
 
 impl Default for AppConfig {
@@ -54,6 +59,7 @@ impl Default for AppConfig {
             // default is to wrap it. `wrap = false` puts it back on one row.
             wrap: true,
             placement: Placement::default(),
+            keys: BTreeMap::new(),
         }
     }
 }

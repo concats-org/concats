@@ -14,8 +14,9 @@
 //!   each, `TAB=name` (or `file:path`) selects a tab, and `SHOT=path.png`
 //!   captures the frame.
 //! - Then one step per poll tick: `STEPS=…` runs its `;`-separated steps
-//!   first (`click x,y`, `cmd-click x,y`, `key name`, `menu command`,
-//!   `drag tab x,y`, `drop tab x,y`, `find text`, `type text`), then
+//!   first (`click x,y`, `cmd-click x,y`, `key keys` as config.toml writes
+//!   them, `menu command`, `drag tab x,y`, `drop tab x,y`, `find text`,
+//!   `type text`, `wait`), then
 //!   `SHOT_BEFORE=path.png` captures the frame before any other input,
 //!   `CLICK=x,y` presses there (`HOVER=x,y` only moves,
 //!   `DRAG_TO=x,y` drags, `CLICK_SEEN` presses the pinned tick box), `TYPE=text`
@@ -311,7 +312,9 @@ impl App {
                 if self.click_tick == 6 {
                     self.event_hook(cx, "CONCATS_APP_FIND", typed);
                     // Last, so it acts on whatever the hooks before it left.
-                    self.event_hook(cx, "CONCATS_APP_KEY", key);
+                    if let Some(keys) = var("CONCATS_APP_KEY") {
+                        self.press_keys(cx, &keys);
+                    }
                 }
                 if let Some(path) = var("CONCATS_APP_SHOT") {
                     self.request_shot(cx, path.into());
@@ -440,7 +443,12 @@ impl App {
                 }
                 shortcut(KeyCode::KeyF)
             }
-            "key" => key(arg),
+            "key" => {
+                self.press_keys(cx, arg);
+                return true;
+            }
+            // A tick that does nothing: time for a slide to finish.
+            "wait" => return true,
             // A dock tab dragged to `x,y` and held there (`drag tab x,y`), or
             // dropped (`drop tab x,y`): the events the platform sends while a
             // tab is dragged, which a pointer can't raise headlessly.
@@ -490,6 +498,39 @@ impl App {
         };
         self.ui.handle_event(cx, &event, &mut Scope::empty());
         true
+    }
+
+    /// The title of the tab the keyboard is in, in the window the hooks
+    /// drive.
+    // NOTE: split out of state_hook, which clippy holds to 100 lines.
+    fn current_tab_title(&self, cx: &mut Cx) -> Option<String> {
+        let pane = self.primary()?.pane(cx);
+        let tab = pane.borrow_mut::<ReviewPane>()?.current_tab(cx)?;
+        match pane.dock(cx, ids!(dock)).clone_state()?.remove(&tab)? {
+            DockItem::Tab { name, .. } => Some(name),
+            _ => None,
+        }
+    }
+
+    /// Press the keys `text` names, as config.toml writes them (`escape`,
+    /// `cmd-k cmd-w`), the way a keyboard does: the keymap first, then the
+    /// widgets.
+    fn press_keys(&mut self, cx: &mut Cx, text: &str) {
+        let Ok(strokes) = crate::keymap::parse(text) else {
+            eprintln!("concats-app: cannot read keys `{text}`");
+            return;
+        };
+        for stroke in strokes {
+            let ke = KeyEvent {
+                key_code: stroke.key,
+                modifiers: stroke.modifiers,
+                ..Default::default()
+            };
+            if !self.key_command(cx, &ke) {
+                self.ui
+                    .handle_event(cx, &Event::KeyDown(ke), &mut Scope::empty());
+            }
+        }
     }
 
     /// Move the pointer to `abs`, with the bookkeeping a real move gets.
@@ -633,6 +674,8 @@ impl App {
                 "terminal_offset": terminal_offset,
                 "terminal_height": terminal_rect.size.y,
                 "bars": bars,
+                "current_tab": self.current_tab_title(cx),
+                "pending_chord": self.pending_chord.is_some(),
                 "panels": panels.map(|[left, right, bottom]| {
                     serde_json::json!({"left": left, "right": right, "bottom": bottom})
                 }),
@@ -722,22 +765,6 @@ fn tab_bars(items: &std::collections::HashMap<LiveId, DockItem>) -> serde_json::
         "left": titles(id!(left_tabs)),
         "right": titles(id!(right_tabs)),
         "bottom": titles(id!(bottom_tabs)),
-    })
-}
-
-/// The key `name` names, pressed on its own: `Escape` closes a find bar,
-/// `Return` posts a composer.
-// NOTE: the KEY hook takes it as its event, and a `key` step calls it.
-// coland-ignore: @coland/single_caller_private_function
-fn key(name: &str) -> Event {
-    let key_code = match name {
-        "Escape" => KeyCode::Escape,
-        "Return" => KeyCode::ReturnKey,
-        _ => KeyCode::Unknown,
-    };
-    Event::KeyDown(KeyEvent {
-        key_code,
-        ..Default::default()
     })
 }
 

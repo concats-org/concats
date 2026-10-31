@@ -39,6 +39,7 @@ use crate::{
         terminal_tab_spec, terminal_tabs,
     },
     file_view::{caret_to_line, open_file, read_file_sides},
+    keymap::Command,
     load::{hold_minted, resplice_comments, spawn_load},
     makepad_widgets::*,
     review_doc::{
@@ -756,6 +757,10 @@ pub struct ReviewPane {
     /// The area the drop highlight was last tinted for.
     #[rust]
     drop_area: Option<concats_config::Area>,
+    /// The tab last pressed or opened: where the keyboard is when nothing
+    /// holds the key focus.
+    #[rust]
+    last_tab: Option<LiveId>,
     /// Sizes to restore each panel to on reopen (0 = never opened yet, so the
     /// default). Written by the App from the persisted layout on load.
     #[rust]
@@ -972,6 +977,7 @@ impl ReviewPane {
         let dock = self.view.dock(cx, ids!(dock));
         open_tab(cx, &dock, spec, siblings, area_bar(area));
         dock.select_tab(cx, spec.id);
+        self.last_tab = Some(spec.id);
         self.reveal_tab(cx, spec.id);
     }
 
@@ -997,6 +1003,142 @@ impl ReviewPane {
                 open_tab(cx, &dock, spec, &[], bar);
             }
         }
+    }
+
+    /// The File tabs' ids: a File tab is its file's identity, so telling one
+    /// from a terminal's tab takes the document's open list.
+    fn open_files(&self) -> Vec<u64> {
+        self.state()
+            .read(|d| d.files_open.iter().map(|f| f.tab).collect())
+    }
+
+    /// `tab_id` came to the front, pressed or by a key: gestures and typing
+    /// go there now, and a terminal whose shell exited starts a new one.
+    fn tab_pressed(&mut self, cx: &mut Cx, tab_id: LiveId) {
+        self.last_tab = Some(tab_id);
+        self.state().set_terminal_tab(None);
+        if let Some(tab) = model_tab_of(tab_id, &self.open_files()) {
+            self.set_gesture_tab(cx, tab);
+        } else if terminal_tabs(&self.view.dock(cx, ids!(dock))).contains(&tab_id) {
+            // (Re)spawn that tab's shell — the recovery path after its
+            // previous one exited.
+            self.open_terminal(cx, tab_id);
+            self.state().set_terminal_tab(Some(tab_id));
+        }
+    }
+
+    /// Close `tab_id` the way its ✕ does: a File tab drops its stream, a
+    /// stream tab stays closed until its button reopens it, but never the
+    /// last one, and a terminal's shell ends.
+    fn close_tab(&mut self, cx: &mut Cx, tab_id: LiveId) {
+        let dock = self.view.dock(cx, ids!(dock));
+        let open_files = self.open_files();
+        if open_files.contains(&tab_id.0) {
+            self.close_file_tab(cx, tab_id);
+        } else if model_tab_of(tab_id, &open_files).is_some() {
+            // Keep at least one stream tab open — an empty main area would
+            // leave nothing to navigate from.
+            let remaining = crate::review_doc::STREAMS
+                .into_iter()
+                .map(|t| stream_tab_spec(t).id)
+                .filter(|t| *t != tab_id && dock.find_tab_bar_of_tab(*t).is_some())
+                .count();
+            if remaining > 0 {
+                self.user_closed.insert(tab_id);
+                dock.close_tab(cx, tab_id);
+            }
+        } else if terminal_tabs(&dock).contains(&tab_id) {
+            // Closing a terminal tab ends its shell.
+            if self.state().terminal_tab() == Some(tab_id) {
+                self.state().set_terminal_tab(None);
+            }
+            terminal::close(terminal::Session {
+                window: self.state().id,
+                tab: tab_id,
+            });
+            dock.close_tab(cx, tab_id);
+        } else if [settings_tab_spec().id, browser_tab_spec().id].contains(&tab_id) {
+            dock.close_tab(cx, tab_id);
+        }
+    }
+
+    /// The tab the keyboard is in: the one holding the key focus, else the
+    /// one last pressed or opened, else the center's.
+    pub(crate) fn current_tab(&mut self, cx: &mut Cx) -> Option<LiveId> {
+        let dock = self.view.dock(cx, ids!(dock));
+        let items = dock.clone_state()?;
+        let shown: Vec<LiveId> = items
+            .values()
+            .filter_map(|item| match item {
+                DockItem::Tabs { tabs, selected, .. } => tabs.get(*selected).copied(),
+                _ => None,
+            })
+            .collect();
+        let focus = cx.key_focus();
+        let focused = (!focus.is_empty())
+            .then(|| focus.rect(cx).center())
+            .and_then(|at| {
+                shown
+                    .iter()
+                    .copied()
+                    .find(|tab| dock.item(*tab).area().rect(cx).contains(at))
+            });
+        focused
+            .or(self.last_tab.filter(|tab| shown.contains(tab)))
+            .or_else(|| match items.get(&id!(main_tabs)) {
+                Some(DockItem::Tabs { tabs, selected, .. }) => tabs.get(*selected).copied(),
+                _ => None,
+            })
+    }
+
+    /// A tab command, in the current tab's bar.
+    pub(crate) fn tab_command(&mut self, cx: &mut Cx, command: Command) {
+        let Some(current) = self.current_tab(cx) else {
+            return;
+        };
+        let dock = self.view.dock(cx, ids!(dock));
+        let Some((bar, at)) = dock.find_tab_bar_of_tab(current) else {
+            return;
+        };
+        let Some(DockItem::Tabs { tabs, .. }) =
+            dock.clone_state().and_then(|mut items| items.remove(&bar))
+        else {
+            return;
+        };
+        let saved = |pane: &Self, tab: LiveId| {
+            pane.state().read(|d| {
+                d.file(tab.0)
+                    .is_some_and(|view| !d.blobs[view.head as usize].dirty())
+            })
+        };
+        let select = match command {
+            Command::NextTab => tabs.get((at + 1) % tabs.len()),
+            Command::PreviousTab => tabs.get((at + tabs.len() - 1) % tabs.len()),
+            Command::Tab(n) => tabs.get(n.wrapping_sub(1)),
+            _ => None,
+        };
+        let close: Vec<LiveId> = match command {
+            Command::CloseTab => vec![current],
+            Command::CloseOtherTabs => tabs.iter().copied().filter(|t| *t != current).collect(),
+            Command::CloseSavedTabs => tabs.iter().copied().filter(|t| saved(self, *t)).collect(),
+            Command::CloseAllTabs => tabs.clone(),
+            _ => Vec::new(),
+        };
+        if let Some(tab) = select {
+            dock.select_tab(cx, *tab);
+            self.tab_pressed(cx, *tab);
+        }
+        for tab in close {
+            self.close_tab(cx, tab);
+        }
+        // What the bar shows now is where the keyboard is.
+        if let Some(DockItem::Tabs { tabs, selected, .. }) =
+            dock.clone_state().and_then(|mut items| items.remove(&bar))
+            && let Some(tab) = tabs.get(selected)
+        {
+            self.tab_pressed(cx, *tab);
+        }
+        self.redraw_streams(cx);
     }
 
     /// Drop a closed file tab's stream. The tab is the file's identity, so a
@@ -1742,59 +1884,12 @@ impl ReviewPane {
     /// drag plumbing hands the event straight back to the dock, which does
     /// all the split/merge/reorder work internally. The terminal view's and
     /// the file browser's actions ride the same widget-action pass.
-    #[expect(
-        clippy::cognitive_complexity,
-        reason = "Dock, terminal, and file-browser actions share the owning window’s action pass."
-    )]
     fn handle_dock_actions(&mut self, cx: &mut Cx, actions: &[&WidgetAction]) {
         let dock = self.view.dock(cx, ids!(dock));
-        // A File tab is its file's identity, so telling one from a terminal's
-        // tab takes the document's open list.
-        let open_files = self
-            .state()
-            .read(|d| d.files_open.iter().map(|f| f.tab).collect::<Vec<_>>());
         for wa in actions {
             match wa.cast() {
-                DockAction::TabWasPressed(tab_id) => {
-                    self.state().set_terminal_tab(None);
-                    if let Some(tab) = model_tab_of(tab_id, &open_files) {
-                        self.set_gesture_tab(cx, tab);
-                    } else if terminal_tabs(&dock).contains(&tab_id) {
-                        // (Re)spawn that tab's shell — the recovery path
-                        // after its previous one exited.
-                        self.open_terminal(cx, tab_id);
-                        self.state().set_terminal_tab(Some(tab_id));
-                    }
-                }
-                DockAction::TabCloseWasPressed(tab_id) => {
-                    if open_files.contains(&tab_id.0) {
-                        self.close_file_tab(cx, tab_id);
-                    } else if model_tab_of(tab_id, &open_files).is_some() {
-                        // Keep at least one stream tab open — an empty main
-                        // area would leave nothing to navigate from.
-                        let remaining = crate::review_doc::STREAMS
-                            .into_iter()
-                            .map(|t| stream_tab_spec(t).id)
-                            .filter(|t| *t != tab_id && dock.find_tab_bar_of_tab(*t).is_some())
-                            .count();
-                        if remaining > 0 {
-                            self.user_closed.insert(tab_id);
-                            dock.close_tab(cx, tab_id);
-                        }
-                    } else if terminal_tabs(&dock).contains(&tab_id) {
-                        // Closing a terminal tab ends its shell.
-                        if self.state().terminal_tab() == Some(tab_id) {
-                            self.state().set_terminal_tab(None);
-                        }
-                        terminal::close(terminal::Session {
-                            window: self.state().id,
-                            tab: tab_id,
-                        });
-                        dock.close_tab(cx, tab_id);
-                    } else if [settings_tab_spec().id, browser_tab_spec().id].contains(&tab_id) {
-                        dock.close_tab(cx, tab_id);
-                    }
-                }
+                DockAction::TabWasPressed(tab_id) => self.tab_pressed(cx, tab_id),
+                DockAction::TabCloseWasPressed(tab_id) => self.close_tab(cx, tab_id),
                 DockAction::ShouldTabStartDrag(tab_id) => {
                     dock.tab_start_drag(
                         cx,
