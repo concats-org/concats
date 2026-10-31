@@ -19,15 +19,8 @@ pub(crate) fn target(uri: &str, root: &Path) -> Option<Target> {
         "http" | "https" | "mailto" => Some(Target::External(url)),
         "file" if url.host_str().is_none_or(|host| host == "localhost") => {
             let path = url.to_file_path().ok()?;
-            let relative = path.strip_prefix(root).ok()?;
-            if relative.as_os_str().is_empty()
-                || !relative
-                    .components()
-                    .all(|part| matches!(part, Component::Normal(_)))
-            {
-                return None;
-            }
-            let (path, suffix) = split_location(relative.to_str()?);
+            let relative = checkout_path(path.strip_prefix(root).ok()?)?;
+            let (path, suffix) = split_location(&relative);
             let fragment = url
                 .fragment()
                 .and_then(concats_review::guide::fragment_lines)
@@ -39,6 +32,52 @@ pub(crate) fn target(uri: &str, root: &Path) -> Option<Target> {
         }
         _ => None,
     }
+}
+
+/// The file a run of plain terminal text names: a `file://` URL, or a path
+/// inside `root`, either one with a `:line[:column]` or a `#L…`. Only a file
+/// `is_file` finds counts, so `12:30`, or a word that merely looks like a
+/// path, is not a link. Sentence punctuation after it is not part of it.
+pub(crate) fn file_in_text(
+    text: &str,
+    root: &Path,
+    is_file: impl Fn(&Path) -> bool,
+) -> Option<Target> {
+    let text = text.trim_end_matches(['.', ',', ':', ';']);
+    let target = if text.starts_with("file://") {
+        target(text, root)?
+    } else {
+        let (text, fragment) = text
+            .split_once('#')
+            .map_or((text, None), |(t, f)| (t, Some(f)));
+        let (path, suffix) = split_location(text);
+        let path = Path::new(path);
+        let fragment = fragment
+            .and_then(concats_review::guide::fragment_lines)
+            .map(|(line, _)| (line, 1));
+        Target::File {
+            path: checkout_path(path.strip_prefix(root).unwrap_or(path))?,
+            at: fragment.or(suffix),
+        }
+    };
+    match &target {
+        Target::File { path, .. } if is_file(&root.join(path)) => Some(target),
+        _ => None,
+    }
+}
+
+/// `relative` as a path in the checkout, or `None` when it is empty or steps
+/// outside it (`..`, a root).
+fn checkout_path(relative: &Path) -> Option<String> {
+    let parts = relative
+        .components()
+        .filter(|part| *part != Component::CurDir)
+        .map(|part| match part {
+            Component::Normal(name) => name.to_str(),
+            _ => None,
+        })
+        .collect::<Option<Vec<_>>>()?;
+    (!parts.is_empty()).then(|| parts.join("/"))
 }
 
 /// `path:line` or `path:line:column`, the way compilers and `rg -n` print a
@@ -135,5 +174,41 @@ mod tests {
         assert_eq!(split_location("src/a.rs"), ("src/a.rs", None));
         assert_eq!(split_location("src/a.rs:"), ("src/a.rs:", None));
         assert_eq!(split_location("src/a.rs:0"), ("src/a.rs:0", None));
+    }
+
+    #[test]
+    fn plain_text_names_a_file_only_when_it_exists_in_the_checkout() {
+        let root = Path::new("/repo");
+        let is_file = |path: &Path| path == Path::new("/repo/src/a.rs");
+        let cases = [
+            ("src/a.rs:12:5", Some((12, 5))),
+            ("./src/a.rs:12", Some((12, 1))),
+            ("src/a.rs#L12", Some((12, 1))),
+            ("src/a.rs:12:", Some((12, 1))),
+            ("file:///repo/src/a.rs", None),
+            ("/repo/src/a.rs", None),
+            ("src/a.rs", None),
+            // The end of a sentence.
+            ("src/a.rs.", None),
+        ];
+        for (text, at) in cases {
+            assert_eq!(
+                file_in_text(text, root, is_file),
+                Some(Target::File {
+                    path: "src/a.rs".into(),
+                    at
+                }),
+                "{text}"
+            );
+        }
+        for text in [
+            "src/b.rs",
+            "../repo/src/a.rs",
+            "/elsewhere/src/a.rs",
+            "12:30",
+            "",
+        ] {
+            assert_eq!(file_in_text(text, root, is_file), None, "{text}");
+        }
     }
 }

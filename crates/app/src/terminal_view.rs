@@ -30,7 +30,7 @@ use alacritty_terminal::{
         TermMode,
         cell::Flags,
         point_to_viewport,
-        search::{Match, RegexSearch},
+        search::{Match, RegexIter, RegexSearch},
         viewport_to_point,
     },
     vte::ansi::{CursorShape, NamedColor},
@@ -372,6 +372,17 @@ pub struct TerminalView {
     /// has to be typed into.
     #[rust]
     ime_pos: Vec2d,
+}
+
+/// The run of path-like text under `point`, read across soft wraps: what a
+/// plain-text file link is read from. Brackets, quotes and backticks end a
+/// run, so `Update(src/a.rs)` and `` `src/a.rs` `` give the path alone.
+fn path_run_at<T>(term: &Term<T>, point: Point) -> Option<String> {
+    let mut regex = RegexSearch::new(r#"[^\s"'`()\[\]<>{}]+"#).ok()?;
+    let (start, end) = (term.line_search_left(point), term.line_search_right(point));
+    RegexIter::new(start, end, Direction::Right, term, &mut regex)
+        .find(|run| run.contains(&point))
+        .map(|run| term.bounds_to_string(*run.start(), *run.end()))
 }
 
 fn next_terminal_match<T>(
@@ -824,29 +835,26 @@ impl TerminalView {
         modifiers: KeyModifiers,
         state: Option<&WindowState>,
     ) -> Option<crate::links::Target> {
-        let uri = {
+        let root = state?.read(|d| {
+            if d.worktree_review() {
+                d.root.clone()
+            } else {
+                std::path::PathBuf::from(&d.repo)
+            }
+        });
+        let text = {
             let term = shared.lock();
             let (point, _) = self.point_at(abs, &term);
-            (!mouse::wants_pointer(modifiers, *term.mode()))
-                .then(|| {
-                    term.grid()[point]
-                        .hyperlink()
-                        .map(|link| link.uri().to_owned())
-                })
-                .flatten()
+            if mouse::wants_pointer(modifiers, *term.mode()) {
+                return None;
+            }
+            // The program's own link first; otherwise a path in the text.
+            if let Some(link) = term.grid()[point].hyperlink() {
+                return crate::links::target(link.uri(), &root);
+            }
+            path_run_at(&term, point)?
         };
-        uri.as_deref().and_then(|uri| {
-            state?.read(|d| {
-                crate::links::target(
-                    uri,
-                    if d.worktree_review() {
-                        d.root.as_path()
-                    } else {
-                        std::path::Path::new(&d.repo)
-                    },
-                )
-            })
-        })
+        crate::links::file_in_text(&text, &root, std::path::Path::is_file)
     }
 
     /// One key press for the session, whichever way it reached this view.
@@ -1855,7 +1863,7 @@ fn paste_bytes(text: &str, bracketed: bool) -> Vec<u8> {
 
 #[cfg(test)]
 mod tests {
-    use alacritty_terminal::{term::Config, vte::ansi::Processor};
+    use alacritty_terminal::{index::Line, term::Config, vte::ansi::Processor};
 
     use super::*;
     use crate::find::Options;
@@ -2206,5 +2214,60 @@ mod tests {
             display_offset_for(max_scroll / 2.0, max_scroll, cell_height),
             50
         );
+    }
+
+    /// A terminal `columns` wide that has printed `text`.
+    fn printed(columns: u16, text: &str) -> Term<alacritty_terminal::event::VoidListener> {
+        let size = Size {
+            columns,
+            screen_lines: 4,
+            cell_width: 8,
+            cell_height: 16,
+        };
+        let mut term = Term::new(
+            Config::default(),
+            &size,
+            alacritty_terminal::event::VoidListener,
+        );
+        let mut parser: Processor = Processor::default();
+        parser.advance(&mut term, text.as_bytes());
+        term
+    }
+
+    #[test]
+    fn the_path_under_the_pointer_is_read_out_of_agent_output() {
+        let root = std::path::Path::new("/repo");
+        let is_file = |path: &std::path::Path| path == root.join("src/a.rs");
+        for line in [
+            "⏺ Update(src/a.rs)",
+            "Edited src/a.rs (+3 -1)",
+            "see [a.rs](src/a.rs#L12)",
+            "changed `src/a.rs` here",
+            "I changed src/a.rs.",
+        ] {
+            let term = printed(60, line);
+            let column = line.chars().take_while(|c| *c != '/').count();
+            let run = path_run_at(&term, Point::new(Line(0), Column(column))).expect(line);
+            assert!(
+                matches!(
+                    crate::links::file_in_text(&run, root, is_file),
+                    Some(crate::links::Target::File { path, .. }) if path == "src/a.rs"
+                ),
+                "{line}: read {run:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_path_the_terminal_wrapped_reads_as_one() {
+        // Ten columns: `src/a.rs:12` starts on the first row and ends on the
+        // second.
+        let term = printed(10, "see src/a.rs:12\r\n");
+        for point in [
+            Point::new(Line(0), Column(6)),
+            Point::new(Line(1), Column(2)),
+        ] {
+            assert_eq!(path_run_at(&term, point).as_deref(), Some("src/a.rs:12"));
+        }
     }
 }

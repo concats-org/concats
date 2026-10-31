@@ -981,3 +981,25 @@ fn a_line_past_the_end_opens_at_the_last_line() {
     );
     assert_eq!(state(&shot, "state.json")["caret"][1], 199);
 }
+
+/// A path an agent printed opens on ⌘-click, at the line it names.
+#[test]
+#[ignore = "needs a macOS window server"]
+fn a_path_in_terminal_output_opens_on_cmd_click() {
+    let shot = capture(
+        "terminal-path-click",
+        &[
+            ("CONCATS_APP_TERM", "1"),
+            (
+                "CONCATS_APP_TERM_SCRIPT",
+                "printf 'editor.rs:12:5\\n'\nread -r answer\n",
+            ),
+            ("CONCATS_APP_STEPS", "cmd-click 50,673"),
+        ],
+        |_| {},
+    );
+    let data = state(&shot, "state.json");
+    assert_eq!(tabs_titled(&data, "editor.rs · worktree"), 1, "{data}");
+    assert_eq!(data["caret"][1], 11, "{data}");
+    assert_eq!(data["caret"][2], 4, "{data}");
+}

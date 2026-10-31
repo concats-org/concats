@@ -14,7 +14,8 @@
 //!   each, `TAB=name` (or `file:path`) selects a tab, and `SHOT=path.png`
 //!   captures the frame.
 //! - Then one step per poll tick: `STEPS=…` runs its `;`-separated steps
-//!   first (`click x,y`, `key name`, `find text`, `type text`), then
+//!   first (`click x,y`, `cmd-click x,y`, `key name`, `find text`,
+//!   `type text`), then
 //!   `SHOT_BEFORE=path.png` captures the frame before any other input,
 //!   `CLICK=x,y` presses there (`HOVER=x,y` only moves,
 //!   `DRAG_TO=x,y` drags, `CLICK_SEEN` presses the pinned tick box), `TYPE=text`
@@ -360,16 +361,16 @@ impl App {
             self.pointer_move(cx, abs, now);
             return;
         }
-        self.press(cx, abs);
+        self.press(cx, abs, KeyModifiers::default());
         if let Some(end) = var("CONCATS_APP_DRAG_TO").and_then(|spec| pointer_position(&spec)) {
             self.pointer_move(cx, end, cx.seconds_since_app_start() + 0.05);
             self.release = Some(end);
         }
     }
 
-    /// Press at `abs`, the pointer arriving there first, and release a moment
-    /// later from `release_hook`.
-    fn press(&mut self, cx: &mut Cx, abs: Vec2d) {
+    /// Press at `abs` holding `modifiers`, the pointer arriving there first,
+    /// and release a moment later from `release_hook`.
+    fn press(&mut self, cx: &mut Cx, abs: Vec2d, modifiers: KeyModifiers) {
         // Move the pointer there before pressing, the way a real one arrives.
         // Without this no hover state was reachable from a capture at all —
         // press and release alone never raise FingerHoverIn, so the gutter's +
@@ -380,7 +381,7 @@ impl App {
             abs,
             button: MouseButton::PRIMARY,
             window_id: CxWindowPool::id_zero(),
-            modifiers: KeyModifiers::default(),
+            modifiers,
             handled: std::cell::Cell::new(Area::Empty),
             time: now,
         };
@@ -423,9 +424,13 @@ impl App {
         };
         let (verb, arg) = step.split_once(' ').unwrap_or((&step, ""));
         let event = match verb {
-            "click" => {
+            "click" | "cmd-click" => {
+                let modifiers = KeyModifiers {
+                    logo: verb == "cmd-click",
+                    ..KeyModifiers::default()
+                };
                 if let Some(abs) = pointer_position(arg) {
-                    self.press(cx, abs);
+                    self.press(cx, abs, modifiers);
                 }
                 return true;
             }
