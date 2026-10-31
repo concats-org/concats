@@ -496,14 +496,15 @@ script_mod! {
                         draw_text.text_style: FONT{font_size: 9}
                     }
                     View { width: Fill height: Fit }
+                    // Hidden for a file the head no longer has. Ahead of the
+                    // toggle, so a narrow panel clips the toggle, not this.
+                    fh_open := HeaderButton {
+                        text: "Open file"
+                    }
                     // Conversations this range cannot place. Shown only when
                     // there are some, because a card with nothing hidden has
                     // nothing to offer.
                     fh_outdated := HeaderButton {}
-                    // Hidden for a file the head no longer has.
-                    fh_open := HeaderButton {
-                        text: "Open file"
-                    }
                     fh_stat := Label {
                         width: Fit
                         draw_text.color: C_FAINT
@@ -2032,7 +2033,11 @@ impl ReviewList {
         // the click goes. What the last comment splice managed to place is
         // read, not recomputed: the splice decided, and deciding again here is
         // how a header ends up disagreeing with the rows right under it.
-        let hidden = store::outdated_threads(&pass.review.comments, path, &d.placed_threads);
+        let hidden = if pass.tab == Stream::Comments && d.comments_tab_outdated.contains(path) {
+            0
+        } else {
+            store::outdated_threads(&pass.review.comments, path, &d.placed_threads)
+        };
         let outdated = root.button(cx, ids!(fh_outdated));
         outdated.set_visible(cx, hidden > 0);
         if hidden > 0 {

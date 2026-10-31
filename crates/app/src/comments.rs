@@ -97,6 +97,7 @@ pub(crate) fn splice_comments(
     let (comments_rows, outdated_paths) =
         comments_stream(&d.blobs, &of_name, comments, old, here.as_deref());
     d.comments_rows = comments_rows;
+    d.comments_tab_outdated.clone_from(&outdated_paths);
     // Union over the streams: every stream reads the same blob table, so a
     // thread that places in one places in every stream that shows its file.
     let mut placed = std::collections::HashSet::new();
@@ -957,6 +958,32 @@ mod tests {
         d.show_all_comments.insert("a.rs".into());
         splice_comments(&mut d, &comments);
         assert!(shows(&d));
+    }
+
+    /// The Comments tab shows this checkout's out-of-range threads on its
+    /// own, so only another checkout's path is left for a toggle there.
+    #[test]
+    fn the_comments_tab_knows_which_paths_it_shows_on_its_own() {
+        let mut d = ReviewDoc {
+            blobs: vec![Blob::new(oid(1), "rs".into(), "kept\n".into())],
+            blob_paths: HashMap::from([(0, "a.rs".to_string())]),
+            files_rows: vec![Row::add(0, 0)],
+            git_dir: Some(std::env::temp_dir()),
+            ..Default::default()
+        };
+        let here = store::worktree_of(&std::env::temp_dir());
+        let comments = [
+            Comment {
+                worktree: Some(here),
+                ..stored(1, "a.rs", oid(9), 0, 0)
+            },
+            Comment {
+                worktree: Some("/elsewhere/.git".into()),
+                ..stored(2, "b.rs", oid(9), 0, 0)
+            },
+        ];
+        splice_comments(&mut d, &comments);
+        assert_eq!(d.comments_tab_outdated, HashSet::from(["a.rs".to_string()]));
     }
 
     #[test]

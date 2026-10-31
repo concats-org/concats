@@ -191,6 +191,9 @@ pub struct ReviewDoc {
     /// including the ones this range cannot place, which are otherwise
     /// invisible. Same scope and lifetime as `folded`.
     pub show_all_comments: HashSet<String>,
+    /// The paths whose out-of-range threads the Comments tab shows on its
+    /// own, this checkout's: their cards there have nothing to toggle.
+    pub comments_tab_outdated: HashSet<String>,
     /// The comments the Comments tab shows whole: the rest stop at a few
     /// lines, with Show more.
     pub expanded_comments: HashSet<u64>,
