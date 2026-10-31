@@ -4,14 +4,14 @@
 
 use concats_diff::Row;
 
-use super::ReviewList;
+use super::{ReviewList, ReviewListAction};
 #[allow(
     clippy::wildcard_imports,
     reason = "Makepad macros and derives expand against the widget prelude in this scope."
 )]
 use crate::{
     editor,
-    file_view::{relower_edited, save_plan},
+    file_view::{relower_edited, save_plan, untitled},
     makepad_widgets::*,
     service::{ReviewCmd, review},
     widgets::find_row,
@@ -334,6 +334,17 @@ impl ReviewList {
         });
         if let Some(text) = settings {
             return self.apply_settings(cx, &text);
+        }
+        let untitled = self.state().read(|d| {
+            let blob = d.caret?.blob;
+            d.files_open
+                .iter()
+                .find(|view| view.head == blob && untitled(&d.blobs[blob as usize]))
+                .map(|view| view.tab)
+        });
+        if let Some(tab) = untitled {
+            cx.widget_action(self.widget_uid(), ReviewListAction::SaveAs(tab));
+            return true;
         }
         let Some(plan) = self.state().with(|d| save_plan(d, d.caret?.blob)) else {
             return false;

@@ -1003,3 +1003,111 @@ fn a_path_in_terminal_output_opens_on_cmd_click() {
     assert_eq!(data["caret"][1], 11, "{data}");
     assert_eq!(data["caret"][2], 4, "{data}");
 }
+
+/// ⌘N opens an empty Untitled tab with the keyboard in it; it is a file, not
+/// a window.
+#[test]
+#[ignore = "spawns a GPU process; run with --ignored on a desktop"]
+fn new_file_opens_an_untitled_tab_to_type_into() {
+    let shot = capture(
+        "untitled-typed",
+        &[("CONCATS_APP_STEPS", "menu new_file; type fn main() {}")],
+        |_| {},
+    );
+    let data = state(&shot, "state.json");
+    assert_eq!(tabs_titled(&data, "• Untitled"), 1, "{data}");
+    assert_eq!(data["caret"][1], 0, "{data}");
+    assert_eq!(data["windows"].as_array().map(Vec::len), Some(1), "{data}");
+    assert_matches("untitled-typed", &shot, EXACT);
+}
+
+#[test]
+#[ignore = "spawns a GPU process; run with --ignored on a desktop"]
+fn new_window_is_shift_cmd_n() {
+    let shot = capture(
+        "new-window",
+        &[("CONCATS_APP_STEPS", "menu new_window")],
+        |_| {},
+    );
+    let data = state(&shot, "state.json");
+    assert_eq!(data["windows"].as_array().map(Vec::len), Some(2), "{data}");
+}
+
+/// The first save of an Untitled tab writes where the Save dialog says, and
+/// the tab becomes that file's.
+#[test]
+#[ignore = "spawns a GPU process; run with --ignored on a desktop"]
+fn saving_an_untitled_tab_names_it() {
+    let shot = capture(
+        "untitled-saved",
+        &[
+            ("CONCATS_APP_STEPS", "menu new_file; type fn main() {}"),
+            ("CONCATS_APP_SAVE", "1"),
+            ("CONCATS_APP_SAVE_AS", "new.rs"),
+        ],
+        |_| {},
+    );
+    let repo = Path::new("/tmp/concats-snapshots/repo");
+    assert_eq!(
+        std::fs::read_to_string(repo.join("new.rs")).ok().as_deref(),
+        Some("fn main() {}")
+    );
+    let data = state(&shot, "state.json");
+    assert_eq!(tabs_titled(&data, "new.rs · worktree"), 1, "{data}");
+    assert_eq!(tabs_titled(&data, "Untitled"), 0, "{data}");
+    // NOTE: no golden: the save reloads the range, and whether the frame
+    // catches the loading card is timing.
+}
+
+/// Saving an untouched Untitled tab writes an empty file, and only that one
+/// of two Untitled tabs is named.
+#[test]
+#[ignore = "spawns a GPU process; run with --ignored on a desktop"]
+fn an_untouched_untitled_tab_saves_empty() {
+    let shot = capture(
+        "untitled-empty",
+        &[
+            ("CONCATS_APP_STEPS", "menu new_file; menu new_file"),
+            ("CONCATS_APP_SAVE", "1"),
+            ("CONCATS_APP_SAVE_AS", "empty.txt"),
+        ],
+        |_| {},
+    );
+    let repo = Path::new("/tmp/concats-snapshots/repo");
+    assert_eq!(
+        std::fs::read_to_string(repo.join("empty.txt"))
+            .ok()
+            .as_deref(),
+        Some("")
+    );
+    let data = state(&shot, "state.json");
+    assert_eq!(tabs_titled(&data, "empty.txt · worktree"), 1, "{data}");
+    assert_eq!(tabs_titled(&data, "Untitled"), 1, "{data}");
+}
+
+/// Cancelling writes nothing, and so does a path outside the checkout; the tab
+/// stays Untitled either way.
+#[test]
+#[ignore = "spawns a GPU process; run with --ignored on a desktop"]
+fn a_refused_save_leaves_the_tab_untitled() {
+    for (name, answer) in [
+        ("untitled-cancel", "-"),
+        ("untitled-outside", "../outside.rs"),
+    ] {
+        let shot = capture(
+            name,
+            &[
+                ("CONCATS_APP_STEPS", "menu new_file; type x"),
+                ("CONCATS_APP_SAVE", "1"),
+                ("CONCATS_APP_SAVE_AS", answer),
+            ],
+            |_| {},
+        );
+        let data = state(&shot, "state.json");
+        assert_eq!(tabs_titled(&data, "• Untitled"), 1, "{name}: {data}");
+        assert!(
+            !Path::new("/tmp/concats-snapshots/outside.rs").exists(),
+            "{name}"
+        );
+    }
+}

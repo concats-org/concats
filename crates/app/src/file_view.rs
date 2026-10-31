@@ -7,6 +7,8 @@
 //! mechanism, because editable, highlighted TOML is a file view over text that
 //! just doesn't come from git.
 
+use std::path::{Path, PathBuf};
+
 use concats_diff::{
     Blob, Row,
     load::{self, Rev},
@@ -15,7 +17,8 @@ use concats_review::store::{self, Comment};
 
 use crate::{
     comments::{hold_comments, splice_stream},
-    review_doc::{Caret, FileView, ReviewDoc, strip_composer},
+    makepad_widgets::LiveId,
+    review_doc::{Caret, FileView, ReviewDoc, Stream, strip_composer},
 };
 
 /// Both sides of one file for the File tab: its content at the range's base
@@ -115,9 +118,12 @@ pub(crate) fn intern(d: &mut ReviewDoc, path: &str, blob: Blob) -> u32 {
     // reusing it would put edited text under diff rows whose line numbers came
     // from the pristine file. So a dirty entry is left alone and a fresh one
     // goes in beside it; the two converge on save, when the file is re-read.
+    //
+    // An Untitled buffer is nobody else's either: every empty file has its
+    // oid, and what it holds is whatever gets typed into it.
     let reusable = |b: &Blob| match (b.origin.as_deref(), blob.origin.as_deref()) {
         (Some(open), Some(incoming)) => open == incoming,
-        _ => b.oid == blob.oid && !b.dirty(),
+        _ => b.oid == blob.oid && !b.dirty() && !untitled(b) && !untitled(&blob),
     };
     let index = if let Some(i) = d.blobs.iter().position(reusable) {
         // NOTE: the base side may be interned first even when the same blob is editable.
@@ -199,18 +205,101 @@ pub(crate) fn caret_to_line(d: &mut ReviewDoc, tab: u64, line: u32, column: u32)
 }
 
 /// What a File tab is called: the file, the revision its content is at, and
-/// whether it has unsaved edits.
+/// whether its buffer has unsaved edits.
 ///
 /// The revision sits here rather than over the text because the tab is the only
 /// chrome an editor has. A worktree range has no commit to name, and that is
-/// also when the file can be typed into.
-pub(crate) fn file_tab_title(path: &str, head: Rev, dirty: bool) -> String {
+/// also when the file can be typed into. An Untitled buffer is in no revision,
+/// so it is only its name.
+pub(crate) fn file_tab_title(d: &ReviewDoc, view: &FileView) -> String {
+    let blob = &d.blobs[view.head as usize];
+    let dirty = if blob.dirty() { "• " } else { "" };
+    let path = view.path.as_str();
+    if untitled(blob) {
+        return format!("{dirty}{path}");
+    }
     let name = path.rsplit('/').next().unwrap_or(path);
-    let at = match head {
+    let at = match d.resolved.1 {
         Rev::Commit(oid) => oid.to_string()[..7].to_string(),
         _ => "worktree".into(),
     };
-    format!("{}{name} · {at}", if dirty { "• " } else { "" })
+    format!("{dirty}{name} · {at}")
+}
+
+/// Whether `blob` is an Untitled buffer, one no file is behind yet. Its origin
+/// is its bare name: a file's origin is always an absolute path, so the two
+/// can't meet, and the buffer is editable like any file's.
+pub(crate) fn untitled(blob: &Blob) -> bool {
+    blob.origin.as_deref().is_some_and(Path::is_relative)
+}
+
+/// Open an empty Untitled File tab, "Untitled", then "Untitled 2" and so on,
+/// with the caret on its first line. Returns its tab id.
+pub(crate) fn open_untitled(d: &mut ReviewDoc) -> u64 {
+    // One more name than there are tabs, so one of them is free.
+    let name = (1..=d.files_open.len() + 1)
+        .map(|n| match n {
+            1 => "Untitled".to_string(),
+            n => format!("Untitled {n}"),
+        })
+        .find(|name| d.files_open.iter().all(|f| f.path != *name))
+        .expect("some name is unused");
+    let mut blob = Blob::new(concats_sync::hash_object(b""), String::new(), String::new());
+    blob.origin = Some(PathBuf::from(&name));
+    let head = intern(d, &name, blob);
+    // Its own id space: a file called "Untitled" can be open beside it.
+    let tab = LiveId::from_str(&format!("untitled:{name}")).0;
+    place(
+        d,
+        FileView {
+            tab,
+            path: name,
+            rows: Vec::new(),
+            base: None,
+            head,
+            heading: None,
+        },
+        &[],
+    );
+    d.caret = Some(Caret {
+        blob: head,
+        line: 0,
+        byte: 0,
+    });
+    d.selection_anchor = None;
+    tab
+}
+
+/// Make the Untitled tab `tab` the File tab of `path`, the file its buffer was
+/// just written to: `path` is checkout-relative, `file` absolute. Its tab id,
+/// title and highlighting follow the name from here, and a save no longer
+/// asks where. Returns the new tab id.
+pub(crate) fn name_untitled(d: &mut ReviewDoc, tab: u64, path: &str, file: PathBuf) -> Option<u64> {
+    let view = d.files_open.iter_mut().find(|f| f.tab == tab)?;
+    let renamed = crate::dock::file_tab_id(path).0;
+    view.tab = renamed;
+    view.path = path.to_string();
+    let head = view.head;
+    let blob = &mut d.blobs[head as usize];
+    blob.ext = Path::new(path)
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    blob.spans = None;
+    blob.origin = Some(file);
+    // Untouched, it has nothing past what is on disk now.
+    let version = match &blob.doc {
+        Some(doc) => doc.oplog_frontiers(),
+        None => blob.disk.clone(),
+    };
+    blob.saved_at(concats_sync::hash_object(blob.text.as_bytes()), version);
+    d.blob_paths.insert(head, path.to_string());
+    if d.tab == Stream::File(tab) {
+        d.tab = Stream::File(renamed);
+    }
+    d.rows_rev += 1;
+    Some(renamed)
 }
 
 /// Lower one file's whole content to rows, from blobs already in the table.
@@ -226,7 +315,12 @@ fn file_rows(
     comments: &[Comment],
 ) -> (Vec<Row>, std::collections::HashSet<u64>) {
     let index = view.head;
-    let code = load::whole_file_rows(&d.blobs, view.base, index);
+    let mut code = load::whole_file_rows(&d.blobs, view.base, index);
+    // An empty file still has a line 1, as in any editor: somewhere for the
+    // caret to be.
+    if code.is_empty() {
+        code.push(Row::context(index, 0, 0));
+    }
     // No card header and no caption: a File tab is an editor, so path, revision
     // and dirty state live in its tab. The diff streams still build both; there
     // the file is one code block among others and has to say which file it is.
@@ -480,7 +574,7 @@ mod tests {
             "no header, no caption and no card cap — just the file"
         );
         // What the header used to say, said by the tab instead.
-        let title = file_tab_title("src/a.rs", d.resolved.1, false);
+        let title = file_tab_title(&d, &d.files_open[0]);
         assert!(title.starts_with("a.rs"), "{title}");
         assert!(title.contains(&oid(9).to_string()[..7]), "{title}");
         assert!(
@@ -896,5 +990,56 @@ mod tests {
         assert_eq!(caret(&d), Some((head, 2, 0)), "past the end of the file");
 
         assert_eq!(caret_to_line(&mut d, tab + 1, 1, 1), None, "no such tab");
+    }
+
+    /// Two Untitled tabs over a document that already holds a clean,
+    /// origin-less empty blob, like the base of a file a range creates empty:
+    /// same oid as every Untitled buffer. The caret is in the second.
+    fn two_untitled() -> (ReviewDoc, u64, u64) {
+        let mut d = ReviewDoc::default();
+        let empty = Blob::new(concats_sync::hash_object(b""), "txt".into(), String::new());
+        intern(&mut d, "empty.txt", empty);
+        let first = open_untitled(&mut d);
+        let second = open_untitled(&mut d);
+        (d, first, second)
+    }
+
+    #[test]
+    fn an_untitled_buffer_is_its_own() {
+        let (mut d, _, _) = two_untitled();
+        let paths: Vec<&str> = d.files_open.iter().map(|f| f.path.as_str()).collect();
+        assert_eq!(paths, ["Untitled", "Untitled 2"]);
+        let heads: Vec<u32> = d.files_open.iter().map(|f| f.head).collect();
+        assert!(
+            heads[0] != 0 && heads[1] != 0 && heads[0] != heads[1],
+            "{heads:?}"
+        );
+        assert!(
+            matches!(opened(&d)[0], Row::Code { line: 0, .. }),
+            "a line 1"
+        );
+        assert_eq!(file_tab_title(&d, &d.files_open[0]), "Untitled");
+
+        assert!(type_at(&mut d, "fn main() {}", 0));
+        relower_edited(&mut d, &[]);
+        let texts: Vec<&str> = heads
+            .iter()
+            .map(|&h| d.blobs[h as usize].text.as_str())
+            .collect();
+        assert_eq!(texts, ["", "fn main() {}"]);
+        assert_eq!(file_tab_title(&d, &d.files_open[1]), "• Untitled 2");
+    }
+
+    #[test]
+    fn naming_an_untitled_buffer_makes_it_the_files() {
+        let (mut d, first, second) = two_untitled();
+        assert!(type_at(&mut d, "fn main() {}", 0));
+        let named = name_untitled(&mut d, second, "src/new.rs", "/repo/src/new.rs".into())
+            .expect("the tab is open");
+        let view = d.file(named).expect("found under its new id");
+        let blob = &d.blobs[view.head as usize];
+        assert!(!untitled(blob) && !blob.dirty() && blob.ext == "rs");
+        assert_eq!(file_tab_title(&d, view), "new.rs · worktree");
+        assert!(d.file(first).is_some(), "the other one stays Untitled");
     }
 }

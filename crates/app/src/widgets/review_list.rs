@@ -176,6 +176,14 @@ fn sticky_offsets(header_top: Option<f64>, end_top: Option<f64>) -> (f64, f64) {
     (push, lift)
 }
 
+#[derive(Clone, Debug, Default)]
+pub(super) enum ReviewListAction {
+    /// ⌘S in the Untitled tab with this id: its first save has to ask where.
+    SaveAs(u64),
+    #[default]
+    None,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub(super) enum ReviewItemAction {
     Seen {

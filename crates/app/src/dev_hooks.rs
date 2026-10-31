@@ -14,8 +14,8 @@
 //!   each, `TAB=name` (or `file:path`) selects a tab, and `SHOT=path.png`
 //!   captures the frame.
 //! - Then one step per poll tick: `STEPS=…` runs its `;`-separated steps
-//!   first (`click x,y`, `cmd-click x,y`, `key name`, `find text`,
-//!   `type text`), then
+//!   first (`click x,y`, `cmd-click x,y`, `key name`, `menu command`,
+//!   `find text`, `type text`), then
 //!   `SHOT_BEFORE=path.png` captures the frame before any other input,
 //!   `CLICK=x,y` presses there (`HOVER=x,y` only moves,
 //!   `DRAG_TO=x,y` drags, `CLICK_SEEN` presses the pinned tick box), `TYPE=text`
@@ -441,6 +441,11 @@ impl App {
                 shortcut(KeyCode::KeyF)
             }
             "key" => key(arg),
+            // What the menu item `arg` does, through the path the menu takes.
+            "menu" => {
+                self.menu_command(cx, LiveId::from_str(arg));
+                return true;
+            }
             "type" => typed(arg),
             _ => {
                 eprintln!("concats-app: unknown step `{step}`");

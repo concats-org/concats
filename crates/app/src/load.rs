@@ -16,7 +16,7 @@ use concats_state::Target;
 use crate::{
     comments::splice_comments,
     editor::{caret_at_offset, offset_of},
-    file_view::{open_file, open_settings, read_file_sides},
+    file_view::{open_file, open_settings, read_file_sides, untitled},
     makepad_widgets::makepad_platform::thread::SignalToUI,
     review_doc::{Caret, Compose, Composing, ReviewDoc, Stream, changed_keys, splice_composer},
     service::{ReviewCmd, review, review_state},
@@ -42,9 +42,11 @@ pub(crate) fn spawn_load(
         let mut next = load_document(&target, guide);
         if next.error.is_none() && state.load_is_current(request) {
             let open = state.read(|d| {
+                // An Untitled buffer has no file to read again; carrying the
+                // document forward keeps it.
                 d.files_open
                     .iter()
-                    .filter(|_| d.repo == next.repo)
+                    .filter(|f| d.repo == next.repo && !untitled(&d.blobs[f.head as usize]))
                     .map(|f| (f.tab, f.path.clone()))
                     .collect()
             });

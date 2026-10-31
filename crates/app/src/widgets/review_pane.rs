@@ -22,7 +22,10 @@ use concats_state::Target;
 use makepad_service::Shared;
 use pickers::{RangeEnd, RangeRow};
 
-use super::{FileBrowserAction, GutterAction, ReviewList, SeenBar, review_list::ReviewItemAction};
+use super::{
+    FileBrowserAction, GutterAction, ReviewList, SeenBar,
+    review_list::{ReviewItemAction, ReviewListAction},
+};
 #[allow(
     clippy::wildcard_imports,
     reason = "Makepad macros and derives expand against the widget prelude in this scope."
@@ -794,25 +797,7 @@ impl ReviewPane {
         hold_minted(git_dir.as_deref(), minted);
 
         let tab_id = file_tab_id(path);
-        let dock = self.view.dock(cx, ids!(dock));
-        let title = self.state().read(|d| {
-            let dirty = d
-                .file(tab_id.0)
-                .is_some_and(|file| d.blobs[file.head as usize].dirty());
-            crate::file_view::file_tab_title(path, d.resolved.1, dirty)
-        });
-        open_tab(
-            cx,
-            &dock,
-            TabSpec {
-                title: &title,
-                ..stream_tab_spec(Stream::File(tab_id.0))
-            },
-            &stream_tabs(),
-            id!(main_tabs),
-        );
-        dock.select_tab(cx, tab_id);
-        self.set_gesture_tab(cx, Stream::File(tab_id.0));
+        self.show_file_tab(cx, tab_id.0);
         if let Some((line, column)) = at {
             let row = self
                 .state()
@@ -820,6 +805,101 @@ impl ReviewPane {
             *self.state().reveal.lock().unwrap() = row.map(|row| (Stream::File(tab_id.0), row));
         }
         self.redraw_streams(cx);
+    }
+
+    /// ⌘N: an empty Untitled tab where file tabs open, selected, with the
+    /// keyboard in it. Its first save asks where it goes.
+    pub fn new_file(&mut self, cx: &mut Cx) {
+        let tab = self.state().with(crate::file_view::open_untitled);
+        self.show_file_tab(cx, tab);
+        *self.state().reveal.lock().unwrap() = Some((Stream::File(tab), 0));
+        self.redraw_streams(cx);
+    }
+
+    /// The first save of an Untitled tab: ask where in the native Save dialog,
+    /// write the buffer there, and make the tab that file's. Only a path in the
+    /// checkout, and one no other tab has open, is taken.
+    fn save_as(&mut self, cx: &mut Cx, tab: u64) {
+        let (root, text) = self.state().read(|d| {
+            let text = d
+                .file(tab)
+                .map(|view| d.blobs[view.head as usize].text.clone());
+            (d.root.clone(), text)
+        });
+        let Some(text) = text else {
+            return;
+        };
+        // NOTE: the native dialog can't be driven headlessly, so the tests
+        // answer for it; `-` cancels.
+        let picked = match crate::dev_hooks::var("CONCATS_APP_SAVE_AS") {
+            Some(answer) => (answer != "-").then(|| root.join(answer)),
+            None => rfd::FileDialog::new()
+                .set_directory(&root)
+                .set_file_name("Untitled")
+                .save_file(),
+        };
+        let Some(picked) = picked else {
+            return;
+        };
+        let relative = |root: &std::path::Path| {
+            let path = picked.strip_prefix(root).ok()?.to_str()?.to_owned();
+            let file = concats_diff::load::worktree_file(root, &path).ok()?;
+            Some((path, file))
+        };
+        let message = match relative(&root).or_else(|| relative(&root.canonicalize().ok()?)) {
+            None => format!("can't save outside {}", root.display()),
+            Some((path, _))
+                if self
+                    .state()
+                    .read(|d| d.files_open.iter().any(|f| f.path == path)) =>
+            {
+                format!("{path} is already open")
+            }
+            Some((path, file)) => {
+                if let Err(error) = std::fs::write(&file, &text) {
+                    format!("cannot save {path}: {error}")
+                } else {
+                    let named = self
+                        .state()
+                        .with(|d| crate::file_view::name_untitled(d, tab, &path, file));
+                    self.view.dock(cx, ids!(dock)).close_tab(cx, LiveId(tab));
+                    if let Some(named) = named {
+                        self.show_file_tab(cx, named);
+                    }
+                    // A reload is what puts a new file in the browser.
+                    let target = self.state().read(ReviewDoc::target);
+                    self.start_load(cx, target, None, None);
+                    format!("saved {path}")
+                }
+            }
+        };
+        self.view
+            .label(cx, ids!(status_label))
+            .set_text(cx, &message);
+        self.redraw_streams(cx);
+    }
+
+    /// Open the File tab `tab`, whose view is in the document, where file tabs
+    /// open, select it and make it the one gestures act in.
+    fn show_file_tab(&mut self, cx: &mut Cx, tab: u64) {
+        let dock = self.view.dock(cx, ids!(dock));
+        let title = self.state().read(|d| {
+            d.file(tab)
+                .map(|view| crate::file_view::file_tab_title(d, view))
+                .unwrap_or_default()
+        });
+        open_tab(
+            cx,
+            &dock,
+            TabSpec {
+                title: &title,
+                ..stream_tab_spec(Stream::File(tab))
+            },
+            &stream_tabs(),
+            id!(main_tabs),
+        );
+        dock.select_tab(cx, LiveId(tab));
+        self.set_gesture_tab(cx, Stream::File(tab));
     }
 
     /// Drop a closed file tab's stream. The tab is the file's identity, so a
@@ -1585,6 +1665,10 @@ impl ReviewPane {
                 TerminalViewAction::OpenFile(path, at) => self.open_file_tab(cx, &path, at),
                 TerminalViewAction::None => {}
             }
+            match wa.cast() {
+                ReviewListAction::SaveAs(tab) => self.save_as(cx, tab),
+                ReviewListAction::None => {}
+            }
             // The file browser names a path; the pane owns the dock, so
             // turning that into a tab is this side's job.
             match wa.cast() {
@@ -1873,11 +1957,7 @@ impl Widget for ReviewPane {
                 if file.tab == settings_tab_spec().id.0 {
                     continue;
                 }
-                let title = crate::file_view::file_tab_title(
-                    &file.path,
-                    document.resolved.1,
-                    document.blobs[file.head as usize].dirty(),
-                );
+                let title = crate::file_view::file_tab_title(&document, file);
                 dock.set_tab_title(cx, LiveId(file.tab), title);
             }
             self.file_titles_generation = document.generation;

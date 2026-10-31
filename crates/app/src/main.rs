@@ -450,13 +450,22 @@ impl MatchEvent for App {
                 },
                 MacosMenu::Sub {
                     name: "File".to_string(),
-                    items: vec![MacosMenu::Item {
-                        command: live_id!(new_window),
-                        key: KeyCode::KeyN,
-                        shift: false,
-                        enabled: true,
-                        name: "New Window".to_string(),
-                    }],
+                    items: vec![
+                        MacosMenu::Item {
+                            command: live_id!(new_file),
+                            key: KeyCode::KeyN,
+                            shift: false,
+                            enabled: true,
+                            name: "New File".to_string(),
+                        },
+                        MacosMenu::Item {
+                            command: live_id!(new_window),
+                            key: KeyCode::KeyN,
+                            shift: true,
+                            enabled: true,
+                            name: "New Window".to_string(),
+                        },
+                    ],
                 },
             ],
         });
@@ -636,15 +645,32 @@ impl App {
         self.windows.iter_mut().find(|w| w.state.id == id)
     }
 
-    /// ⌘N: another window on the range the focused one is showing, in this
+    /// The window a menu command acts in: the one that last had focus, else
+    /// the newest.
+    fn focused_window(&self) -> Option<&AppWindow> {
+        self.focused
+            .and_then(|id| self.windows.iter().find(|w| w.state.id == id))
+            .or_else(|| self.windows.last())
+    }
+
+    /// What a menu item does, by its command.
+    fn menu_command(&mut self, cx: &mut Cx, command: LiveId) {
+        if command == live_id!(new_window) {
+            self.open_new_window(cx);
+        } else if command == live_id!(new_file)
+            && let Some(window) = self.focused_window()
+            && let Some(mut pane) = window.pane(cx).borrow_mut::<ReviewPane>()
+        {
+            pane.new_file(cx);
+        }
+    }
+
+    /// ⇧⌘N: another window on the range the focused one is showing, in this
     /// process. Its document, its load and its terminals are its own; the
     /// review store underneath is shared, so a tick in one shows in the other.
     fn open_new_window(&mut self, cx: &mut Cx) {
-        // Copied from whichever window last had focus, else the newest.
         let target = self
-            .focused
-            .and_then(|id| self.windows.iter().find(|w| w.state.id == id))
-            .or_else(|| self.windows.last())
+            .focused_window()
             .map(|window| window.state.read(ReviewDoc::target))
             .filter(|t| !t.repo.is_empty())
             // Nothing loaded yet: the range the app was asked for is the same
@@ -1087,10 +1113,8 @@ impl AppMain for App {
         {
             dq.response.set(WindowDragQueryResponse::Caption);
         }
-        if let Event::MacosMenuCommand(command) = event
-            && *command == live_id!(new_window)
-        {
-            self.open_new_window(cx);
+        if let Event::MacosMenuCommand(command) = event {
+            self.menu_command(cx, *command);
         }
         // After `Root` has dropped the widget, so the window is gone from both.
         if let Event::WindowClosed(e) = event {
