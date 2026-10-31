@@ -243,9 +243,18 @@ pub(crate) fn is_earlier(comments: &[store::Comment], root: u64, opened_at: u64)
         .all(|c| c.created_at < opened_at)
 }
 
-/// Lines of context shown either side of a thread's code in the Comments tab —
+/// Lines of context either side of a thread's code in the Comments tab —
 /// the same margin a standard hunk keeps.
 const COMMENT_CONTEXT: u32 = 3;
+
+/// Lines of a thread's run the Comments tab shows before the rest is behind
+/// a band: its last ones, since the thread sits under the run's last line.
+const EXCERPT_LINES: u32 = 5;
+
+/// The first line of `run` the Comments tab shows.
+fn excerpt_start(run: Side) -> u32 {
+    run.end.saturating_sub(EXCERPT_LINES - 1).max(run.start)
+}
 
 /// The Comments tab's rows: every thread as a card of its code with
 /// [`COMMENT_CONTEXT`] lines either side, overlapping threads sharing one card.
@@ -336,21 +345,24 @@ fn comments_stream<'a>(
         // Threads whose context overlaps share one card: the same line must not
         // render in two cards, or the splice would attach every thread at both
         // occurrences.
-        let mut merged: Vec<(Vec<&store::Comment>, Side)> = Vec::new();
+        // Each card also keeps the first line it shows: every thread's last
+        // lines, which is where they sit.
+        let mut merged: Vec<(Vec<&store::Comment>, Side, u32)> = Vec::new();
         for &(_, run, root) in located.iter().filter(|&&(at, ..)| at == path) {
             match merged.last_mut() {
-                Some((members, card))
+                Some((members, card, shown))
                     if card.blob == run.blob
                         && run.start.saturating_sub(COMMENT_CONTEXT)
                             <= card.end + COMMENT_CONTEXT =>
                 {
                     card.end = card.end.max(run.end);
+                    *shown = (*shown).min(excerpt_start(run));
                     members.push(root);
                 }
-                _ => merged.push((vec![root], run)),
+                _ => merged.push((vec![root], run, excerpt_start(run))),
             }
         }
-        for (members, card) in merged {
+        for (members, card, shown) in merged {
             let lines: Vec<String> = members.iter().map(|c| line(c, "")).collect();
             cards.push(Row::Prose {
                 md: lines.join("  \n"),
@@ -362,15 +374,33 @@ fn comments_stream<'a>(
                 cards.push(context_header(path));
             }
             let last = (blobs[card.blob as usize].line_count() as u32).saturating_sub(1);
-            let context =
-                card.start.saturating_sub(COMMENT_CONTEXT)..=(card.end + COMMENT_CONTEXT).min(last);
-            cards.extend(context.map(|line| Row::Code {
+            let first = card.start.saturating_sub(COMMENT_CONTEXT);
+            let end = (card.end + COMMENT_CONTEXT).min(last);
+            let code = |line| Row::Code {
                 kind: LineKind::Context,
                 old_no: None,
                 new_no: (!prose).then_some(line + 1),
                 blob: card.blob,
                 line,
-            }));
+            };
+            // The rest of the run and its context wait behind the bands a
+            // diff's unchanged lines do. Revealed lines are numbered, so
+            // authored text shows all of it instead.
+            if prose {
+                cards.extend((first..=end).map(code));
+                continue;
+            }
+            let band = |from: u32, to: u32| {
+                (from < to).then_some(Row::Collapsed {
+                    blob: card.blob,
+                    old_start: from,
+                    new_start: from,
+                    count: to - from,
+                })
+            };
+            cards.extend(band(first, shown));
+            cards.extend((shown..=card.end).map(code));
+            cards.extend(band(card.end + 1, end + 1));
         }
     }
 
@@ -565,7 +595,7 @@ mod tests {
         clippy::format_collect,
         reason = "Generated fixture lines and row assertions keep the expected context visible together."
     )]
-    fn comments_tab_frames_a_thread_in_the_context_a_hunk_gets() {
+    fn comments_tab_shows_a_threads_run_between_bands_of_its_context() {
         let text: String = (0..20).map(|n| format!("line {n}\n")).collect();
         let blobs = vec![Blob::new(oid(1), "rs".into(), text)];
         let names = HashMap::from([("a.rs", vec![0])]);
@@ -583,22 +613,59 @@ mod tests {
         assert!(md.contains("`a.rs:10-11`"), "meta was: {md}");
         assert!(md.contains("**unanswered** — ada"));
         assert!(matches!(&rows[3], Row::FileHeader { path, .. } if path == "a.rs"));
-        // COMMENT_CONTEXT lines either side of the 9..=10 anchor: 6..=13.
-        let code: Vec<(u32, Option<u32>)> = rows[4..]
+        // The 9..=10 anchor, with COMMENT_CONTEXT lines either side behind a
+        // band: 6..=8 above, 11..=13 below.
+        assert_eq!(bands(&rows), [(6, 3), (11, 3)]);
+        let code: Vec<(u32, Option<u32>)> = rows
             .iter()
-            .map(|r| match r {
+            .filter_map(|r| match r {
                 Row::Code {
                     kind: LineKind::Context,
                     old_no: None,
                     blob: 0,
                     line,
                     new_no,
-                } => (*line, *new_no),
-                _ => panic!("expected only context lines after the header"),
+                } => Some((*line, *new_no)),
+                _ => None,
             })
             .collect();
-        let expect: Vec<(u32, Option<u32>)> = (6..=13).map(|n| (n, Some(n + 1))).collect();
-        assert_eq!(code, expect);
+        assert_eq!(code, [(9, Some(10)), (10, Some(11))]);
+    }
+
+    /// Where each `Collapsed` band of `rows` starts and how many lines it holds.
+    fn bands(rows: &[Row]) -> Vec<(u32, u32)> {
+        rows.iter()
+            .filter_map(|r| match r {
+                Row::Collapsed {
+                    new_start, count, ..
+                } => Some((*new_start, *count)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// A long run shows its last lines, the ones its thread sits under; the
+    /// rest of it waits in the band above with the context.
+    #[test]
+    #[expect(
+        clippy::format_collect,
+        reason = "Generated fixture lines make the expected excerpt explicit."
+    )]
+    fn a_long_run_shows_its_last_lines() {
+        let text: String = (0..20).map(|n| format!("line {n}\n")).collect();
+        let blobs = vec![Blob::new(oid(1), "rs".into(), text)];
+        let names = HashMap::from([("a.rs", vec![0])]);
+        let comments = vec![stored(1, "a.rs", oid(1), 2, 12)];
+        let (rows, _) = comments_stream(&blobs, &names, &comments, |_| None, None);
+        let lines: Vec<u32> = rows
+            .iter()
+            .filter_map(|row| match row {
+                Row::Code { line, .. } => Some(*line),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(lines, (8..=12).collect::<Vec<_>>());
+        assert_eq!(bands(&rows), [(0, 8), (13, 3)]);
     }
 
     /// A thread on a transcript entry is tracked like any other — in the content
@@ -657,7 +724,8 @@ mod tests {
                     _ => None,
                 })
                 .collect();
-            assert_eq!(lines, (5..=11).collect::<Vec<_>>());
+            assert_eq!(lines, [8]);
+            assert_eq!(bands(&rows), [(5, 3), (9, 3)]);
         }
     }
 
@@ -692,7 +760,7 @@ mod tests {
         };
         assert!(md.contains("`a.rs:6-6` · **unanswered** — ada"));
         assert!(md.contains("`a.rs:9-9` · 1 reply, last by **bob**"));
-        // The merged card runs from 5-3 to 8+3, once.
+        // The merged card shows 5 to 8, once, its context either side in bands.
         let lines: Vec<u32> = rows
             .iter()
             .filter_map(|r| match r {
@@ -700,8 +768,8 @@ mod tests {
                 _ => None,
             })
             .collect();
-        let expect: Vec<u32> = (2..=11).collect();
-        assert_eq!(lines, expect);
+        assert_eq!(lines, [5, 6, 7, 8]);
+        assert_eq!(bands(&rows), [(2, 3), (9, 3)]);
     }
 
     /// A card prints the anchor the CLI reads back: a thread on deleted lines

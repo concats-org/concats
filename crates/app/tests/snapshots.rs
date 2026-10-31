@@ -1969,7 +1969,7 @@ fn a_long_comment_is_clamped_in_the_comments_tab() {
 
     let shot = capture(
         "comments-expanded",
-        &hooks("wait; wait; wait; key alt-cmd-1; wait; wait; click 77,490; wait; wait"),
+        &hooks("wait; wait; wait; key alt-cmd-1; wait; wait; click 77,442; wait; wait"),
         long,
     );
     assert_eq!(
@@ -1983,8 +1983,8 @@ fn a_long_comment_is_clamped_in_the_comments_tab() {
     let shot = capture(
         "comments-collapsed",
         &hooks(
-            "wait; wait; wait; key alt-cmd-1; wait; wait; click 77,490; wait; wait; \
-             click 77,512; wait; wait",
+            "wait; wait; wait; key alt-cmd-1; wait; wait; click 77,442; wait; wait; \
+             click 77,464; wait; wait",
         ),
         long,
     );
@@ -2029,7 +2029,7 @@ fn a_long_thread_folds_its_middle_replies() {
 
     let shot = capture(
         "replies-shown",
-        &hooks("wait; wait; wait; key alt-cmd-1; wait; wait; click 111,501; wait; wait"),
+        &hooks("wait; wait; wait; key alt-cmd-1; wait; wait; click 111,453; wait; wait"),
         thread,
     );
     assert_eq!(
@@ -2037,4 +2037,25 @@ fn a_long_thread_folds_its_middle_replies() {
         serde_json::json!([1])
     );
     assert_matches("replies-shown", &shot, EXACT);
+}
+
+/// A thread card shows the lines its thread is on; the bands either side hold
+/// the code around them, and clicking one shows it.
+#[test]
+#[ignore = "spawns a GPU process; run with --ignored on a desktop"]
+fn a_thread_card_shows_the_code_around_it_on_a_click() {
+    let home = home_with_placement("comments = \"center\"");
+    let home_path = home.path().to_str().expect("utf-8 temp path").to_owned();
+    let shot = capture(
+        "thread-context",
+        &[
+            ("HOME", &home_path),
+            (
+                "CONCATS_APP_STEPS",
+                "wait; wait; wait; key alt-cmd-1; wait; wait; click 35,228; wait; wait",
+            ),
+        ],
+        |repo| comment_on(repo, &["hash-object", "editor.rs"], "why hello?"),
+    );
+    assert_matches("thread-context", &shot, EXACT);
 }
