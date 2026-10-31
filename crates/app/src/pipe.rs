@@ -267,6 +267,7 @@ mod tests {
             created_at: 1,
             parent: None,
             external: None,
+            worktree: None,
             cursors: None,
             quote: None,
         }

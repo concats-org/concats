@@ -105,6 +105,10 @@ pub struct Comment {
     /// Import matches on it, so re-running one converges instead of
     /// duplicating.
     pub external: Option<String>,
+    /// The checkout it was made in: `worktree_of` its git dir. Every worktree
+    /// of a repo shares one store, so this is what tells this checkout's
+    /// conversations from another's. `None` on comments older than the field.
+    pub worktree: Option<String>,
     /// The lines as a cursor pair in the file's document, for a comment on a
     /// worktree file: minted when the comment was made, in the app or by the
     /// CLI, and what carries it across edits. Encoded, because the store keeps
@@ -166,8 +170,19 @@ pub fn comment(path: String, anchor: Anchor) -> Comment {
         quote: None,
         parent: None,
         external: None,
+        worktree: None,
         cursors: None,
     }
+}
+
+/// How a comment names the checkout `git_dir` belongs to: its per-worktree
+/// git dir, resolved, so the app and the CLI spell one checkout the same.
+pub fn worktree_of(git_dir: &Path) -> String {
+    git_dir
+        .canonicalize()
+        .unwrap_or_else(|_| git_dir.to_path_buf())
+        .to_string_lossy()
+        .into_owned()
 }
 
 pub struct Store {
@@ -178,11 +193,14 @@ pub struct Store {
     data_version: i64,
     pub seen: HashSet<LineKey>,
     pub comments: Vec<Comment>,
+    /// The checkout this store was opened for, which every comment written
+    /// through it records.
+    worktree: String,
 }
 
 /// A comment's columns, written and read back in this order.
 const COMMENT_COLUMNS: &str = "path, blob, start, end, body, author, created_at, parent, external, \
-                               quote, quote_from, quote_to";
+                               quote, quote_from, quote_to, worktree";
 
 /// One schema, one location. The guides table lives here too, read and written
 /// through the same per-repo database.
@@ -276,6 +294,7 @@ pub(crate) fn open_db(git_dir: &Path) -> rusqlite::Result<Connection> {
         ("quote", "TEXT"),
         ("quote_from", "INTEGER"),
         ("quote_to", "INTEGER"),
+        ("worktree", "TEXT"),
     ] {
         let present = conn
             .prepare("SELECT 1 FROM pragma_table_info('comments') WHERE name = ?1")?
@@ -327,6 +346,7 @@ impl Store {
             data_version: -1,
             seen: HashSet::new(),
             comments: Vec::new(),
+            worktree: worktree_of(git_dir),
         };
         store.external_change();
         store.refresh();
@@ -394,9 +414,10 @@ impl Store {
                         (Some(text), Some(from), Some(to)) => Some(Quote { text, from, to }),
                         _ => None,
                     },
+                    worktree: row.get(13)?,
                     cursors: row
-                        .get::<_, Option<Vec<u8>>>(13)?
-                        .zip(row.get::<_, Option<Vec<u8>>>(14)?)
+                        .get::<_, Option<Vec<u8>>>(14)?
+                        .zip(row.get::<_, Option<Vec<u8>>>(15)?)
                         .map(|(start, end)| start..end),
                 }))
             });
@@ -443,12 +464,13 @@ impl Store {
     pub fn add_comment(&mut self, comment: Comment) -> Result<Comment, Error> {
         let comment = Comment {
             anchor: comment.anchor.normalized(),
+            worktree: Some(self.worktree.clone()),
             ..comment
         };
         let write = self.conn.execute(
             &format!(
                 "INSERT INTO comments ({COMMENT_COLUMNS})
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)"
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)"
             ),
             (
                 &comment.path,
@@ -463,6 +485,7 @@ impl Store {
                 comment.quote.as_ref().map(|quote| &quote.text),
                 comment.quote.as_ref().map(|quote| quote.from),
                 comment.quote.as_ref().map(|quote| quote.to),
+                &comment.worktree,
             ),
         );
         write.map_err(|source| Error::Store {
@@ -1083,6 +1106,7 @@ mod tests {
             created_at: 0,
             parent: None,
             external: None,
+            worktree: None,
             cursors: None,
             quote: None,
         }
@@ -2041,5 +2065,46 @@ mod tests {
         );
         // No guide for a range nothing was submitted against.
         assert!(latest_guide(tmp.path(), &oid(9), &oid(2)).is_none());
+    }
+
+    /// Each comment records the checkout it was made in, so a view can tell
+    /// this worktree's conversations from another's; a store made before the
+    /// field gains it, and its comments read as recorded nowhere.
+    #[test]
+    fn comments_record_the_worktree_they_were_made_in() {
+        let tmp = tempfile::tempdir().unwrap();
+        let shared = tmp.path().join(".git");
+        let linked = shared.join("worktrees").join("feature");
+        std::fs::create_dir_all(&linked).unwrap();
+        std::fs::write(linked.join("commondir"), "../..\n").unwrap();
+
+        // A store from before the column: its table lacks it.
+        let db = common_dir(&shared).join("concats-app");
+        std::fs::create_dir_all(&db).unwrap();
+        let old = Connection::open(db.join("store.db")).unwrap();
+        old.execute_batch(
+            "CREATE TABLE comments(id INTEGER PRIMARY KEY, path TEXT NOT NULL, \
+             blob TEXT NOT NULL, start INTEGER NOT NULL, end INTEGER NOT NULL, \
+             body TEXT NOT NULL, author TEXT, created_at INTEGER NOT NULL, \
+             parent INTEGER, external TEXT);",
+        )
+        .unwrap();
+        old.execute(
+            "INSERT INTO comments (path, blob, start, end, body, created_at) \
+             VALUES ('a.rs', ?1, 1, 1, 'from before', 0)",
+            [oid(7).to_string()],
+        )
+        .unwrap();
+        drop(old);
+
+        let mut feature = Store::open(&linked);
+        feature
+            .add_comment(comment("a.rs", anchor(oid(7), 2, 2), "from the feature"))
+            .unwrap();
+        let main = Store::open(&shared);
+        let recorded: Vec<Option<String>> =
+            main.comments.iter().map(|c| c.worktree.clone()).collect();
+        assert_eq!(recorded, [None, Some(worktree_of(&linked))]);
+        assert_ne!(worktree_of(&linked), worktree_of(&shared));
     }
 }

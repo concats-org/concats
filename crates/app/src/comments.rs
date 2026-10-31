@@ -521,6 +521,7 @@ mod tests {
             created_at: 0,
             parent: None,
             external: None,
+            worktree: None,
             cursors: None,
             quote: None,
         }

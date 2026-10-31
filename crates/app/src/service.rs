@@ -883,6 +883,7 @@ mod tests {
                 created_at: store::now(),
                 parent: None,
                 external: None,
+                worktree: None,
                 cursors: None,
                 quote: None,
             })
