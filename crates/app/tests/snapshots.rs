@@ -1104,7 +1104,10 @@ fn a_refused_save_leaves_the_tab_untitled() {
         let shot = capture(
             name,
             &[
-                ("CONCATS_APP_STEPS", "menu new_file; type x"),
+                (
+                    "CONCATS_APP_STEPS",
+                    "wait; wait; wait; menu new_file; wait; type x",
+                ),
                 ("CONCATS_APP_SAVE", "1"),
                 ("CONCATS_APP_SAVE_AS", answer),
             ],
@@ -1717,4 +1720,131 @@ fn reload_key_loads_again() {
     );
     let data = state(&shot, "state.json");
     assert!(data["range"]["loads"].as_u64() >= Some(2), "{data}");
+}
+
+/// A long editor.rs changed in six places, far enough apart to be six hunks
+/// and a card taller than the window, and README.md changed too.
+fn six_hunks(repo: &Path) {
+    let text = |changed: &[usize]| -> String {
+        (1..=120)
+            .map(|n| {
+                if changed.contains(&n) {
+                    format!("// edited {n}\n")
+                } else {
+                    format!("// line {n}\n")
+                }
+            })
+            .collect()
+    };
+    std::fs::write(repo.join("editor.rs"), text(&[])).expect("base");
+    git(repo, &["commit", "-qam", "long editor"]);
+    std::fs::write(repo.join("editor.rs"), text(&[10, 30, 50, 70, 90, 110])).expect("six edits");
+    std::fs::write(repo.join("README.md"), "# Changed\n").expect("second card");
+}
+
+/// ⌥⌘↓ lands where the tab bar's down arrow does.
+#[test]
+#[ignore = "spawns a GPU process; run with --ignored on a desktop"]
+fn the_hunk_key_lands_where_the_arrow_does() {
+    let key = capture(
+        "hunk-key",
+        &[("CONCATS_APP_STEPS", "key alt-cmd-down; key alt-cmd-down")],
+        six_hunks,
+    );
+    let arrow = capture(
+        "hunk-arrow",
+        &[("CONCATS_APP_STEPS", "click 995,72; click 995,72")],
+        six_hunks,
+    );
+    assert_eq!(
+        distance(&key, &arrow),
+        0,
+        "the key and the arrow land apart"
+    );
+    let unmoved = capture("hunk-none", &[], six_hunks);
+    assert!(distance(&key, &unmoved) > 0, "the key moved nothing");
+}
+
+/// ⇧⌥⌘↓ brings the next card's header up; on the pinned card, ⌘K P ticks it
+/// seen and ⌘K J folds it, and ⌘K H turns Collapse seen on.
+#[test]
+#[ignore = "spawns a GPU process; run with --ignored on a desktop"]
+fn card_keys_act_on_the_pinned_card() {
+    let next = capture(
+        "card-next",
+        // The key walks from where the list stood in its last draw: let it
+        // draw first.
+        &[(
+            "CONCATS_APP_STEPS",
+            "wait; wait; key shift-alt-cmd-down; wait; wait",
+        )],
+        six_hunks,
+    );
+    let data = state(&next, "state.json");
+    assert_eq!(data["cards"]["current"], "editor.rs", "{data}");
+    // README.md sorts first, so its header is the one pinned at the start.
+    let acted = capture(
+        "card-keys",
+        &[(
+            "CONCATS_APP_STEPS",
+            "wait; key cmd-k p; wait; key cmd-k j; wait; key cmd-k h",
+        )],
+        six_hunks,
+    );
+    let data = state(&acted, "state.json");
+    assert!(data["seen_lines"].as_u64() > Some(0), "{data}");
+    assert_eq!(
+        data["cards"]["folded"],
+        serde_json::json!(["README.md"]),
+        "{data}"
+    );
+    assert_eq!(data["cards"]["collapse_seen"], true, "{data}");
+}
+
+/// ⌘K L comments on the selection: the composer opens and takes typing;
+/// Escape cancels it like the Cancel button, Enter posts it.
+#[test]
+#[ignore = "spawns a GPU process; run with --ignored on a desktop"]
+fn comment_key_opens_the_composer_on_the_selection() {
+    let select = "click 300,257; key shift-right; key shift-right; key shift-right; key cmd-k l";
+    let typed = format!("{select}; wait; wait; type nice");
+    let opened = capture("comment-key-open", &[("CONCATS_APP_STEPS", &typed)], |_| {});
+    let data = state(&opened, "state.json");
+    assert_eq!(data["composer_open"], true, "{data}");
+    assert_eq!(data["draft"], "nice", "{data}");
+    let escaped = capture(
+        "comment-key-escape",
+        &[("CONCATS_APP_STEPS", &format!("{typed}; key escape"))],
+        |_| {},
+    );
+    let data = state(&escaped, "state.json");
+    assert_eq!(data["composer_open"], false, "{data}");
+    assert_eq!(data["comments"], 0, "{data}");
+    let posted = capture(
+        "comment-key-post",
+        &[("CONCATS_APP_STEPS", &format!("{typed}; key enter; wait"))],
+        |_| {},
+    );
+    let data = state(&posted, "state.json");
+    assert_eq!(data["composer_open"], false, "{data}");
+    assert_eq!(data["comments"], 1, "{data}");
+}
+
+/// ⌘G walks find's matches with the keyboard in the list, not in find.
+#[test]
+#[ignore = "spawns a GPU process; run with --ignored on a desktop"]
+fn find_next_works_from_the_list() {
+    let shot = capture(
+        "find-next-key",
+        &[(
+            "CONCATS_APP_STEPS",
+            "click 300,600; find edited; wait; click 300,600; key cmd-g; key cmd-g",
+        )],
+        six_hunks,
+    );
+    let data = state(&shot, "state.json");
+    assert_eq!(data["find_query"], "edited", "{data}");
+    // The second ⌘G is on the second match, `edited 30`.
+    assert_eq!(data["caret"][1], 29, "{data}");
+    assert_eq!(data["caret"][2], 3, "{data}");
 }

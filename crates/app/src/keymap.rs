@@ -50,6 +50,23 @@ pub(crate) enum Command {
     PickHead,
     /// Load the range again.
     Reload,
+    /// Bring the next (or previous) hunk of the current stream into view.
+    NextHunk,
+    PreviousHunk,
+    /// Bring the next (or previous) file card's header to the top.
+    NextFile,
+    PreviousFile,
+    /// Tick the current card seen, or untick it.
+    ToggleSeen,
+    /// Fold the current card shut, or open it.
+    FoldCard,
+    /// Shut every card that is all seen, or open them again.
+    CollapseSeen,
+    /// Open the composer on the selection.
+    CommentOnSelection,
+    /// The open find's next (or previous) match.
+    FindNext,
+    FindPrevious,
 }
 
 /// Every command: its name in config.toml, and its title in the menu and the
@@ -130,6 +147,20 @@ pub(crate) const COMMANDS: &[(Command, &str, &str)] = &[
     (Command::PickBase, "pick_base", "Pick Base"),
     (Command::PickHead, "pick_head", "Pick Head"),
     (Command::Reload, "reload", "Reload"),
+    (Command::NextHunk, "next_hunk", "Next Hunk"),
+    (Command::PreviousHunk, "previous_hunk", "Previous Hunk"),
+    (Command::NextFile, "next_file", "Next File"),
+    (Command::PreviousFile, "previous_file", "Previous File"),
+    (Command::ToggleSeen, "toggle_seen", "Toggle Seen"),
+    (Command::FoldCard, "fold_card", "Fold Card"),
+    (Command::CollapseSeen, "collapse_seen", "Collapse Seen"),
+    (
+        Command::CommentOnSelection,
+        "comment_on_selection",
+        "Comment on Selection",
+    ),
+    (Command::FindNext, "find_next", "Find Next"),
+    (Command::FindPrevious, "find_previous", "Find Previous"),
 ];
 
 /// The keys every command has until config.toml says otherwise.
@@ -169,6 +200,17 @@ const DEFAULTS: &[(&str, &str)] = &[
     ("alt-cmd-5", "open_guide"),
     ("cmd-o", "open_repo"),
     ("cmd-r", "reload"),
+    ("alt-cmd-down", "next_hunk"),
+    ("alt-cmd-up", "previous_hunk"),
+    ("shift-alt-cmd-down", "next_file"),
+    ("shift-alt-cmd-up", "previous_file"),
+    // The review's own keys: starting points, to change in config.toml.
+    ("cmd-k p", "toggle_seen"),
+    ("cmd-k j", "fold_card"),
+    ("cmd-k h", "collapse_seen"),
+    ("cmd-k l", "comment_on_selection"),
+    ("cmd-g", "find_next"),
+    ("cmd-shift-g", "find_previous"),
 ];
 
 impl Command {

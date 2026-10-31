@@ -500,6 +500,23 @@ impl App {
         true
     }
 
+    /// The review's card state: the card the keyboard acts on, the folded
+    /// ones, and whether Collapse seen is on.
+    // NOTE: split out of state_hook, which clippy holds to 100 lines.
+    fn cards_state(&self, cx: &mut Cx, d: &ReviewDoc) -> serde_json::Value {
+        let current = self.primary().and_then(|window| {
+            let list = tab_item(window, cx, d.tab);
+            list.borrow::<widgets::ReviewList>()?.current_card()
+        });
+        let mut folded: Vec<&String> = d.folded.iter().collect();
+        folded.sort();
+        serde_json::json!({
+            "current": current.map(|(path, ..)| path),
+            "folded": folded,
+            "collapse_seen": d.collapse_seen,
+        })
+    }
+
     /// Each panel's size in the window the hooks drive.
     // NOTE: split out of state_hook, which clippy holds to 100 lines.
     fn panel_sizes(&self, cx: &mut Cx) -> Option<serde_json::Value> {
@@ -678,12 +695,14 @@ impl App {
                 "terminal_height": terminal_rect.size.y,
                 "bars": dock.clone_state().map(|items| tab_bars(&items)),
                 "current_tab": self.current_tab_title(cx),
+                "cards": self.cards_state(cx, d),
                 "pending_chord": self.pending_chord.is_some(),
                 "panels": self.panel_sizes(cx),
                 "tab_titles": titles,
                 "range": {"repo": d.repo, "base": d.base, "head": d.head, "loads": d.generation},
                 "caret": d.caret.map(|caret| (caret.blob, caret.line, caret.byte)),
                 "seen_lines": service::review_state(d.git_dir.as_deref()).load().seen.len(),
+                "comments": service::review_state(d.git_dir.as_deref()).load().comments.len(),
                 "find_query": query,
                 "find_count": count,
                 "file_find_query": file_query,

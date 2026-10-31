@@ -254,7 +254,7 @@ impl ReviewList {
     }
 
     /// Walk matches in this tab, unfolding and scrolling to the matching row.
-    fn seek(&mut self, cx: &mut Cx, back: bool) {
+    pub(super) fn seek(&mut self, cx: &mut Cx, back: bool) {
         let Some(find) = self.find.clone() else {
             return;
         };

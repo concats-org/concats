@@ -720,6 +720,16 @@ impl App {
             | Command::NextTab
             | Command::PreviousTab
             | Command::Tab(_) => pane.tab_command(cx, command),
+            Command::NextHunk
+            | Command::PreviousHunk
+            | Command::NextFile
+            | Command::PreviousFile
+            | Command::ToggleSeen
+            | Command::FoldCard
+            | Command::CollapseSeen
+            | Command::CommentOnSelection
+            | Command::FindNext
+            | Command::FindPrevious => pane.review_command(cx, command),
             _ => pane.view_command(cx, command),
         }
     }

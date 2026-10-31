@@ -1115,6 +1115,46 @@ impl ReviewPane {
         }
     }
 
+    /// A review command, in the current tab if it is a stream: walking its
+    /// hunks, cards and find matches, or acting on its current card.
+    pub(crate) fn review_command(&mut self, cx: &mut Cx, command: Command) {
+        let Some(tab) = self
+            .current_tab(cx)
+            .and_then(|tab| model_tab_of(tab, &self.open_files()))
+        else {
+            return;
+        };
+        let item = self.view.dock(cx, ids!(dock)).item(stream_tab_spec(tab).id);
+        let card = item
+            .borrow::<ReviewList>()
+            .and_then(|list| list.current_card());
+        match (command, card) {
+            (Command::ToggleSeen, Some((path, header, _))) => {
+                self.toggle_card_seen(cx, tab, &path, header);
+            }
+            (Command::FoldCard, Some((path, header, _))) => {
+                // Whether every changed line is ticked decides whether Collapse
+                // seen is what shuts it, as for the header's caret.
+                let git_dir = self.state().read(|d| d.git_dir.clone());
+                let review = self.review_snapshot(git_dir.as_deref());
+                let seen = self.state().read(|d| {
+                    card_keys(d.stream(tab), &path, header, &d.blobs)
+                        .iter()
+                        .all(|key| review.seen.contains(key))
+                });
+                self.toggle_card_fold(cx, &path, seen);
+            }
+            (Command::CommentOnSelection, Some((_, _, near))) => self.compose_span(cx, tab, near),
+            (Command::ToggleSeen | Command::FoldCard | Command::CommentOnSelection, None) => {}
+            _ => {
+                if let Some(mut list) = item.borrow_mut::<ReviewList>() {
+                    list.review_step(cx, command);
+                }
+                self.redraw_streams(cx);
+            }
+        }
+    }
+
     /// The tab the keyboard is in: the one holding the key focus, else the
     /// one last pressed or opened, else the center's.
     pub(crate) fn current_tab(&mut self, cx: &mut Cx) -> Option<LiveId> {
@@ -2162,7 +2202,9 @@ impl ReviewPane {
             .filter_map(|action| action.as_widget_action())
         {
             let Some(
-                text @ (TextInputAction::Changed(draft) | TextInputAction::Returned(draft, _)),
+                text @ (TextInputAction::Changed(_)
+                | TextInputAction::Returned(..)
+                | TextInputAction::Escaped),
             ) = action.action.downcast_ref::<TextInputAction>()
             else {
                 continue;
@@ -2183,6 +2225,12 @@ impl ReviewPane {
             if input != Some(action.widget_uid) {
                 continue;
             }
+            let (TextInputAction::Changed(draft) | TextInputAction::Returned(draft, _)) = text
+            else {
+                // Escape cancels, like the Cancel button.
+                self.close_composer(cx);
+                continue;
+            };
             // The draft is mirrored on every keystroke because the virtualized
             // list can recycle the field out from under it; without that
             // mirror, posting reads an empty body.

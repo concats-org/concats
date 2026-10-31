@@ -23,6 +23,7 @@ use super::{
 use crate::{
     FrameData, FrameTheme,
     find::Find,
+    keymap::Command,
     makepad_widgets::{event::TouchState, *},
     review_doc::{Composing, FileView, ReviewDoc, Stream, card_shut, compose_title, header_title},
     service::{HighlightCmd, ReviewState, highlight},
@@ -1122,26 +1123,80 @@ impl ReviewList {
         if !forward && !self.view.button(cx, ids!(hunk_prev)).clicked(actions) {
             return;
         }
-        let Some(tab) = self.drawn_tab else {
-            return;
-        };
-        let Some((on, below)) = self.arrow_pivots else {
-            return;
-        };
-        let shown = |row: usize| self.entry_of(row).is_some();
-        let target = self.state().read(|d| {
-            let rows = d.stream(tab);
-            let row = |entry| self.row_at(entry).unwrap_or(rows.len());
-            if forward {
-                first_hunk(rows, row(below)..rows.len(), shown)
-            } else {
-                first_hunk(rows, (0..row(on)).rev(), shown)
-            }
-        });
-        if let Some(row) = target {
+        if let Some(row) = self.next_row(forward, is_hunk) {
             self.seek_row = Some((row, BELOW_STICKY));
             self.redraw(cx);
         }
+    }
+
+    /// The next (or previous) shown row `wanted` picks, from where the list
+    /// stood in its last draw: below the pinned header going forward, above
+    /// it going back.
+    fn next_row(&self, forward: bool, wanted: fn(&Row) -> bool) -> Option<usize> {
+        let tab = self.drawn_tab?;
+        let (on, below) = self.arrow_pivots?;
+        let shown = |row: usize| self.entry_of(row).is_some();
+        self.state().read(|d| {
+            let rows = d.stream(tab);
+            let row = |entry| self.row_at(entry).unwrap_or(rows.len());
+            if forward {
+                first_row(rows, row(below)..rows.len(), shown, wanted)
+            } else {
+                first_row(rows, (0..row(on)).rev(), shown, wanted)
+            }
+        })
+    }
+
+    /// A review command that moves through this list or changes how it
+    /// shows: hunks and file cards by key as by the tab bar's arrows, find's
+    /// matches while find is open, and Collapse seen.
+    pub(crate) fn review_step(&mut self, cx: &mut Cx, command: Command) {
+        let seek = match command {
+            Command::NextHunk => self.next_row(true, is_hunk).map(|row| (row, BELOW_STICKY)),
+            Command::PreviousHunk => self.next_row(false, is_hunk).map(|row| (row, BELOW_STICKY)),
+            // A header at the very top: its card is the one pinned there.
+            Command::NextFile => self.next_row(true, is_card).map(|row| (row, 0.0)),
+            Command::PreviousFile => self.next_row(false, is_card).map(|row| (row, 0.0)),
+            _ => None,
+        };
+        if seek.is_some() {
+            self.seek_row = seek;
+        }
+        match command {
+            Command::FindNext | Command::FindPrevious if self.find.is_some() => {
+                self.seek(cx, command == Command::FindPrevious);
+            }
+            Command::CollapseSeen => self.state().with(|d| {
+                d.collapse_seen = !d.collapse_seen;
+                d.unfolded.clear();
+            }),
+            _ => {}
+        }
+        self.redraw(cx);
+    }
+
+    /// The card the keyboard acts on: the one holding the caret, else the
+    /// one whose header is pinned at the top. Its path, its header's row,
+    /// and the row the action is near.
+    pub(crate) fn current_card(&self) -> Option<(String, usize, usize)> {
+        let tab = self.drawn_tab?;
+        self.state().read(|d| {
+            let rows = d.stream(tab);
+            let caret = d.caret.filter(|_| d.tab == tab).and_then(|caret| {
+                rows.iter().position(|row| {
+                    matches!(row, Row::Code { blob, line, .. } if *blob == caret.blob && *line == caret.line)
+                })
+            });
+            let near = caret.or(self.sticky_idx)?;
+            rows[..=near]
+                .iter()
+                .enumerate()
+                .rev()
+                .find_map(|(header, row)| match row {
+                    Row::FileHeader { path, .. } => Some((path.clone(), header, near)),
+                    _ => None,
+                })
+        })
     }
 
     /// Rebuild the entry→row mapping for this stream's fold state. A folded
@@ -1173,13 +1228,22 @@ impl ReviewList {
     }
 }
 
-/// The first of `candidates` that starts a hunk the view shows.
-fn first_hunk(
+/// The first of `candidates` that is `wanted` and that the view shows.
+fn first_row(
     rows: &[Row],
     mut candidates: impl Iterator<Item = usize>,
     shown: impl Fn(usize) -> bool,
+    wanted: fn(&Row) -> bool,
 ) -> Option<usize> {
-    candidates.find(|&row| matches!(rows[row], Row::HunkBar { .. }) && shown(row))
+    candidates.find(|&row| wanted(&rows[row]) && shown(row))
+}
+
+fn is_hunk(row: &Row) -> bool {
+    matches!(row, Row::HunkBar { .. })
+}
+
+fn is_card(row: &Row) -> bool {
+    matches!(row, Row::FileHeader { .. })
 }
 
 /// Whether the pointer gesture that is ending belongs to the view laid out at
@@ -2297,7 +2361,7 @@ mod tests {
     use super::{
         Band, CARD_END_EDGE, CardIndex, CardMeta, Cell, DrawnRow, FILE_HEADER_TOP_PADDING, HashSet,
         Row, STICKY_FADE, STICKY_HEIGHT, STICKY_TOP_GAP, Seen, anchor_entry, arrow_pivots,
-        first_hunk, owns_gesture, row_at_y, sticky_offsets,
+        first_row, is_hunk, owns_gesture, row_at_y, sticky_offsets,
     };
     #[allow(
         clippy::wildcard_imports,
@@ -2349,10 +2413,13 @@ mod tests {
             Row::Spacer,
         ];
         let every = |_| true;
-        assert_eq!(first_hunk(&rows, 2..rows.len(), every), Some(3));
-        assert_eq!(first_hunk(&rows, (0..3).rev(), every), Some(1));
-        assert_eq!(first_hunk(&rows, 2..rows.len(), |row| row != 3), Some(4));
-        assert_eq!(first_hunk(&rows, 5..rows.len(), every), None);
+        assert_eq!(first_row(&rows, 2..rows.len(), every, is_hunk), Some(3));
+        assert_eq!(first_row(&rows, (0..3).rev(), every, is_hunk), Some(1));
+        assert_eq!(
+            first_row(&rows, 2..rows.len(), |row| row != 3, is_hunk),
+            Some(4)
+        );
+        assert_eq!(first_row(&rows, 5..rows.len(), every, is_hunk), None);
     }
     #[test]
     fn only_the_view_the_press_went_down_in_owns_the_gesture() {
