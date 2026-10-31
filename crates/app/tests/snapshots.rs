@@ -914,3 +914,33 @@ fn a_deleted_file_card_has_no_open_button() {
     });
     assert_matches("deleted-card", &actual, EXACT);
 }
+
+/// The Guide's cards are the same header: its Open file opens the file too.
+#[test]
+#[ignore = "spawns a GPU process; run with --ignored on a desktop"]
+fn open_file_on_a_guide_card() {
+    let shot = capture(
+        "open-file-guide",
+        &[
+            ("CONCATS_APP_TAB", "guide"),
+            ("CONCATS_APP_CLICK", "899,333"),
+        ],
+        |repo| {
+            let head = git(repo, &["rev-parse", "HEAD"]);
+            concats_review::store::save_guide(
+                &repo.join(".git"),
+                &concats_review::store::Guide {
+                    base: gix::ObjectId::from_hex(head.trim().as_bytes()).expect("HEAD oid"),
+                    head: gix::ObjectId::null(gix::hash::Kind::Sha1),
+                    created_at: 1,
+                    author: None,
+                    markdown: "# Tour\n\nThe greeting changes.\n\n[editor.rs](editor.rs#L13)\n"
+                        .into(),
+                },
+            )
+            .expect("save the guide");
+        },
+    );
+    let data = state(&shot, "state.json");
+    assert_eq!(tabs_titled(&data, "editor.rs · worktree"), 1, "{data}");
+}
