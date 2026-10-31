@@ -2059,3 +2059,32 @@ fn a_thread_card_shows_the_code_around_it_on_a_click() {
     );
     assert_matches("thread-context", &shot, EXACT);
 }
+
+/// A comment another process stores while the window is open — `concats
+/// comments add`, a second window — shows up on the next poll, in the diff
+/// and as a Comments tab, without the range loading again.
+#[test]
+#[ignore = "spawns a GPU process; run with --ignored on a desktop"]
+fn a_comment_added_elsewhere_arrives_without_a_reload() {
+    let before = artifacts().join("comment-arrives/before.png");
+    let shot = capture(
+        "comment-arrives",
+        &[("CONCATS_APP_STEPS", "wait; wait; wait; wait; wait; wait")],
+        |repo| {
+            let repo = repo.to_path_buf();
+            // Stored once the first frame has presented, so it can only
+            // arrive through the poll, not the load.
+            std::thread::spawn(move || {
+                let deadline = Instant::now() + TIMEOUT;
+                while !before.exists() && Instant::now() < deadline {
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+                comment_on(&repo, &["hash-object", "editor.rs"], "from the CLI");
+            });
+        },
+    );
+    let data = state(&shot, "state.json");
+    assert_eq!(data["comments"], 1, "{data}");
+    assert_eq!(data["range"]["loads"], 1, "no reload: {data}");
+    assert_eq!(bar(&data, "left"), ["Comments"], "{data}");
+}
