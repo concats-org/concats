@@ -217,6 +217,10 @@ pub(super) enum ReviewItemAction {
     More {
         id: u64,
     },
+    /// "N more replies" in a thread in the Comments tab: shows them all.
+    Replies {
+        root: u64,
+    },
     /// The card's "Open file": the whole file at the head, in a File tab, at
     /// `thread` when the card is one of the Comments tab's.
     OpenFile {
@@ -422,6 +426,16 @@ script_mod! {
             cm_delete := BarButton {
                 draw_icon.svg: crate_resource("self:resources/icons/close_circle.svg")
             }
+        } } }
+    }
+
+    // A thread's middle replies, folded in the Comments tab: one indented
+    // strip saying how many, which shows them. Inset so the button's text
+    // lines up with the replies' bodies.
+    let MoreRepliesStrip = StripFrame {
+        cm_frame +: { cm_bar +: { cm_strip +: {
+            padding: Inset{top: 6 bottom: 6 left: 30 right: 12}
+            cm_replies := HeaderButton { visible: true }
         } } }
     }
 
@@ -737,8 +751,12 @@ script_mod! {
                         padding: Inset{top: 12 bottom: 12 left: 36 right: 12}
                     } } }
                 }
+                MoreReplies := MoreRepliesStrip {}
                 // A thread from before the window loaded its range: the same
                 // strips, their bar in the washed-out comment blue.
+                EarlierMoreReplies := MoreRepliesStrip {
+                    cm_frame +: { cm_bar +: { draw_bg.color: C_ACCENT_EARLIER } }
+                }
                 EarlierComment := CommentStrip {
                     cm_frame +: { cm_bar +: { draw_bg.color: C_ACCENT_EARLIER } }
                 }
@@ -1014,10 +1032,39 @@ pub struct ReviewList {
     /// because the width it wraps at is only known then.
     #[rust]
     long_comments: HashSet<u64>,
+    /// The Comments tab's folded replies, from [`folded_replies`]: the row
+    /// standing in for each fold, and how many replies it stands for.
+    #[rust]
+    folded_replies: Vec<(usize, usize)>,
 }
 
 /// The lines a comment shows in the Comments tab until Show more.
 const CLAMP_LINES: usize = 5;
+
+/// The middle replies the Comments tab folds: in each thread with more than
+/// two replies and not in `expanded`, everything between the first reply and
+/// the last. Each fold is the row of its first reply, which stands in for it,
+/// and how many replies it holds. `inject_comments` emits a thread's rows
+/// together, root first, so a thread is a run of rows.
+fn folded_replies(rows: &[Row], expanded: &HashSet<u64>) -> Vec<(usize, usize)> {
+    rows.iter()
+        .enumerate()
+        .filter_map(|(at, row)| match row {
+            Row::Comment {
+                id, parent: None, ..
+            } if !expanded.contains(id) => {
+                let replies = rows[at + 1..]
+                    .iter()
+                    .take_while(
+                        |row| matches!(row, Row::Comment { parent: Some(root), .. } if root == id),
+                    )
+                    .count();
+                (replies > 2).then(|| (at + 2, replies - 2))
+            }
+            _ => None,
+        })
+        .collect()
+}
 
 #[derive(Default)]
 struct CardIndex {
@@ -1234,14 +1281,19 @@ impl ReviewList {
     /// Rebuild the entry→row mapping for this stream's fold state. A folded
     /// card keeps its header and its bottom cap; everything between them —
     /// hunks, comments, the composer — stops being an entry at all, so the
-    /// list never walks (or measures) the rows it isn't drawing.
+    /// list never walks (or measures) the rows it isn't drawing. Folded
+    /// replies keep the row that stands in for them.
     // NOTE: every row between a header and its cap is the card's body, a new kind too.
     // coland-ignore: @coland/absorbing_default_branch
-    fn map_folded(&mut self, rows: &[Row], folded: &HashSet<String>) {
+    fn map_folded(&mut self, rows: &[Row], folded: &HashSet<String>, replies: &[(usize, usize)]) {
         self.visible.clear();
-        if folded.is_empty() {
+        if folded.is_empty() && replies.is_empty() {
             return;
         }
+        let tucked: HashSet<usize> = replies
+            .iter()
+            .flat_map(|&(at, count)| at + 1..at + count)
+            .collect();
         let mut hidden = false;
         for (i, row) in rows.iter().enumerate() {
             match row {
@@ -1253,7 +1305,7 @@ impl ReviewList {
                     hidden = false;
                     self.visible.push(i);
                 }
-                _ if hidden => {}
+                _ if hidden || tucked.contains(&i) => {}
                 _ => self.visible.push(i),
             }
         }
@@ -1759,11 +1811,18 @@ impl ReviewList {
                 _ => None,
             })
             .collect();
-        let mapping_changed = changed || self.mapped_folded != shut;
+        let replies = if pass.tab == Stream::Comments {
+            folded_replies(pass.rows, &d.expanded_threads)
+        } else {
+            Vec::new()
+        };
+        let mapping_changed =
+            changed || self.mapped_folded != shut || self.folded_replies != replies;
         if mapping_changed {
-            self.map_folded(pass.rows, &shut);
+            self.map_folded(pass.rows, &shut, &replies);
             self.mapped = key;
             self.mapped_folded = shut;
+            self.folded_replies = replies;
         }
         let first = if self.visible.is_empty() {
             old_first_row
@@ -1886,22 +1945,7 @@ impl ReviewList {
                 let item = list.item(cx, entry, id!(HunkBar));
                 item.draw_all(cx, &mut Scope::with_props(theme));
             }
-            // A reply gets the indented twin of the same strip.
-            Row::Comment { id, parent, .. } => {
-                let earlier = crate::comments::is_earlier(
-                    &pass.review.comments,
-                    parent.unwrap_or(*id),
-                    pass.doc.opened_at,
-                );
-                let template = match (parent.is_some(), earlier) {
-                    (false, false) => id!(Comment),
-                    (true, false) => id!(Reply),
-                    (false, true) => id!(EarlierComment),
-                    (true, true) => id!(EarlierReply),
-                };
-                let item = list.item(cx, entry, template);
-                self.draw_comment(cx, &item, r, pass);
-            }
+            Row::Comment { .. } => self.draw_comment(cx, list, entry, r, pass),
             Row::CardEnd => {
                 let item = list.item(cx, entry, id!(CardEnd));
                 item.draw_all(cx, &mut Scope::with_props(theme));
@@ -2025,14 +2069,55 @@ impl ReviewList {
         root.view(cx, ids!(fh_rule)).set_visible(cx, !folded);
     }
 
-    /// A comment row: its strip filled and drawn. In the Comments tab a long
-    /// body stops at [`CLAMP_LINES`] with Show more; the strips under the code
-    /// show it whole.
+    /// A comment row in its strip: a reply's is indented, a thread from before
+    /// the window loaded its range has a washed-out bar, and in the Comments
+    /// tab a folded run of replies is one strip saying how many.
+    fn draw_comment(
+        &mut self,
+        cx: &mut Cx2d,
+        list: &mut PortalList,
+        entry: usize,
+        r: usize,
+        pass: &DrawPass,
+    ) {
+        let Some(Row::Comment { id, parent, .. }) = pass.rows.get(r) else {
+            return;
+        };
+        let root = parent.unwrap_or(*id);
+        let earlier = crate::comments::is_earlier(&pass.review.comments, root, pass.doc.opened_at);
+        let folded = self
+            .folded_replies
+            .binary_search_by_key(&r, |&(at, _)| at)
+            .ok()
+            .map(|fold| self.folded_replies[fold].1);
+        let template = match (folded.is_some(), parent.is_some(), earlier) {
+            (true, _, false) => id!(MoreReplies),
+            (true, _, true) => id!(EarlierMoreReplies),
+            (false, false, false) => id!(Comment),
+            (false, true, false) => id!(Reply),
+            (false, false, true) => id!(EarlierComment),
+            (false, true, true) => id!(EarlierReply),
+        };
+        let item = list.item(cx, entry, template);
+        let Some(count) = folded else {
+            return self.fill_comment(cx, &item, r, pass);
+        };
+        let replies = if count == 1 { "reply" } else { "replies" };
+        item.button(cx, ids!(cm_replies))
+            .set_text(cx, &format!("{count} more {replies}"));
+        item.widget(cx, ids!(cm_replies))
+            .set_action_data(ReviewItemAction::Replies { root });
+        item.draw_all(cx, &mut Scope::with_props(&pass.theme));
+    }
+
+    /// A comment's strip filled and drawn. In the Comments tab a long body
+    /// stops at [`CLAMP_LINES`] with Show more; the strips under the code show
+    /// it whole.
     #[expect(
         clippy::cast_possible_truncation,
         reason = "Makepad lays text out in f32 logical pixels."
     )]
-    fn draw_comment(&mut self, cx: &mut Cx2d, item: &WidgetRef, r: usize, pass: &DrawPass) {
+    fn fill_comment(&mut self, cx: &mut Cx2d, item: &WidgetRef, r: usize, pass: &DrawPass) {
         let Some(Row::Comment {
             id,
             body,
@@ -2466,7 +2551,7 @@ mod tests {
     use super::{
         Band, CARD_END_EDGE, CardIndex, CardMeta, Cell, DrawnRow, FILE_HEADER_TOP_PADDING, HashSet,
         Row, STICKY_FADE, STICKY_HEIGHT, STICKY_TOP_GAP, Seen, anchor_entry, arrow_pivots,
-        first_row, is_hunk, owns_gesture, row_at_y, sticky_offsets,
+        first_row, folded_replies, is_hunk, owns_gesture, row_at_y, sticky_offsets,
     };
     #[allow(
         clippy::wildcard_imports,
@@ -2486,6 +2571,35 @@ mod tests {
             handled: Cell::new(Area::Empty),
             time: 0.0,
         })
+    }
+
+    #[test]
+    fn a_thread_folds_the_replies_between_its_first_and_last() {
+        let comment = |id, parent| Row::Comment {
+            id,
+            parent,
+            body: String::new(),
+            meta: String::new(),
+            quote: None,
+        };
+        let rows = [
+            comment(1, None),
+            comment(2, Some(1)),
+            comment(3, Some(1)),
+            comment(4, Some(1)),
+            comment(5, Some(1)),
+            comment(6, None),
+            comment(7, Some(6)),
+            comment(8, Some(6)),
+            comment(9, None),
+            comment(10, Some(9)),
+            comment(11, Some(9)),
+            comment(12, Some(9)),
+            comment(13, None),
+        ];
+        // Replies 3 and 4 fold under 3's row; two replies or none fold nothing.
+        assert_eq!(folded_replies(&rows, &HashSet::new()), [(2, 2), (10, 1)]);
+        assert_eq!(folded_replies(&rows, &HashSet::from([1, 9])), []);
     }
 
     fn release() -> Event {

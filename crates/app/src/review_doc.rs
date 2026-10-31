@@ -194,6 +194,9 @@ pub struct ReviewDoc {
     /// The comments the Comments tab shows whole: the rest stop at a few
     /// lines, with Show more.
     pub expanded_comments: HashSet<u64>,
+    /// The threads the Comments tab shows every reply of: the rest fold the
+    /// replies between their first and last.
+    pub expanded_threads: HashSet<u64>,
     /// Where each comment's quote sits, by the blob and line a row carries:
     /// the byte ranges to underline. Rebuilt by
     /// [`crate::comments::splice_comments`], because

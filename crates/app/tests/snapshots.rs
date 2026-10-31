@@ -1993,3 +1993,48 @@ fn a_long_comment_is_clamped_in_the_comments_tab() {
         serde_json::json!([])
     );
 }
+
+/// Past two replies, the Comments tab folds the ones between the first and
+/// the last into "N more replies", which shows them.
+#[test]
+#[ignore = "spawns a GPU process; run with --ignored on a desktop"]
+fn a_long_thread_folds_its_middle_replies() {
+    let home = home_with_placement("comments = \"center\"");
+    let home_path = home.path().to_str().expect("utf-8 temp path").to_owned();
+    let thread = |repo: &Path| {
+        comment_on(repo, &["hash-object", "editor.rs"], "why hello?");
+        let mut store = concats_review::store::Store::open(&repo.join(".git"));
+        for body in [
+            "The greeting is configurable now.",
+            "Configurable from where?",
+            "The environment, through resolve.",
+            "Then the fallback wants a test.",
+        ] {
+            store
+                .reply_comment(1, body.into(), None, 1, None)
+                .expect("store the reply");
+        }
+    };
+    let hooks = |steps: &'static str| [("HOME", home_path.as_str()), ("CONCATS_APP_STEPS", steps)];
+    let shot = capture(
+        "replies-folded",
+        &hooks("wait; wait; wait; key alt-cmd-1; wait; wait"),
+        thread,
+    );
+    assert_eq!(
+        state(&shot, "state.json")["expanded_threads"],
+        serde_json::json!([])
+    );
+    assert_matches("replies-folded", &shot, EXACT);
+
+    let shot = capture(
+        "replies-shown",
+        &hooks("wait; wait; wait; key alt-cmd-1; wait; wait; click 111,501; wait; wait"),
+        thread,
+    );
+    assert_eq!(
+        state(&shot, "state.json")["expanded_threads"],
+        serde_json::json!([1])
+    );
+    assert_matches("replies-shown", &shot, EXACT);
+}

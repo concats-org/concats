@@ -2182,6 +2182,10 @@ impl ReviewPane {
                     });
                     self.redraw_streams(cx);
                 }
+                ReviewItemAction::Replies { root } if clicked => {
+                    self.state().with(|d| d.expanded_threads.insert(*root));
+                    self.redraw_streams(cx);
+                }
                 ReviewItemAction::OpenFile { path, thread } if clicked => {
                     self.open_file_tab(cx, path, None);
                     // Looked for once the tab is open: its file is where the
@@ -2235,6 +2239,7 @@ impl ReviewPane {
                 | ReviewItemAction::Outdated { .. }
                 | ReviewItemAction::OpenFile { .. }
                 | ReviewItemAction::More { .. }
+                | ReviewItemAction::Replies { .. }
                 | ReviewItemAction::Reveal { .. }
                 | ReviewItemAction::Post
                 | ReviewItemAction::Cancel => {}

@@ -148,6 +148,7 @@ impl WindowState {
             .clone_from(&snapshot.show_all_comments);
         next.expanded_comments
             .clone_from(&snapshot.expanded_comments);
+        next.expanded_threads.clone_from(&snapshot.expanded_threads);
         crate::load::carry_forward(&mut next, &snapshot);
         if next.repo != snapshot.repo {
             self.compose_draft.write().unwrap().clear();
