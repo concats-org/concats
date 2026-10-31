@@ -225,6 +225,8 @@ script_mod! {
         round_corner +: {
             pixel: fn() { return vec4(0.0, 0.0, 0.0, 0.0) }
         }
+        // The drop highlight: the accent over the center, and while a tab
+        // is dragged over a panel, that panel's own hue (see `tint_drop`).
         drag_target_preview +: {
             color: C_DRAG
         }
@@ -702,6 +704,21 @@ impl Panel {
     }
 }
 
+/// The area `abs` is over in a dock at `rect` whose left, right and bottom
+/// panels are `sizes` big: the bottom panel spans the center column only.
+fn area_at(abs: Vec2d, rect: Rect, sizes: [f64; 3]) -> concats_config::Area {
+    let [left, right, bottom] = sizes;
+    if abs.x < rect.pos.x + left {
+        concats_config::Area::Left
+    } else if abs.x > rect.pos.x + rect.size.x - right {
+        concats_config::Area::Right
+    } else if abs.y > rect.pos.y + rect.size.y - bottom {
+        concats_config::Area::Bottom
+    } else {
+        concats_config::Area::Center
+    }
+}
+
 /// A panel slide in flight: where it started, where it is going, and when it
 /// began — set on the first frame, so the easing is wall-clock and not
 /// frame-rate bound.
@@ -736,6 +753,9 @@ pub struct ReviewPane {
     slide: Option<Slide>,
     #[rust]
     slide_next_frame: NextFrame,
+    /// The area the drop highlight was last tinted for.
+    #[rust]
+    drop_area: Option<concats_config::Area>,
     /// Sizes to restore each panel to on reopen (0 = never opened yet, so the
     /// default). Written by the App from the persisted layout on load.
     #[rust]
@@ -1578,10 +1598,37 @@ impl ReviewPane {
         Some(size.max(0.0))
     }
 
-    /// Each panel's size, left, right and bottom: what the visual tests assert
-    /// a toggle did.
+    /// Each panel's size, left, right and bottom.
     pub(crate) fn panel_sizes(&mut self, cx: &mut Cx) -> [f64; 3] {
         Panel::ALL.map(|panel| self.panel_size(cx, panel).unwrap_or_default())
+    }
+
+    /// Tint the drop highlight by the area under the dragged tab, so a move
+    /// into a panel reads apart from a split within one: the center keeps the
+    /// accent, each panel has a hue of its own. Only when the area changes:
+    /// an apply restyles the dock, and a drag sends an event per pointer move.
+    fn tint_drop(&mut self, cx: &mut Cx, abs: Vec2d) {
+        let rect = self.view.dock(cx, ids!(dock)).area().rect(cx);
+        let area = area_at(abs, rect, self.panel_sizes(cx));
+        if self.drop_area == Some(area) {
+            return;
+        }
+        self.drop_area = Some(area);
+        let theme = crate::theme::active_theme();
+        let hue = match area {
+            concats_config::Area::Center => theme.accent,
+            concats_config::Area::Left => theme.ansi[5],
+            concats_config::Area::Right => theme.ansi[6],
+            concats_config::Area::Bottom => theme.ansi[3],
+        };
+        let color = Vec4f {
+            w: 0.25,
+            ..crate::theme::paint(hue)
+        };
+        let mut dock = self.view.dock(cx, ids!(dock));
+        script_apply_eval!(cx, dock, {
+            drag_target_preview +: { color: #(color) }
+        });
     }
 
     /// `save` marks the dock layout dirty — passed only on the final set of a
@@ -1760,6 +1807,7 @@ impl ReviewPane {
                 }
                 DockAction::Drag(e) => {
                     if drag_source_tab_id(e.items.as_ref()).is_some() {
+                        self.tint_drop(cx, e.abs);
                         dock.accept_drag(cx, e, DragResponse::Move);
                     }
                 }
@@ -1767,6 +1815,8 @@ impl ReviewPane {
                     if let Some(src) = drag_source_tab_id(e.items.as_ref()) {
                         dock.drop_move(cx, e.abs, src);
                     }
+                    // The next drag tints afresh, in whatever theme is on.
+                    self.drop_area = None;
                 }
                 _ => {}
             }
@@ -2159,5 +2209,34 @@ impl WidgetMatchEvent for ReviewPane {
         self.handle_chrome_buttons(cx, actions);
         self.handle_item_actions(cx, &owned);
         self.handle_composer_actions(cx, actions);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use concats_config::Area;
+
+    use super::*;
+
+    #[test]
+    fn a_point_is_in_the_area_whose_panel_it_is_over() {
+        // A 1000×800 dock with a 200-wide left, 250-wide right and 150-tall
+        // bottom panel, which spans the center column only.
+        let rect = Rect {
+            pos: dvec2(0.0, 30.0),
+            size: dvec2(1000.0, 800.0),
+        };
+        let sizes = [200.0, 250.0, 150.0];
+        for (x, y, area) in [
+            (100.0, 400.0, Area::Left),
+            (100.0, 800.0, Area::Left),
+            (900.0, 800.0, Area::Right),
+            (500.0, 750.0, Area::Bottom),
+            (500.0, 400.0, Area::Center),
+        ] {
+            assert_eq!(area_at(dvec2(x, y), rect, sizes), area, "{x},{y}");
+        }
+        // Shut panels are nowhere.
+        assert_eq!(area_at(dvec2(1.0, 829.0), rect, [0.0; 3]), Area::Center);
     }
 }

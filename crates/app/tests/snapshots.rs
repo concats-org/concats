@@ -1365,3 +1365,75 @@ fn placement_applies_to_the_next_opening() {
     assert_eq!(bar(&data, "left"), ["Files · WORKTREE"], "{data}");
     assert!(panel(&data, "left") > 0.0, "{data}");
 }
+
+/// A few poll ticks for a panel's slide to finish before the next step.
+const SETTLE: &str = "key Unknown; key Unknown; key Unknown; key Unknown; key Unknown";
+
+/// A tab held over each area highlights its drop in that area's hue; the
+/// center keeps the accent. The left panel is open and empty. The bottom one
+/// is aimed at its tab strip: its terminal takes drags itself, for files.
+#[test]
+#[ignore = "spawns a GPU process; run with --ignored on a desktop"]
+fn a_dragged_tab_tints_its_drop_by_area() {
+    for (name, steps) in [
+        ("drag-center", "drag browser_tab 500,300".to_string()),
+        ("drag-right", "drag files_tab 1150,300".to_string()),
+        (
+            "drag-bottom",
+            format!("click {BOTTOM_TOGGLE}; {SETTLE}; drag files_tab 700,650"),
+        ),
+        (
+            "drag-left-empty",
+            format!("click {LEFT_TOGGLE}; {SETTLE}; drag files_tab 130,300"),
+        ),
+    ] {
+        let shot = capture(
+            name,
+            &[
+                // A fixed shell, so the bottom panel's terminal draws the
+                // same every run and never someone's own prompt.
+                (
+                    "CONCATS_APP_TERM_SCRIPT",
+                    "printf 'ready'\nread -r answer\n",
+                ),
+                ("CONCATS_APP_STEPS", &steps),
+            ],
+            |_| {},
+        );
+        assert_matches(name, &shot, EXACT);
+    }
+}
+
+/// A light theme has the panel hues too.
+#[test]
+#[ignore = "spawns a GPU process; run with --ignored on a desktop"]
+fn a_light_theme_tints_drops_too() {
+    let shot = capture(
+        "drag-right-light",
+        &[
+            ("CONCATS_APP_THEME", "Rosé Pine Dawn"),
+            ("CONCATS_APP_STEPS", "drag files_tab 1150,300"),
+        ],
+        |_| {},
+    );
+    assert_matches("drag-right-light", &shot, EXACT);
+}
+
+/// Dropping still moves the tab, here into the right panel.
+#[test]
+#[ignore = "spawns a GPU process; run with --ignored on a desktop"]
+fn dropping_a_tab_in_a_panel_moves_it_there() {
+    let shot = capture(
+        "drop-right",
+        &[(
+            "CONCATS_APP_STEPS",
+            "drag files_tab 1150,300; drop files_tab 1150,300",
+        )],
+        |_| {},
+    );
+    let data = state(&shot, "state.json");
+    assert!(
+        bar(&data, "right").contains(&"File Diff".to_string()),
+        "{data}"
+    );
+}

@@ -15,7 +15,7 @@
 //!   captures the frame.
 //! - Then one step per poll tick: `STEPS=…` runs its `;`-separated steps
 //!   first (`click x,y`, `cmd-click x,y`, `key name`, `menu command`,
-//!   `find text`, `type text`), then
+//!   `drag tab x,y`, `drop tab x,y`, `find text`, `type text`), then
 //!   `SHOT_BEFORE=path.png` captures the frame before any other input,
 //!   `CLICK=x,y` presses there (`HOVER=x,y` only moves,
 //!   `DRAG_TO=x,y` drags, `CLICK_SEEN` presses the pinned tick box), `TYPE=text`
@@ -441,6 +441,42 @@ impl App {
                 shortcut(KeyCode::KeyF)
             }
             "key" => key(arg),
+            // A dock tab dragged to `x,y` and held there (`drag tab x,y`), or
+            // dropped (`drop tab x,y`): the events the platform sends while a
+            // tab is dragged, which a pointer can't raise headlessly.
+            "drag" | "drop" => {
+                let Some((tab, at)) = arg.split_once(' ') else {
+                    return true;
+                };
+                let Some(abs) = pointer_position(at) else {
+                    return true;
+                };
+                let items = std::sync::Arc::new(vec![DragItem::FilePath {
+                    path: String::new(),
+                    internal_id: Some(LiveId::from_str(tab)),
+                }]);
+                let window_id = CxWindowPool::id_zero();
+                let handled = std::sync::Arc::new(std::sync::Mutex::new(false));
+                let modifiers = KeyModifiers::default();
+                if verb == "drag" {
+                    Event::Drag(DragEvent {
+                        window_id,
+                        modifiers,
+                        handled,
+                        abs,
+                        items,
+                        response: std::sync::Arc::new(std::sync::Mutex::new(DragResponse::None)),
+                    })
+                } else {
+                    Event::Drop(DropEvent {
+                        window_id,
+                        modifiers,
+                        handled,
+                        abs,
+                        items,
+                    })
+                }
+            }
             // What the menu item `arg` does, through the path the menu takes.
             "menu" => {
                 self.menu_command(cx, LiveId::from_str(arg));
