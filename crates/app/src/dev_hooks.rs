@@ -561,6 +561,7 @@ impl App {
         let browser = dock.item(id!(browser_tab));
         let file_query = browser.text_input(cx, ids!(find_input)).text();
         let file_count = browser.label(cx, ids!(find_count)).text();
+        let bars = dock.clone_state().map(|items| tab_bars(&items));
         let panels = window
             .pane(cx)
             .borrow_mut::<ReviewPane>()
@@ -595,6 +596,7 @@ impl App {
                 "terminal_selection": terminal_selection,
                 "terminal_offset": terminal_offset,
                 "terminal_height": terminal_rect.size.y,
+                "bars": bars,
                 "panels": panels.map(|[left, right, bottom]| {
                     serde_json::json!({"left": left, "right": right, "bottom": bottom})
                 }),
@@ -663,6 +665,27 @@ fn shortcut(key_code: KeyCode) -> Event {
             ..Default::default()
         },
         ..Default::default()
+    })
+}
+
+/// Each area's tab bar, by tab title: where a view landed.
+// NOTE: split out of state_hook, which clippy holds to 100 lines.
+fn tab_bars(items: &std::collections::HashMap<LiveId, DockItem>) -> serde_json::Value {
+    let titles = |bar| match items.get(&bar) {
+        Some(DockItem::Tabs { tabs, .. }) => tabs
+            .iter()
+            .filter_map(|tab| match items.get(tab) {
+                Some(DockItem::Tab { name, .. }) => Some(name.clone()),
+                _ => None,
+            })
+            .collect(),
+        _ => Vec::new(),
+    };
+    serde_json::json!({
+        "center": titles(id!(main_tabs)),
+        "left": titles(id!(left_tabs)),
+        "right": titles(id!(right_tabs)),
+        "bottom": titles(id!(bottom_tabs)),
     })
 }
 

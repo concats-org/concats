@@ -121,6 +121,7 @@ pub fn apply_settings_text(text: &str) -> Result<String, SettingsError> {
     concats_config::save_config(&config)
         .map_err(|error| SettingsError::Persist(error.to_string()))?;
     set_active_theme(theme);
+    *placement_slot().write().unwrap() = settings.placement;
     set_active_font(FontSetting {
         paths,
         size,
@@ -128,6 +129,16 @@ pub fn apply_settings_text(text: &str) -> Result<String, SettingsError> {
         wrap: settings.wrap,
     });
     Ok(settings.theme.clone())
+}
+
+fn placement_slot() -> &'static RwLock<concats_config::Placement> {
+    static P: OnceLock<RwLock<concats_config::Placement>> = OnceLock::new();
+    P.get_or_init(|| RwLock::new(settings().app.placement))
+}
+
+/// Where each view opens when it isn't open yet, as last saved in Settings.
+pub fn active_placement() -> concats_config::Placement {
+    *placement_slot().read().unwrap()
 }
 
 fn theme_slot() -> &'static RwLock<Arc<Theme>> {
@@ -347,6 +358,14 @@ mod tests {
             "[app]\nwrap = 'yes'",
         ] {
             assert!(apply_settings_text(text).is_err(), "{text}");
+        }
+        // A bad placement says which name it doesn't know.
+        for (text, named) in [
+            ("[app.placement]\nterminal = 'top'", "top"),
+            ("[app.placement]\nminimap = 'left'", "minimap"),
+        ] {
+            let error = apply_settings_text(text).expect_err(text).to_string();
+            assert!(error.contains(named), "{error}");
         }
     }
 }

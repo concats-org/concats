@@ -38,6 +38,7 @@ pub struct AppConfig {
     pub font_size: f64,
     pub terminal_font_size: f64,
     pub wrap: bool,
+    pub placement: Placement,
 }
 
 impl Default for AppConfig {
@@ -52,6 +53,52 @@ impl Default for AppConfig {
             // A line you cannot read is not a line you can review, so the
             // default is to wrap it. `wrap = false` puts it back on one row.
             wrap: true,
+            placement: Placement::default(),
+        }
+    }
+}
+
+/// One of the window's four areas: the center, or a panel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Area {
+    Center,
+    Left,
+    Right,
+    Bottom,
+}
+
+/// The area each view opens in when it isn't open yet. A view already open
+/// stays where it is, and a saved layout wins over this for the tabs it holds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Placement {
+    pub guide: Area,
+    pub sessions: Area,
+    pub commits: Area,
+    /// File Diff.
+    pub diff: Area,
+    pub comments: Area,
+    /// The file browser.
+    pub browser: Area,
+    pub terminal: Area,
+    pub settings: Area,
+    /// File tabs, Untitled ones included.
+    pub file: Area,
+}
+
+impl Default for Placement {
+    fn default() -> Self {
+        Self {
+            guide: Area::Center,
+            sessions: Area::Center,
+            commits: Area::Center,
+            diff: Area::Center,
+            comments: Area::Left,
+            browser: Area::Right,
+            terminal: Area::Bottom,
+            settings: Area::Center,
+            file: Area::Center,
         }
     }
 }

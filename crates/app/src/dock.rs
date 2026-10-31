@@ -4,6 +4,8 @@
 
 use std::{collections::HashMap, io::Write, path::Path};
 
+use concats_config::{Area, Placement};
+
 #[allow(
     clippy::wildcard_imports,
     reason = "Makepad macros and derives expand against the widget prelude in this scope."
@@ -106,11 +108,35 @@ pub(crate) fn terminal_tab_spec() -> TabSpec<'static> {
     }
 }
 
-/// The stream tabs, File Diff first: what opens beside the streams goes next
-/// to File Diff when it can.
-pub(crate) fn stream_tabs() -> Vec<LiveId> {
+/// The tab bar a view opens in when it isn't open yet: its area's.
+pub(crate) fn area_bar(area: Area) -> LiveId {
+    match area {
+        Area::Center => id!(main_tabs),
+        Area::Left => id!(left_tabs),
+        Area::Right => id!(right_tabs),
+        Area::Bottom => id!(bottom_tabs),
+    }
+}
+
+/// The area `stream`'s tab opens in, as placed in Settings.
+pub(crate) fn stream_area(placement: &Placement, stream: Stream) -> Area {
+    match stream {
+        Stream::Guide => placement.guide,
+        Stream::Sessions => placement.sessions,
+        Stream::Commits => placement.commits,
+        Stream::Files => placement.diff,
+        Stream::Comments => placement.comments,
+        Stream::File(_) => placement.file,
+    }
+}
+
+/// The stream tabs placed in `area`, File Diff first: what opens in that area
+/// goes beside them, next to File Diff when it can.
+pub(crate) fn stream_tabs_in(area: Area) -> Vec<LiveId> {
+    let placement = crate::theme::active_placement();
     std::iter::once(Stream::Files)
         .chain(crate::review_doc::STREAMS)
+        .filter(|stream| stream_area(&placement, *stream) == area)
         .map(|stream| stream_tab_spec(stream).id)
         .collect()
 }

@@ -804,6 +804,8 @@ impl AppWindow {
                         // extra session tabs respawn when pressed.
                         p.open_terminal(cx, id!(terminal_tab));
                     }
+                } else if let Some(mut p) = pane.borrow_mut::<ReviewPane>() {
+                    p.place_views(cx);
                 }
             }
             if let Some(mut p) = pane.borrow_mut::<ReviewPane>() {

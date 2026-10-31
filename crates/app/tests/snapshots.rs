@@ -1204,3 +1204,164 @@ fn the_left_panel_restores_and_old_layouts_are_ignored() {
     assert_eq!(panel(&data, "left"), 0.0, "{data}");
     assert_eq!(panel(&data, "right"), 260.0, "{data}");
 }
+
+/// Where the status bar's terminal button sits.
+const TERMINAL_BUTTON: &str = "1137,866";
+
+/// A HOME whose config places views as `placement` (TOML under
+/// `[app.placement]`), for a test to point the app at.
+fn home_with_placement(placement: &str) -> tempfile::TempDir {
+    let home = tempfile::tempdir().expect("a temp HOME");
+    let dir = home.path().join("Library/Application Support/concats");
+    std::fs::create_dir_all(&dir).expect("config dir");
+    std::fs::write(
+        dir.join("config.toml"),
+        format!("[app.placement]\n{placement}\n"),
+    )
+    .expect("write config");
+    home
+}
+
+/// The titles in one area's tab bar, as `state.json` lists them.
+fn bar(data: &serde_json::Value, area: &str) -> Vec<String> {
+    data["bars"][area]
+        .as_array()
+        .expect("bars")
+        .iter()
+        .filter_map(|title| title.as_str().map(str::to_owned))
+        .collect()
+}
+
+/// `>_` with the bottom panel shut opens it on a running terminal.
+#[test]
+#[ignore = "needs a macOS window server"]
+fn the_terminal_button_opens_its_panel() {
+    let shot = capture(
+        "terminal-button",
+        &[
+            (
+                "CONCATS_APP_TERM_SCRIPT",
+                "printf 'ready'\nread -r answer\n",
+            ),
+            ("CONCATS_APP_CLICK", TERMINAL_BUTTON),
+        ],
+        |_| {},
+    );
+    let data = state(&shot, "state.json");
+    assert_eq!(panel(&data, "bottom"), 220.0, "{data}");
+    assert_ne!(data["terminal_cursor"], serde_json::Value::Null, "{data}");
+}
+
+/// Placed right, the terminal is made in the right panel on a fresh layout,
+/// and `>_` opens that panel while the bottom one stays shut.
+#[test]
+#[ignore = "needs a macOS window server"]
+fn a_placed_terminal_opens_where_it_is_placed() {
+    let home = home_with_placement("terminal = \"right\"");
+    let home_path = home.path().to_str().expect("utf-8 temp path").to_owned();
+    let shot = capture(
+        "terminal-placed-right",
+        &[
+            ("HOME", &home_path),
+            (
+                "CONCATS_APP_TERM_SCRIPT",
+                "printf 'ready'\nread -r answer\n",
+            ),
+            ("CONCATS_APP_CLICK", TERMINAL_BUTTON),
+        ],
+        |_| {},
+    );
+    let data = state(&shot, "state.json");
+    assert!(
+        bar(&data, "right").contains(&"Terminal".to_string()),
+        "{data}"
+    );
+    assert!(bar(&data, "bottom").is_empty(), "{data}");
+    assert_eq!(panel(&data, "bottom"), 0.0, "{data}");
+    assert!(panel(&data, "right") > 0.0, "{data}");
+}
+
+/// A view dragged into a shut panel opens there on its button, and that panel
+/// slides open.
+#[test]
+#[ignore = "spawns a GPU process; run with --ignored on a desktop"]
+fn a_moved_view_opens_where_it_was_moved() {
+    let baseline = capture("moved-view-baseline", &[], |_| {});
+    let saved = std::fs::read_to_string(baseline.with_file_name("layout.ron")).expect("layout");
+    let moved = saved
+        .replace(
+            "right_tabs:Tabs(\n            tabs:[\n                browser_tab,\n            ],",
+            "right_tabs:Tabs(\n            tabs:[\n            ],",
+        )
+        .replace(
+            "left_tabs:Tabs(\n            tabs:[\n            ],",
+            "left_tabs:Tabs(\n            tabs:[\n                browser_tab,\n            ],",
+        );
+    assert_ne!(moved, saved, "the fixture layout moved the browser");
+    let shot = capture(
+        "moved-view-opened",
+        &[("CONCATS_APP_CLICK", FILES_BUTTON)],
+        |repo| {
+            std::fs::write(repo.join(".git/concats-app-layout-5.ron"), &moved).expect("seed");
+        },
+    );
+    let data = state(&shot, "state.json");
+    assert_eq!(bar(&data, "left"), ["Files · WORKTREE"], "{data}");
+    assert_eq!(panel(&data, "left"), 260.0, "{data}");
+}
+
+/// With a comment in the store, a fresh window opens the Comments tab in the
+/// left panel and moves nothing else.
+#[test]
+#[ignore = "spawns a GPU process; run with --ignored on a desktop"]
+fn comments_open_in_the_left_panel() {
+    let shot = capture("comments-left", &[], |repo| {
+        let blob = git(repo, &["rev-parse", "HEAD:editor.rs"]);
+        let mut store = concats_review::store::Store::open(&repo.join(".git"));
+        store
+            .add_comment(concats_review::store::Comment {
+                body: "why hello?".into(),
+                ..concats_review::store::comment(
+                    "editor.rs".into(),
+                    concats_review::store::Anchor {
+                        blob: gix::ObjectId::from_hex(blob.trim().as_bytes()).expect("blob oid"),
+                        start: 12,
+                        end: 12,
+                    },
+                )
+            })
+            .expect("store the comment");
+    });
+    let data = state(&shot, "state.json");
+    assert_eq!(bar(&data, "left"), ["Comments"], "{data}");
+    assert_eq!(bar(&data, "center"), ["File Diff"], "{data}");
+    assert_eq!(bar(&data, "right"), ["Files · WORKTREE"], "{data}");
+}
+
+/// A placement doesn't move a view the saved layout already holds; the
+/// view's next opening follows it.
+#[test]
+#[ignore = "spawns a GPU process; run with --ignored on a desktop"]
+fn placement_applies_to_the_next_opening() {
+    let baseline = capture("placement-baseline", &[], |_| {});
+    let saved = std::fs::read_to_string(baseline.with_file_name("layout.ron")).expect("layout");
+    let home = home_with_placement("browser = \"left\"");
+    let home_path = home.path().to_str().expect("utf-8 temp path").to_owned();
+    let seed = |repo: &Path| {
+        std::fs::write(repo.join(".git/concats-app-layout-5.ron"), &saved).expect("seed");
+    };
+    let kept = capture("placement-kept", &[("HOME", &home_path)], seed);
+    let data = state(&kept, "state.json");
+    assert_eq!(bar(&data, "right"), ["Files · WORKTREE"], "{data}");
+
+    // Close the browser's tab, then press Files.
+    let steps = format!("click 1046,45; click {FILES_BUTTON}");
+    let reopened = capture(
+        "placement-reopened",
+        &[("HOME", &home_path), ("CONCATS_APP_STEPS", &steps)],
+        seed,
+    );
+    let data = state(&reopened, "state.json");
+    assert_eq!(bar(&data, "left"), ["Files · WORKTREE"], "{data}");
+    assert!(panel(&data, "left") > 0.0, "{data}");
+}

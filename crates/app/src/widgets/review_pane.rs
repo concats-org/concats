@@ -34,9 +34,9 @@ use super::{
 use crate::{
     FrameData, WindowScope,
     dock::{
-        TabSpec, browser_tab_spec, drag_source_tab_id, file_tab_id, holds, model_tab_of, open_tab,
-        settings_tab_spec, shown_tabs, stream_tab_spec, stream_tabs, terminal_tab_spec,
-        terminal_tabs,
+        TabSpec, area_bar, browser_tab_spec, drag_source_tab_id, file_tab_id, holds, model_tab_of,
+        open_tab, settings_tab_spec, shown_tabs, stream_area, stream_tab_spec, stream_tabs_in,
+        terminal_tab_spec, terminal_tabs,
     },
     file_view::{caret_to_line, open_file, read_file_sides},
     load::{hold_minted, resplice_comments, spawn_load},
@@ -807,10 +807,8 @@ impl ReviewPane {
     /// isn't open, else selecting it.
     pub fn open_settings_tab(&mut self, cx: &mut Cx) {
         self.state().with(crate::file_view::open_settings);
-        let dock = self.view.dock(cx, ids!(dock));
-        let spec = settings_tab_spec();
-        open_tab(cx, &dock, spec, &stream_tabs(), id!(main_tabs));
-        dock.select_tab(cx, spec.id);
+        let area = crate::theme::active_placement().settings;
+        self.open_view(cx, settings_tab_spec(), &stream_tabs_in(area), area);
         self.view.redraw(cx);
     }
 
@@ -928,24 +926,57 @@ impl ReviewPane {
     /// Open the File tab `tab`, whose view is in the document, where file tabs
     /// open, select it and make it the one gestures act in.
     fn show_file_tab(&mut self, cx: &mut Cx, tab: u64) {
-        let dock = self.view.dock(cx, ids!(dock));
         let title = self.state().read(|d| {
             d.file(tab)
                 .map(|view| crate::file_view::file_tab_title(d, view))
                 .unwrap_or_default()
         });
-        open_tab(
-            cx,
-            &dock,
-            TabSpec {
-                title: &title,
-                ..stream_tab_spec(Stream::File(tab))
-            },
-            &stream_tabs(),
-            id!(main_tabs),
-        );
-        dock.select_tab(cx, LiveId(tab));
+        let spec = TabSpec {
+            title: &title,
+            ..stream_tab_spec(Stream::File(tab))
+        };
+        let area = crate::theme::active_placement().file;
+        self.open_view(cx, spec, &stream_tabs_in(area), area);
         self.set_gesture_tab(cx, Stream::File(tab));
+    }
+
+    /// Open a view: select its tab where it is, or make it in `area`, beside
+    /// `siblings`, when it isn't open; then slide open the panel it is in.
+    fn open_view(
+        &mut self,
+        cx: &mut Cx,
+        spec: TabSpec<'_>,
+        siblings: &[LiveId],
+        area: concats_config::Area,
+    ) {
+        let dock = self.view.dock(cx, ids!(dock));
+        open_tab(cx, &dock, spec, siblings, area_bar(area));
+        dock.select_tab(cx, spec.id);
+        self.reveal_tab(cx, spec.id);
+    }
+
+    /// With no saved layout to restore, move the views the default layout put
+    /// elsewhere to where Settings places them.
+    pub(crate) fn place_views(&mut self, cx: &mut Cx) {
+        let placement = crate::theme::active_placement();
+        let dock = self.view.dock(cx, ids!(dock));
+        let views = std::iter::once(Stream::Files)
+            .chain(crate::review_doc::STREAMS)
+            .map(|stream| (stream_tab_spec(stream), stream_area(&placement, stream)))
+            .chain([
+                (terminal_tab_spec(), placement.terminal),
+                (browser_tab_spec(), placement.browser),
+            ]);
+        for (spec, area) in views {
+            let bar = area_bar(area);
+            if dock
+                .find_tab_bar_of_tab(spec.id)
+                .is_some_and(|(at, _)| at != bar)
+            {
+                dock.close_tab(cx, spec.id);
+                open_tab(cx, &dock, spec, &[], bar);
+            }
+        }
     }
 
     /// Drop a closed file tab's stream. The tab is the file's identity, so a
@@ -1469,21 +1500,19 @@ impl ReviewPane {
         let tab_id = dock.unique_id(terminal_tab_spec().id.0);
         let n = self.next_terminal.max(2);
         self.next_terminal = n + 1;
-        open_tab(
+        let spec = TabSpec {
+            id: tab_id,
+            title: &format!("Terminal {n}"),
+            ..terminal_tab_spec()
+        };
+        self.open_view(
             cx,
-            &dock,
-            TabSpec {
-                id: tab_id,
-                title: &format!("Terminal {n}"),
-                ..terminal_tab_spec()
-            },
+            spec,
             &terminal_tabs(&dock),
-            id!(bottom_tabs),
+            crate::theme::active_placement().terminal,
         );
-        dock.select_tab(cx, tab_id);
         self.open_terminal(cx, tab_id);
         self.state().set_terminal_tab(Some(tab_id));
-        self.reveal_tab(cx, tab_id);
     }
 
     /// A status-bar view button: reopen the stream's tab if it was closed,
@@ -1491,9 +1520,8 @@ impl ReviewPane {
     fn open_stream_tab(&mut self, cx: &mut Cx, tab: Stream) {
         let spec = stream_tab_spec(tab);
         self.user_closed.remove(&spec.id);
-        let dock = self.view.dock(cx, ids!(dock));
-        open_tab(cx, &dock, spec, &stream_tabs(), id!(main_tabs));
-        dock.select_tab(cx, spec.id);
+        let area = stream_area(&crate::theme::active_placement(), tab);
+        self.open_view(cx, spec, &stream_tabs_in(area), area);
         self.set_gesture_tab(cx, tab);
         self.view.redraw(cx);
     }
@@ -1503,12 +1531,13 @@ impl ReviewPane {
     /// the user's layout is kept.
     pub(crate) fn sync_stream_tabs(&mut self, cx: &mut Cx, d: &ReviewDoc) {
         let dock = self.view.dock(cx, ids!(dock));
-        let siblings = stream_tabs();
+        let placement = crate::theme::active_placement();
         for (button, stream) in VIEW_BUTTONS {
             let available = stream == Stream::Files || !d.stream(stream).is_empty();
             let spec = stream_tab_spec(stream);
             if available && !self.user_closed.contains(&spec.id) {
-                open_tab(cx, &dock, spec, &siblings, id!(main_tabs));
+                let area = stream_area(&placement, stream);
+                open_tab(cx, &dock, spec, &stream_tabs_in(area), area_bar(area));
             } else if dock.find_tab_bar_of_tab(spec.id).is_some() {
                 dock.close_tab(cx, spec.id);
             }
@@ -1523,11 +1552,14 @@ impl ReviewPane {
     pub fn reveal_terminal(&mut self, cx: &mut Cx) {
         let dock = self.view.dock(cx, ids!(dock));
         let spec = terminal_tab_spec();
-        open_tab(cx, &dock, spec, &terminal_tabs(&dock), id!(bottom_tabs));
+        self.open_view(
+            cx,
+            spec,
+            &terminal_tabs(&dock),
+            crate::theme::active_placement().terminal,
+        );
         self.open_terminal(cx, spec.id);
         self.state().set_terminal_tab(Some(spec.id));
-        dock.select_tab(cx, spec.id);
-        self.reveal_tab(cx, spec.id);
     }
 
     /// A panel's current size, off its splitter's position. Each panel's
@@ -1777,11 +1809,12 @@ impl ReviewPane {
             }
         }
         if self.view.button(cx, ids!(browser_button)).clicked(actions) {
-            let spec = browser_tab_spec();
-            let dock = self.view.dock(cx, ids!(dock));
-            open_tab(cx, &dock, spec, &[], id!(right_tabs));
-            dock.select_tab(cx, spec.id);
-            self.reveal_tab(cx, spec.id);
+            self.open_view(
+                cx,
+                browser_tab_spec(),
+                &[],
+                crate::theme::active_placement().browser,
+            );
         }
         if self
             .view

@@ -2,7 +2,7 @@ pub mod model;
 
 use std::{io::Write, path::PathBuf};
 
-pub use model::{AppConfig, Config, SyncConfig};
+pub use model::{AppConfig, Area, Config, Placement, SyncConfig};
 
 /// Load configuration from the TOML config file
 /// (`~/.config/concats/config.toml`). What the file leaves out, or a missing
