@@ -949,19 +949,10 @@ fn open_file_on_a_guide_card() {
             ("CONCATS_APP_CLICK", "899,269"),
         ],
         |repo| {
-            let head = git(repo, &["rev-parse", "HEAD"]);
-            concats_review::store::save_guide(
-                &repo.join(".git"),
-                &concats_review::store::Guide {
-                    base: gix::ObjectId::from_hex(head.trim().as_bytes()).expect("HEAD oid"),
-                    head: gix::ObjectId::null(gix::hash::Kind::Sha1),
-                    created_at: 1,
-                    author: None,
-                    markdown: "# Tour\n\nThe greeting changes.\n\n[editor.rs](editor.rs#L13)\n"
-                        .into(),
-                },
-            )
-            .expect("save the guide");
+            save_guide(
+                repo,
+                "# Tour\n\nThe greeting changes.\n\n[editor.rs](editor.rs#L13)\n",
+            );
         },
     );
     let data = state(&shot, "state.json");
@@ -2164,9 +2155,24 @@ fn a_comments_card_folds_on_its_own() {
     assert_matches("comments-card-fold", &shot, EXACT);
 }
 
+/// `markdown` as the guide for the fixture's worktree against HEAD.
+fn save_guide(repo: &Path, markdown: &str) {
+    let head = git(repo, &["rev-parse", "HEAD"]);
+    concats_review::store::save_guide(
+        &repo.join(".git"),
+        &concats_review::store::Guide {
+            base: gix::ObjectId::from_hex(head.trim().as_bytes()).expect("HEAD oid"),
+            head: gix::ObjectId::null(gix::hash::Kind::Sha1),
+            created_at: 1,
+            author: None,
+            markdown: markdown.into(),
+        },
+    )
+    .expect("save the guide");
+}
+
 /// A guide whose prose uses every Markdown element the review list renders.
 fn markdown_guide(repo: &Path) {
-    let head = git(repo, &["rev-parse", "HEAD"]);
     let markdown = "# Tour of the greeting\n\n\
         ## What changed\n\n\
         The greeting now **says** `hello, world` instead of *hello*, and \
@@ -2181,17 +2187,7 @@ fn markdown_guide(repo: &Path) {
         This line follows a hard break.\n\n\
         ---\n\n\
         [editor.rs](editor.rs#L13)\n";
-    concats_review::store::save_guide(
-        &repo.join(".git"),
-        &concats_review::store::Guide {
-            base: gix::ObjectId::from_hex(head.trim().as_bytes()).expect("HEAD oid"),
-            head: gix::ObjectId::null(gix::hash::Kind::Sha1),
-            created_at: 1,
-            author: None,
-            markdown: markdown.into(),
-        },
-    )
-    .expect("save the guide");
+    save_guide(repo, markdown);
 }
 
 /// Guide prose is rendered Markdown, not its source.
@@ -2293,18 +2289,7 @@ fn long_guide(repo: &Path) {
              [src/f{i}.rs](src/f{i}.rs#L6)\n\n"
         ));
     }
-    let head = git(repo, &["rev-parse", "HEAD"]);
-    concats_review::store::save_guide(
-        &repo.join(".git"),
-        &concats_review::store::Guide {
-            base: gix::ObjectId::from_hex(head.trim().as_bytes()).expect("HEAD oid"),
-            head: gix::ObjectId::null(gix::hash::Kind::Sha1),
-            created_at: 1,
-            author: None,
-            markdown,
-        },
-    )
-    .expect("save the guide");
+    save_guide(repo, &markdown);
 }
 
 /// Find still matches a guide's prose as written and lands on the section it
