@@ -2238,3 +2238,82 @@ fn a_selection_across_prose_and_code_copies_the_prose_as_read() {
     assert!(!copied.contains("**") && !copied.contains('`'), "{copied}");
     assert!(copied.contains("fn main()"), "{copied}");
 }
+
+/// Thirty changed files and a guide whose prose before each one uses every
+/// Markdown element the list renders. Each section names its own `markerN`,
+/// for find to land on.
+#[expect(
+    clippy::format_collect,
+    clippy::format_push_string,
+    reason = "Generated fixture text reads plainest as format!."
+)]
+fn long_guide(repo: &Path) {
+    std::fs::create_dir_all(repo.join("src")).expect("src dir");
+    for i in 0..30 {
+        let text: String = (0..12).map(|n| format!("fn f{i}_{n}() {{}}\n")).collect();
+        std::fs::write(repo.join(format!("src/f{i}.rs")), text).expect("write a file");
+    }
+    git(repo, &["add", "-A"]);
+    git(repo, &["commit", "-qm", "thirty files"]);
+    for i in 0..30 {
+        let path = repo.join(format!("src/f{i}.rs"));
+        let text = std::fs::read_to_string(&path).expect("read back").replace(
+            &format!("fn f{i}_5() {{}}"),
+            &format!("fn f{i}_5() {{ changed(); }}"),
+        );
+        std::fs::write(path, text).expect("change a file");
+    }
+    let mut markdown = String::from("# Tour of the change\n\n");
+    for i in 0..30 {
+        markdown.push_str(&format!(
+            "## Section {i} (marker{i})\n\n\
+             The function now **calls** `changed()` instead of *nothing*, and \
+             ***both*** matter.\n\n\
+             1. The call in `f{i}_5`\n\
+             2. What it touches:\n\
+             \x20  - the file `src/f{i}.rs`\n\
+             \x20  - nothing else\n\
+             3. Nothing moved\n\n\
+             > Small on purpose: the next commit tests it.\n\n\
+             ```rust\nfn f{i}_5() {{ changed(); }}\n```\n\n\
+             See [the README](README.md) for how to run it.  \n\
+             This line follows a hard break.\n\n\
+             ---\n\n\
+             [src/f{i}.rs](src/f{i}.rs#L6)\n\n"
+        ));
+    }
+    let head = git(repo, &["rev-parse", "HEAD"]);
+    concats_review::store::save_guide(
+        &repo.join(".git"),
+        &concats_review::store::Guide {
+            base: gix::ObjectId::from_hex(head.trim().as_bytes()).expect("HEAD oid"),
+            head: gix::ObjectId::null(gix::hash::Kind::Sha1),
+            created_at: 1,
+            author: None,
+            markdown,
+        },
+    )
+    .expect("save the guide");
+}
+
+/// Find still matches a guide's prose as written and lands on the section it
+/// names, far down a guide whose rows are drawn at their rendered heights.
+#[test]
+#[ignore = "spawns a GPU process; run with --ignored on a desktop"]
+fn find_lands_in_rendered_prose() {
+    let shot = capture(
+        "guide-find",
+        &[
+            ("CONCATS_APP_TAB", "guide"),
+            (
+                "CONCATS_APP_STEPS",
+                "wait; wait; wait; click 1000,620; wait; find marker23; wait; wait; \
+                 click 305,72; wait; wait",
+            ),
+        ],
+        long_guide,
+    );
+    let data = state(&shot, "state.json");
+    assert_eq!(data["find_count"], "1/1", "{data}");
+    assert_matches("guide-find", &shot, SUMMARY_LINE);
+}
