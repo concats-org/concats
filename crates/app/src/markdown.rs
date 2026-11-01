@@ -208,8 +208,8 @@ struct Grid {
     /// Each column's width, worked out for the width the table has.
     widths: Vec<f64>,
     aligns: Vec<Alignment>,
-    head: bool,
-    /// The head's fill, begun before its text so that it draws beneath it.
+    /// The head's fill, begun before its text so that it draws beneath it:
+    /// set while the row in progress is the head.
     fill: Option<Area>,
     /// The cells of the row in progress, drawn.
     cells: Vec<Rect>,
@@ -241,8 +241,8 @@ impl Grid {
             Event::End(TagEnd::Table) => {
                 cx.end_turtle();
             }
-            Event::Start(Tag::TableHead) => self.begin_row(tf, cx, true),
-            Event::Start(Tag::TableRow) => self.begin_row(tf, cx, false),
+            Event::Start(Tag::TableHead) => self.begin_head(tf, cx),
+            Event::Start(Tag::TableRow) => self.begin_row(cx),
             Event::End(TagEnd::TableHead | TagEnd::TableRow) => self.end_row(tf, cx),
             Event::Start(Tag::TableCell) => self.begin_cell(tf, cx),
             Event::End(TagEnd::TableCell) => self.end_cell(tf, cx),
@@ -250,17 +250,17 @@ impl Grid {
         }
     }
 
-    fn begin_row(&mut self, tf: &mut TextFlow, cx: &mut Cx2d, head: bool) {
-        self.head = head;
+    fn begin_head(&mut self, tf: &mut TextFlow, cx: &mut Cx2d) {
         self.cells.clear();
-        let (walk, layout) = (Walk::fill_fit(), Layout::flow_right());
-        if head {
-            tf.draw_block.block_type = FlowBlockType::TableCell;
-            tf.draw_block.begin(cx, walk, layout);
-            self.fill = Some(tf.draw_block.draw_vars.area);
-        } else {
-            cx.begin_turtle(walk, layout);
-        }
+        tf.draw_block.block_type = FlowBlockType::TableCell;
+        tf.draw_block
+            .begin(cx, Walk::fill_fit(), Layout::flow_right());
+        self.fill = Some(tf.draw_block.draw_vars.area);
+    }
+
+    fn begin_row(&mut self, cx: &mut Cx2d) {
+        self.cells.clear();
+        cx.begin_turtle(Walk::fill_fit(), Layout::flow_right());
     }
 
     fn begin_cell(&self, tf: &mut TextFlow, cx: &mut Cx2d) {
@@ -281,13 +281,13 @@ impl Grid {
             Some(Alignment::Right) => 1.0,
             _ => 0.0,
         };
-        if self.head {
+        if self.fill.is_some() {
             tf.bold.push();
         }
     }
 
     fn end_cell(&mut self, tf: &mut TextFlow, cx: &mut Cx2d) {
-        if self.head {
+        if self.fill.is_some() {
             tf.bold.pop();
         }
         tf.cell_text_align_x = 0.0;
@@ -298,6 +298,7 @@ impl Grid {
     /// the first cell the left one, and the head the top.
     fn end_row(&mut self, tf: &mut TextFlow, cx: &mut Cx2d) {
         let block = &mut tf.draw_block;
+        let head = self.fill.is_some();
         let row = match self.fill.take() {
             Some(fill) => {
                 block.draw_vars.area = fill;
@@ -329,7 +330,7 @@ impl Grid {
                 },
             );
         }
-        if self.head {
+        if head {
             let size = dvec2(row.size.x, 1.0);
             block.draw_abs(cx, Rect { pos: row.pos, size });
         }
