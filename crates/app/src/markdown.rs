@@ -6,14 +6,14 @@
 //! `Markdown` widget parses its body again on every draw, which is why this
 //! text used to be shown raw.
 
-use std::sync::Arc;
+use std::{borrow::Cow, sync::Arc};
 
-use concats_diff::{Row, Table};
+use concats_diff::{Column, Row, Table};
 use pulldown_cmark::{Alignment, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 
 use crate::makepad_widgets::{
-    Area, Cx2d, Flow, FlowBlockType, Inset, Layout, LiveId, Rect, Scope, Size, TextFlow, Vec4f,
-    Walk, WidgetRef, dvec2, live_id,
+    Align, Area, Cx2d, Flow, FlowBlockType, Inset, Layout, LiveId, Rect, Scope, Size, TextFlow,
+    Vec4f, Walk, WidgetRef, dvec2, live_id,
 };
 
 /// One text's Markdown, parsed.
@@ -97,7 +97,7 @@ fn prose(md: &str) -> Row {
     }
 }
 
-/// The table `md`, a row each, its head first: they share its widths.
+/// The table `md`, a row each, its head first: they share its columns.
 fn table_rows(md: &str) -> Vec<Row> {
     let events: Vec<_> = Parser::new_ext(md, OPTIONS).into_offset_iter().collect();
     let body: Vec<_> = events
@@ -108,7 +108,7 @@ fn table_rows(md: &str) -> Vec<Row> {
     let head = body.first().map_or(md, |row| &md[..row.start]).trim_end();
     let table = Arc::new(Table {
         head: head.into(),
-        widths: widths(&longest_cells(events.iter().map(|(event, _)| event))),
+        columns: columns(events.iter().map(|(event, _)| event)),
     });
     std::iter::once(head)
         .chain(body.into_iter().map(|row| md[row].trim_end()))
@@ -119,38 +119,65 @@ fn table_rows(md: &str) -> Vec<Row> {
         .collect()
 }
 
-/// The longest cell of each column of the table `events` open, in chars.
-fn longest_cells<'a, 'md: 'a>(events: impl IntoIterator<Item = &'a Event<'md>>) -> Vec<usize> {
-    let mut longest = Vec::new();
-    let (mut column, mut cell) = (0, 0);
+/// What each column of the table `events` open holds.
+fn columns<'a, 'md: 'a>(events: impl IntoIterator<Item = &'a Event<'md>>) -> Vec<Column> {
+    let mut columns: Vec<Column> = Vec::new();
+    let (mut at, mut cell) = (0, Column::default());
     for event in events {
         match event {
-            Event::Text(text) | Event::Code(text) => cell += text.chars().count(),
-            Event::End(TagEnd::TableCell) => {
-                match longest.get_mut(column) {
-                    Some(widest) => *widest = cell.max(*widest),
-                    None => longest.push(cell),
-                }
-                (column, cell) = (column + 1, 0);
+            Event::Text(text) | Event::Code(text) => {
+                let chars = |text: &str| u32::try_from(text.chars().count()).unwrap_or(u32::MAX);
+                // NOTE: a path breaks at its slashes, as the layouter wraps it.
+                let words = text.split(|c: char| c.is_whitespace() || c == '/');
+                cell.word = words.map(chars).fold(cell.word, u32::max);
+                cell.cell = cell.cell.saturating_add(chars(text));
             }
-            Event::End(TagEnd::TableHead | TagEnd::TableRow) => column = 0,
+            Event::End(TagEnd::TableCell) => {
+                if columns.len() <= at {
+                    columns.push(Column::default());
+                }
+                let column = &mut columns[at];
+                column.word = column.word.max(cell.word);
+                column.cell = column.cell.max(cell.cell);
+                (at, cell) = (at + 1, Column::default());
+            }
+            Event::End(TagEnd::TableHead | TagEnd::TableRow) => at = 0,
             Event::End(TagEnd::Table) => break,
             _ => {}
         }
     }
-    longest
+    columns
 }
 
-/// Each column's share of a table's width: what its longest cell asks for,
-/// up to a cap, so a column of numbers stays narrow and the columns of prose
-/// split the rest.
-fn widths(longest: &[usize]) -> Vec<f32> {
-    let asks: Vec<f32> = longest
+/// A column needs at most this many chars of room, so one long word cannot
+/// starve the others; it takes at most [`CELL_CAP`] when there is room.
+const WORD_CAP: u32 = 16;
+const CELL_CAP: u32 = 48;
+
+/// Each column's width in a table `width` across, where a char is
+/// `char_width`: first the room its longest word needs, then what is left
+/// shared by how much more its longest cell would take. Too narrow for the
+/// words, every column gives up the same part of its room.
+fn column_widths(columns: &[Column], width: f64, char_width: f64) -> Vec<f64> {
+    let room = |chars: u32| f64::from(chars) * char_width + CELL_PADDING.left + CELL_PADDING.right;
+    let need: Vec<f64> = columns.iter().map(|c| room(c.word.min(WORD_CAP))).collect();
+    let want: Vec<f64> = columns
         .iter()
-        .map(|&chars| f32::from(u8::try_from(chars.clamp(3, 40)).unwrap_or(40)) + 2.0)
+        .zip(&need)
+        .map(|(c, need)| room(c.cell.min(CELL_CAP)).max(*need))
         .collect();
-    let total: f32 = asks.iter().sum();
-    asks.iter().map(|ask| ask / total).collect()
+    let (needs, wants): (f64, f64) = (need.iter().sum(), want.iter().sum());
+    if needs >= width {
+        need.iter().map(|need| need * width / needs).collect()
+    } else if wants <= width {
+        want.iter().map(|want| want * width / wants).collect()
+    } else {
+        let spare = (width - needs) / (wants - needs);
+        need.iter()
+            .zip(&want)
+            .map(|(need, want)| need + (want - need) * spare)
+            .collect()
+    }
 }
 
 /// Inside a table cell: room around its text.
@@ -161,10 +188,25 @@ const CELL_PADDING: Inset = Inset {
     bottom: 4.0,
 };
 
+/// How wide a char of `tf`'s body text is, ten of them laid out as the
+/// flow lays its runs out.
+fn char_width(tf: &mut TextFlow, cx: &mut Cx2d) -> f64 {
+    let style = std::mem::replace(&mut tf.draw_text.text_style, tf.text_style_normal.clone());
+    tf.draw_text.text_style.font_size = tf.font_size;
+    let ten = tf
+        .draw_text
+        .layout(cx, 0.0, 0.0, None, false, Align::default(), "0000000000");
+    tf.draw_text.text_style = style;
+    ten.rows
+        .first()
+        .map_or(0.0, |row| f64::from(row.width_in_lpxs) / 10.0)
+}
+
 /// The table being drawn: its columns, and the row in progress.
 #[derive(Default)]
 struct Grid {
-    widths: Vec<f32>,
+    /// Each column's width, worked out for the width the table has.
+    widths: Vec<f64>,
     aligns: Vec<Alignment>,
     head: bool,
     /// The head's fill, begun before its text so that it draws beneath it.
@@ -175,24 +217,26 @@ struct Grid {
 
 impl Grid {
     /// Draw a table's part: open it, or begin or end a row or a cell. A
-    /// table opens with the column `widths` it was cut with, or, whole,
+    /// table opens with the `columns` of the one it was cut from, or, whole,
     /// with its own from `events`, which start at it.
     fn draw(
         &mut self,
         tf: &mut TextFlow,
         cx: &mut Cx2d,
         events: &[Event<'static>],
-        widths: Option<&[f32]>,
+        columns: Option<&[Column]>,
     ) {
         match &events[0] {
             Event::Start(Tag::Table(aligns)) => {
+                cx.begin_turtle(Walk::fill_fit(), Layout::flow_down());
+                let columns: Cow<'_, [Column]> =
+                    columns.map_or_else(|| self::columns(events).into(), Cow::Borrowed);
+                let width = cx.turtle().inner_width();
                 *self = Grid {
-                    widths: widths
-                        .map_or_else(|| self::widths(&longest_cells(events)), <[f32]>::to_vec),
+                    widths: column_widths(&columns, width, char_width(tf, cx)),
                     aligns: aligns.clone(),
                     ..Grid::default()
                 };
-                cx.begin_turtle(Walk::fill_fit(), Layout::flow_down());
             }
             Event::End(TagEnd::Table) => {
                 cx.end_turtle();
@@ -221,9 +265,8 @@ impl Grid {
 
     fn begin_cell(&self, tf: &mut TextFlow, cx: &mut Cx2d) {
         let column = self.cells.len();
-        let share = self.widths.get(column).copied().unwrap_or_default();
         let walk = Walk {
-            width: Size::Fixed(cx.turtle().inner_width() * f64::from(share)),
+            width: Size::Fixed(self.widths.get(column).copied().unwrap_or_default()),
             ..Walk::fit()
         };
         let layout = Layout {
@@ -315,7 +358,7 @@ fn block(tf: &mut TextFlow, cx: &mut Cx2d, first: &mut bool) {
 }
 
 /// Draw `events` into `tf`, which has begun its flow. A table takes the
-/// column `widths` of the one it was cut from, or works out its own. A link
+/// `columns` of the one it was cut from, or works out its own. A link
 /// draws as the flow's `link` item with the text it wraps; `on_link` gets
 /// each one and its destination before it draws, to say what a click on it
 /// does.
@@ -327,7 +370,7 @@ pub(crate) fn replay(
     tf: &mut TextFlow,
     cx: &mut Cx2d,
     events: &[Event<'static>],
-    widths: Option<&[f32]>,
+    columns: Option<&[Column]>,
     mut on_link: impl FnMut(&WidgetRef, &str),
 ) {
     // The next number of each open list; `None` for a bulleted one.
@@ -341,13 +384,13 @@ pub(crate) fn replay(
         match event {
             Event::Start(Tag::Table(_)) => {
                 block(tf, cx, &mut first);
-                grid.draw(tf, cx, &events[at..], widths);
+                grid.draw(tf, cx, &events[at..], columns);
             }
             Event::Start(Tag::TableHead | Tag::TableRow | Tag::TableCell)
             | Event::End(
                 TagEnd::Table | TagEnd::TableHead | TagEnd::TableRow | TagEnd::TableCell,
             ) => {
-                grid.draw(tf, cx, &events[at..], widths);
+                grid.draw(tf, cx, &events[at..], columns);
             }
             Event::Start(Tag::Heading { level, .. }) => {
                 block(tf, cx, &mut first);
@@ -530,9 +573,31 @@ mod tests {
                 ("prose", "After.".into()),
             ]
         );
-        // The number column asks for little; the two of prose split the rest.
-        assert!(table.widths[0] < table.widths[1] && table.widths[0] < table.widths[2]);
-        assert!((table.widths.iter().sum::<f32>() - 1.0).abs() < 1e-6);
+        // A path's longest word ends at a slash; a cell counts all its text.
+        let column = |word, cell| Column { word, cell };
+        assert_eq!(table.columns, [column(1, 1), column(7, 19), column(7, 16)]);
+    }
+
+    #[test]
+    fn columns_get_room_for_their_words_then_share_the_rest() {
+        let columns = [
+            Column { word: 2, cell: 2 },
+            Column { word: 10, cell: 60 },
+            Column { word: 10, cell: 17 },
+        ];
+        let at = |width| column_widths(&columns, width, 10.0);
+        // Room for every whole cell, and more: each grows by its own share.
+        let wide = at(1_480.0);
+        assert!((wide.iter().sum::<f64>() - 1_480.0).abs() < 1e-6);
+        assert!(wide[0] < wide[2] && wide[2] < wide[1]);
+        // Room for every word, not every cell: words first, the rest to the
+        // columns by what more each would take.
+        let mid = at(500.0);
+        assert!((mid[0] - 32.0).abs() < 1e-6, "{mid:?}");
+        assert!(mid[1] > mid[2] && mid[2] > 112.0, "{mid:?}");
+        // Not even room for the words: all give up alike.
+        let narrow = at(128.0);
+        assert!((narrow[0] - 16.0).abs() < 1e-6, "{narrow:?}");
     }
 
     #[test]

@@ -143,8 +143,16 @@ pub struct Table {
     /// The header and delimiter lines as written: a row parses as a table row
     /// only beneath them.
     pub head: String,
-    /// Each column's share of the width, together 1.
-    pub widths: Vec<f32>,
+    pub columns: Vec<Column>,
+}
+
+/// What one column of a [`Table`] holds, in chars.
+#[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
+pub struct Column {
+    /// Its longest word: less room breaks it.
+    pub word: u32,
+    /// Its longest cell: more room goes unused.
+    pub cell: u32,
 }
 
 /// Diff lines by 0-based line index; the gutter's 1-based numbers derive here.

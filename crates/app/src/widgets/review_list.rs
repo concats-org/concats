@@ -1080,20 +1080,20 @@ pub struct ReviewList {
     prose_styles: HashMap<(u32, u64), Arc<Vec<crate::prose_style::Runs>>>,
 }
 
-/// Draw `item`, whose `MarkdownFlow` replays `parsed`, a table in it at
-/// the column `widths` given; each link carries its destination for the
-/// pane to open.
+/// Draw `item`, whose `MarkdownFlow` replays `parsed`, a table in it with
+/// the `columns` given; each link carries its destination for the pane to
+/// open.
 fn draw_markdown(
     cx: &mut Cx2d,
     item: &mut WidgetRef,
     parsed: &[pulldown_cmark::Event<'static>],
-    widths: Option<&[f32]>,
+    columns: Option<&[concats_diff::Column]>,
     theme: &FrameTheme,
 ) {
     let mut scope = Scope::with_props(theme);
     while let Some(step) = item.draw(cx, &mut scope).step() {
         if let Some(mut flow) = step.as_text_flow().borrow_mut() {
-            crate::markdown::replay(&mut flow, cx, parsed, widths, |link, href| {
+            crate::markdown::replay(&mut flow, cx, parsed, columns, |link, href| {
                 link.set_action_data(ReviewItemAction::Link {
                     href: href.to_string(),
                 });
@@ -1940,7 +1940,7 @@ impl ReviewList {
                 draw_markdown(cx, &mut item, &parsed, None, theme);
             }
             // A row cut from a table: its parse keeps it beneath its head,
-            // and it takes the widths of the whole table.
+            // and it takes the columns of the whole table.
             Row::TableRow { md, table } => {
                 let parsed = self
                     .parsed
@@ -1948,7 +1948,7 @@ impl ReviewList {
                     .or_insert_with_key(|text| crate::markdown::parse_row(text))
                     .clone();
                 let mut item = list.item(cx, entry, id!(TableRow));
-                draw_markdown(cx, &mut item, &parsed, Some(&table.widths), theme);
+                draw_markdown(cx, &mut item, &parsed, Some(&table.columns), theme);
             }
             // An unresolved reference: a loud label, not Markdown.
             Row::Warning { text } => {
