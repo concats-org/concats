@@ -2141,15 +2141,10 @@ impl ReviewList {
         item.widget(cx, ids!(cm_delete))
             .set_action_data(ReviewItemAction::Delete { id: *id });
         // The byline, not the range: the blue bar spanning the range tells that.
-        // The Comments tab reads like a chat, so there it says when, too.
-        let clamp = pass.tab == Stream::Comments;
-        let when = pass
-            .review
-            .comments
-            .iter()
-            .find(|c| c.id == *id)
-            .filter(|_| clamp)
-            .map(|c| crate::comments::ago(store::now(), c.created_at));
+        // It ends in when the comment was written, in local time.
+        let when = pass.review.comments.iter().find(|c| c.id == *id).map(|c| {
+            crate::comments::stamp(c.created_at, store::now(), crate::comments::local_zone())
+        });
         let byline = match when {
             Some(when) if meta.is_empty() => when,
             Some(when) => format!("{meta} · {when}"),
@@ -2161,6 +2156,7 @@ impl ReviewList {
         if let Some(quote) = quote {
             quoted.set_text(cx, &format!("“{quote}”"));
         }
+        let clamp = pass.tab == Stream::Comments;
         let open = pass.doc.expanded_comments.contains(id);
         let text = item.label(cx, ids!(cm_body));
         text.set_text(cx, body);

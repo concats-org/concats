@@ -91,13 +91,15 @@ bitflags = "2"
 # `concats_review`'s.
 rusqlite = { workspace = true }
 serde_json = { workspace = true }
-time = { workspace = true }
 toml = { workspace = true }
 thiserror = { workspace = true }
 tempfile = { workspace = true }
 url = "2"
 regex = "1"
 nucleo-matcher = "0.3"
+# Local time for comment bylines: the offset each stamp had, from the
+# system's zone database. gix already builds it.
+jiff = "0.2"
 
 # Native folder picker behind the header's repo name.
 rfd = { workspace = true }

@@ -246,25 +246,36 @@ pub(crate) fn is_earlier(comments: &[store::Comment], root: u64, opened_at: u64)
         .all(|c| c.created_at < opened_at)
 }
 
-/// How long before `now` the moment `at` was, both in unix seconds, the way a
-/// chat says it: "just now", "5m ago", "3h ago", "2d ago", and past a month
-/// the day it was.
-pub(crate) fn ago(now: u64, at: u64) -> String {
-    const MINUTE: u64 = 60;
-    const HOUR: u64 = 60 * MINUTE;
-    const DAY: u64 = 24 * HOUR;
-    const MONTH: u64 = 30 * DAY;
-    let elapsed = now.saturating_sub(at);
-    match elapsed {
-        0..MINUTE => "just now".into(),
-        MINUTE..HOUR => format!("{}m ago", elapsed / MINUTE),
-        HOUR..DAY => format!("{}h ago", elapsed / HOUR),
-        DAY..MONTH => format!("{}d ago", elapsed / DAY),
-        _ => i64::try_from(at)
-            .ok()
-            .and_then(|at| time::OffsetDateTime::from_unix_timestamp(at).ok())
-            .map_or_else(String::new, |at| at.date().to_string()),
+/// When a comment was written, for its byline: `at` in unix seconds as a
+/// local day and time in `tz`, `Oct 29, 14:05`, with the year when it is not
+/// `now`'s. Within a minute of `now` it is "just now".
+pub(crate) fn stamp(at: u64, now: u64, tz: &jiff::tz::TimeZone) -> String {
+    if now.saturating_sub(at) < 60 {
+        return "just now".into();
     }
+    let local = |secs: u64| {
+        let secs = i64::try_from(secs).ok()?;
+        Some(
+            jiff::Timestamp::from_second(secs)
+                .ok()?
+                .to_zoned(tz.clone()),
+        )
+    };
+    let (Some(at), Some(now)) = (local(at), local(now)) else {
+        return String::new();
+    };
+    let format = if at.year() == now.year() {
+        "%b %-d, %H:%M"
+    } else {
+        "%b %-d %Y, %H:%M"
+    };
+    at.strftime(format).to_string()
+}
+
+/// The zone bylines are written in: the system's, read once.
+pub(crate) fn local_zone() -> &'static jiff::tz::TimeZone {
+    static ZONE: std::sync::OnceLock<jiff::tz::TimeZone> = std::sync::OnceLock::new();
+    ZONE.get_or_init(jiff::tz::TimeZone::system)
 }
 
 /// Lines of context either side of a thread's code in the Comments tab —
@@ -987,15 +998,20 @@ mod tests {
     }
 
     #[test]
-    fn ago_says_how_long_the_way_a_chat_does() {
-        let now = 1_700_000_000;
-        assert_eq!(ago(now, now - 20), "just now");
-        assert_eq!(ago(now, now - 5 * 60), "5m ago");
-        assert_eq!(ago(now, now - 3 * 3_600), "3h ago");
-        assert_eq!(ago(now, now - 2 * 86_400), "2d ago");
-        assert_eq!(ago(now, 1), "1970-01-01");
+    fn a_stamp_is_the_local_day_and_time_it_was_written() {
+        let berlin_winter = jiff::tz::TimeZone::fixed(jiff::tz::offset(1));
+        // 2026-10-29 13:05 UTC, read in a day later.
+        let at = 1_793_279_100;
+        let now = at + 86_400;
+        assert_eq!(stamp(at, now, &berlin_winter), "Oct 29, 14:05");
+        // Last year's carries its year: 2025-07-30 08:15 UTC.
         assert_eq!(
-            ago(now, now + 30),
+            stamp(1_753_863_300, now, &berlin_winter),
+            "Jul 30 2025, 09:15"
+        );
+        assert_eq!(stamp(at, at + 30, &berlin_winter), "just now");
+        assert_eq!(
+            stamp(at, at - 30, &berlin_winter),
             "just now",
             "a clock behind the comment's"
         );

@@ -634,6 +634,7 @@ dependencies = [
  "concats-theme",
  "gix",
  "image",
+ "jiff",
  "mac-notification-sys",
  "makepad-service",
  "makepad-widgets",
@@ -645,7 +646,6 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror 2.0.20",
- "time",
  "toml",
  "url",
 ]

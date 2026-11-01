@@ -212,6 +212,9 @@ fn capture(name: &str, hooks: &[(&str, &str)], setup: impl FnOnce(&Path)) -> Pat
         // frame ever presents and `capture_next_frame_to_file` never completes
         // — the app exits having written nothing. Timer pacing still draws.
         .env("MAKEPAD_DISPLAY_LINK", "0")
+        // Comment bylines are in local time; one zone, so a stamp reads the
+        // same on every machine.
+        .env("TZ", "UTC")
         .env("CONCATS_APP_SHOT", &shot)
         .env("CONCATS_APP_STATE", work.join("state.json"))
         // The app exits once it has written the frame, so waiting for it is an
