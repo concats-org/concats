@@ -2419,7 +2419,7 @@ fn markdown_session(repo: &Path) {
             "Make the lookup **strict**: the *old* one read `std::env` on every miss.",
         ))
         .with_entry(TurnEntry::response_now(
-            "## Done\n\nThe lookup is **strict** now, and `NOTES.md` says why.",
+            "## Done\n\nThe lookup is **strict** now, and [`NOTES.md`](NOTES.md) says why.",
         ))
         .to_string();
     let turn = git(
@@ -2471,4 +2471,22 @@ fn a_transcript_reads_as_markdown() {
     // unstyled line: a styled run is as wide as a plain one.
     assert_eq!(data["caret"][2], 40, "{data}");
     assert_matches("session-markdown", &shot, COMMIT_IDS);
+}
+
+/// ⌘-click on a link in a transcript follows it, as a click on one in
+/// rendered prose does: a file in the checkout opens in a File tab.
+#[test]
+#[ignore = "spawns a GPU process; run with --ignored on a desktop"]
+fn a_cmd_click_follows_a_link_in_a_transcript() {
+    let shot = capture(
+        "session-link",
+        &[(
+            "CONCATS_APP_STEPS",
+            "wait; wait; menu pick_base; key down; key down; key down; key enter; wait; wait; \
+             key alt-cmd-4; wait; cmd-click 333,419; wait; wait",
+        )],
+        markdown_session,
+    );
+    let data = state(&shot, "state.json");
+    assert_eq!(tabs_titled(&data, "NOTES.md · worktree"), 1, "{data}");
 }

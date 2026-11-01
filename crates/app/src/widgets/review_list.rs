@@ -188,6 +188,8 @@ fn sticky_offsets(header_top: Option<f64>, end_top: Option<f64>) -> (f64, f64) {
 pub(super) enum ReviewListAction {
     /// ⌘S in the Untitled tab with this id: its first save has to ask where.
     SaveAs(u64),
+    /// ⌘-click on a link in a transcript: where it goes.
+    OpenLink(String),
     #[default]
     None,
 }
@@ -1069,6 +1071,10 @@ pub struct ReviewList {
     /// [`ReviewList::owns_gesture`].
     #[rust]
     pressed_inside: bool,
+    /// Whether that gesture went down with ⌘ held: its release follows the
+    /// link under it.
+    #[rust]
+    pressed_cmd: bool,
     /// The comments whose bodies ran past [`CLAMP_LINES`] when the Comments
     /// tab last drew them: they get Show more. Read back after a body draws,
     /// because the width it wraps at is only known then.
@@ -1675,6 +1681,9 @@ impl Widget for ReviewList {
         if let Some(state) = crate::frame_state(scope) {
             self.state = Some(state);
         }
+        if let Event::MouseDown(e) = event {
+            self.pressed_cmd = e.modifiers.logo;
+        }
         // The caret's keys are claimed before the list sees them: `PortalList`
         // binds Home, Cmd-A and the arrows to its own scrolling and selection,
         // and the caret needs all of them. Makepad dispatch is explicit, so not
@@ -1706,6 +1715,9 @@ impl Widget for ReviewList {
             self.view.portal_list(cx, ids!(list)).area().rect(cx)
         }) {
             self.adopt_list_selection(cx);
+            if std::mem::take(&mut self.pressed_cmd) {
+                self.follow_link(cx);
+            }
         }
         self.widget_match_event(cx, event, scope);
     }

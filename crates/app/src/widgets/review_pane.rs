@@ -904,9 +904,10 @@ impl ReviewPane {
         self.redraw_streams(cx);
     }
 
-    /// A link in rendered prose: a URL opens outside, a path in the checkout,
-    /// written as a URL or as the path itself, opens in a File tab at the
-    /// line it names.
+    /// A link in rendered prose or a transcript: a URL opens outside, a path
+    /// in the checkout, written as a URL or as the path itself, opens in a
+    /// File tab at the line it names. Anything else stays shut, and the
+    /// status line says so rather than the click seeming to miss.
     fn open_link(&mut self, cx: &mut Cx, href: &str) {
         let root = self.state().read(|d| {
             if d.worktree_review() {
@@ -922,7 +923,10 @@ impl ReviewPane {
                 cx.open_url(url.as_str(), OpenUrlInPlace::No);
             }
             Some(crate::links::Target::File { path, at }) => self.open_file_tab(cx, &path, at),
-            None => {}
+            None => self.view.label(cx, ids!(status_label)).set_text(
+                cx,
+                &format!("only web links and files in this checkout open: {href}"),
+            ),
         }
     }
 
@@ -2066,6 +2070,7 @@ impl ReviewPane {
             }
             match wa.cast() {
                 ReviewListAction::SaveAs(tab) => self.save_as(cx, tab),
+                ReviewListAction::OpenLink(href) => self.open_link(cx, &href),
                 ReviewListAction::None => {}
             }
             // The file browser names a path; the pane owns the dock, so

@@ -3,10 +3,26 @@
 //! comments, quote underlines, find hits, the caret — so nothing can be
 //! rendered away. Each line's bytes are styled where they stand instead:
 //! emphasis italic, strong text and headings bold, and the markup dimmed.
+//! A link stays its bytes too, and ⌘-click follows it.
 
 use std::ops::Range;
 
 use pulldown_cmark::{Event, Options, Parser, Tag};
+
+const OPTIONS: Options = Options::ENABLE_STRIKETHROUGH;
+
+/// Where the link at byte `at` of transcript `text` goes, written as
+/// `[text](destination)` or `<destination>`.
+pub(crate) fn link_at(text: &str, at: usize) -> Option<String> {
+    Parser::new_ext(text, OPTIONS)
+        .into_offset_iter()
+        .find_map(|(event, range)| match event {
+            Event::Start(Tag::Link { dest_url, .. }) if range.contains(&at) => {
+                Some(dest_url.into_string())
+            }
+            _ => None,
+        })
+}
 
 /// How a run of transcript is drawn.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -26,7 +42,7 @@ pub(crate) type Runs = Vec<(usize, usize, Style)>;
 /// code fence or a list crosses lines.
 pub(crate) fn line_styles(text: &str, line_starts: &[u32]) -> Vec<Runs> {
     let mut bytes = vec![Style::default(); text.len()];
-    for (event, range) in Parser::new_ext(text, Options::ENABLE_STRIKETHROUGH).into_offset_iter() {
+    for (event, range) in Parser::new_ext(text, OPTIONS).into_offset_iter() {
         match event {
             Event::Start(Tag::Strong) => {
                 mark(&mut bytes, range.clone(), |s| s.bold = true);
@@ -180,6 +196,17 @@ mod tests {
                 ),
             ]
         );
+    }
+
+    #[test]
+    fn a_link_is_found_by_any_byte_of_it() {
+        let text = "Read [the guide](/tmp/guide.md), or <https://x.dev>.\n";
+        let at = |needle: &str| link_at(text, text.find(needle).unwrap());
+        assert_eq!(at("the guide").as_deref(), Some("/tmp/guide.md"));
+        assert_eq!(at("guide.md").as_deref(), Some("/tmp/guide.md"));
+        assert_eq!(at("x.dev").as_deref(), Some("https://x.dev"));
+        assert_eq!(at("Read"), None);
+        assert_eq!(at(", or"), None);
     }
 
     #[test]

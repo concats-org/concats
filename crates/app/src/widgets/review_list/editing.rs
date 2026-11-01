@@ -117,6 +117,21 @@ impl ReviewList {
         self.redraw(cx);
     }
 
+    /// ⌘-click in a transcript: follow the link the caret landed in, as a
+    /// click on one in rendered prose does.
+    pub(super) fn follow_link(&mut self, cx: &mut Cx) {
+        let href = self.state().read(|d| {
+            let caret = d.caret.filter(|_| d.selection_anchor.is_none())?;
+            let blob = d.blobs.get(caret.blob as usize).filter(|blob| {
+                (blob.prose.as_deref()).is_some_and(concats_review::sessions::is_transcript)
+            })?;
+            crate::prose_style::link_at(&blob.text, editor::offset_of(d, caret)?)
+        });
+        if let Some(href) = href {
+            cx.widget_action(self.widget_uid(), ReviewListAction::OpenLink(href));
+        }
+    }
+
     /// Typed text — from the keyboard, an IME, or a paste. Returns whether the
     /// caret took it.
     pub(super) fn caret_text(&mut self, cx: &mut Cx, input: &str) -> bool {
