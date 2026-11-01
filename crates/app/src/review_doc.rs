@@ -788,6 +788,7 @@ fn in_card_row(row: &Row, blobs: &[Blob]) -> bool {
         | Row::Spacer => true,
         Row::Title { .. }
         | Row::Prose { .. }
+        | Row::TableRow { .. }
         | Row::Warning { .. }
         | Row::FileHeader { .. }
         | Row::CardEnd => false,

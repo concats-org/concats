@@ -38,4 +38,4 @@ pub mod stage;
 pub use blob::Blob;
 pub use error::Error;
 pub use load::Loaded;
-pub use row::{CollapsedEnd, FileChange, Hunk, LineKind, LoadStats, Row, Side};
+pub use row::{CollapsedEnd, FileChange, Hunk, LineKind, LoadStats, Row, Side, Table};

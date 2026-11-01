@@ -240,7 +240,7 @@ pub(crate) fn search_hits(
         .flat_map(|(row, value)| {
             let text: Cow<'_, str> = match value {
                 Row::Title { text } | Row::Warning { text } => text.as_str().into(),
-                Row::Prose { md } => md.as_str().into(),
+                Row::Prose { md } | Row::TableRow { md, .. } => md.as_str().into(),
                 Row::Comment { body, meta, .. } => format!("{meta}\n{body}").into(),
                 Row::FileHeader { path, from, .. } => header_title(path, from.as_deref()),
                 Row::Code { blob, line, .. } => {

@@ -340,6 +340,11 @@ script_mod! {
             color_hover: C_TEXT
             color_down: C_TEXT
         }
+        // A table's rules are the app's hairlines; its head sits on a card.
+        draw_block +: {
+            table_header_bg_color: C_CARD
+            table_border_color: C_BORDER
+        }
     }
 
     // A text button in the card header: the toggle for the conversations this
@@ -654,6 +659,14 @@ script_mod! {
                     width: Fill height: Fit
                     padding: Inset{top: 6 bottom: 6 left: 16 right: 16}
                     prose_md := MarkdownFlow {}
+                }
+
+                // One row of a table cut out of guide prose. Rows abut, so
+                // their rules join into one grid.
+                TableRow := View {
+                    width: Fill height: Fit
+                    padding: Inset{left: 16 right: 16}
+                    table_md := MarkdownFlow {}
                 }
 
                 // An unresolved agent reference. Loud on purpose.
@@ -1067,18 +1080,20 @@ pub struct ReviewList {
     prose_styles: HashMap<(u32, u64), Arc<Vec<crate::prose_style::Runs>>>,
 }
 
-/// Draw `item`, whose `MarkdownFlow` replays `parsed`; each link carries
-/// its destination for the pane to open.
+/// Draw `item`, whose `MarkdownFlow` replays `parsed`, a table in it at
+/// the column `widths` given; each link carries its destination for the
+/// pane to open.
 fn draw_markdown(
     cx: &mut Cx2d,
     item: &mut WidgetRef,
     parsed: &[pulldown_cmark::Event<'static>],
+    widths: Option<&[f32]>,
     theme: &FrameTheme,
 ) {
     let mut scope = Scope::with_props(theme);
     while let Some(step) = item.draw(cx, &mut scope).step() {
         if let Some(mut flow) = step.as_text_flow().borrow_mut() {
-            crate::markdown::replay(&mut flow, cx, parsed, |link, href| {
+            crate::markdown::replay(&mut flow, cx, parsed, widths, |link, href| {
                 link.set_action_data(ReviewItemAction::Link {
                     href: href.to_string(),
                 });
@@ -1151,6 +1166,7 @@ impl CardIndex {
                 // Neither a card boundary nor review keys.
                 Row::Title { .. }
                 | Row::Prose { .. }
+                | Row::TableRow { .. }
                 | Row::Warning { .. }
                 | Row::Collapsed { .. }
                 | Row::Removed { .. }
@@ -1921,7 +1937,18 @@ impl ReviewList {
                     id!(ProseRow)
                 };
                 let mut item = list.item(cx, entry, template);
-                draw_markdown(cx, &mut item, &parsed, theme);
+                draw_markdown(cx, &mut item, &parsed, None, theme);
+            }
+            // A row cut from a table: its parse keeps it beneath its head,
+            // and it takes the widths of the whole table.
+            Row::TableRow { md, table } => {
+                let parsed = self
+                    .parsed
+                    .entry(crate::markdown::row_text(md, table))
+                    .or_insert_with_key(|text| crate::markdown::parse_row(text))
+                    .clone();
+                let mut item = list.item(cx, entry, id!(TableRow));
+                draw_markdown(cx, &mut item, &parsed, Some(&table.widths), theme);
             }
             // An unresolved reference: a loud label, not Markdown.
             Row::Warning { text } => {
@@ -2225,7 +2252,7 @@ impl ReviewList {
             .entry(body.clone())
             .or_insert_with(|| crate::markdown::parse(body))
             .clone();
-        draw_markdown(cx, item, &parsed, &pass.theme);
+        draw_markdown(cx, item, &parsed, None, &pass.theme);
         if !clamp {
             return;
         }

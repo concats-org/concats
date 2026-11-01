@@ -10,6 +10,8 @@
 //! [`FileChange`] and [`Hunk`] are the intermediate the loader produces and an
 //! agent reorders; [`Row`] is what they lower to.
 
+use std::sync::Arc;
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum LineKind {
     Context,
@@ -25,6 +27,14 @@ pub enum Row {
     /// Agent prose. Markdown, so it carries links, emphasis, tables.
     Prose {
         md: String,
+    },
+    /// One row of a table in agent prose, its header row among them. A table
+    /// is cut into its rows so that a long one, like a long diff, draws only
+    /// the rows on screen.
+    TableRow {
+        /// The row as written; the header row with its delimiter line.
+        md: String,
+        table: Arc<Table>,
     },
     /// The agent referenced something that does not exist in this diff. Loud on
     /// purpose: a bad reference must never look like an absent one.
@@ -126,6 +136,15 @@ pub enum Row {
     /// document content: the row marks the place, and whoever spliced it in
     /// owns the range it targets.
     Composer,
+}
+
+/// What the rows of one table in agent prose share.
+pub struct Table {
+    /// The header and delimiter lines as written: a row parses as a table row
+    /// only beneath them.
+    pub head: String,
+    /// Each column's share of the width, together 1.
+    pub widths: Vec<f32>,
 }
 
 /// Diff lines by 0-based line index; the gutter's 1-based numbers derive here.

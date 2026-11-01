@@ -955,6 +955,7 @@ fn blobs_by_path<'a>(
             // comment is placed on lines that are not drawn.
             Row::Title { .. }
             | Row::Prose { .. }
+            | Row::TableRow { .. }
             | Row::Warning { .. }
             | Row::Collapsed { .. }
             | Row::Removed { .. }

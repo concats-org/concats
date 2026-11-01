@@ -2292,6 +2292,54 @@ fn long_guide(repo: &Path) {
     save_guide(repo, &markdown);
 }
 
+/// A guide whose tour is a table, as guides write them: a narrow number
+/// column, prose that wraps, and cells of code and links.
+fn table_guide(repo: &Path) {
+    save_guide(
+        repo,
+        "# The tour\n\n\
+         Each stop names what it covers.\n\n\
+         | # | Stop | Priority | Files |\n\
+         |--:|---|:-:|---|\n\
+         | 1 | The greeting changes its literal | **review** | `editor.rs` |\n\
+         | 2 | What reads the greeting falls back to the environment when the \
+         name is missing, the part to read twice | skim | `editor.rs`, \
+         [the README](README.md) |\n\
+         | 3 | Nothing else moves, so the tableend stop is short | skip | none |\n\n\
+         After the table.\n\n\
+         [editor.rs](editor.rs#L13)\n",
+    );
+}
+
+/// A table in guide prose draws as a grid: a ruled head, columns as wide as
+/// they need, wrapped cells, and code and links inside them.
+#[test]
+#[ignore = "spawns a GPU process; run with --ignored on a desktop"]
+fn a_table_in_guide_prose_draws_as_a_grid() {
+    let shot = capture("guide-table", &[("CONCATS_APP_TAB", "guide")], table_guide);
+    assert_matches("guide-table", &shot, SUMMARY_LINE);
+}
+
+/// Find matches a table's rows as written, each row on its own.
+#[test]
+#[ignore = "spawns a GPU process; run with --ignored on a desktop"]
+fn find_matches_a_table_row() {
+    let shot = capture(
+        "guide-table-find",
+        &[
+            ("CONCATS_APP_TAB", "guide"),
+            (
+                "CONCATS_APP_STEPS",
+                "wait; wait; wait; click 1000,620; wait; find tableend; wait; wait; \
+                 click 305,72; wait; wait",
+            ),
+        ],
+        table_guide,
+    );
+    let data = state(&shot, "state.json");
+    assert_eq!(data["find_count"], "1/1", "{data}");
+}
+
 /// Find still matches a guide's prose as written and lands on the section it
 /// names, far down a guide whose rows are drawn at their rendered heights.
 #[test]
