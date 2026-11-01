@@ -661,6 +661,14 @@ script_mod! {
                     prose_md := MarkdownFlow {}
                 }
 
+                // A block that opens with a heading: air above it, none
+                // below, so it reads with what follows.
+                HeadingRow := View {
+                    width: Fill height: Fit
+                    padding: Inset{top: 18 bottom: 0 left: 16 right: 16}
+                    prose_md := MarkdownFlow {}
+                }
+
                 // One row of a table cut out of guide prose. Rows abut, so
                 // their rules join into one grid.
                 TableRow := View {
@@ -1923,32 +1931,8 @@ impl ReviewList {
         };
         let (tab, theme) = (pass.tab, &pass.theme);
         match row {
-            // Titles and prose are Markdown, rendered from a parse the list
-            // keeps; a title has more air above it.
-            Row::Title { text } | Row::Prose { md: text } => {
-                let parsed = self
-                    .parsed
-                    .entry(text.clone())
-                    .or_insert_with(|| crate::markdown::parse(text))
-                    .clone();
-                let template = if matches!(row, Row::Title { .. }) {
-                    id!(Title)
-                } else {
-                    id!(ProseRow)
-                };
-                let mut item = list.item(cx, entry, template);
-                draw_markdown(cx, &mut item, &parsed, None, theme);
-            }
-            // A row cut from a table: its parse keeps it beneath its head,
-            // and it takes the columns of the whole table.
-            Row::TableRow { md, table } => {
-                let parsed = self
-                    .parsed
-                    .entry(crate::markdown::row_text(md, table))
-                    .or_insert_with_key(|text| crate::markdown::parse_row(text))
-                    .clone();
-                let mut item = list.item(cx, entry, id!(TableRow));
-                draw_markdown(cx, &mut item, &parsed, Some(&table.columns), theme);
+            Row::Title { .. } | Row::Prose { .. } | Row::TableRow { .. } => {
+                self.draw_markdown_row(cx, list, entry, row, theme);
             }
             // An unresolved reference: a loud label, not Markdown.
             Row::Warning { text } => {
@@ -2152,6 +2136,46 @@ impl ReviewList {
         root.button(cx, ids!(fold_button)).set_visible(cx, !folded);
         root.button(cx, ids!(unfold_button)).set_visible(cx, folded);
         root.view(cx, ids!(fh_rule)).set_visible(cx, !folded);
+    }
+
+    /// A row of Markdown: a title, prose, or a table's row, drawn from a
+    /// parse the list keeps. A title, and a block opening with a heading,
+    /// have more air above them; a table's row takes the columns of the
+    /// whole table, and its parse keeps it beneath its head.
+    fn draw_markdown_row(
+        &mut self,
+        cx: &mut Cx2d,
+        list: &mut PortalList,
+        entry: usize,
+        row: &Row,
+        theme: &FrameTheme,
+    ) {
+        let (text, columns) = match row {
+            Row::TableRow { md, table } => (
+                crate::markdown::row_text(md, table),
+                Some(&table.columns[..]),
+            ),
+            Row::Title { text } | Row::Prose { md: text } => (text.clone(), None),
+            _ => return,
+        };
+        let parsed = self
+            .parsed
+            .entry(text)
+            .or_insert_with_key(|text| match row {
+                Row::TableRow { .. } => crate::markdown::parse_row(text),
+                _ => crate::markdown::parse(text),
+            })
+            .clone();
+        let template = match (row, parsed.first()) {
+            (Row::Title { .. }, _) => id!(Title),
+            (Row::TableRow { .. }, _) => id!(TableRow),
+            (_, Some(pulldown_cmark::Event::Start(pulldown_cmark::Tag::Heading { .. }))) => {
+                id!(HeadingRow)
+            }
+            _ => id!(ProseRow),
+        };
+        let mut item = list.item(cx, entry, template);
+        draw_markdown(cx, &mut item, &parsed, columns, theme);
     }
 
     /// A comment row in its strip: a reply's is indented, a thread from before

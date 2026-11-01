@@ -339,6 +339,10 @@ impl Grid {
 
 /// Air between blocks, and above a code block.
 const BLOCK_SPACING: f64 = 6.0;
+/// Air above a heading, and below it before the next block: a heading
+/// belongs to what follows it.
+const HEADING_ABOVE: f64 = 14.0;
+const HEADING_BELOW: f64 = 2.0;
 
 fn heading_scale(level: HeadingLevel) -> f64 {
     match level {
@@ -349,12 +353,13 @@ fn heading_scale(level: HeadingLevel) -> f64 {
     }
 }
 
-/// Start a block: air above it unless it is the first.
-fn block(tf: &mut TextFlow, cx: &mut Cx2d, first: &mut bool) {
-    if !*first {
-        tf.new_line_collapsed_with_spacing(cx, BLOCK_SPACING);
+/// Start a block with the air `gap` holds above it, none if it is the
+/// first.
+fn block(tf: &mut TextFlow, cx: &mut Cx2d, gap: &mut Option<f64>) {
+    if let Some(gap) = *gap {
+        tf.new_line_collapsed_with_spacing(cx, gap);
     }
-    *first = false;
+    *gap = Some(BLOCK_SPACING);
 }
 
 /// Draw `events` into `tf`, which has begun its flow. A table takes the
@@ -375,7 +380,8 @@ pub(crate) fn replay(
 ) {
     // The next number of each open list; `None` for a bulleted one.
     let mut lists: Vec<Option<u64>> = Vec::new();
-    let mut first = true;
+    // The air above the next block; none above the first.
+    let mut gap = None;
     // The open link's destination and the text it wraps so far.
     let mut link: Option<(String, String)> = None;
     let mut links = 0;
@@ -383,7 +389,7 @@ pub(crate) fn replay(
     for (at, event) in events.iter().enumerate() {
         match event {
             Event::Start(Tag::Table(_)) => {
-                block(tf, cx, &mut first);
+                block(tf, cx, &mut gap);
                 grid.draw(tf, cx, &events[at..], columns);
             }
             Event::Start(Tag::TableHead | Tag::TableRow | Tag::TableCell)
@@ -393,7 +399,8 @@ pub(crate) fn replay(
                 grid.draw(tf, cx, &events[at..], columns);
             }
             Event::Start(Tag::Heading { level, .. }) => {
-                block(tf, cx, &mut first);
+                gap = gap.map(|gap| f64::max(gap, HEADING_ABOVE));
+                block(tf, cx, &mut gap);
                 tf.push_size_rel_scale(heading_scale(*level));
                 tf.bold.push();
             }
@@ -401,10 +408,11 @@ pub(crate) fn replay(
                 tf.bold.pop();
                 tf.font_sizes.pop();
                 tf.new_line_collapsed(cx);
+                gap = Some(HEADING_BELOW);
             }
-            Event::Start(Tag::Paragraph) => block(tf, cx, &mut first),
+            Event::Start(Tag::Paragraph) => block(tf, cx, &mut gap),
             Event::Start(Tag::BlockQuote(_)) => {
-                block(tf, cx, &mut first);
+                block(tf, cx, &mut gap);
                 tf.begin_quote(cx);
             }
             Event::End(TagEnd::BlockQuote(_)) => tf.end_quote(cx),
@@ -413,10 +421,10 @@ pub(crate) fn replay(
                 lists.pop();
             }
             Event::Start(Tag::Item) => {
-                if !first {
+                if gap.is_some() {
                     tf.new_line_collapsed(cx);
                 }
-                first = false;
+                gap = Some(BLOCK_SPACING);
                 let marker = match lists.last_mut() {
                     Some(Some(next)) => {
                         *next += 1;
@@ -451,7 +459,7 @@ pub(crate) fn replay(
                 }
             }
             Event::Start(Tag::CodeBlock(_)) => {
-                block(tf, cx, &mut first);
+                block(tf, cx, &mut gap);
                 tf.combine_spaces.push(false);
                 tf.fixed.push();
                 tf.begin_code(cx);
@@ -482,7 +490,7 @@ pub(crate) fn replay(
             },
             Event::HardBreak => tf.new_line_collapsed(cx),
             Event::Rule => {
-                block(tf, cx, &mut first);
+                block(tf, cx, &mut gap);
                 tf.sep(cx);
                 tf.new_line_collapsed_with_spacing(cx, BLOCK_SPACING);
             }

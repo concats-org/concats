@@ -946,7 +946,7 @@ fn open_file_on_a_guide_card() {
         "open-file-guide",
         &[
             ("CONCATS_APP_TAB", "guide"),
-            ("CONCATS_APP_CLICK", "899,269"),
+            ("CONCATS_APP_CLICK", "899,281"),
         ],
         |repo| {
             save_guide(
@@ -2213,7 +2213,7 @@ fn a_link_in_guide_prose_opens_its_file() {
             ("CONCATS_APP_TAB", "guide"),
             (
                 "CONCATS_APP_STEPS",
-                "wait; wait; wait; click 86,474; wait; wait",
+                "wait; wait; wait; click 86,486; wait; wait",
             ),
         ],
         markdown_guide,
@@ -2231,8 +2231,8 @@ fn a_selection_across_prose_and_code_copies_the_prose_as_read() {
         "guide-select",
         &[
             ("CONCATS_APP_TAB", "guide"),
-            ("CONCATS_APP_CLICK", "22,260"),
-            ("CONCATS_APP_DRAG_TO", "192,621"),
+            ("CONCATS_APP_CLICK", "22,273"),
+            ("CONCATS_APP_DRAG_TO", "192,634"),
         ],
         markdown_guide,
     );
@@ -2330,7 +2330,7 @@ fn find_matches_a_table_row() {
             ("CONCATS_APP_TAB", "guide"),
             (
                 "CONCATS_APP_STEPS",
-                "wait; wait; wait; click 1000,620; wait; find tableend; wait; wait; \
+                "wait; wait; wait; click 1000,760; wait; find tableend; wait; wait; \
                  click 305,72; wait; wait",
             ),
         ],
