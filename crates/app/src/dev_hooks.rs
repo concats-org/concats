@@ -631,6 +631,10 @@ impl App {
             .collect()
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "One field per thing a test asserts on, written in one place."
+    )]
     fn state_hook(&self, cx: &mut Cx, name: &str) {
         let (Some(path), Some(window)) = (var("CONCATS_APP_STATE"), self.primary()) else {
             return;
@@ -645,6 +649,11 @@ impl App {
         });
         let active = tab_item(window, cx, state.read(|d| d.tab));
         let query = active.text_input(cx, ids!(find_input)).text();
+        // What a copy in the active list would take.
+        let list_selection = active
+            .portal_list(cx, ids!(list))
+            .borrow()
+            .map(|list| list.get_selected_text());
         let count = active.label(cx, ids!(find_count)).text();
         let titles = window
             .pane(cx)
@@ -706,6 +715,7 @@ impl App {
                 "seen_lines": service::review_state(d.git_dir.as_deref()).load().seen.len(),
                 "comments": service::review_state(d.git_dir.as_deref()).load().comments.len(),
                 "find_query": query,
+                "list_selection": list_selection,
                 "find_count": count,
                 "file_find_query": file_query,
                 "file_find_count": file_count,

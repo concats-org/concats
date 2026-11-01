@@ -2214,3 +2214,27 @@ fn a_link_in_guide_prose_opens_its_file() {
     let data = state(&shot, "state.json");
     assert_eq!(tabs_titled(&data, "README.md · worktree"), 1, "{data}");
 }
+
+/// A selection from rendered prose into a card copies the prose as it reads,
+/// not its Markdown source, and the code as it is.
+#[test]
+#[ignore = "spawns a GPU process; run with --ignored on a desktop"]
+fn a_selection_across_prose_and_code_copies_the_prose_as_read() {
+    let shot = capture(
+        "guide-select",
+        &[
+            ("CONCATS_APP_TAB", "guide"),
+            ("CONCATS_APP_CLICK", "22,249"),
+            ("CONCATS_APP_DRAG_TO", "192,573"),
+        ],
+        markdown_guide,
+    );
+    let data = state(&shot, "state.json");
+    let copied = data["list_selection"].as_str().expect("a selection");
+    assert!(
+        copied.contains("The greeting now says hello, world"),
+        "{copied}"
+    );
+    assert!(!copied.contains("**") && !copied.contains('`'), "{copied}");
+    assert!(copied.contains("fn main()"), "{copied}");
+}
