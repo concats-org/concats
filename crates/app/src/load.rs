@@ -427,7 +427,15 @@ pub(crate) fn build_review(
                 }
             ),
         });
-        d.guide_rows.extend(r.rows);
+        d.guide_rows.extend(r.rows.into_iter().flat_map(|row| {
+            match row {
+                Row::Prose { md } => crate::markdown::blocks(&md)
+                    .into_iter()
+                    .map(|block| Row::Prose { md: block.into() })
+                    .collect(),
+                row => vec![row],
+            }
+        }));
     }
 
     d.blobs = loaded.blobs;

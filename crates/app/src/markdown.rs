@@ -15,10 +15,49 @@ use crate::makepad_widgets::{Cx2d, LiveId, Scope, TextFlow, WidgetRef, live_id};
 /// One text's Markdown, parsed.
 pub(crate) type Parsed = Arc<[Event<'static>]>;
 
+const OPTIONS: Options = Options::ENABLE_STRIKETHROUGH;
+
 pub(crate) fn parse(md: &str) -> Parsed {
-    Parser::new_ext(md, Options::ENABLE_STRIKETHROUGH)
+    Parser::new_ext(md, OPTIONS)
         .map(Event::into_static)
         .collect()
+}
+
+/// `md` cut into its top-level blocks, a bulleted list into its items. The
+/// list draws only the rows on screen, so a long section costs what shows of
+/// it. An ordered list stays whole, since an item alone would renumber from
+/// its own marker, and so does text defining a link reference, which a cut
+/// would strand. HTML draws nothing, so it makes no block.
+pub(crate) fn blocks(md: &str) -> Vec<&str> {
+    let mut parser = Parser::new_ext(md, OPTIONS).into_offset_iter();
+    let mut cuts = Vec::new();
+    let mut depth = 0;
+    let mut in_bullets = false;
+    for (event, range) in parser.by_ref() {
+        match event {
+            Event::Start(tag) => {
+                if depth == 0 {
+                    in_bullets = tag == Tag::List(None);
+                }
+                let cut = match depth {
+                    0 => !in_bullets && tag != Tag::HtmlBlock,
+                    1 => in_bullets && tag == Tag::Item,
+                    _ => false,
+                };
+                if cut {
+                    cuts.push(range);
+                }
+                depth += 1;
+            }
+            Event::End(_) => depth -= 1,
+            Event::Rule if depth == 0 => cuts.push(range),
+            _ => {}
+        }
+    }
+    if parser.reference_definitions().iter().next().is_some() {
+        return vec![md];
+    }
+    cuts.into_iter().map(|range| md[range].trim_end()).collect()
 }
 
 /// Air between blocks, and above a code block.
@@ -181,5 +220,31 @@ mod tests {
                 .iter()
                 .any(|e| matches!(e, Event::Start(Tag::Strong)))
         );
+    }
+
+    #[test]
+    fn a_section_cuts_into_blocks_and_bullets_into_items() {
+        let md = "## Plan\n\nOne *paragraph*\nover two lines.\n\n\
+                  - first\n- second\n  - nested\n\n\
+                  1. one\n1. two\n\n\
+                  ---\n\n<!-- a note -->\n\n```rust\nfn main() {}\n```\n";
+        assert_eq!(
+            blocks(md),
+            [
+                "## Plan",
+                "One *paragraph*\nover two lines.",
+                "- first",
+                "- second\n  - nested",
+                "1. one\n1. two",
+                "---",
+                "```rust\nfn main() {}\n```",
+            ]
+        );
+    }
+
+    #[test]
+    fn text_defining_a_link_reference_stays_whole() {
+        let md = "See [the plan][plan].\n\n[plan]: docs/plan.md\n";
+        assert_eq!(blocks(md), [md]);
     }
 }

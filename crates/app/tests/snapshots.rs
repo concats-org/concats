@@ -2217,7 +2217,7 @@ fn a_link_in_guide_prose_opens_its_file() {
             ("CONCATS_APP_TAB", "guide"),
             (
                 "CONCATS_APP_STEPS",
-                "wait; wait; wait; click 86,428; wait; wait",
+                "wait; wait; wait; click 86,474; wait; wait",
             ),
         ],
         markdown_guide,
@@ -2235,8 +2235,8 @@ fn a_selection_across_prose_and_code_copies_the_prose_as_read() {
         "guide-select",
         &[
             ("CONCATS_APP_TAB", "guide"),
-            ("CONCATS_APP_CLICK", "22,249"),
-            ("CONCATS_APP_DRAG_TO", "192,573"),
+            ("CONCATS_APP_CLICK", "22,260"),
+            ("CONCATS_APP_DRAG_TO", "192,621"),
         ],
         markdown_guide,
     );
