@@ -904,6 +904,28 @@ impl ReviewPane {
         self.redraw_streams(cx);
     }
 
+    /// A link in rendered prose: a URL opens outside, a path in the checkout,
+    /// written as a URL or as the path itself, opens in a File tab at the
+    /// line it names.
+    fn open_link(&mut self, cx: &mut Cx, href: &str) {
+        let root = self.state().read(|d| {
+            if d.worktree_review() {
+                d.root.clone()
+            } else {
+                PathBuf::from(&d.repo)
+            }
+        });
+        let target = crate::links::target(href, &root)
+            .or_else(|| crate::links::file_in_text(href, &root, Path::is_file));
+        match target {
+            Some(crate::links::Target::External(url)) => {
+                cx.open_url(url.as_str(), OpenUrlInPlace::No);
+            }
+            Some(crate::links::Target::File { path, at }) => self.open_file_tab(cx, &path, at),
+            None => {}
+        }
+    }
+
     /// ⌘N: an empty Untitled tab where file tabs open, selected, with the
     /// keyboard in it. Its first save asks where it goes.
     pub fn new_file(&mut self, cx: &mut Cx) {
@@ -2140,6 +2162,7 @@ impl ReviewPane {
     /// gutter's comment gestures, and the inline composer's controls.
     #[expect(
         clippy::cognitive_complexity,
+        clippy::too_many_lines,
         reason = "Row actions are dispatched against the current document in action order."
     )]
     fn handle_item_actions(&mut self, cx: &mut Cx, actions: &[&WidgetAction]) {
@@ -2178,6 +2201,16 @@ impl ReviewPane {
                 }
                 ReviewItemAction::Outdated { path } if clicked => {
                     self.toggle_card_outdated(cx, path);
+                }
+                ReviewItemAction::Link { href }
+                    if action
+                        .action
+                        .downcast_ref::<TextFlowLinkAction>()
+                        .is_some_and(|action| {
+                            matches!(action, TextFlowLinkAction::Clicked { .. })
+                        }) =>
+                {
+                    self.open_link(cx, href);
                 }
                 ReviewItemAction::More { id } if clicked => {
                     self.state().with(|d| {
@@ -2244,6 +2277,7 @@ impl ReviewPane {
                 | ReviewItemAction::Outdated { .. }
                 | ReviewItemAction::OpenFile { .. }
                 | ReviewItemAction::More { .. }
+                | ReviewItemAction::Link { .. }
                 | ReviewItemAction::Replies { .. }
                 | ReviewItemAction::Reveal { .. }
                 | ReviewItemAction::Post

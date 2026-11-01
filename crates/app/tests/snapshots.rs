@@ -106,6 +106,15 @@ const BLINKING_CURSOR: Tolerance = Tolerance {
     pixels: 200,
 };
 
+/// A golden of a stream with its summary line: the line names the base
+/// commit, whose id moves with the fixture's commit time, and how long the
+/// load took. Those two runs of text, about 1,600 pixels, are all that may
+/// differ.
+const SUMMARY_LINE: Tolerance = Tolerance {
+    channel: 0,
+    pixels: 2_500,
+};
+
 fn workspace() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -926,7 +935,7 @@ fn open_file_on_a_guide_card() {
         "open-file-guide",
         &[
             ("CONCATS_APP_TAB", "guide"),
-            ("CONCATS_APP_CLICK", "899,333"),
+            ("CONCATS_APP_CLICK", "899,269"),
         ],
         |repo| {
             let head = git(repo, &["rev-parse", "HEAD"]);
@@ -2141,4 +2150,66 @@ fn a_comments_card_folds_on_its_own() {
         "{data}"
     );
     assert_matches("comments-card-fold", &shot, EXACT);
+}
+
+/// A guide whose prose uses every Markdown element the review list renders.
+fn markdown_guide(repo: &Path) {
+    let head = git(repo, &["rev-parse", "HEAD"]);
+    let markdown = "# Tour of the greeting\n\n\
+        ## What changed\n\n\
+        The greeting now **says** `hello, world` instead of *hello*, and \
+        ***both*** matter; ~~nothing else~~ moved.\n\n\
+        1. The literal in `main`\n\
+        2. What reads it:\n\
+        \x20  - `resolve`, falling back to the environment\n\
+        \x20  - nothing else\n\n\
+        > Small on purpose: the next commit tests the fallback.\n\n\
+        ```rust\nlet greeting = resolve(&names, \"greeting\");\n```\n\n\
+        See [the README](README.md) for how to run it.  \n\
+        This line follows a hard break.\n\n\
+        ---\n\n\
+        [editor.rs](editor.rs#L13)\n";
+    concats_review::store::save_guide(
+        &repo.join(".git"),
+        &concats_review::store::Guide {
+            base: gix::ObjectId::from_hex(head.trim().as_bytes()).expect("HEAD oid"),
+            head: gix::ObjectId::null(gix::hash::Kind::Sha1),
+            created_at: 1,
+            author: None,
+            markdown: markdown.into(),
+        },
+    )
+    .expect("save the guide");
+}
+
+/// Guide prose is rendered Markdown, not its source.
+#[test]
+#[ignore = "spawns a GPU process; run with --ignored on a desktop"]
+fn guide_prose_renders_its_markdown() {
+    let shot = capture(
+        "guide-markdown",
+        &[("CONCATS_APP_TAB", "guide")],
+        markdown_guide,
+    );
+    assert_matches("guide-markdown", &shot, SUMMARY_LINE);
+}
+
+/// A link in guide prose opens what it names: a file in the checkout, in a
+/// File tab.
+#[test]
+#[ignore = "spawns a GPU process; run with --ignored on a desktop"]
+fn a_link_in_guide_prose_opens_its_file() {
+    let shot = capture(
+        "guide-link",
+        &[
+            ("CONCATS_APP_TAB", "guide"),
+            (
+                "CONCATS_APP_STEPS",
+                "wait; wait; wait; click 86,428; wait; wait",
+            ),
+        ],
+        markdown_guide,
+    );
+    let data = state(&shot, "state.json");
+    assert_eq!(tabs_titled(&data, "README.md · worktree"), 1, "{data}");
 }

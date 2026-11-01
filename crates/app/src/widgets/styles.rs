@@ -65,6 +65,27 @@ script_mod! {
         line_spacing: 1.4
     }
 
+    // Emphasis in rendered prose: the italic face ahead of the upright chain,
+    // as the terminal has it, so a glyph it lacks still draws.
+    mod.widgets.FONT_ITALIC = TextStyle{
+        font_family: FontFamily{
+            italic := FontMember{res: mod.app_font.italic asc: 0.0 desc: 0.0}
+            first := FontMember{res: mod.app_font.first asc: 0.0 desc: 0.0}
+            mono := FontMember{res: mod.app_font.mono asc: 0.0 desc: 0.0}
+            symbols := FontMember{res: mod.app_font.symbols asc: 0.0 desc: 0.0}
+        }
+        font_size: mod.app_font.size
+        line_spacing: 1.4
+    }
+    mod.widgets.FONT_BOLD_ITALIC = TextStyle{
+        font_family: FontFamily{
+            italic := FontMember{res: mod.app_font.italic asc: 0.0 desc: 0.0 weight: 700.0}
+            first := FontMember{res: mod.app_font.first asc: 0.0 desc: 0.0 weight: 700.0}
+        }
+        font_size: mod.app_font.size
+        line_spacing: 1.4
+    }
+
     // A TextInput recolored into the chrome: content-dark well, hairline
     // border, mono text.
     mod.widgets.DarkInput = TextInputFlat {

@@ -7,7 +7,11 @@
 
 mod editing;
 
-use std::{cell::Cell, collections::HashSet, sync::Arc};
+use std::{
+    cell::Cell,
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 
 use concats_diff::{Blob, LineKind, Row};
 use concats_review::store::{self, LineKey, Seen};
@@ -216,6 +220,10 @@ pub(super) enum ReviewItemAction {
     Outdated {
         path: String,
     },
+    /// A link in rendered prose: opened as the terminal opens one.
+    Link {
+        href: String,
+    },
     /// Show more or Show less under a long comment in the Comments tab.
     More {
         id: u64,
@@ -311,6 +319,27 @@ script_mod! {
     let Prose = Label {
         selectable: true
         draw_selection.color: mod.app_theme.color_sel_focus
+    }
+
+    // Rendered Markdown in the app's fonts, selectable like the `Prose`
+    // labels; a link is a `TextFlowLink` in the comment blue.
+    let MarkdownFlow = TextFlow {
+        width: Fill height: Fit
+        selectable: true
+        draw_selection.color: mod.app_theme.color_sel_focus
+        font_size: 9
+        font_color: C_TEXT
+        draw_text +: { color: C_TEXT }
+        text_style_normal: FONT{font_size: 9 line_spacing: 1.5}
+        text_style_italic: FONT_ITALIC{font_size: 9 line_spacing: 1.5}
+        text_style_bold: FONT_BOLD{font_size: 9 line_spacing: 1.5}
+        text_style_bold_italic: FONT_BOLD_ITALIC{font_size: 9 line_spacing: 1.5}
+        text_style_fixed: FONT{font_size: 9 line_spacing: 1.5}
+        link := TextFlowLink {
+            color: C_ACCENT
+            color_hover: C_TEXT
+            color_down: C_TEXT
+        }
     }
 
     // A text button in the card header: the toggle for the conversations this
@@ -618,25 +647,15 @@ script_mod! {
                 Title := View {
                     width: Fill height: Fit
                     padding: Inset{top: 16 bottom: 0 left: 16 right: 16}
-                    title_text := Prose {
-                        width: Fill height: Fit
-                        padding: 0
-                        draw_text.color: C_TEXT
-                        draw_text.text_style: FONT_BOLD{font_size: 11 line_spacing: 1.45}
-                    }
+                    title_md := MarkdownFlow {}
                 }
 
+                // Rendered Markdown: the list parses each text once and
+                // replays it here (see `crate::markdown`).
                 ProseRow := View {
                     width: Fill height: Fit
                     padding: Inset{top: 6 bottom: 6 left: 16 right: 16}
-                    // Raw Markdown on purpose: Makepad's Markdown widget reparses
-                    // the body on every scrolling redraw.
-                    prose_text := Prose {
-                        width: Fill height: Fit
-                        padding: 0
-                        draw_text.color: C_TEXT
-                        draw_text.text_style: FONT{font_size: 9 line_spacing: 1.5}
-                    }
+                    prose_md := MarkdownFlow {}
                 }
 
                 // An unresolved agent reference. Loud on purpose.
@@ -1040,6 +1059,30 @@ pub struct ReviewList {
     /// standing in for each fold, and how many replies it stands for.
     #[rust]
     folded_replies: Vec<(usize, usize)>,
+    /// Each prose text's parse, by text: row widgets go when they scroll
+    /// out, so the list keeps it. Dropped when a load lands.
+    #[rust]
+    parsed: HashMap<String, crate::markdown::Parsed>,
+}
+
+/// Draw `item`, whose `MarkdownFlow` replays `parsed`; each link carries
+/// its destination for the pane to open.
+fn draw_markdown(
+    cx: &mut Cx2d,
+    item: &mut WidgetRef,
+    parsed: &[pulldown_cmark::Event<'static>],
+    theme: &FrameTheme,
+) {
+    let mut scope = Scope::with_props(theme);
+    while let Some(step) = item.draw(cx, &mut scope).step() {
+        if let Some(mut flow) = step.as_text_flow().borrow_mut() {
+            crate::markdown::replay(&mut flow, cx, parsed, |link, href| {
+                link.set_action_data(ReviewItemAction::Link {
+                    href: href.to_string(),
+                });
+            });
+        }
+    }
 }
 
 /// The lines a comment shows in the Comments tab until Show more.
@@ -1780,6 +1823,7 @@ impl ReviewList {
         let d = pass.doc;
         if self.mapped.0 != d.generation {
             self.requested_highlights.clear();
+            self.parsed.clear();
         }
         // The composer moving is a change of the same kind as a comment landing:
         // a row appears or leaves mid-stream, so everything keyed by row index
@@ -1851,8 +1895,6 @@ impl ReviewList {
     }
 
     /// One list entry: the row it maps to, drawn with that row's template.
-    // NOTE: the inner match's row is already one of the three label rows.
-    // coland-ignore: @coland/absorbing_default_branch
     fn draw_row(&mut self, cx: &mut Cx2d, list: &mut PortalList, entry: usize, pass: &DrawPass) {
         let Some(r) = self.row_at(entry) else {
             return;
@@ -1862,15 +1904,26 @@ impl ReviewList {
         };
         let (tab, theme) = (pass.tab, &pass.theme);
         match row {
-            // One label each, in the row's own template.
-            Row::Title { text } | Row::Prose { md: text } | Row::Warning { text } => {
-                let (template, label) = match row {
-                    Row::Title { .. } => (id!(Title), ids!(title_text)),
-                    Row::Prose { .. } => (id!(ProseRow), ids!(prose_text)),
-                    _ => (id!(Warning), ids!(warn_label)),
+            // Titles and prose are Markdown, rendered from a parse the list
+            // keeps; a title has more air above it.
+            Row::Title { text } | Row::Prose { md: text } => {
+                let parsed = self
+                    .parsed
+                    .entry(text.clone())
+                    .or_insert_with(|| crate::markdown::parse(text))
+                    .clone();
+                let template = if matches!(row, Row::Title { .. }) {
+                    id!(Title)
+                } else {
+                    id!(ProseRow)
                 };
-                let item = list.item(cx, entry, template);
-                item.label(cx, label).set_text(cx, text);
+                let mut item = list.item(cx, entry, template);
+                draw_markdown(cx, &mut item, &parsed, theme);
+            }
+            // An unresolved reference: a loud label, not Markdown.
+            Row::Warning { text } => {
+                let item = list.item(cx, entry, id!(Warning));
+                item.label(cx, ids!(warn_label)).set_text(cx, text);
                 item.draw_all(cx, &mut Scope::with_props(theme));
             }
             Row::FileHeader { .. } => {

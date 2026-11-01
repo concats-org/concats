@@ -640,6 +640,7 @@ dependencies = [
  "makepad-widgets",
  "nix",
  "nucleo-matcher",
+ "pulldown-cmark",
  "regex",
  "rfd",
  "rusqlite",

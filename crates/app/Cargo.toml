@@ -97,6 +97,9 @@ tempfile = { workspace = true }
 url = "2"
 regex = "1"
 nucleo-matcher = "0.3"
+# Markdown for prose rows and comment bodies: the copy makepad already
+# vendors, so the lock holds one.
+pulldown-cmark = { git = "https://github.com/concats-org/makepad", branch = "int", default-features = false }
 # Local time for comment bylines: the offset each stamp had, from the
 # system's zone database. gix already builds it.
 jiff = "0.2"
