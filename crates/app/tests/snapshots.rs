@@ -2007,14 +2007,19 @@ fn a_long_thread_folds_its_middle_replies() {
     let thread = |repo: &Path| {
         comment_on(repo, &["hash-object", "editor.rs"], "why hello?");
         let mut store = concats_review::store::Store::open(&repo.join(".git"));
-        for body in [
+        // An hour apart, so each byline shows its own reply's stamp.
+        for (hour, body) in [
             "The greeting is configurable now.",
             "Configurable from where?",
             "The environment, through resolve.",
             "Then the fallback wants a test.",
-        ] {
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let at = 3_600 * (hour as u64 + 1);
             store
-                .reply_comment(1, body.into(), None, 1, None)
+                .reply_comment(1, body.into(), None, at, None)
                 .expect("store the reply");
         }
     };
