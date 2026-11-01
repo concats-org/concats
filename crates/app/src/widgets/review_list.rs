@@ -419,8 +419,7 @@ script_mod! {
         cm_frame +: { cm_bar +: { cm_strip +: {
             flow: Right
             align: Align{x: 0.0, y: 0.0}
-            // Named so the body's wrap width can be read back.
-            cm_column := View {
+            View {
                 width: Fill height: Fit
                 flow: Down
                 spacing: 4
@@ -442,11 +441,10 @@ script_mod! {
                     draw_text.color: C_DIM
                     draw_text.text_style: FONT{font_size: 8.5}
                 }
-                cm_body := Prose {
-                    width: Fill
+                // Inset as a `Label` is, so it lines up under the byline.
+                cm_body := MarkdownFlow {
+                    padding: Inset{top: 3 bottom: 3 left: 6 right: 3}
                     text_overflow: Ellipsis
-                    draw_text.color: C_TEXT
-                    draw_text.text_style: FONT{font_size: 9}
                 }
                 // Under a long comment in the Comments tab: lets the rest
                 // of it out, and shuts it again.
@@ -2153,9 +2151,9 @@ impl ReviewList {
             (false, false, true) => id!(EarlierComment),
             (false, true, true) => id!(EarlierReply),
         };
-        let item = list.item(cx, entry, template);
+        let mut item = list.item(cx, entry, template);
         let Some(count) = folded else {
-            return self.fill_comment(cx, &item, r, pass);
+            return self.fill_comment(cx, &mut item, r, pass);
         };
         let replies = if count == 1 { "reply" } else { "replies" };
         item.button(cx, ids!(cm_replies))
@@ -2165,14 +2163,10 @@ impl ReviewList {
         item.draw_all(cx, &mut Scope::with_props(&pass.theme));
     }
 
-    /// A comment's strip filled and drawn. In the Comments tab a long body
-    /// stops at [`CLAMP_LINES`] with Show more; the strips under the code show
-    /// it whole.
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "Makepad lays text out in f32 logical pixels."
-    )]
-    fn fill_comment(&mut self, cx: &mut Cx2d, item: &WidgetRef, r: usize, pass: &DrawPass) {
+    /// A comment's strip filled and drawn, its body rendered Markdown. In the
+    /// Comments tab a long body stops at [`CLAMP_LINES`] with Show more; the
+    /// strips under the code show it whole.
+    fn fill_comment(&mut self, cx: &mut Cx2d, item: &mut WidgetRef, r: usize, pass: &DrawPass) {
         let Some(Row::Comment {
             id,
             body,
@@ -2211,10 +2205,9 @@ impl ReviewList {
         }
         let clamp = pass.tab == Stream::Comments;
         let open = pass.doc.expanded_comments.contains(id);
-        let text = item.label(cx, ids!(cm_body));
-        text.set_text(cx, body);
-        if let Some(mut label) = text.borrow_mut() {
-            label.max_lines = if clamp && !open { CLAMP_LINES } else { 0 };
+        let flow = item.widget(cx, ids!(cm_body));
+        if let Some(mut flow) = flow.as_text_flow().borrow_mut() {
+            flow.max_lines = if clamp && !open { CLAMP_LINES } else { 0 };
         }
         let long = clamp && self.long_comments.contains(id);
         let more = item.button(cx, ids!(cm_more));
@@ -2222,33 +2215,30 @@ impl ReviewList {
         more.set_text(cx, if open { "Show less" } else { "Show more" });
         item.widget(cx, ids!(cm_more))
             .set_action_data(ReviewItemAction::More { id: *id });
-        item.draw_all(cx, &mut Scope::with_props(&pass.theme));
+        let parsed = self
+            .parsed
+            .entry(body.clone())
+            .or_insert_with(|| crate::markdown::parse(body))
+            .clone();
+        draw_markdown(cx, item, &parsed, &pass.theme);
         if !clamp {
             return;
         }
-        // Whether it runs long is read back from this draw, since the width
-        // the body wrapped at is only known now. It was drawn with the last
-        // answer, so a changed one draws again.
-        let width = item.view(cx, ids!(cm_column)).area().rect(cx).size.x as f32;
-        let ran_past = text.borrow_mut().is_some_and(|label| {
-            let laid = label.draw_text.layout(
-                cx,
-                0.0,
-                0.0,
-                Some(width / label.draw_text.font_scale),
-                true,
-                Align::default(),
-                body,
-            );
-            laid.is_truncated || laid.rows.len() > CLAMP_LINES
-        });
+        // Whether it runs long is read back from this draw: the flow knows
+        // whether it stopped at the allowance. It was drawn with the last
+        // answer, so a changed one draws again; one opened whole stays long.
+        let ran_past = open
+            || flow
+                .as_text_flow()
+                .borrow()
+                .is_some_and(|flow| flow.is_content_truncated());
         if ran_past != long {
             if ran_past {
                 self.long_comments.insert(*id);
             } else {
                 self.long_comments.remove(id);
             }
-            cx.redraw_area_in_draw(text.area());
+            cx.redraw_area_in_draw(flow.area());
         }
     }
 

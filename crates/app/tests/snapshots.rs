@@ -1949,13 +1949,14 @@ fn open_file_on_a_thread_card() {
     assert_eq!(data["caret"][1], 12, "{data}");
 }
 
-/// More than five lines at any width.
+/// More than five lines at any width, rendered or raw.
 const LONG_COMMENT: &str = "Three things before this lands:\n\
     1. The fallback reads the environment on every miss, so a typo in a key silently \
     picks up whatever the shell has.\n\
     2. Make it explicit at the call site, say resolve_or_env, and keep resolve strict.\n\
     3. The tests can then stop setting variables to reach the happy path, which is what \
-    made the last run flaky.\n\n\
+    made the last run flaky.\n\
+    4. A line in the changelog would help whoever relied on the old fallback.\n\n\
     Happy to pair on it.";
 
 /// A long comment stops at five lines in the Comments tab, with Show more;
