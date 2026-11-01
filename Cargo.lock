@@ -627,6 +627,7 @@ dependencies = [
  "concats-diff",
  "concats-fixture",
  "concats-highlight",
+ "concats-message",
  "concats-review",
  "concats-state",
  "concats-sync",

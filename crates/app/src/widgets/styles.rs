@@ -65,8 +65,9 @@ script_mod! {
         line_spacing: 1.4
     }
 
-    // Emphasis in rendered prose: the italic face ahead of the upright chain,
-    // as the terminal has it, so a glyph it lacks still draws.
+    // Emphasis in Markdown, rendered or styled in place: the italic face
+    // ahead of the upright chain, as the terminal has it, so a glyph it
+    // lacks still draws.
     mod.widgets.FONT_ITALIC = TextStyle{
         font_family: FontFamily{
             italic := FontMember{res: mod.app_font.italic asc: 0.0 desc: 0.0}

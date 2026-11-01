@@ -43,6 +43,18 @@ use gix::{ObjectId, Repository};
 /// Guard against garbage refs; a session is a conversation, not a history.
 const MAX_CHAIN: usize = 10_000;
 
+/// How a transcript's prose blobs are named: a session's header, and each
+/// turn's prompts and responses under it.
+const SESSION_PROSE: &str = "session/";
+const TURN_PROSE: &str = "turn/";
+
+/// Whether the prose blob `name` is transcript, Markdown as the prompter and
+/// the agent wrote it. A commit message is not: it can be anyone's, and few
+/// are written as Markdown.
+pub fn is_transcript(name: &str) -> bool {
+    name.starts_with(SESSION_PROSE) || name.starts_with(TURN_PROSE)
+}
+
 pub fn worktree_fingerprint(repo: &Repository) -> Result<u64, concats_diff::Error> {
     let mut fingerprint = DefaultHasher::new();
     concats_diff::stage::worktree_fingerprint(repo)?.hash(&mut fingerprint);
@@ -757,7 +769,7 @@ fn sessions_rows(
         if t.session_id != session {
             session = &t.session_id;
             rows.extend(low.prose(
-                format!("session/{session}"),
+                format!("{SESSION_PROSE}{session}"),
                 format!("## Session `{session}`\n"),
             ));
             if let Some(agent) = t.message.agent_name() {
@@ -808,7 +820,7 @@ fn turn_rows(
     // What a comment on this turn's content records. The turn's own oid names
     // it: a turn belongs to one session, and its commit is what the content is
     // recognized by.
-    let turn = format!("turn/{}", &t.oid.to_string()[..10]);
+    let turn = format!("{TURN_PROSE}{}", &t.oid.to_string()[..10]);
     rows.push(Row::Title {
         text: format!("### {}", t.message.subject()),
     });
@@ -1006,6 +1018,16 @@ mod tests {
         assert!(sess.iter().any(|r| matches!(r, Row::Code { .. })));
         // One commit still gets its Commits tab, though it repeats the File Diff.
         assert!(prose(&mined.commits, &loaded.blobs).contains("feature"));
+        // The transcript is Markdown to the app; the commit's message is not.
+        let transcript: Vec<&str> = loaded
+            .blobs
+            .iter()
+            .filter(|b| b.prose.as_deref().is_some_and(is_transcript))
+            .map(|b| b.text.as_str())
+            .collect();
+        assert!(transcript.iter().any(|t| t.contains("test-session")));
+        assert!(transcript.iter().any(|t| t.contains("please add two")));
+        assert!(!transcript.iter().any(|t| t.contains("feature")));
     }
 
     #[test]

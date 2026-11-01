@@ -97,8 +97,8 @@ tempfile = { workspace = true }
 url = "2"
 regex = "1"
 nucleo-matcher = "0.3"
-# Markdown for prose rows and comment bodies: the copy makepad already
-# vendors, so the lock holds one.
+# Markdown for prose rows, comment bodies and transcript lines: the copy
+# makepad already vendors, so the lock holds one.
 pulldown-cmark = { git = "https://github.com/concats-org/makepad", branch = "int", default-features = false }
 # Local time for comment bylines: the offset each stamp had, from the
 # system's zone database. gix already builds it.
@@ -115,6 +115,8 @@ mac-notification-sys = { workspace = true }
 
 [dev-dependencies]
 concats_fixture = { workspace = true }
+# The sessions a snapshot fixture records, in the grammar the CLI writes.
+concats_message = { workspace = true }
 # Visual snapshot tests (tests/snapshots.rs) compare PNG captures per pixel to
 # catch rendering regressions.
 image = { version = "0.25", default-features = false, features = ["png"] }

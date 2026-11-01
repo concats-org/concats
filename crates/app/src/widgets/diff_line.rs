@@ -14,11 +14,14 @@ use concats_syntax::{Hl, Span};
     clippy::wildcard_imports,
     reason = "Makepad macros and derives expand against the widget prelude in this scope."
 )]
-use crate::{ROW_PAD, frame_theme, line_bg, makepad_widgets::*, theme::paint};
+use crate::{ROW_PAD, frame_theme, line_bg, makepad_widgets::*, prose_style::Style, theme::paint};
 
 script_mod! {
     use mod.prelude.widgets.*
     use mod.widgets.FONT
+    use mod.widgets.FONT_BOLD
+    use mod.widgets.FONT_ITALIC
+    use mod.widgets.FONT_BOLD_ITALIC
 
     mod.widgets.DiffLine = #(DiffLine::register_widget(vm)) {
         width: Fill
@@ -26,6 +29,13 @@ script_mod! {
         // Without an explicit text_style the DrawText has no font family and
         // silently draws nothing — you get the row tint and no glyphs.
         draw_text.text_style: FONT{line_spacing: 1.55}
+        // Transcript lines styled in place (see `crate::prose_style`). The same
+        // monospace face in every one, so a styled run is as wide as a plain
+        // one and no byte moves under the caret.
+        text_style_plain: FONT{line_spacing: 1.55}
+        text_style_bold: FONT_BOLD{line_spacing: 1.55}
+        text_style_italic: FONT_ITALIC{line_spacing: 1.55}
+        text_style_bold_italic: FONT_BOLD_ITALIC{line_spacing: 1.55}
         // The terminal's selection tint, so a selection reads the same in both.
         draw_sel +: {
             color: mod.app_theme.color_sel_focus
@@ -80,6 +90,14 @@ pub struct DiffLine {
     draw_find: DrawColor,
     #[live]
     draw_quote: DrawColor,
+    #[live]
+    text_style_plain: TextStyle,
+    #[live]
+    text_style_bold: TextStyle,
+    #[live]
+    text_style_italic: TextStyle,
+    #[live]
+    text_style_bold_italic: TextStyle,
 
     #[rust]
     kind: Option<LineKind>,
@@ -87,6 +105,10 @@ pub struct DiffLine {
     text: String,
     #[rust]
     spans: Vec<Span>,
+    /// How a transcript line's runs read, from its Markdown; empty for code
+    /// and commit messages.
+    #[rust]
+    styles: Vec<(usize, usize, Style)>,
     #[rust]
     selected: bool,
     #[rust]
@@ -152,11 +174,60 @@ impl DiffLine {
         self.text.push_str(text);
         self.spans.clear();
         self.spans.extend_from_slice(spans);
+        self.styles.clear();
         self.selected = selected;
         self.caret = caret;
         // NOTE: the rect is where the last line's caret drew; this line's
         // comes from its own draw.
         self.caret_rect = None;
+    }
+
+    /// Style this row's runs: a transcript line, read as Markdown. Called after
+    /// [`Self::set_row`], which clears them.
+    pub fn set_styles(&mut self, styles: &[(usize, usize, Style)]) {
+        self.styles.extend_from_slice(styles);
+    }
+
+    /// Draw one coloured run in the pieces its styles cut it into. Returns
+    /// the right edge of the last piece drawn.
+    fn draw_styled(
+        &mut self,
+        cx: &mut Cx2d,
+        theme: &crate::theme::Theme,
+        (start, end, hl): (usize, usize, Option<Hl>),
+    ) -> Option<f64> {
+        let mut right = None;
+        for (start, end, style) in style_runs(&self.styles, start, end) {
+            // Markup reads faint whatever it would be coloured as.
+            let color = if style.dim {
+                theme.text_faint
+            } else {
+                theme.syntax_color(hl)
+            };
+            self.draw_text.color = paint(color);
+            if !self.styles.is_empty() {
+                self.draw_text.text_style = self.text_style(style);
+            }
+            if let Some(s) = self.text.get(start..end) {
+                right = Some(draw_run(
+                    cx,
+                    &mut self.draw_text,
+                    &mut self.sel_track,
+                    &mut self.rows,
+                    s,
+                ));
+            }
+        }
+        right
+    }
+
+    fn text_style(&self, style: Style) -> TextStyle {
+        match (style.bold, style.italic) {
+            (false, false) => self.text_style_plain.clone(),
+            (true, false) => self.text_style_bold.clone(),
+            (false, true) => self.text_style_italic.clone(),
+            (true, true) => self.text_style_bold_italic.clone(),
+        }
     }
 
     /// The caret as a thin quad, taken from the geometry of the character it
@@ -229,17 +300,15 @@ impl DiffLine {
                 );
             }
         }
-        for (start, end, hl) in color_runs(&self.spans, indent, bytes.len()) {
-            self.draw_text.color = paint(theme.syntax_color(hl));
-            if let Ok(s) = std::str::from_utf8(&bytes[start..end]) {
-                right = draw_run(
-                    cx,
-                    &mut self.draw_text,
-                    &mut self.sel_track,
-                    &mut self.rows,
-                    s,
-                );
-            }
+        // Taken for the loop, which draws through `self`.
+        let spans = std::mem::take(&mut self.spans);
+        for run in color_runs(&spans, indent, bytes.len()) {
+            right = self.draw_styled(cx, theme, run).unwrap_or(right);
+        }
+        self.spans = spans;
+        // The widget is recycled for the next row, which may be code.
+        if !self.styles.is_empty() {
+            self.draw_text.text_style = self.text_style_plain.clone();
         }
         if self.text.is_empty() {
             self.draw_text.color = paint(theme.syntax_color(None));
@@ -295,6 +364,32 @@ fn color_runs(
             gap.into_iter().chain(run)
         })
         .chain((tail < len).then_some((tail, len, None)))
+}
+
+/// `start..end` cut at the edges of `styles`, each piece with its style:
+/// plain where no run covers it, the whole of it for code, which has none.
+/// `styles` is in order and does not overlap, as [`color_runs`]' spans.
+fn style_runs(
+    styles: &[(usize, usize, Style)],
+    start: usize,
+    end: usize,
+) -> impl Iterator<Item = (usize, usize, Style)> + '_ {
+    let mut at = start;
+    let tail = styles
+        .iter()
+        .map(|&(_, to, _)| to.min(end))
+        .fold(start, usize::max);
+    styles
+        .iter()
+        .flat_map(move |&(from, to, style)| {
+            let from = from.max(at).min(end);
+            let to = to.min(end);
+            let gap = (from > at).then_some((at, from, Style::default()));
+            let run = (to > from).then_some((from, to, style));
+            at = at.max(to);
+            gap.into_iter().chain(run)
+        })
+        .chain((tail < end).then_some((tail, end, Style::default())))
 }
 
 /// Draw one already-coloured run and record it for selection. Free-standing so
@@ -505,7 +600,7 @@ impl WidgetNode for DiffLine {
 mod tests {
     use concats_syntax::{Hl, Span};
 
-    use super::color_runs;
+    use super::{Style, color_runs, style_runs};
 
     fn span(start: usize, end: usize, hl: Hl) -> Span {
         Span {
@@ -528,6 +623,23 @@ mod tests {
                 (8, 10, Some(Hl::String)),
                 (10, 12, None),
             ]
+        );
+    }
+
+    #[test]
+    fn style_runs_cut_a_coloured_run_at_its_styles() {
+        let bold = Style {
+            bold: true,
+            ..Style::default()
+        };
+        let plain = Style::default();
+        let styles = [(2, 4, bold), (6, 9, bold)];
+        let cut: Vec<_> = style_runs(&styles, 3, 8).collect();
+        assert_eq!(cut, [(3, 4, bold), (4, 6, plain), (6, 8, bold)]);
+        assert_eq!(style_runs(&[], 0, 5).collect::<Vec<_>>(), [(0, 5, plain)]);
+        assert_eq!(
+            style_runs(&styles, 9, 12).collect::<Vec<_>>(),
+            [(9, 12, plain)]
         );
     }
 

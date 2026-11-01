@@ -66,11 +66,15 @@
 use std::{
     path::{Path, PathBuf},
     process::{Child, Command},
+    str::FromStr,
     sync::Mutex,
     time::{Duration, Instant},
 };
 
 use concats_fixture::git;
+use concats_message::{
+    SESSION_REF_PREFIX, SNAPSHOT_REF_PREFIX, SessionId, Snapshot, SnapshotReason, Turn, TurnEntry,
+};
 
 /// Logical window size. Fixed, because the layout responds to width — a capture
 /// at another size is a different picture, not the same one scaled.
@@ -113,6 +117,13 @@ const BLINKING_CURSOR: Tolerance = Tolerance {
 const SUMMARY_LINE: Tolerance = Tolerance {
     channel: 0,
     pixels: 2_500,
+};
+/// A golden of commits the fixture makes as it runs: their ids move with
+/// its commit time, and the ids they print, about 2,700 pixels for two, are
+/// all that may differ.
+const COMMIT_IDS: Tolerance = Tolerance {
+    channel: 0,
+    pixels: 4_000,
 };
 
 fn workspace() -> PathBuf {
@@ -2316,4 +2327,115 @@ fn find_lands_in_rendered_prose() {
     let data = state(&shot, "state.json");
     assert_eq!(data["find_count"], "1/1", "{data}");
     assert_matches("guide-find", &shot, SUMMARY_LINE);
+}
+
+/// A commit whose message reads like Markdown, on top of the fixture's first.
+fn markdown_commit(repo: &Path) {
+    std::fs::write(repo.join("NOTES.md"), "notes\n").expect("a file to commit");
+    git(repo, &["add", "NOTES.md"]);
+    git(
+        repo,
+        &[
+            "commit",
+            "-qm",
+            "feat: make the fallback **explicit**\n\n\
+             # Why\n\n\
+             The *old* fallback read `std::env` on every miss.\n\
+             See [the notes](NOTES.md) for the plan.",
+        ],
+    );
+}
+
+/// A commit message reads as written, though it looks like Markdown: it can
+/// be anyone's, and few are Markdown. Every byte is where it was.
+#[test]
+#[ignore = "spawns a GPU process; run with --ignored on a desktop"]
+fn a_commit_message_reads_as_written() {
+    let shot = capture(
+        "commit-plain",
+        &[(
+            "CONCATS_APP_STEPS",
+            // Base HEAD~1, below INDEX and the branch, so the commit is in range.
+            "wait; wait; menu pick_base; key down; key down; key down; key enter; wait; wait; \
+             key alt-cmd-3; wait; click 136,225; wait; find explicit; wait",
+        )],
+        markdown_commit,
+    );
+    let data = state(&shot, "state.json");
+    assert_eq!(data["current_tab"], "Commits", "{data}");
+    assert_eq!(data["find_count"], "0/1", "{data}");
+    // The `f` of `> The *old* fallback`.
+    assert_eq!(data["caret"][2], 12, "{data}");
+    assert_matches("commit-plain", &shot, COMMIT_IDS);
+}
+
+/// git's empty tree: a turn commit carries its transcript, not content.
+const EMPTY_TREE: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+
+/// [`markdown_commit`] and the session that made it, its prompt and response
+/// written as Markdown.
+fn markdown_session(repo: &Path) {
+    markdown_commit(repo);
+    // The turn sits on the commit before; its snapshot holds the commit's
+    // tree, so the same bytes at the same path link the two.
+    let session = SessionId::from_str("md-session").expect("a session id");
+    let turn = Turn::new(session.clone())
+        .with_subject("Make the fallback explicit")
+        .expect("a subject")
+        .with_entry(TurnEntry::prompt_now(
+            "Make the lookup **strict**: the *old* one read `std::env` on every miss.",
+        ))
+        .with_entry(TurnEntry::response_now(
+            "## Done\n\nThe lookup is **strict** now, and `NOTES.md` says why.",
+        ))
+        .to_string();
+    let turn = git(
+        repo,
+        &["commit-tree", EMPTY_TREE, "-p", "HEAD~1", "-m", &turn],
+    );
+    git(
+        repo,
+        &[
+            "update-ref",
+            &format!("{SESSION_REF_PREFIX}{session}"),
+            &turn,
+        ],
+    );
+    let snapshot = Snapshot::new(session.clone(), SnapshotReason::TurnCommit).to_string();
+    let snapshot = git(
+        repo,
+        &["commit-tree", "HEAD^{tree}", "-p", &turn, "-m", &snapshot],
+    );
+    git(
+        repo,
+        &[
+            "update-ref",
+            &format!("{SNAPSHOT_REF_PREFIX}{session}"),
+            &snapshot,
+        ],
+    );
+}
+
+/// A transcript reads as the Markdown it is: emphasis, strong text and the
+/// heading styled, the markup dimmed, every byte where it was.
+#[test]
+#[ignore = "spawns a GPU process; run with --ignored on a desktop"]
+fn a_transcript_reads_as_markdown() {
+    let shot = capture(
+        "session-markdown",
+        &[(
+            "CONCATS_APP_STEPS",
+            "wait; wait; menu pick_base; key down; key down; key down; key enter; wait; wait; \
+             key alt-cmd-4; wait; click 336,312; wait; find strict; wait",
+        )],
+        markdown_session,
+    );
+    let data = state(&shot, "state.json");
+    assert_eq!(data["current_tab"], "Sessions", "{data}");
+    // Two hits, on the bytes of the styled prompt and response.
+    assert_eq!(data["find_count"], "0/2", "{data}");
+    // The `o` of `one`, past a bold and an italic run, where it is in the
+    // unstyled line: a styled run is as wide as a plain one.
+    assert_eq!(data["caret"][2], 40, "{data}");
+    assert_matches("session-markdown", &shot, COMMIT_IDS);
 }

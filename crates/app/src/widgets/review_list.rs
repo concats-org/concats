@@ -1061,6 +1061,10 @@ pub struct ReviewList {
     /// out, so the list keeps it. Dropped when a load lands.
     #[rust]
     parsed: HashMap<String, crate::markdown::Parsed>,
+    /// Each prose blob's line styles, by blob and edit: worked out once,
+    /// dropped when a load lands.
+    #[rust]
+    prose_styles: HashMap<(u32, u64), Arc<Vec<crate::prose_style::Runs>>>,
 }
 
 /// Draw `item`, whose `MarkdownFlow` replays `parsed`; each link carries
@@ -1822,6 +1826,7 @@ impl ReviewList {
         if self.mapped.0 != d.generation {
             self.requested_highlights.clear();
             self.parsed.clear();
+            self.prose_styles.clear();
         }
         // The composer moving is a change of the same kind as a comment landing:
         // a row appears or leaves mid-stream, so everything keyed by row index
@@ -2242,6 +2247,25 @@ impl ReviewList {
         }
     }
 
+    /// How line `line` of blob `blob` reads: its Markdown styled where it
+    /// stands for a transcript, the blob's styles worked out once per edit;
+    /// code and commit messages unstyled.
+    fn prose_runs(&mut self, blob: u32, b: &Blob, line: usize) -> crate::prose_style::Runs {
+        if !b
+            .prose
+            .as_deref()
+            .is_some_and(concats_review::sessions::is_transcript)
+        {
+            return Vec::new();
+        }
+        self.prose_styles
+            .entry((blob, b.edit_rev))
+            .or_insert_with(|| Arc::new(crate::prose_style::line_styles(&b.text, &b.line_starts)))
+            .get(line)
+            .cloned()
+            .unwrap_or_default()
+    }
+
     /// A code row: the gutter's numbers and marks, the line's text and colours,
     /// and the caret when it is on this line.
     fn draw_code(&mut self, cx: &mut Cx2d, item: &WidgetRef, r: usize, pass: &DrawPass) {
@@ -2306,8 +2330,10 @@ impl ReviewList {
         if let Some(mut g) = gut_ref.borrow_mut::<Gutter>() {
             g.set_row(row, marks);
         }
+        let runs = self.prose_runs(*blob, b, *line as usize);
         if let Some(mut dl) = dl_ref.borrow_mut::<DiffLine>() {
             dl.set_row(*kind, text, spans, selected, caret);
+            dl.set_styles(&runs);
             // Prose wraps whatever the setting says: a prompt is one line per
             // paragraph, and truncating it would hide what is being reviewed.
             dl.wrap = pass.wrap || b.prose.is_some();

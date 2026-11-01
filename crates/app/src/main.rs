@@ -64,6 +64,7 @@ mod load;
 mod markdown;
 mod palette;
 mod pipe;
+mod prose_style;
 /// The recent-repos list behind the header's picker.
 mod recents;
 mod review_doc;
