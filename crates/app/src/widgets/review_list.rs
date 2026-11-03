@@ -1101,6 +1101,9 @@ pub struct ReviewList {
     /// out, so the list keeps it. Dropped when a load lands.
     #[rust]
     parsed: HashMap<String, crate::markdown::Parsed>,
+    /// The same for comment bodies, whose `#N` are links and so parse apart.
+    #[rust]
+    parsed_comments: HashMap<String, crate::markdown::Parsed>,
     /// Each prose blob's line styles, by blob and edit: worked out once,
     /// dropped when a load lands.
     #[rust]
@@ -1920,6 +1923,7 @@ impl ReviewList {
         if self.mapped.0 != d.generation {
             self.requested_highlights.clear();
             self.parsed.clear();
+            self.parsed_comments.clear();
             self.prose_styles.clear();
         }
         // The composer moving is a change of the same kind as a comment landing:
@@ -2366,7 +2370,6 @@ impl ReviewList {
             crate::comments::stamp(c.created_at, store::now(), crate::comments::local_zone())
         });
         let byline = match when {
-            Some(when) if meta.is_empty() => when,
             Some(when) => format!("{meta} · {when}"),
             None => meta.clone(),
         };
@@ -2389,9 +2392,9 @@ impl ReviewList {
         item.widget(cx, ids!(cm_more))
             .set_action_data(ReviewItemAction::More { id: *id });
         let parsed = self
-            .parsed
+            .parsed_comments
             .entry(body.clone())
-            .or_insert_with(|| crate::markdown::parse(body))
+            .or_insert_with(|| crate::markdown::parse_comment(body))
             .clone();
         draw_markdown(cx, item, &parsed, None, &pass.theme);
         if !clamp {

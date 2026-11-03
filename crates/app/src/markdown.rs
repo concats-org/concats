@@ -9,7 +9,7 @@
 use std::{borrow::Cow, sync::Arc};
 
 use concats_diff::{Column, Row, Table};
-use pulldown_cmark::{Alignment, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
+use pulldown_cmark::{Alignment, Event, HeadingLevel, LinkType, Options, Parser, Tag, TagEnd};
 
 use crate::makepad_widgets::{
     Align, Area, Cx2d, Flow, FlowBlockType, Inset, Layout, LiveId, Rect, Scope, Size, TextFlow,
@@ -25,6 +25,68 @@ pub(crate) fn parse(md: &str) -> Parsed {
     Parser::new_ext(md, OPTIONS)
         .map(Event::into_static)
         .collect()
+}
+
+/// A comment's body parsed, each `#N` in its text a link to comment N: the
+/// number agents and the CLI call a comment by.
+pub(crate) fn parse_comment(md: &str) -> Parsed {
+    let (mut in_code, mut in_link) = (false, false);
+    Parser::new_ext(md, OPTIONS)
+        .flat_map(|event| {
+            match &event {
+                Event::Start(Tag::CodeBlock(_)) => in_code = true,
+                Event::End(TagEnd::CodeBlock) => in_code = false,
+                Event::Start(Tag::Link { .. }) => in_link = true,
+                Event::End(TagEnd::Link) => in_link = false,
+                Event::Text(text) if !in_code && !in_link => return numbered(text),
+                _ => {}
+            }
+            vec![event.into_static()]
+        })
+        .collect()
+}
+
+/// The comment a link from [`parse_comment`] goes to.
+pub(crate) fn comment_number(href: &str) -> Option<u64> {
+    href.strip_prefix('#')?.parse().ok()
+}
+
+/// `text` with each `#N` standing alone made a link to comment N. A number
+/// glued to a word or a path (`foo#3`, `#3a`) stays text.
+fn numbered(text: &str) -> Vec<Event<'static>> {
+    let mut events = Vec::new();
+    let mut plain = 0;
+    for (hash, _) in text.match_indices('#') {
+        let end = hash
+            + 1
+            + text[hash + 1..]
+                .bytes()
+                .take_while(u8::is_ascii_digit)
+                .count();
+        let alone = |c: Option<char>| c.is_none_or(|c| !c.is_alphanumeric() && !"_/#&".contains(c));
+        if end == hash + 1
+            || !alone(text[..hash].chars().next_back())
+            || !alone(text[end..].chars().next())
+        {
+            continue;
+        }
+        let number = text[hash..end].to_string();
+        events.extend([
+            Event::Text(text[plain..hash].to_string().into()),
+            Event::Start(Tag::Link {
+                link_type: LinkType::Inline,
+                dest_url: number.clone().into(),
+                title: "".into(),
+                id: "".into(),
+            }),
+            Event::Text(number.into()),
+            Event::End(TagEnd::Link),
+        ]);
+        plain = end;
+    }
+    events.push(Event::Text(text[plain..].to_string().into()));
+    events.retain(|event| !matches!(event, Event::Text(text) if text.is_empty()));
+    events
 }
 
 /// What the table row `md` parses as: itself if it is the head, otherwise
@@ -503,6 +565,43 @@ pub(crate) fn replay(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The text a parse draws, code included.
+    fn texts(parsed: &Parsed) -> Vec<String> {
+        parsed
+            .iter()
+            .filter_map(|event| match event {
+                Event::Text(text) | Event::Code(text) => Some(text.to_string()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_number_standing_alone_links_to_its_comment() {
+        let links = |md: &str| -> Vec<String> {
+            parse_comment(md)
+                .iter()
+                .filter_map(|event| match event {
+                    Event::Start(Tag::Link { dest_url, .. }) => Some(dest_url.to_string()),
+                    _ => None,
+                })
+                .collect()
+        };
+        assert_eq!(links("as proposed in #301."), ["#301"]);
+        assert_eq!(links("(#3) and #4, see #5"), ["#3", "#4", "#5"]);
+        assert_eq!(links("foo#3 #3a a/#3 `#3` #"), Vec::<String>::new());
+        assert_eq!(
+            links("```\n#3\n```\n[see #3](https://x.test)"),
+            ["https://x.test"]
+        );
+        assert_eq!(comment_number("#301"), Some(301));
+        assert_eq!(comment_number("https://x.test"), None);
+        assert_eq!(
+            texts(&parse_comment("as in #301.")),
+            ["as in ", "#301", "."]
+        );
+    }
 
     #[test]
     fn a_parse_owns_its_events() {

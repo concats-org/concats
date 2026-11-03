@@ -909,6 +909,10 @@ impl ReviewPane {
     /// File tab at the line it names. Anything else stays shut, and the
     /// status line says so rather than the click seeming to miss.
     fn open_link(&mut self, cx: &mut Cx, href: &str) {
+        if let Some(id) = crate::markdown::comment_number(href) {
+            self.reveal_comment(cx, id);
+            return;
+        }
         let root = self.state().read(|d| {
             if d.worktree_review() {
                 d.root.clone()
@@ -928,6 +932,31 @@ impl ReviewPane {
                 &format!("only web links and files in this checkout open: {href}"),
             ),
         }
+    }
+
+    /// `#N` in a comment: comment N in the view in front when it shows it,
+    /// otherwise in the Comments tab.
+    fn reveal_comment(&mut self, cx: &mut Cx, id: u64) {
+        let found = self.state().read(|d| {
+            [d.tab, Stream::Comments].into_iter().find_map(|tab| {
+                let row = d
+                    .stream(tab)
+                    .iter()
+                    .position(|row| matches!(row, Row::Comment { id: at, .. } if *at == id))?;
+                Some((tab, row))
+            })
+        });
+        let Some((tab, row)) = found else {
+            self.view
+                .label(cx, ids!(status_label))
+                .set_text(cx, &format!("no comment #{id} in this review"));
+            return;
+        };
+        if tab == Stream::Comments {
+            self.open_stream_tab(cx, tab);
+        }
+        *self.state().reveal.lock().unwrap() = Some((tab, row));
+        self.redraw_streams(cx);
     }
 
     /// ⌘N: an empty Untitled tab where file tabs open, selected, with the

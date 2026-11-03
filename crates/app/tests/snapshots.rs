@@ -1965,6 +1965,26 @@ fn comment_on(repo: &Path, blob: &[&str], body: &str) {
         .expect("store the comment");
 }
 
+/// A #N in a comment opens comment N: in the Comments tab when the view in
+/// front doesn't show it.
+#[test]
+#[ignore = "spawns a GPU process; run with --ignored on a desktop"]
+fn a_comment_number_links_to_its_comment() {
+    let shot = capture(
+        "comment-link",
+        &[("CONCATS_APP_STEPS", "wait; wait; click 161,300; wait; wait")],
+        |repo| {
+            // #1 sits on content the range doesn't have; #2 points at it.
+            std::fs::write(repo.join("gone.rs"), "fn gone() {}\n").expect("a gone file");
+            comment_on(repo, &["hash-object", "-w", "gone.rs"], "the old version");
+            std::fs::remove_file(repo.join("gone.rs")).expect("remove it");
+            comment_on(repo, &["rev-parse", "HEAD:editor.rs"], "as proposed in #1");
+        },
+    );
+    let data = state(&shot, "state.json");
+    assert_eq!(data["current_tab"], "Comments", "{data}");
+}
+
 /// A thread from before the window loaded its range draws its bar washed
 /// out; one posted since keeps the comment blue.
 #[test]

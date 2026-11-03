@@ -202,16 +202,11 @@ pub struct Store {
 const COMMENT_COLUMNS: &str = "path, blob, start, end, body, author, created_at, parent, external, \
                                quote, quote_from, quote_to, worktree";
 
-/// One schema, one location. The guides table lives here too, read and written
-/// through the same per-repo database.
-const SCHEMA: &str = "
-CREATE TABLE IF NOT EXISTS seen(
-  blob TEXT NOT NULL,
-  line INTEGER NOT NULL,
-  PRIMARY KEY(blob, line)
-) WITHOUT ROWID;
+/// The comments table, kept apart from [`SCHEMA`] so a migration can build it
+/// again.
+const COMMENTS_TABLE: &str = "
 CREATE TABLE IF NOT EXISTS comments(
-  id INTEGER PRIMARY KEY,
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
   path TEXT NOT NULL,
   blob TEXT NOT NULL,
   start INTEGER NOT NULL,
@@ -223,8 +218,19 @@ CREATE TABLE IF NOT EXISTS comments(
   external TEXT,
   quote TEXT,
   quote_from INTEGER,
-  quote_to INTEGER
-);
+  quote_to INTEGER,
+  worktree TEXT
+)
+";
+
+/// One schema, one location, with [`COMMENTS_TABLE`]. The guides table lives
+/// here too, read and written through the same per-repo database.
+const SCHEMA: &str = "
+CREATE TABLE IF NOT EXISTS seen(
+  blob TEXT NOT NULL,
+  line INTEGER NOT NULL,
+  PRIMARY KEY(blob, line)
+) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS guides(
   id INTEGER PRIMARY KEY,
   base TEXT NOT NULL,
@@ -283,11 +289,12 @@ pub(crate) fn open_db(git_dir: &Path) -> rusqlite::Result<Connection> {
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))
             .map_err(cannot_open)?;
     }
-    let conn = Connection::open(dir.join("store.db"))?;
+    let mut conn = Connection::open(dir.join("store.db"))?;
     conn.pragma_update(None, "journal_mode", "WAL")?;
     conn.pragma_update(None, "synchronous", "NORMAL")?;
     conn.busy_timeout(std::time::Duration::from_secs(5))?;
     conn.execute_batch(SCHEMA)?;
+    conn.execute_batch(COMMENTS_TABLE)?;
     // `CREATE TABLE IF NOT EXISTS` leaves a table that already exists alone, so
     // a column added later has to be asked for by name.
     for (column, kind) in [
@@ -306,7 +313,31 @@ pub(crate) fn open_db(git_dir: &Path) -> rusqlite::Result<Connection> {
             )?;
         }
     }
+    number_comments_once(&mut conn)?;
     Ok(conn)
+}
+
+/// Rebuild a `comments` table from before AUTOINCREMENT with it. Agents and
+/// the CLI call a comment by its id, so a deleted one must never come back as
+/// another comment, and only a rebuilt table can gain the keyword. The check
+/// runs inside the write lock, so two processes opening the store migrate once.
+fn number_comments_once(conn: &mut Connection) -> rusqlite::Result<()> {
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let numbered: bool = tx.query_row(
+        "SELECT sql LIKE '%AUTOINCREMENT%' FROM sqlite_master WHERE name = 'comments'",
+        (),
+        |row| row.get(0),
+    )?;
+    if !numbered {
+        tx.execute_batch(&format!(
+            "ALTER TABLE comments RENAME TO comments_unnumbered;
+             {COMMENTS_TABLE};
+             INSERT INTO comments (id, {COMMENT_COLUMNS})
+                  SELECT id, {COMMENT_COLUMNS} FROM comments_unnumbered;
+             DROP TABLE comments_unnumbered;"
+        ))?;
+    }
+    tx.commit()
 }
 
 impl Store {
@@ -1035,15 +1066,7 @@ fn flush_outdated(
         .iter()
         .filter(|c| c.path == path && !placed.contains(&thread_key(c)))
     {
-        let byline = byline(c);
-        out.push(comment_row(
-            c,
-            if byline.is_empty() {
-                "outdated".into()
-            } else {
-                format!("{byline} · outdated")
-            },
-        ));
+        out.push(comment_row(c, format!("{} · outdated", byline(c))));
     }
 }
 
@@ -1070,18 +1093,20 @@ pub fn outdated_threads(comments: &[Comment], path: &str, placed: &HashSet<u64>)
         .count()
 }
 
-/// Who said this and, for an imported comment, where it came from. The range is
-/// left out on purpose: the accent bar spanning the lines already says it. The
-/// author is the one thing the strip cannot show otherwise.
+/// The comment's number, who said it and, for an imported comment, where it
+/// came from. The range is left out on purpose: the accent bar spanning the
+/// lines already says it. The number is what agents and the CLI call it by.
 fn byline(c: &Comment) -> String {
-    let mut byline = c.author.clone().unwrap_or_default();
-    if let Some(source) = c.external.as_deref().and_then(|e| e.split(':').next()) {
-        if !byline.is_empty() {
-            byline.push_str(" · ");
-        }
-        byline.push_str(source);
-    }
-    byline
+    let source = c.external.as_deref().and_then(|e| e.split(':').next());
+    [
+        Some(format!("#{}", c.id).as_str()),
+        c.author.as_deref(),
+        source,
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>()
+    .join(" · ")
 }
 
 #[cfg(test)]
@@ -1534,7 +1559,7 @@ mod tests {
         inject_comments(&mut rows, &blobs, &comments, &HashSet::new(), Some("a.txt"));
         assert_eq!(rows.len(), 4);
         assert!(matches!(&rows[2], Row::Comment { body, .. } if body == "range comment"));
-        assert!(matches!(&rows[2], Row::Comment { meta, .. } if meta == "claude"));
+        assert!(matches!(&rows[2], Row::Comment { meta, .. } if meta == "#1 · claude"));
         // Idempotent: re-injecting does not duplicate.
         inject_comments(&mut rows, &blobs, &comments, &HashSet::new(), Some("a.txt"));
         assert_eq!(rows.len(), 4);
@@ -1705,8 +1730,8 @@ mod tests {
         assert_eq!(
             seen,
             [
-                ("this leaks", "octocat · outdated"),
-                ("fixed", "claude · outdated")
+                ("this leaks", "#1 · octocat · outdated"),
+                ("fixed", "#2 · claude · outdated")
             ]
         );
 
@@ -2000,24 +2025,28 @@ mod tests {
     }
 
     #[test]
-    fn the_byline_names_the_author_and_an_imported_comments_source() {
+    fn the_byline_names_the_number_author_and_an_imported_comments_source() {
         let local = Comment {
+            id: 301,
             author: Some("Ada L".into()),
             ..comment("a.txt", anchor(oid(1), 0, 0), "x")
         };
-        assert_eq!(byline(&local), "Ada L");
+        assert_eq!(byline(&local), "#301 · Ada L");
         assert_eq!(
             byline(&Comment {
                 external: Some("github:2181234567".into()),
                 cursors: None,
                 ..local.clone()
             }),
-            "Ada L · github"
+            "#301 · Ada L · github"
         );
-        // Pre-author records have nothing to say.
+        // Pre-author records have only their number.
         assert_eq!(
-            byline(&comment("a.txt", anchor(oid(1), 0, 0), "x")),
-            String::new()
+            byline(&Comment {
+                author: None,
+                ..local
+            }),
+            "#301"
         );
     }
 
@@ -2066,6 +2095,49 @@ mod tests {
         );
         // No guide for a range nothing was submitted against.
         assert!(latest_guide(tmp.path(), &oid(9), &oid(2)).is_none());
+    }
+
+    /// A comment's number is what agents call it by: deleting the newest one
+    /// doesn't hand its number to the next, in a store made before the rule
+    /// too, which keeps the numbers it had.
+    #[test]
+    fn a_deleted_comments_number_never_comes_back() {
+        let tmp = tempfile::tempdir().unwrap();
+        let git_dir = tmp.path().join(".git");
+        let db = common_dir(&git_dir).join("concats-app");
+        std::fs::create_dir_all(&db).unwrap();
+        let old = Connection::open(db.join("store.db")).unwrap();
+        old.execute_batch(
+            "CREATE TABLE comments(id INTEGER PRIMARY KEY, path TEXT NOT NULL, \
+             blob TEXT NOT NULL, start INTEGER NOT NULL, end INTEGER NOT NULL, \
+             body TEXT NOT NULL, author TEXT, created_at INTEGER NOT NULL, \
+             parent INTEGER, external TEXT);",
+        )
+        .unwrap();
+        old.execute(
+            "INSERT INTO comments (id, path, blob, start, end, body, created_at) \
+             VALUES (7, 'a.rs', ?1, 1, 1, 'from before', 0)",
+            [oid(7).to_string()],
+        )
+        .unwrap();
+        drop(old);
+
+        let mut store = Store::open(&git_dir);
+        assert_eq!(store.comments.iter().map(|c| c.id).collect::<Vec<_>>(), [7]);
+        let newest = store
+            .add_comment(comment("a.rs", anchor(oid(7), 2, 2), "newest"))
+            .unwrap();
+        assert_eq!(newest.id, 8);
+        store.delete_comment(newest.id);
+        let next = store
+            .add_comment(comment("a.rs", anchor(oid(7), 2, 2), "next"))
+            .unwrap();
+        assert_eq!(next.id, 9);
+        let reopened = Store::open(&git_dir);
+        assert_eq!(
+            reopened.comments.iter().map(|c| c.id).collect::<Vec<_>>(),
+            [7, 9]
+        );
     }
 
     /// Each comment records the checkout it was made in, so a view can tell
