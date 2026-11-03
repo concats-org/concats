@@ -1965,6 +1965,21 @@ fn comment_on(repo: &Path, blob: &[&str], body: &str) {
         .expect("store the comment");
 }
 
+/// A comment's shortcodes draw as GitHub's emoji; its byline leads with its
+/// number.
+#[test]
+#[ignore = "spawns a GPU process; run with --ignored on a desktop"]
+fn a_comment_shows_its_number_and_its_emoji() {
+    let shot = capture("comment-emoji", &[], |repo| {
+        comment_on(
+            repo,
+            &["rev-parse", "HEAD:editor.rs"],
+            ":+1: looks good :tada:",
+        );
+    });
+    assert_matches("comment-emoji", &shot, EXACT);
+}
+
 /// A #N in a comment opens comment N: in the Comments tab when the view in
 /// front doesn't show it.
 #[test]

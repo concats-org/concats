@@ -9,7 +9,9 @@
 use std::{borrow::Cow, sync::Arc};
 
 use concats_diff::{Column, Row, Table};
-use pulldown_cmark::{Alignment, Event, HeadingLevel, LinkType, Options, Parser, Tag, TagEnd};
+use pulldown_cmark::{
+    Alignment, Event, HeadingLevel, LinkType, Options, Parser, Tag, TagEnd, TextMergeStream,
+};
 
 use crate::makepad_widgets::{
     Align, Area, Cx2d, Flow, FlowBlockType, Inset, Layout, LiveId, Rect, Scope, Size, TextFlow,
@@ -22,7 +24,7 @@ pub(crate) type Parsed = Arc<[Event<'static>]>;
 const OPTIONS: Options = Options::ENABLE_STRIKETHROUGH.union(Options::ENABLE_TABLES);
 
 pub(crate) fn parse(md: &str) -> Parsed {
-    Parser::new_ext(md, OPTIONS)
+    with_emoji(Parser::new_ext(md, OPTIONS))
         .map(Event::into_static)
         .collect()
 }
@@ -31,7 +33,7 @@ pub(crate) fn parse(md: &str) -> Parsed {
 /// number agents and the CLI call a comment by.
 pub(crate) fn parse_comment(md: &str) -> Parsed {
     let (mut in_code, mut in_link) = (false, false);
-    Parser::new_ext(md, OPTIONS)
+    with_emoji(Parser::new_ext(md, OPTIONS))
         .flat_map(|event| {
             match &event {
                 Event::Start(Tag::CodeBlock(_)) => in_code = true,
@@ -89,6 +91,51 @@ fn numbered(text: &str) -> Vec<Event<'static>> {
     events
 }
 
+/// `events` with GitHub's emoji shortcodes (`:+1:`) drawn as the emoji, as
+/// GitHub does, except in code. The text stays as written. Adjacent text is
+/// merged first, because the parser can split a shortcode at an underscore.
+fn with_emoji<'a>(events: impl Iterator<Item = Event<'a>>) -> impl Iterator<Item = Event<'a>> {
+    let mut in_code = false;
+    TextMergeStream::new(events).map(move |event| match event {
+        Event::Start(Tag::CodeBlock(_)) => {
+            in_code = true;
+            event
+        }
+        Event::End(TagEnd::CodeBlock) => {
+            in_code = false;
+            event
+        }
+        Event::Text(text) if !in_code => {
+            emojify(&text).map_or(Event::Text(text), |swapped| Event::Text(swapped.into()))
+        }
+        event => event,
+    })
+}
+
+/// `text` with each shortcode it holds swapped for its emoji, or `None` when
+/// it holds none.
+fn emojify(text: &str) -> Option<String> {
+    let mut out = String::new();
+    let mut rest = text;
+    let mut swapped = false;
+    while let Some(open) = rest.find(':') {
+        let after = &rest[open + 1..];
+        let emoji = after.find(':').and_then(|close| {
+            emojis::get_by_shortcode(&after[..close]).map(|emoji| (emoji, close))
+        });
+        if let Some((emoji, close)) = emoji {
+            out.push_str(&rest[..open]);
+            out.push_str(emoji.as_str());
+            rest = &after[close + 1..];
+            swapped = true;
+        } else {
+            out.push_str(&rest[..=open]);
+            rest = after;
+        }
+    }
+    swapped.then(|| out + rest)
+}
+
 /// What the table row `md` parses as: itself if it is the head, otherwise
 /// beneath the head, as GFM reads a row only there.
 pub(crate) fn row_text(md: &str, table: &Table) -> String {
@@ -106,7 +153,7 @@ pub(crate) fn parse_row(text: &str) -> Parsed {
         return parse(text);
     }
     let mut in_head = false;
-    Parser::new_ext(text, OPTIONS)
+    with_emoji(Parser::new_ext(text, OPTIONS))
         .filter(|event| {
             let skip = in_head || matches!(event, Event::Start(Tag::TableHead));
             in_head = skip && !matches!(event, Event::End(TagEnd::TableHead));
@@ -601,6 +648,21 @@ mod tests {
             texts(&parse_comment("as in #301.")),
             ["as in ", "#301", "."]
         );
+    }
+
+    #[test]
+    fn shortcodes_draw_as_emoji_outside_code() {
+        assert_eq!(
+            texts(&parse(":+1: looks good :tada:")),
+            ["👍 looks good 🎉"]
+        );
+        assert_eq!(texts(&parse(":white_check_mark: done")), ["✅ done"]);
+        assert_eq!(
+            texts(&parse("at 10:30:45, a:zz:c, :nope:")),
+            ["at 10:30:45, a:zz:c, :nope:"]
+        );
+        assert_eq!(texts(&parse("see `:+1:`")), ["see ", ":+1:"]);
+        assert_eq!(texts(&parse("```\n:+1:\n```\n")), [":+1:\n"]);
     }
 
     #[test]
