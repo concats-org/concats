@@ -36,6 +36,9 @@ and `Stop` records the final assistant response. Sessions use Codex's session ID
 so separate agents keep separate conversations even when they share a worktree.
 Existing hooks and notification commands, including Computer Use's `notify`, are
 preserved. Older Concats notification entries are removed when installing.
+Unless you have picked one, it also sets `[tui] notification_method = "osc9"`:
+Codex's `auto` only sends its message to terminals it recognises, and a Concats
+terminal would otherwise get a bare bell.
 
 Restart Codex after installing and review and trust the new definitions in
 `/hooks`, as described in the [Codex hook documentation](https://learn.chatgpt.com/docs/hooks#review-and-trust-hooks).

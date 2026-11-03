@@ -171,6 +171,10 @@ fn installs_and_removes_lifecycle_hooks_without_replacing_notify() {
     for event in ["UserPromptSubmit", "PostToolUse", "Stop"] {
         assert_eq!(installed["hooks"][event].as_array().unwrap().len(), 1);
     }
+    assert_eq!(
+        installed["tui"]["notification_method"].as_str(),
+        Some("osc9")
+    );
     let status = run(&["hooks", "status", "--global"]);
     assert!(
         String::from_utf8_lossy(&status.stderr)

@@ -13,6 +13,10 @@ const PROMPT_EVENT: &str = "UserPromptSubmit";
 const TOOL_EVENT: &str = "PostToolUse";
 const STOP_EVENT: &str = "Stop";
 const EVENTS: [&str; 3] = [PROMPT_EVENT, TOOL_EVENT, STOP_EVENT];
+/// How Codex should send its notifications. Its `auto` picks OSC 9 only in
+/// terminals it recognises, and Concats isn't one, so they would arrive as a
+/// bare bell without the message.
+const NOTIFICATION_METHOD: &str = "osc9";
 
 pub(crate) struct CodexAgent;
 
@@ -135,6 +139,14 @@ fn install_hooks(value: ::toml::Value, binary: &Path) -> Result<::toml::Value> {
         .map_err(|error| Error::session(format!("invalid Codex hook config: {error}")))?;
         groups.push(group);
     }
+    // NOTE: a method the user chose stays, and uninstalling leaves this one.
+    table
+        .entry("tui")
+        .or_insert_with(|| ::toml::Value::Table(::toml::Table::new()))
+        .as_table_mut()
+        .ok_or_else(|| Error::session("codex tui is not a table"))?
+        .entry("notification_method")
+        .or_insert_with(|| NOTIFICATION_METHOD.into());
     Ok(value)
 }
 
@@ -205,6 +217,18 @@ mod tests {
             );
         }
         assert!(value.get("notify").is_none());
+        assert_eq!(
+            value["tui"]["notification_method"].as_str(),
+            Some(NOTIFICATION_METHOD)
+        );
+    }
+
+    #[test]
+    fn keeps_a_notification_method_the_user_chose() {
+        let chosen: ::toml::Value =
+            ::toml::from_str("[tui]\nnotification_method = \"bel\"\nnotifications = true").unwrap();
+        let value = install_hooks(chosen.clone(), Path::new("concats")).unwrap();
+        assert_eq!(value["tui"], chosen["tui"]);
     }
 
     #[test]
