@@ -75,6 +75,8 @@ pub struct Report {
     pub color_queries: Vec<(usize, ColorReply)>,
     /// CSI 14t: the program asking how big the text area is, in pixels.
     pub size_queries: Vec<SizeReply>,
+    /// A bell or a notification since the UI last looked: the tab gets a dot.
+    pub attention: bool,
 }
 
 /// How a program wants the text area's size reported.
@@ -158,13 +160,28 @@ impl EventListener for Proxy {
             }
             // A program's own notification (OSC 9/777) comes from the PTY
             // thread, which reads what this parser drops.
-            Event::Bell => self.bell.lock().unwrap().ring(Instant::now()),
+            Event::Bell => self.report.lock().unwrap().attention = true,
             // The view reads whether the cursor blinks off the term itself;
             // a change only has to redraw it.
             Event::Wakeup | Event::CursorBlinkingChange => {}
             _ => return,
         }
         // Every event that gets here changed what the view shows.
+        dirty().lock().unwrap().insert(self.session);
+        SignalToUI::set_ui_signal();
+    }
+}
+
+impl Proxy {
+    /// A program's own notification (OSC 9/777), read on the PTY thread: up
+    /// on the desktop, and a dot on the tab.
+    fn notify(&self, notification: &osc::Notification) {
+        self.bell.lock().unwrap().notify(
+            Instant::now(),
+            notification.title.as_deref(),
+            &notification.body,
+        );
+        self.report.lock().unwrap().attention = true;
         dirty().lock().unwrap().insert(self.session);
         SignalToUI::set_ui_signal();
     }

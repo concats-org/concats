@@ -143,6 +143,20 @@ pub(crate) fn stream_tabs_in(area: Area) -> Vec<LiveId> {
 
 /// The terminal tabs, the permanent one first. Judged by kind, so it holds for
 /// the permanent tab and every `+`-created session alike.
+/// What marks a terminal tab whose program rang or sent a notification while
+/// nobody was looking. Part of the title, because a tab draws only its name.
+const ATTENTION: &str = "● ";
+
+/// `title` with the attention dot, or without it.
+pub(crate) fn attention_title(title: &str, on: bool) -> String {
+    let bare = title.strip_prefix(ATTENTION).unwrap_or(title);
+    if on {
+        format!("{ATTENTION}{bare}")
+    } else {
+        bare.to_owned()
+    }
+}
+
 pub(crate) fn terminal_tabs(dock: &DockRef) -> Vec<LiveId> {
     let mut tabs: Vec<LiveId> = dock
         .clone_state()
@@ -285,9 +299,14 @@ pub(crate) fn load_layout(git_dir: &Path) -> Option<DockLayoutRon> {
         _ => true,
     });
     for item in state.dock_items.values_mut() {
-        if let DockItem::Tabs { tabs, selected, .. } = item {
-            tabs.retain(|t| !dropped.contains(t));
-            *selected = (*selected).min(tabs.len().saturating_sub(1));
+        match item {
+            DockItem::Tabs { tabs, selected, .. } => {
+                tabs.retain(|t| !dropped.contains(t));
+                *selected = (*selected).min(tabs.len().saturating_sub(1));
+            }
+            // A dot is a moment's state, not layout.
+            DockItem::Tab { name, .. } => *name = attention_title(name, false),
+            DockItem::Splitter { .. } => {}
         }
     }
     Some(state)
@@ -339,6 +358,49 @@ mod tests {
         save_layout(dir.path(), &layout).unwrap();
         let layout = load_layout(dir.path()).expect("the saved layout loads");
         assert!(layout.dock_items.contains_key(&spec.id));
+    }
+
+    /// The dot comes and goes without touching the title, and a saved layout
+    /// comes back without it.
+    #[test]
+    fn a_terminal_title_wears_its_attention_dot_and_loses_it_on_load() {
+        assert_eq!(attention_title("claude", true), "● claude");
+        assert_eq!(attention_title("● claude", true), "● claude");
+        assert_eq!(attention_title("● claude", false), "claude");
+        assert_eq!(attention_title("claude", false), "claude");
+
+        let dir = tempfile::tempdir().unwrap();
+        let spec = terminal_tab_spec();
+        let layout = DockLayoutRon {
+            dock_items: HashMap::from([
+                (
+                    id!(root),
+                    DockItem::Tabs {
+                        tabs: vec![spec.id],
+                        selected: 0,
+                        closable: false,
+                        hide_tab_bar: false,
+                    },
+                ),
+                (
+                    spec.id,
+                    DockItem::Tab {
+                        name: "● claude".into(),
+                        template: spec.template,
+                        kind: spec.kind,
+                    },
+                ),
+            ]),
+            left_restore: 260.0,
+            right_restore: 260.0,
+            bottom_restore: 220.0,
+        };
+        save_layout(dir.path(), &layout).unwrap();
+        let loaded = load_layout(dir.path()).expect("the saved layout loads");
+        assert!(matches!(
+            &loaded.dock_items[&spec.id],
+            DockItem::Tab { name, .. } if name == "claude"
+        ));
     }
 
     /// A panel is its splitter's side, however the user has split it since.

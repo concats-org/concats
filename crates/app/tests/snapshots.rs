@@ -1691,6 +1691,44 @@ fn terminal_keys_open_and_add_terminals() {
     assert_eq!(bar(&data, "bottom"), ["Terminal", "Terminal 2"], "{data}");
 }
 
+/// A bell in a terminal that isn't on screen marks its tab with a dot, and
+/// no notification; showing the tab takes the dot away.
+#[test]
+#[ignore = "needs a macOS window server"]
+fn a_bell_marks_its_tab_until_the_tab_is_shown() {
+    // Both shells ring two seconds in; only the first is out of sight then.
+    let script = (
+        "CONCATS_APP_TERM_SCRIPT",
+        "sleep 2; printf '\\a'; read -r answer\n",
+    );
+    let rang = capture(
+        "bell-dot",
+        &[
+            script,
+            (
+                "CONCATS_APP_STEPS",
+                "key ctrl-`; wait; key ctrl-shift-`; wait; wait; wait; wait",
+            ),
+        ],
+        |_| {},
+    );
+    let data = state(&rang, "state.json");
+    assert_eq!(bar(&data, "bottom")[0], "● Terminal", "{data}");
+    let seen = capture(
+        "bell-dot-seen",
+        &[
+            script,
+            (
+                "CONCATS_APP_STEPS",
+                "key ctrl-`; wait; key ctrl-shift-`; wait; wait; wait; wait; key alt-cmd-left; wait",
+            ),
+        ],
+        |_| {},
+    );
+    let data = state(&seen, "state.json");
+    assert_eq!(bar(&data, "bottom")[0], "Terminal", "{data}");
+}
+
 /// ⇧⌘E puts the keyboard in the browser, so ⌘F opens its filter.
 #[test]
 #[ignore = "spawns a GPU process; run with --ignored on a desktop"]

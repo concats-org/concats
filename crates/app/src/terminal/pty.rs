@@ -230,11 +230,7 @@ impl Loop {
             };
             let chunk = &buf[..unprocessed];
             for notification in self.osc.notifications(chunk) {
-                self.proxy.bell.lock().unwrap().notify(
-                    Instant::now(),
-                    notification.title.as_deref(),
-                    &notification.body,
-                );
+                self.proxy.notify(&notification);
             }
             self.parser.advance(&mut **term, chunk);
             processed += unprocessed;

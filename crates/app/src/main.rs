@@ -493,6 +493,11 @@ impl MatchEvent for App {
         }
         self.focused = Some(state.id);
         self.focus_window(&state);
+        if let Some(window) = self.windows.iter().find(|w| w.state.id == state.id)
+            && let Some(mut pane) = window.pane(cx).borrow_mut::<ReviewPane>()
+        {
+            pane.attention_seen(cx);
+        }
     }
 
     fn handle_timer(&mut self, cx: &mut Cx, e: &TimerEvent) {
@@ -528,8 +533,13 @@ impl MatchEvent for App {
                     if let Some(text) = report.clipboard.take() {
                         cx.copy_to_clipboard(&text);
                     }
-                    if let Some(title) = report.title.take().filter(|t| !t.is_empty()) {
-                        dock.set_tab_title(cx, session.tab, title);
+                    if let Some(mut pane) = window.pane(cx).borrow_mut::<ReviewPane>() {
+                        if let Some(title) = report.title.take().filter(|t| !t.is_empty()) {
+                            pane.terminal_titled(cx, session.tab, &title);
+                        }
+                        if std::mem::take(&mut report.attention) {
+                            pane.terminal_attention(cx, session.tab);
+                        }
                     }
                     terminal::queries::answer(*session, report, &theme::active_theme());
                 }

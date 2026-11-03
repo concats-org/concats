@@ -1,6 +1,6 @@
-//! A terminal's bell, and the notifications programs send, as desktop
-//! notifications: how an agent says it has finished while you are looking at
-//! another window.
+//! The notifications programs send (OSC 9/777) as desktop notifications:
+//! how an agent says it needs you while you are looking at another window. A
+//! plain bell raises none; it only marks the terminal's tab.
 
 use std::{
     path::Path,
@@ -49,11 +49,6 @@ impl Bell {
         self.title = (!title.is_empty()).then(|| title.to_owned());
     }
 
-    /// The program rang at `now`: a notification with nothing to say.
-    pub fn ring(&mut self, now: Instant) {
-        self.notify(now, None, "Bell");
-    }
-
     /// The program asked at `now` to show `body`, under `title` when it gave
     /// one (OSC 9/777) — unless that would repeat or flood.
     pub fn notify(&mut self, now: Instant, title: Option<&str>, body: &str) {
@@ -92,7 +87,7 @@ fn post(title: String, subtitle: Option<String>, message: String) {
             }
         });
         let mut notification = mac_notification_sys::Notification::new();
-        notification.title(&title).message(&message);
+        notification.title(&title).message(&message).default_sound();
         if let Some(subtitle) = &subtitle {
             notification.subtitle(subtitle);
         }

@@ -34,9 +34,9 @@ use super::{
 use crate::{
     FrameData, WindowScope,
     dock::{
-        TabSpec, area_bar, browser_tab_spec, drag_source_tab_id, file_tab_id, holds, model_tab_of,
-        open_tab, settings_tab_spec, shown_tabs, stream_area, stream_tab_spec, stream_tabs_in,
-        terminal_tab_spec, terminal_tabs,
+        TabSpec, area_bar, attention_title, browser_tab_spec, drag_source_tab_id, file_tab_id,
+        holds, model_tab_of, open_tab, settings_tab_spec, shown_tabs, stream_area, stream_tab_spec,
+        stream_tabs_in, terminal_tab_spec, terminal_tabs,
     },
     file_view::{caret_to_line, caret_to_thread, open_file, read_file_sides},
     keymap::Command,
@@ -789,6 +789,10 @@ pub struct ReviewPane {
     /// Numbering for `+`-created terminal tabs ("Terminal 2", …).
     #[rust]
     next_terminal: usize,
+    /// Terminal tabs whose program rang or sent a notification since they
+    /// were last on screen in the focused window: their titles carry a dot.
+    #[rust]
+    attention: HashSet<LiveId>,
     /// The recent repo paths shown in the repo picker, most-recent first. Held
     /// so a row click maps back to its full path (the rows show basenames).
     #[rust]
@@ -1099,6 +1103,7 @@ impl ReviewPane {
     /// go there now, and a terminal whose shell exited starts a new one.
     fn tab_pressed(&mut self, cx: &mut Cx, tab_id: LiveId) {
         self.last_tab = Some(tab_id);
+        self.attention_seen(cx);
         self.state().set_terminal_tab(None);
         if let Some(tab) = model_tab_of(tab_id, &self.open_files()) {
             self.set_gesture_tab(cx, tab);
@@ -1108,6 +1113,78 @@ impl ReviewPane {
             self.open_terminal(cx, tab_id);
             self.state().set_terminal_tab(Some(tab_id));
         }
+    }
+
+    /// A bell or a notification in terminal `tab`: a dot on its title, unless
+    /// the tab is on screen in the focused window.
+    pub(crate) fn terminal_attention(&mut self, cx: &mut Cx, tab: LiveId) {
+        if self.state().is_focused() && self.tabs_on_screen(cx).contains(&tab) {
+            return;
+        }
+        if self.attention.insert(tab) {
+            self.retitle(cx, tab, None);
+        }
+    }
+
+    /// What the program in terminal `tab` now calls itself, its dot kept.
+    pub(crate) fn terminal_titled(&mut self, cx: &mut Cx, tab: LiveId, title: &str) {
+        self.retitle(cx, tab, Some(title));
+    }
+
+    /// Drop the dots of terminal tabs now on screen in the focused window.
+    pub(crate) fn attention_seen(&mut self, cx: &mut Cx) {
+        if self.attention.is_empty() || !self.state().is_focused() {
+            return;
+        }
+        let on_screen = self.tabs_on_screen(cx);
+        let seen: Vec<LiveId> = self
+            .attention
+            .iter()
+            .filter(|tab| on_screen.contains(tab))
+            .copied()
+            .collect();
+        for tab in seen {
+            self.attention.remove(&tab);
+            self.retitle(cx, tab, None);
+        }
+    }
+
+    /// Set terminal `tab`'s title, or keep its current one, with the dot it
+    /// is due.
+    fn retitle(&mut self, cx: &mut Cx, tab: LiveId, title: Option<&str>) {
+        let dock = self.view.dock(cx, ids!(dock));
+        let current = || match dock.clone_state()?.remove(&tab)? {
+            DockItem::Tab { name, .. } => Some(name),
+            _ => None,
+        };
+        if let Some(title) = title.map(str::to_owned).or_else(current) {
+            dock.set_tab_title(
+                cx,
+                tab,
+                attention_title(&title, self.attention.contains(&tab)),
+            );
+        }
+    }
+
+    /// The tabs on screen: each tab bar's selected tab, outside shut panels.
+    fn tabs_on_screen(&mut self, cx: &mut Cx) -> Vec<LiveId> {
+        let Some(items) = self.view.dock(cx, ids!(dock)).clone_state() else {
+            return Vec::new();
+        };
+        let shut: Vec<LiveId> = Panel::ALL
+            .into_iter()
+            .filter(|panel| self.panel_size(cx, *panel).unwrap_or_default() <= 1.0)
+            .filter_map(|panel| panel.side(&items))
+            .flat_map(|side| shown_tabs(&items, side))
+            .collect();
+        items
+            .values()
+            .filter_map(|item| match item {
+                DockItem::Tabs { tabs, selected, .. } => tabs.get(*selected).copied(),
+                _ => None,
+            })
+            .filter(|tab| !shut.contains(tab))
+            .collect()
     }
 
     /// Close `tab_id` the way its ✕ does: a File tab drops its stream, a
@@ -2008,6 +2085,8 @@ impl ReviewPane {
             // The final set marks the layout dirty — studio persists the
             // panel size out-of-band, we ride the dock's needs_save.
             self.set_panel_size(cx, panel, target, true);
+            // A panel that slid open shows its tabs: their dots are seen.
+            self.attention_seen(cx);
         } else {
             self.slide_next_frame = cx.new_next_frame();
         }
