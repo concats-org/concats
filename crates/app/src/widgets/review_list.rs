@@ -30,8 +30,8 @@ use crate::{
     keymap::Command,
     makepad_widgets::{event::TouchState, *},
     review_doc::{
-        Composing, FileView, ReviewDoc, Stream, card_shut, compose_title, first_thread, fold_key,
-        header_title,
+        Composing, FileView, ReviewDoc, Stream, card_shut, compose_title, first_thread,
+        fitted_title, fold_key,
     },
     service::{HighlightCmd, ReviewState, highlight},
 };
@@ -527,14 +527,22 @@ script_mod! {
                         draw_icon.svg: crate_resource("self:resources/icons/caret_right.svg")
                     }
                     seen_box := SeenBox {}
-                    fh_path := Prose {
-                        width: Fit
-                        draw_text.color: C_TEXT
-                        draw_text.text_style: FONT{font_size: 9}
+                    // The path gets what the buttons leave, and `fit_title`
+                    // fits it to that. A view, because a label's area is only
+                    // its first glyph. It holds the label's left inset, so its
+                    // width is the path's room, and it centres the path itself
+                    // because the row's centring misses a filled width.
+                    fh_title := View {
+                        width: Fill height: Fill
+                        align: Align{y: 0.5}
+                        padding: Inset{left: 6}
+                        fh_path := Prose {
+                            padding: Inset{top: 3 bottom: 3}
+                            draw_text.color: C_TEXT
+                            draw_text.text_style: FONT{font_size: 9}
+                        }
                     }
-                    View { width: Fill height: Fit }
-                    // Hidden for a file the head no longer has. Ahead of the
-                    // toggle, so a narrow panel clips the toggle, not this.
+                    // Hidden for a file the head no longer has.
                     fh_open := HeaderButton {
                         text: "Open file"
                     }
@@ -956,9 +964,9 @@ script_mod! {
                 st_shadow_up := ShadowUp {}
                 // Chrome, not content: the copy's path is not selectable.
                 HeaderCard {
-                    fh_frame +: { fh_card +: { fh_row +: { fh_path +: {
+                    fh_frame +: { fh_card +: { fh_row +: { fh_title +: { fh_path +: {
                         selectable: false
-                    } } } }
+                    } } } } }
                     fh_bottom +: { visible: true }
                 }
                 // …and the header's own shadow onto the rows passing beneath it,
@@ -1080,6 +1088,11 @@ pub struct ReviewList {
     /// because the width it wraps at is only known then.
     #[rust]
     long_comments: HashSet<u64>,
+    /// The room each card's title had, by path, with the outdated toggle
+    /// hidden. Read back after a header draws, because the width the row
+    /// leaves the title is only known then.
+    #[rust]
+    title_rooms: HashMap<String, f64>,
     /// The Comments tab's folded replies, from [`folded_replies`]: the row
     /// standing in for each fold, and how many replies it stands for.
     #[rust]
@@ -1492,6 +1505,42 @@ fn outdated_label(hidden: usize, showing: bool) -> String {
     }
 }
 
+/// What the outdated toggle adds to its text in a header row: `HeaderButton`'s
+/// padding (6 + 6) and margin (4), and the row's spacing (8).
+const TOGGLE_CHROME: f64 = 24.0;
+
+/// The room a header's title had in the draw just done, with the outdated
+/// toggle hidden; `None` when the header wasn't drawn.
+fn title_room(cx: &mut Cx2d, root: &WidgetRef) -> Option<f64> {
+    let title = root.view(cx, ids!(fh_title));
+    let area = title.area();
+    if !area.is_valid(cx) {
+        return None;
+    }
+    let inset = title.borrow().map_or(0.0, |view| {
+        view.layout.padding.left + view.layout.padding.right
+    });
+    let outdated = root.button(cx, ids!(fh_outdated));
+    let toggle = if outdated.visible() {
+        text_width(cx, root, &outdated.text()) + TOGGLE_CHROME
+    } else {
+        0.0
+    };
+    Some(area.rect(cx).size.x - inset + toggle)
+}
+
+/// How wide `text` lays out in a header's title.
+// NOTE: the toggle's text is measured this way too, in the title's 9pt
+// rather than its own 8.25, so it gives way a little early.
+fn text_width(cx: &mut Cx2d, root: &WidgetRef, text: &str) -> f64 {
+    root.label(cx, ids!(fh_path)).borrow().map_or(0.0, |label| {
+        let laid = label
+            .draw_text
+            .layout(cx, 0.0, 0.0, None, false, Align::default(), text);
+        f64::from(laid.rows.first().map_or(0.0, |row| row.width_in_lpxs))
+    })
+}
+
 /// What every row of one draw pass reads: the frame, resolved once.
 #[expect(
     clippy::struct_excessive_bools,
@@ -1563,6 +1612,10 @@ fn set_range(cx: &mut Cx2d, list: &mut PortalList, range: &EntryRange) {
 }
 
 impl Widget for ReviewList {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "One pass in drawing order: the rows, the pinned header, the chip."
+    )]
     fn draw_walk(&mut self, cx: &mut Cx2d, scope: &mut Scope, walk: Walk) -> DrawStep {
         let Some(frame) = scope.data.get::<FrameData>() else {
             return DrawStep::done();
@@ -1625,6 +1678,7 @@ impl Widget for ReviewList {
         // fade — reads the theme off the scope like every row does. Drawing the
         // root with an empty one made each of them bail out silently.
         let mut list_scope = Scope::with_props(&pass.theme);
+        let mut pinned = None;
         while let Some(step) = self.view.draw_walk(cx, &mut list_scope, walk).step() {
             let (push, lift) = {
                 let list = step.as_portal_list();
@@ -1661,8 +1715,12 @@ impl Widget for ReviewList {
                 self.arrow_pivots = arrow_pivots(&bands, BELOW_STICKY);
                 self.place_sticky(&list, &bands, &range, &pass)
             };
-            self.draw_sticky(cx, &pass, push, lift);
+            pinned = self.draw_sticky(cx, &pass, push, lift);
             self.draw_chip(cx, &pass);
+        }
+        if let Some(header) = pinned {
+            let sticky = self.view.widget(cx, ids!(sticky));
+            self.refit_header(cx, &sticky, header, &pass);
         }
         if reveal.is_some() {
             let area = self.view.portal_list(cx, ids!(list)).area();
@@ -1962,6 +2020,7 @@ impl ReviewList {
                     .set_visible(cx, self.sticky_idx != Some(r));
                 self.fill_header(cx, &item, r, pass);
                 item.draw_all(cx, &mut Scope::with_props(theme));
+                self.refit_header(cx, &item, r, pass);
             }
             // What the range took out, standing where it was. The file view
             // shows the file as it is, so this is the only trace of a deletion
@@ -2064,8 +2123,9 @@ impl ReviewList {
     }
 
     /// The header of the card at row `r`, in the box under `root`: the list
-    /// row's or the pinned copy's.
-    fn fill_header(&self, cx: &mut Cx2d, root: &WidgetRef, r: usize, pass: &DrawPass) {
+    /// row's or the pinned copy's. Returns whether its title or toggle
+    /// changed, which after a draw means it has to draw again.
+    fn fill_header(&self, cx: &mut Cx2d, root: &WidgetRef, r: usize, pass: &DrawPass) -> bool {
         let Some(Row::FileHeader {
             path,
             adds,
@@ -2075,7 +2135,7 @@ impl ReviewList {
             ..
         }) = pass.rows.get(r)
         else {
-            return;
+            return false;
         };
         let d = pass.doc;
         root.widget(cx, ids!(seen_box))
@@ -2098,8 +2158,6 @@ impl ReviewList {
                     seen: seen == Seen::All,
                 });
         }
-        root.label(cx, ids!(fh_path))
-            .set_text(cx, &header_title(path, from.as_deref()));
         root.check_box(cx, ids!(seen_box))
             .set_active(cx, seen == Seen::All, Animate::No);
         // A Comments card is the code a thread is on, not a change to it.
@@ -2119,16 +2177,14 @@ impl ReviewList {
         } else {
             store::outdated_threads(&pass.review.comments, path, &d.placed_threads)
         };
-        let outdated = root.button(cx, ids!(fh_outdated));
-        outdated.set_visible(cx, hidden > 0);
-        if hidden > 0 {
-            outdated.set_text(
-                cx,
-                &outdated_label(hidden, d.show_all_comments.contains(path)),
-            );
+        let toggle =
+            (hidden > 0).then(|| outdated_label(hidden, d.show_all_comments.contains(path)));
+        if let Some(text) = &toggle {
+            root.button(cx, ids!(fh_outdated)).set_text(cx, text);
             root.widget(cx, ids!(fh_outdated))
                 .set_action_data(ReviewItemAction::Outdated { path: path.clone() });
         }
+        let changed = self.fit_title(cx, root, (path, from.as_deref()), toggle.as_deref());
         let at_head = d.tree.binary_search(path).is_ok();
         root.button(cx, ids!(fh_open)).set_visible(cx, at_head);
         // A Comments card opens its file at the first thread in it.
@@ -2148,6 +2204,55 @@ impl ReviewList {
         root.button(cx, ids!(fold_button)).set_visible(cx, !folded);
         root.button(cx, ids!(unfold_button)).set_visible(cx, folded);
         root.view(cx, ids!(fh_rule)).set_visible(cx, !folded);
+        changed
+    }
+
+    /// Set a card's title to fit the room it had when last drawn, and show the
+    /// outdated toggle only while the path keeps its first directory beside
+    /// it: the toggle matters least. Returns whether either changed.
+    fn fit_title(
+        &self,
+        cx: &mut Cx2d,
+        root: &WidgetRef,
+        (path, from): (&str, Option<&str>),
+        toggle: Option<&str>,
+    ) -> bool {
+        // Not drawn yet at this width: room for anything until it is.
+        let bare = self.title_rooms.get(path).copied().unwrap_or(f64::INFINITY);
+        let toggle_width = toggle.map_or(0.0, |text| text_width(cx, root, text) + TOGGLE_CHROME);
+        let toggled = toggle.is_some() && {
+            let beside = fitted_title(path, from, |text| {
+                text_width(cx, root, text) <= bare - toggle_width
+            });
+            let side = beside.rsplit("  →  ").next().unwrap_or(&beside);
+            side == path
+                || path
+                    .split_once('/')
+                    .is_some_and(|(first, _)| side.starts_with(&format!("{first}/")))
+        };
+        let left = if toggled { bare - toggle_width } else { bare };
+        let text = fitted_title(path, from, |text| text_width(cx, root, text) <= left);
+        let title = root.label(cx, ids!(fh_path));
+        let outdated = root.button(cx, ids!(fh_outdated));
+        let changed = title.text() != text || outdated.visible() != toggled;
+        title.set_text(cx, &text);
+        outdated.set_visible(cx, toggled);
+        changed
+    }
+
+    /// Keep the room a header's title had in the draw just done, and fill it
+    /// again if that changes what it says: its first draw, a resize, the
+    /// toggle coming or going.
+    fn refit_header(&mut self, cx: &mut Cx2d, root: &WidgetRef, r: usize, pass: &DrawPass) {
+        let (Some(Row::FileHeader { path, .. }), Some(width)) =
+            (pass.rows.get(r), title_room(cx, root))
+        else {
+            return;
+        };
+        self.title_rooms.insert(path.clone(), width);
+        if self.fill_header(cx, root, r, pass) {
+            cx.redraw_area_in_draw(root.area());
+        }
     }
 
     /// A row of Markdown: a title, prose, or a table's row, drawn from a
@@ -2585,12 +2690,18 @@ impl ReviewList {
     /// a path lookup walks makepad's widget-tree cache, and refreshing a dirty
     /// node needs to borrow this widget's children — impossible while the draw
     /// loop holds the list, where the lookup silently returns an empty ref and
-    /// every set on it is a no-op.
+    /// every set on it is a no-op. Returns the header row the copy shows.
     #[expect(
         clippy::cast_possible_truncation,
         reason = "The shader stores pixel dimensions as f32."
     )]
-    fn draw_sticky(&mut self, cx: &mut Cx2d, pass: &DrawPass, push: f64, lift: f64) {
+    fn draw_sticky(
+        &mut self,
+        cx: &mut Cx2d,
+        pass: &DrawPass,
+        push: f64,
+        lift: f64,
+    ) -> Option<usize> {
         let sticky = self.view.view(cx, ids!(sticky));
         let pinned = self
             .sticky_idx
@@ -2599,7 +2710,7 @@ impl ReviewList {
             if sticky.visible() {
                 sticky.set_visible(cx, false);
             }
-            return;
+            return None;
         };
         self.fill_header(cx, &sticky, header, pass);
         if let Some(mut view) = sticky.borrow_mut() {
@@ -2619,6 +2730,7 @@ impl ReviewList {
         if !sticky.visible() {
             sticky.set_visible(cx, true);
         }
+        Some(header)
     }
 
     /// Arm the platform text input at the caret. Without it, typed characters

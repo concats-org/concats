@@ -938,6 +938,61 @@ fn a_deleted_file_card_has_no_open_button() {
     assert_matches("deleted-card", &actual, EXACT);
 }
 
+/// A file deep in the tree, changed in the worktree, with a conversation on
+/// a version the range doesn't have: its card offers Open file and an
+/// outdated toggle.
+fn deep_card(repo: &Path) {
+    let path = "crates/app/src/widgets/review_list/narrow_header.rs";
+    let file = repo.join(path);
+    std::fs::create_dir_all(file.parent().expect("a parent")).expect("deep dirs");
+    std::fs::write(&file, "fn old() {}\n").expect("an outdated version");
+    let gone = git(repo, &["hash-object", "-w", path]);
+    std::fs::write(&file, "fn head() {}\n").expect("the head version");
+    git(repo, &["add", "-A"]);
+    git(repo, &["commit", "-qm", "deep"]);
+    std::fs::write(&file, "fn head() {}\nfn worktree() {}\n").expect("the change");
+    let mut store = concats_review::store::Store::open(&repo.join(".git"));
+    store
+        .add_comment(concats_review::store::Comment {
+            body: "still needed?".into(),
+            created_at: 1,
+            ..concats_review::store::comment(
+                path.into(),
+                concats_review::store::Anchor {
+                    blob: gix::ObjectId::from_hex(gone.trim().as_bytes()).expect("blob oid"),
+                    start: 1,
+                    end: 1,
+                },
+            )
+        })
+        .expect("store the comment");
+}
+
+/// In a narrow window a deep path loses its middle directories, Open file
+/// stays, and the outdated toggle gives way first.
+#[test]
+#[ignore = "spawns a GPU process; run with --ignored on a desktop"]
+fn a_deep_path_shortens_in_a_narrow_card_header() {
+    for (name, size) in [
+        ("deep-path-narrow", "520x400"),
+        ("deep-path-middle", "860x400"),
+        ("deep-path-wide", "1280x400"),
+    ] {
+        let shot = capture(name, &[("CONCATS_APP_SIZE", size)], deep_card);
+        assert_matches(name, &shot, EXACT);
+    }
+    // Find still reads the whole path, cut-out middle included.
+    let shot = capture(
+        "deep-path-find",
+        &[
+            ("CONCATS_APP_SIZE", "520x400"),
+            ("CONCATS_APP_FIND", "review_list"),
+        ],
+        deep_card,
+    );
+    assert_eq!(state(&shot, "state.json")["find_count"], "0/1");
+}
+
 /// The Guide's cards are the same header: its Open file opens the file too.
 #[test]
 #[ignore = "spawns a GPU process; run with --ignored on a desktop"]

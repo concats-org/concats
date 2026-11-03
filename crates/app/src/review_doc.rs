@@ -594,6 +594,53 @@ pub(crate) fn header_title<'a>(path: &'a str, from: Option<&str>) -> std::borrow
     }
 }
 
+/// [`header_title`] cut down until it `fits`. The path loses its middle
+/// directories first and its file name last. A rename that doesn't fit whole
+/// keeps only the old file name.
+pub(crate) fn fitted_title(
+    path: &str,
+    from: Option<&str>,
+    mut fits: impl FnMut(&str) -> bool,
+) -> String {
+    let whole = header_title(path, from);
+    if fits(&whole) {
+        return whole.into_owned();
+    }
+    match from {
+        Some(from) => {
+            let old = from.rsplit('/').next().unwrap_or(from);
+            let new = fitted_path(path, |new| fits(&format!("{old}  →  {new}")));
+            format!("{old}  →  {new}")
+        }
+        None => fitted_path(path, fits),
+    }
+}
+
+/// The longest of `path`'s shortenings that `fits`: the first directory, "…"
+/// and as many trailing parts as there is room for; then without the first
+/// directory; then the file name, cut from the front.
+fn fitted_path(path: &str, mut fits: impl FnMut(&str) -> bool) -> String {
+    let parts: Vec<&str> = path.split('/').collect();
+    let last = parts.len() - 1;
+    let name = parts[last];
+    let tail = |kept: usize| parts[last + 1 - kept..].join("/");
+    let first_kept = (1..last)
+        .rev()
+        .map(|kept| format!("{}/…/{}", parts[0], tail(kept)));
+    let first_dropped = (1..=last).rev().map(|kept| format!("…/{}", tail(kept)));
+    let name_cut = name
+        .char_indices()
+        .skip(1)
+        .map(|(at, _)| format!("…{}", &name[at..]));
+    std::iter::once(path.to_string())
+        .chain(first_kept)
+        .chain(first_dropped)
+        .chain(std::iter::once(name.to_string()))
+        .chain(name_cut)
+        .find(|candidate| fits(candidate))
+        .unwrap_or_else(|| "…".to_string())
+}
+
 pub(crate) fn blob_label(d: &ReviewDoc, blob: u32) -> String {
     blob_name(d, blob).map_or_else(
         || format!("blob {}", &d.blobs[blob as usize].oid.to_string()[..10]),
@@ -1027,6 +1074,30 @@ pub(crate) mod tests {
         };
         assert_eq!(status_line(&d), "");
         assert!(status_line(&ReviewDoc::default()).contains("open a repository"));
+    }
+
+    fn fitted(path: &str, from: Option<&str>, room: usize) -> String {
+        fitted_title(path, from, |text| text.chars().count() <= room)
+    }
+
+    #[test]
+    fn a_title_loses_its_middle_directories_before_its_first_and_its_name_last() {
+        let path = "crates/app/src/widgets/review_list.rs";
+        assert_eq!(fitted(path, None, 99), path);
+        assert_eq!(fitted(path, None, 34), "crates/…/widgets/review_list.rs");
+        assert_eq!(fitted(path, None, 23), "crates/…/review_list.rs");
+        assert_eq!(fitted(path, None, 22), "…/review_list.rs");
+        assert_eq!(fitted(path, None, 14), "review_list.rs");
+        assert_eq!(fitted(path, None, 8), "…list.rs");
+        assert_eq!(fitted("src/main.rs", None, 8), "main.rs");
+        assert_eq!(fitted("README.md", None, 6), "…ME.md");
+    }
+
+    #[test]
+    fn a_rename_that_does_not_fit_keeps_only_the_old_file_name() {
+        let (old, new) = ("crates/y/src/b.rs", "crates/x/src/a.rs");
+        assert_eq!(fitted(new, Some(old), 99), format!("{old}  →  {new}"));
+        assert_eq!(fitted(new, Some(old), 22), "b.rs  →  crates/…/a.rs");
     }
 
     use std::collections::HashMap;
