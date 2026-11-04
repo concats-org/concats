@@ -486,6 +486,17 @@ impl App {
                     })
                 }
             }
+            // A click on the notification of the primary window's terminal
+            // tab `arg`, through the queue the poster thread fills.
+            "notified" => {
+                if let Some(window) = self.primary() {
+                    crate::terminal::bell::clicked(crate::terminal::Session {
+                        window: window.state.id,
+                        tab: LiveId::from_str(arg),
+                    });
+                }
+                return true;
+            }
             // What the menu item `arg` does, through the path the menu takes.
             "menu" => {
                 self.menu_command(cx, LiveId::from_str(arg));

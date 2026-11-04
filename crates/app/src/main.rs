@@ -546,6 +546,7 @@ impl MatchEvent for App {
                 }
             }
         }
+        self.show_notified(cx);
         let mut dirty = false;
         for window in &mut self.windows {
             dirty |= window.reconcile(cx);
@@ -826,6 +827,28 @@ impl App {
         };
         if let Some(mut pane) = window.pane(cx).borrow_mut::<ReviewPane>() {
             pane.start_load(cx, target, None, Some("loading…"));
+        }
+    }
+
+    /// Notifications clicked since the last signal: each one's window over
+    /// the app's others (a level change and back puts it at the front of the
+    /// normal level), and its terminal shown. The click itself brought the app
+    /// forward, which is all a terminal closed since gets.
+    // NOTE: split out of handle_signal, which clippy holds to its complexity limit.
+    fn show_notified(&mut self, cx: &mut Cx) {
+        let clicked = terminal::bell::take_clicked().into_iter();
+        for session in clicked.filter(|session| terminal::is_open(*session)) {
+            let Some(window) = self.windows.iter().find(|w| w.state.id == session.window) else {
+                continue;
+            };
+            if let Some(id) = window.window.as_window().window_id() {
+                cx.push_unique_platform_op(CxOsOp::Deminiaturize(id));
+                cx.push_unique_platform_op(CxOsOp::SetTopmost(id, true));
+                cx.push_unique_platform_op(CxOsOp::SetTopmost(id, false));
+            }
+            if let Some(mut pane) = window.pane(cx).borrow_mut::<ReviewPane>() {
+                pane.show_notified(cx, session.tab);
+            }
         }
     }
 

@@ -4,8 +4,13 @@
 
 use std::{
     path::Path,
+    sync::Mutex,
     time::{Duration, Instant},
 };
+
+use makepad_widgets::makepad_platform::thread::SignalToUI;
+
+use super::Session;
 
 /// How long the same notification stays merged into the one it repeats, so a
 /// program that rings in a loop raises one rather than one per bell.
@@ -21,9 +26,27 @@ const FLOOD: Duration = Duration::from_secs(1);
 #[cfg(target_os = "macos")]
 const BUNDLE: &str = "dev.concats.app";
 
+/// The terminals whose notification was clicked, waiting for the UI to bring
+/// them to the front.
+static CLICKED: Mutex<Vec<Session>> = Mutex::new(Vec::new());
+
+/// The terminals whose notification was clicked since the UI last looked.
+pub fn take_clicked() -> Vec<Session> {
+    std::mem::take(&mut CLICKED.lock().unwrap())
+}
+
+/// A click on `session`'s notification: from the poster thread, or from the
+/// hooks, since a test can't click a real one.
+pub fn clicked(session: Session) {
+    CLICKED.lock().unwrap().push(session);
+    SignalToUI::set_ui_signal();
+}
+
 /// One terminal's notifications: what they are named after, and the last one
 /// raised.
 pub struct Bell {
+    /// The terminal a click on one of them brings to the front.
+    session: Session,
     /// The directory the shell started in, by name: the window's repo.
     place: String,
     /// What the program last called itself (OSC 0/2).
@@ -33,8 +56,9 @@ pub struct Bell {
 }
 
 impl Bell {
-    pub fn new(cwd: &Path) -> Self {
+    pub fn new(session: Session, cwd: &Path) -> Self {
         Self {
+            session,
             place: cwd.file_name().map_or_else(
                 || cwd.display().to_string(),
                 |name| name.to_string_lossy().into_owned(),
@@ -59,6 +83,7 @@ impl Bell {
         self.raised = Some((now, said));
         let terminal = self.title.as_deref().unwrap_or("Terminal");
         post(
+            self.session,
             format!("{} — {terminal}", self.place),
             title.map(str::to_owned),
             body.to_owned(),
@@ -75,9 +100,13 @@ fn due(raised: Option<&(Instant, String)>, now: Instant, said: &str) -> bool {
     })
 }
 
-/// Post a notification off the caller's thread — delivery can block. The
-/// program's own title, when it gave one, goes under the terminal's.
-fn post(title: String, subtitle: Option<String>, message: String) {
+/// Post a notification off the caller's thread, which then waits for it to
+/// be clicked or cleared: a click queues `session` for the UI to bring to the
+/// front. The program's own title, when it gave one, goes under the
+/// terminal's.
+// NOTE: each notification still in Notification Center holds its thread; the
+// merge and flood limits above keep those few.
+fn post(session: Session, title: String, subtitle: Option<String>, message: String) {
     #[cfg(target_os = "macos")]
     std::thread::spawn(move || {
         static IDENTITY: std::sync::Once = std::sync::Once::new();
@@ -87,16 +116,22 @@ fn post(title: String, subtitle: Option<String>, message: String) {
             }
         });
         let mut notification = mac_notification_sys::Notification::new();
-        notification.title(&title).message(&message).default_sound();
+        notification
+            .title(&title)
+            .message(&message)
+            .default_sound()
+            .wait_for_click(true);
         if let Some(subtitle) = &subtitle {
             notification.subtitle(subtitle);
         }
-        if let Err(error) = notification.send() {
-            eprintln!("concats-app: cannot raise a notification: {error}");
+        match notification.send() {
+            Ok(mac_notification_sys::NotificationResponse::Click) => clicked(session),
+            Ok(_) => {}
+            Err(error) => eprintln!("concats-app: cannot raise a notification: {error}"),
         }
     });
     #[cfg(not(target_os = "macos"))]
-    drop((title, subtitle, message));
+    drop((session, title, subtitle, message));
 }
 
 #[cfg(test)]

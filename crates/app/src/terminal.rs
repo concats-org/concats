@@ -320,7 +320,7 @@ pub fn open(session: Session, cwd: &Path) {
         sender: sender.clone(),
         exited: exited.clone(),
         report: report.clone(),
-        bell: Arc::new(Mutex::new(bell::Bell::new(cwd))),
+        bell: Arc::new(Mutex::new(bell::Bell::new(session, cwd))),
     };
     let term = Arc::new(FairMutex::new(Term::new(config, &size, proxy.clone())));
     pty::spawn(pty, term.clone(), proxy, inbox);

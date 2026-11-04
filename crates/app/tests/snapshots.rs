@@ -1727,6 +1727,30 @@ fn a_bell_marks_its_tab_until_the_tab_is_shown() {
     assert_eq!(bar(&data, "bottom")[0], "Terminal", "{data}");
 }
 
+/// A click on a terminal's notification shows that terminal: its panel,
+/// shut since, slides open again. A terminal closed since shows nothing.
+#[test]
+#[ignore = "needs a macOS window server"]
+fn a_clicked_notification_shows_its_terminal() {
+    for (name, click, bottom) in [
+        ("notification-unclicked", "", 0.0),
+        ("notification-click", "notified terminal_tab; ", 220.0),
+        ("notification-closed", "notified closed_tab; ", 0.0),
+    ] {
+        let steps = format!("key ctrl-`; {SETTLE}; key cmd-j; {SETTLE}; {click}{SETTLE}");
+        let shot = capture(
+            name,
+            &[
+                ("CONCATS_APP_TERM_SCRIPT", "read -r answer\n"),
+                ("CONCATS_APP_STEPS", steps.as_str()),
+            ],
+            |_| {},
+        );
+        let data = state(&shot, "state.json");
+        assert_eq!(panel(&data, "bottom"), bottom, "{name}: {data}");
+    }
+}
+
 /// ⇧⌘E puts the keyboard in the browser, so ⌘F opens its filter.
 #[test]
 #[ignore = "spawns a GPU process; run with --ignored on a desktop"]

@@ -1131,6 +1131,16 @@ impl ReviewPane {
         self.retitle(cx, tab, Some(title));
     }
 
+    /// A click on terminal `tab`'s notification: show the tab, sliding its
+    /// panel open when shut, and drop its dot, since the click was the look.
+    pub(crate) fn show_notified(&mut self, cx: &mut Cx, tab: LiveId) {
+        self.view.dock(cx, ids!(dock)).select_tab(cx, tab);
+        self.reveal_tab(cx, tab);
+        if self.attention.remove(&tab) {
+            self.retitle(cx, tab, None);
+        }
+    }
+
     /// Drop the dots of terminal tabs now on screen in the focused window.
     pub(crate) fn attention_seen(&mut self, cx: &mut Cx) {
         if self.attention.is_empty() || !self.state().is_focused() {
