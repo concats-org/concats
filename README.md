@@ -11,6 +11,22 @@ Software engineering was always more than syntax. In a world where more of the w
 
 ## Getting Started
 
+### The `concats` command
+
+The app ships the `concats` command inside its bundle. Put it on your PATH
+with **Concats › Install concats Command**, which links
+`/usr/local/bin/concats` to the copy in the app (asking for an
+administrator's password when that directory isn't yours), or link it by
+hand:
+
+```sh
+ln -sf /Applications/Concats.app/Contents/MacOS/concats /usr/local/bin/concats
+```
+
+The link follows the app, so the command and the app it talks to never
+drift apart. `cargo install --path crates/cli --features review` is for
+working on Concats itself.
+
 ### Claude Code Hooks
 
 If you're already using [Claude Code](https://docs.anthropic.com/en/docs/claude-code), the fastest way to start is via hooks:

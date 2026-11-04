@@ -32,6 +32,8 @@ pub(crate) enum Command {
     Settings,
     /// Settings, where the key bindings are.
     Keymap,
+    /// Put the `concats` command the app ships on the PATH.
+    InstallCli,
     /// Open or shut the panel on this side, whatever it holds.
     TogglePanel(Area),
     /// The terminal: reveal it and type into it.
@@ -102,6 +104,11 @@ pub(crate) const COMMANDS: &[(Command, &str, &str)] = &[
     (Command::Tab(9), "tab_9", "Tab 9"),
     (Command::Settings, "settings", "Settings"),
     (Command::Keymap, "keymap", "Keymap"),
+    (
+        Command::InstallCli,
+        "install_cli",
+        "Install concats Command",
+    ),
     (
         Command::TogglePanel(Area::Left),
         "toggle_left_panel",

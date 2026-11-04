@@ -647,6 +647,7 @@ dependencies = [
  "rfd",
  "rusqlite",
  "serde_json",
+ "shlex",
  "tempfile",
  "thiserror 2.0.20",
  "toml",

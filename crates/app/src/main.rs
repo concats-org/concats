@@ -50,6 +50,7 @@ use window::WindowState;
 
 use crate::theme::paint;
 
+mod command_link;
 mod comments;
 mod dev_hooks;
 mod dock;
@@ -677,13 +678,16 @@ impl App {
                 items: vec![
                     MacosMenu::Sub {
                         name: "Concats".to_string(),
-                        items: vec![MacosMenu::Item {
-                            command: live_id!(quit),
-                            key: KeyCode::KeyQ,
-                            shift: false,
-                            enabled: true,
-                            name: "Quit Concats".to_string(),
-                        }],
+                        items: vec![
+                            item(Command::InstallCli),
+                            MacosMenu::Item {
+                                command: live_id!(quit),
+                                key: KeyCode::KeyQ,
+                                shift: false,
+                                enabled: true,
+                                name: "Quit Concats".to_string(),
+                            },
+                        ],
                     },
                     MacosMenu::Sub {
                         name: "File".to_string(),
@@ -732,6 +736,9 @@ impl App {
         match command {
             Command::NewFile => pane.new_file(cx),
             Command::Settings | Command::Keymap => pane.open_settings_tab(cx),
+            Command::InstallCli => pane
+                .label(cx, ids!(status_label))
+                .set_text(cx, &command_link::install()),
             Command::CloseTab
             | Command::CloseOtherTabs
             | Command::CloseSavedTabs

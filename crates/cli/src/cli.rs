@@ -5,6 +5,7 @@ use clap::{Parser, Subcommand};
 #[derive(Parser)]
 #[command(
     name = "concats",
+    version,
     about = "Concats \u{2013} git-native session history for coding agents"
 )]
 pub struct Cli {

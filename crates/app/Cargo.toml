@@ -47,6 +47,9 @@ icons = [
     "./resources/icon.ico",
 ]
 out_dir = "./dist"
+# The `concats` command, beside the app in Contents/MacOS: installing it is a
+# link (Concats > Install concats Command), so it can't drift from the app.
+external_binaries = ["./dist/bin/concats"]
 
 resources = [
     { src = "./dist/resources/makepad_widgets", target = "makepad_widgets" },
@@ -60,6 +63,9 @@ meta=$(cargo metadata --no-deps --format-version 1)
 release="$(printf '%s' "$meta" | jq -r .target_directory)/release"
 build="$(printf '%s' "$meta" | jq -r .build_directory)/release"
 [ "$build" = "$release" ] || ln -sf "$build/makepad-widgets.path" "$release/"
+cargo build --release -p concats-cli --features review
+mkdir -p dist/bin
+cp "$release/concats" "dist/bin/concats-$(rustc -vV | sed -n 's/^host: //p')"
 robius-packaging-commands before-each-package \
     --force-makepad \
     --binary-name concats-app \
@@ -115,6 +121,8 @@ jiff = "0.2"
 
 # Native folder picker behind the header's repo name.
 rfd = { workspace = true }
+# Quoting the bundled command's path for the administrator prompt that links it.
+shlex = { workspace = true }
 
 # A terminal's bell, and the notifications programs send, as desktop
 # notifications. No unsafe on our side, and it posts from a development build
