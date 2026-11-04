@@ -722,6 +722,7 @@ impl App {
                 "has_caret": d.caret.is_some(),
                 "expanded_comments": d.expanded_comments.iter().collect::<std::collections::BTreeSet<_>>(),
                 "expanded_threads": d.expanded_threads.iter().collect::<std::collections::BTreeSet<_>>(),
+                "folded_threads": d.folded_threads.iter().collect::<std::collections::BTreeSet<_>>(),
                 "draft": *state.compose_draft.read().unwrap(),
                 "composer_open": d.composer_tab.is_some(),
                 "compose_ranges": match d.compose {

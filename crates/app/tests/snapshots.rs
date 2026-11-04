@@ -2036,6 +2036,51 @@ fn a_comment_number_links_to_its_comment() {
     assert_eq!(data["current_tab"], "Comments", "{data}");
 }
 
+/// A long comment under the code stops at five lines too, and a thread folds
+/// to one line and opens again.
+#[test]
+#[ignore = "spawns a GPU process; run with --ignored on a desktop"]
+fn a_comment_under_the_code_clamps_and_its_thread_folds() {
+    let long = |repo: &Path| comment_on(repo, &["rev-parse", "HEAD:editor.rs"], LONG_COMMENT);
+    let shot = capture("diff-comment-clamped", &[], long);
+    assert_matches("diff-comment-clamped", &shot, EXACT);
+
+    let more = capture(
+        "diff-comment-more",
+        &[("CONCATS_APP_STEPS", "wait; wait; click 77,419; wait; wait")],
+        long,
+    );
+    assert_eq!(
+        state(&more, "state.json")["expanded_comments"],
+        serde_json::json!([1])
+    );
+
+    let folded = capture(
+        "diff-thread-folded",
+        &[("CONCATS_APP_STEPS", "wait; wait; click 938,269; wait; wait")],
+        long,
+    );
+    assert_eq!(
+        state(&folded, "state.json")["folded_threads"],
+        serde_json::json!([1])
+    );
+    assert_matches("diff-thread-folded", &folded, EXACT);
+
+    // The line opens the thread again; a reload keeps a fold.
+    for (name, then, expected) in [
+        ("diff-thread-opened", "click 160,260", serde_json::json!([])),
+        ("diff-thread-reloaded", "key cmd-r", serde_json::json!([1])),
+    ] {
+        let steps = format!("wait; wait; click 938,269; wait; wait; {then}; wait; wait");
+        let shot = capture(name, &[("CONCATS_APP_STEPS", steps.as_str())], long);
+        assert_eq!(
+            state(&shot, "state.json")["folded_threads"],
+            expected,
+            "{name}"
+        );
+    }
+}
+
 /// A thread from before the window loaded its range draws its bar washed
 /// out; one posted since keeps the comment blue.
 #[test]

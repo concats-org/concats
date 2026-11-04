@@ -2337,6 +2337,14 @@ impl ReviewPane {
                     self.state().with(|d| d.expanded_threads.insert(*root));
                     self.redraw_streams(cx);
                 }
+                ReviewItemAction::FoldThread { root } if clicked => {
+                    self.state().with(|d| {
+                        if !d.folded_threads.remove(root) {
+                            d.folded_threads.insert(*root);
+                        }
+                    });
+                    self.redraw_streams(cx);
+                }
                 ReviewItemAction::OpenFile { path, thread } if clicked => {
                     self.open_file_tab(cx, path, None);
                     // Looked for once the tab is open: its file is where the
@@ -2392,6 +2400,7 @@ impl ReviewPane {
                 | ReviewItemAction::More { .. }
                 | ReviewItemAction::Link { .. }
                 | ReviewItemAction::Replies { .. }
+                | ReviewItemAction::FoldThread { .. }
                 | ReviewItemAction::Reveal { .. }
                 | ReviewItemAction::Post
                 | ReviewItemAction::Cancel => {}

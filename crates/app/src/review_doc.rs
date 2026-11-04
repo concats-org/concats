@@ -200,6 +200,8 @@ pub struct ReviewDoc {
     /// The threads the Comments tab shows every reply of: the rest fold the
     /// replies between their first and last.
     pub expanded_threads: HashSet<u64>,
+    /// Threads folded to one line in the diffs and File tabs, by root.
+    pub folded_threads: HashSet<u64>,
     /// Where each comment's quote sits, by the blob and line a row carries:
     /// the byte ranges to underline. Rebuilt by
     /// [`crate::comments::splice_comments`], because
