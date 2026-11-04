@@ -30,11 +30,18 @@ than a wall of text: changes grouped by concern instead of by path, each
 group preceded by the rationale that produced it, mined from the transcripts
 the capture layer already wrote into the repository.
 """
+# NOTE: the packager files a PNG under the icns slot its size names, and
+# under the Retina one only when its name ends in @2x. A missing Retina slot
+# leaves macOS upscaling a smaller icon wherever it draws one small.
 icons = [
+    "./resources/icon_16.png",
+    "./resources/icon_16@2x.png",
     "./resources/icon_32.png",
-    "./resources/icon_64.png",
+    "./resources/icon_32@2x.png",
     "./resources/icon_128.png",
+    "./resources/icon_128@2x.png",
     "./resources/icon_256.png",
+    "./resources/icon_256@2x.png",
     "./resources/icon_512.png",
     "./resources/icon_512@2x.png",
     "./resources/icon.ico",
