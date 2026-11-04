@@ -2036,6 +2036,30 @@ fn a_comment_number_links_to_its_comment() {
     assert_eq!(data["current_tab"], "Comments", "{data}");
 }
 
+/// Text dragged over inside a comment's body is what a copy takes.
+#[test]
+#[ignore = "spawns a GPU process; run with --ignored on a desktop"]
+fn a_selection_in_a_comment_copies_its_text() {
+    let shot = capture(
+        "comment-select",
+        &[
+            ("CONCATS_APP_CLICK", "50,300"),
+            ("CONCATS_APP_DRAG_TO", "180,300"),
+        ],
+        |repo| {
+            comment_on(
+                repo,
+                &["rev-parse", "HEAD:editor.rs"],
+                "copy these words out",
+            );
+        },
+    );
+    let data = state(&shot, "state.json");
+    let copied = data["list_selection"].as_str().expect("a selection");
+    assert!(copied.starts_with("copy these"), "{copied:?}");
+    assert!(!copied.contains("Jan 1"), "{copied:?}");
+}
+
 /// A long comment under the code stops at five lines too, and a thread folds
 /// to one line and opens again.
 #[test]

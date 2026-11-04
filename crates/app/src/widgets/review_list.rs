@@ -449,7 +449,12 @@ script_mod! {
                 // Who said it, and where it came from when that is not
                 // here. Empty on the pre-author records, and an empty
                 // label draws nothing.
+                //
+                // NOTE: chrome, not content: not selectable. makepad's
+                // label answers a selection's hit test for points below
+                // it, so a selectable byline took every drag over the body.
                 cm_meta := Prose {
+                    selectable: false
                     width: Fill
                     draw_text.color: C_FAINT
                     draw_text.text_style: FONT{font_size: 8 * mod.app_font.scale}
@@ -459,6 +464,7 @@ script_mod! {
                 // the content, so it reads as the code's words and not
                 // as the reviewer's; hidden when there is none.
                 cm_quote := Prose {
+                    selectable: false
                     visible: false
                     width: Fill
                     draw_text.color: C_DIM
