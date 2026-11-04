@@ -25,11 +25,11 @@ struct HookPayload {
 enum HandlerAction {
     SessionStarted,
     PromptSubmitted,
-    FilesChanged,
     Stop,
-    // NOTE: droid and copilot `PreToolUse`, amp `tool.call` and opencode
-    // `tool.execute.before` are no longer installed, but an older install
-    // still sends them until it is reinstalled.
+    // NOTE: the file-write events that took snapshots, droid and copilot
+    // `PreToolUse`, amp `tool.call` and opencode `tool.execute.before` are no
+    // longer installed, but an older install still sends them until it is
+    // reinstalled.
     Ignore,
 }
 
@@ -56,7 +56,6 @@ fn dispatch_simple(
             Some(prompt) => handler::on_prompt_submitted(&session()?, agent_name, prompt),
             None => Ok(()),
         },
-        HandlerAction::FilesChanged => handler::on_files_changed(&session()?, agent_name),
         HandlerAction::Stop => {
             let response = payload
                 .response

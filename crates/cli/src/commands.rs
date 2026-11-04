@@ -7,7 +7,6 @@ use std::{
 
 use concats_core::{
     Repository,
-    diff::{self, DiffStatus},
     session::{self, Session},
     turn::{self, Turn, TurnEntryKind},
 };
@@ -48,12 +47,6 @@ fn session_command(cli: Cli) -> miette::Result<()> {
             count,
             workspace,
         }) => run_log(&session_ref, count, workspace),
-        Some(Commands::Checkout {
-            session_ref,
-            force,
-            quiet,
-            workspace,
-        }) => run_checkout(&session_ref, force, quiet, workspace),
         Some(Commands::Sessions { workspace }) => run_sessions_list(workspace),
         #[cfg(feature = "review")]
         Some(Commands::Review(_)) => unreachable!("handled in run"),
@@ -265,8 +258,8 @@ fn run_sessions_list(workspace: Option<PathBuf>) -> miette::Result<()> {
     // a bare `git push` never carries them.
     println!(
         "
-push a session (and its snapshots) with git:
-           git push <remote> 'refs/agent/sessions/<id>' 'refs/agent/snapshots/<id>'"
+push a session with git:
+           git push <remote> 'refs/agent/sessions/<id>'"
     );
 
     Ok(())
@@ -296,13 +289,13 @@ fn run_log(
     println!("session {} ({} turns)\n", resolved.session.id, turns.len());
 
     for turn in visible {
-        print_turn(&resolved.session, turn);
+        print_turn(turn);
     }
 
     Ok(())
 }
 
-fn print_turn(session: &Session, turn: &Turn) {
+fn print_turn(turn: &Turn) {
     let ts = turn
         .created_at
         .format(&time::format_description::well_known::Rfc3339)
@@ -322,79 +315,7 @@ fn print_turn(session: &Session, turn: &Turn) {
         }
     }
 
-    if let Ok(diffs) = diff::for_turn(session, turn)
-        && !diffs.is_empty()
-    {
-        println!();
-        for file in &diffs {
-            let icon = match &file.status {
-                DiffStatus::Added => "A",
-                DiffStatus::Modified => "M",
-                DiffStatus::Deleted => "D",
-            };
-            println!("  {icon} {}", file.path);
-        }
-    }
-
     println!();
-}
-
-// ---------------------------------------------------------------------------
-// concats checkout
-// ---------------------------------------------------------------------------
-
-// NOTE: --quiet drops only the confirmation; the checkout itself runs the same.
-// coland-ignore: @coland/selector_parameter
-fn run_checkout(
-    session_ref: &str,
-    force: bool,
-    quiet: bool,
-    workspace: Option<PathBuf>,
-) -> miette::Result<()> {
-    let repo = open_repo(workspace)?;
-    let resolved = resolve_session_ref(&repo, session_ref)?;
-
-    if let Err(e) = turn::restore(&resolved.session, &resolved.turn, force) {
-        if let concats_core::error::Error::RestoreConflict { paths } = &e {
-            let listing = paths
-                .iter()
-                .take(20)
-                .map(|p| format!("  {p}"))
-                .collect::<Vec<_>>()
-                .join("\n");
-            let suffix = if paths.len() > 20 {
-                format!("\n  ... and {} more", paths.len() - 20)
-            } else {
-                String::new()
-            };
-            return Err(miette::miette!(
-                "checkout would overwrite local changes in {} file{}:\n\
-                 {listing}{suffix}\n\n\
-                 use --force to discard these changes",
-                paths.len(),
-                if paths.len() == 1 { "" } else { "s" },
-            ));
-        }
-        return Err(miette::miette!("{e}"));
-    }
-
-    if !quiet {
-        let ref_display = if resolved.offset_from_tip > 0 {
-            format!("{}~{}", resolved.session.id, resolved.offset_from_tip)
-        } else {
-            resolved.session.id.to_string()
-        };
-        println!(
-            "Checked out turn {} (from session {}).\n\n\
-             Continue from this point. To see the full conversation up to here:\n  \
-             concats log {ref_display}\n\n\
-             The working tree has been restored to the state at this turn.",
-            resolved.turn.oid.to_hex_with_len(7),
-            resolved.session.id,
-        );
-    }
-
-    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -403,7 +324,6 @@ fn run_checkout(
 
 struct ResolvedRef {
     session: Session,
-    turn: Turn,
     offset_from_tip: usize,
 }
 
@@ -412,20 +332,18 @@ fn resolve_session_ref(repo: &Rc<Repository>, input: &str) -> miette::Result<Res
 
     // Try session-name resolution first.
     if let Ok(session) = session::open(Rc::clone(repo), name) {
-        let mut turns = turn::list(&session).map_err(|e| miette::miette!("{e}"))?;
+        let turns = turn::list(&session).map_err(|e| miette::miette!("{e}"))?;
         if turns.is_empty() {
             return Err(miette::miette!("session '{name}' has no turns"));
         }
-        let index = turns.len().checked_sub(1 + offset).ok_or_else(|| {
-            miette::miette!(
+        if offset >= turns.len() {
+            return Err(miette::miette!(
                 "offset ~{offset} out of range; session '{name}' has {} turns",
                 turns.len()
-            )
-        })?;
-        let turn = turns.swap_remove(index);
+            ));
+        }
         return Ok(ResolvedRef {
             session,
-            turn,
             offset_from_tip: offset,
         });
     }
@@ -443,14 +361,12 @@ fn resolve_session_ref(repo: &Rc<Repository>, input: &str) -> miette::Result<Res
             continue;
         };
         let count = turns.len();
-        if let Some((i, turn)) = turns
-            .into_iter()
-            .enumerate()
-            .find(|(_, turn)| turn.oid.to_string().starts_with(input))
+        if let Some(i) = turns
+            .iter()
+            .position(|turn| turn.oid.to_string().starts_with(input))
         {
             return Ok(ResolvedRef {
                 session,
-                turn,
                 offset_from_tip: count - 1 - i,
             });
         }

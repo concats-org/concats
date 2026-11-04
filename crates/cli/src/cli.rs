@@ -37,25 +37,6 @@ pub enum Commands {
         workspace: Option<PathBuf>,
     },
 
-    /// Restore the working tree to a session turn's snapshot.
-    Checkout {
-        /// Session ref (e.g. session-a, session-a~3, abc1234).
-        #[arg(name = "ref")]
-        session_ref: String,
-
-        /// Force checkout even if the worktree has uncommitted changes.
-        #[arg(short, long)]
-        force: bool,
-
-        /// Suppress human-readable output.
-        #[arg(short, long)]
-        quiet: bool,
-
-        /// Workspace root directory (defaults to current directory).
-        #[arg(short, long)]
-        workspace: Option<PathBuf>,
-    },
-
     /// List recorded sessions.
     Sessions {
         /// Workspace root directory (defaults to current directory).

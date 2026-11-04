@@ -3,6 +3,13 @@
 This RFC defines how Concats records interactive agent sessions in Git using
 two linked histories: transcript-only turns and full worktree snapshots.
 
+> **Status (2026-11):** snapshots are no longer written or read. A turn links to
+> the commit it was recorded on (parent 1) and nothing else. The snapshot
+> sections below describe what older versions wrote under
+> `refs/agent/snapshots/`; delete those refs with
+> `git for-each-ref --format='delete %(refname)' refs/agent/snapshots | git update-ref --stdin`
+> and reclaim the space with `git gc --prune=now`.
+
 ## Motivation
 
 We want to preserve more than a final branch narrative. A recorded session

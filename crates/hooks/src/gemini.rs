@@ -27,7 +27,7 @@ impl crate::Agent for GeminiAgent {
             event,
             payload_json,
             |event| match event {
-                "AfterTool" | "BeforeTool" => Ok(HandlerAction::FilesChanged),
+                "AfterTool" | "BeforeTool" => Ok(HandlerAction::Ignore),
                 _ => Err(Error::session(format!(
                     "unknown Gemini hook event: {event}"
                 ))),

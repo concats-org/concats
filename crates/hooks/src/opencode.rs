@@ -29,8 +29,7 @@ impl crate::Agent for OpenCodeAgent {
             |event| match event {
                 "session.created" => Ok(HandlerAction::SessionStarted),
                 "session.idle" => Ok(HandlerAction::Stop),
-                "tool.execute.after" => Ok(HandlerAction::FilesChanged),
-                "tool.execute.before" => Ok(HandlerAction::Ignore),
+                "tool.execute.after" | "tool.execute.before" => Ok(HandlerAction::Ignore),
                 _ => Err(Error::session(format!(
                     "unknown OpenCode hook event: {event}"
                 ))),

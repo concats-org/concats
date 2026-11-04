@@ -4,7 +4,6 @@ use concats_core::{
     Repository, current_head_oid,
     error::{Error, Result},
     session::{self, Session},
-    snapshot::{self, SnapshotReason},
     turn::{self, Turn, TurnEntry},
 };
 use concats_message::Turn as TurnMessage;
@@ -15,24 +14,7 @@ use concats_message::Turn as TurnMessage;
 ///
 /// Returns an error if the turn cannot be committed.
 pub fn on_prompt_submitted(session: &Session, agent_name: &str, prompt: &str) -> Result<()> {
-    let turn = commit_turn(session, agent_name, &[TurnEntry::prompt_now(prompt)])?;
-    let _ = snapshot::capture(session, turn.oid, SnapshotReason::TurnCommit)?;
-    Ok(())
-}
-
-/// Update the open turn snapshot after file changes.
-///
-/// # Errors
-///
-/// Returns an error if the current turn cannot be loaded, the snapshot
-/// commit or amendment fails.
-pub fn on_files_changed(session: &Session, agent_name: &str) -> Result<()> {
-    let turn = match open_turn(session)? {
-        Some(turn) => turn,
-        None => commit_turn(session, agent_name, &[])?,
-    };
-    let _ = snapshot::capture(session, turn.oid, SnapshotReason::FilesChanged)?;
-    Ok(())
+    commit_turn(session, agent_name, &[TurnEntry::prompt_now(prompt)]).map(drop)
 }
 
 /// Append one or more transcript entries and close the open turn.
@@ -46,24 +28,16 @@ pub fn on_files_changed(session: &Session, agent_name: &str) -> Result<()> {
 /// Returns an error if the current turn cannot be loaded, or the entry commit
 /// or amendment fails.
 pub fn on_stop(session: &Session, agent_name: &str, entries: &[TurnEntry]) -> Result<()> {
-    let (turn, reason) = match open_turn(session)? {
+    match open_turn(session)? {
         Some(turn) => {
             let message = entries
                 .iter()
                 .cloned()
                 .fold(turn.message().clone(), TurnMessage::with_entry);
-            (
-                session::amend(session, &message)?,
-                SnapshotReason::TurnAmend,
-            )
+            session::amend(session, &message).map(drop)
         }
-        None => (
-            commit_turn(session, agent_name, entries)?,
-            SnapshotReason::TurnCommit,
-        ),
-    };
-    let _ = snapshot::capture(session, turn.oid, reason)?;
-    Ok(())
+        None => commit_turn(session, agent_name, entries).map(drop),
+    }
 }
 
 /// Open the session, creating it at `HEAD` on its first hook.
@@ -91,7 +65,7 @@ fn commit_turn(session: &Session, agent_name: &str, entries: &[TurnEntry]) -> Re
     );
     let subject = message
         .suggest_subject()
-        .unwrap_or_else(|| "files changed".to_string());
+        .unwrap_or_else(|| "turn".to_string());
     session::commit(session, &message.with_subject(subject)?)
 }
 
@@ -110,12 +84,20 @@ mod tests {
     use std::rc::Rc;
 
     use concats_core::{
-        session, snapshot,
+        session,
         turn::{self, TurnEntry},
     };
     use concats_fixture::init_repo_with_commit;
 
     use super::*;
+
+    /// No snapshot ref, and so no worktree tree, is written for a turn.
+    fn assert_no_snapshot(dir: &std::path::Path) {
+        let repo = gix::open(dir).unwrap();
+        let refs = repo.references().unwrap();
+        let snapshots = refs.prefixed("refs/agent/snapshots/").unwrap().count();
+        assert_eq!(snapshots, 0);
+    }
 
     mod load_or_create_session {
         use super::*;
@@ -158,57 +140,10 @@ mod tests {
             super::on_prompt_submitted(&session, "Test", "hello").unwrap();
 
             let turns = turn::list(&session).unwrap();
-            let snapshot = snapshot::get(&session, turns[0].oid).unwrap();
             assert_eq!(turns[0].subject(), "hello");
             assert_eq!(turns[0].message().agent_name(), Some("Test"));
-            assert_eq!(snapshot.reason(), Some(SnapshotReason::TurnCommit));
+            assert_no_snapshot(dir.path());
             assert_eq!(turns[0].entries(), [TurnEntry::prompt_now("hello")]);
-        }
-    }
-
-    mod on_files_changed {
-        use super::*;
-
-        #[test]
-        fn refreshes_active_turn_snapshot() {
-            let dir = tempfile::tempdir().unwrap();
-            init_repo_with_commit(dir.path());
-
-            let repo = Rc::new(gix::open(dir.path()).unwrap());
-            let session = super::load_or_create_session(repo, "session-a").unwrap();
-            super::on_prompt_submitted(&session, "Test", "hello").unwrap();
-
-            std::fs::write(dir.path().join("changed.txt"), "updated").unwrap();
-            super::on_files_changed(&session, "Test").unwrap();
-
-            let turns = turn::list(&session).unwrap();
-            let snapshots = snapshot::list(&session).unwrap();
-
-            assert_eq!(turns.len(), 1);
-            assert_eq!(snapshots.len(), 2);
-            assert_eq!(
-                snapshots.last().unwrap().reason(),
-                Some(SnapshotReason::FilesChanged)
-            );
-        }
-
-        #[test]
-        fn without_active_turn_uses_files_changed_subject() {
-            let dir = tempfile::tempdir().unwrap();
-            init_repo_with_commit(dir.path());
-
-            let repo = Rc::new(gix::open(dir.path()).unwrap());
-            let session = super::load_or_create_session(repo, "session-a").unwrap();
-            std::fs::write(dir.path().join("changed.txt"), "updated").unwrap();
-            super::on_files_changed(&session, "Test").unwrap();
-
-            let turns = turn::list(&session).unwrap();
-            let snapshot = snapshot::get(&session, turns[0].oid).unwrap();
-
-            assert_eq!(turns.len(), 1);
-            assert_eq!(turns[0].subject(), "files changed");
-            assert_eq!(snapshot.reason(), Some(SnapshotReason::FilesChanged));
-            assert_eq!(turns[0].entries(), []);
         }
     }
 
@@ -226,9 +161,7 @@ mod tests {
             super::on_stop(&session, "Test", &[TurnEntry::response_now("done")]).unwrap();
 
             let turns = turn::list(&session).unwrap();
-            let snapshot = snapshot::get(&session, turns[0].oid).unwrap();
-
-            assert_eq!(snapshot.reason(), Some(SnapshotReason::TurnAmend));
+            assert_no_snapshot(dir.path());
             assert_eq!(
                 turns[0].entries(),
                 [
@@ -257,9 +190,7 @@ mod tests {
             .unwrap();
 
             let turns = turn::list(&session).unwrap();
-            let snapshot = snapshot::get(&session, turns[0].oid).unwrap();
-
-            assert_eq!(snapshot.reason(), Some(SnapshotReason::TurnAmend));
+            assert_no_snapshot(dir.path());
             assert_eq!(
                 turns[0].entries(),
                 [
@@ -280,11 +211,9 @@ mod tests {
             super::on_stop(&session, "Test", &[TurnEntry::response_now("done now")]).unwrap();
 
             let turns = turn::list(&session).unwrap();
-            let snapshot = snapshot::get(&session, turns[0].oid).unwrap();
-
             assert_eq!(turns.len(), 1);
             assert_eq!(turns[0].subject(), "done now");
-            assert_eq!(snapshot.reason(), Some(SnapshotReason::TurnCommit));
+            assert_no_snapshot(dir.path());
             assert_eq!(turns[0].entries(), [TurnEntry::response_now("done now")]);
         }
     }

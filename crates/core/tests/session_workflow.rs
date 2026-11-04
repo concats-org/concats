@@ -4,9 +4,7 @@ pub mod support;
 
 use std::rc::Rc;
 
-use concats_core::{
-    error::Error, session, snapshot, snapshot::SnapshotReason, turn, turn::TurnEntry,
-};
+use concats_core::{error::Error, session, turn, turn::TurnEntry};
 
 #[test]
 fn create_session_without_turns() {
@@ -14,10 +12,6 @@ fn create_session_without_turns() {
 
     assert_eq!(session.id, "session-a");
     assert_eq!(turn::list(&session).unwrap(), [] as [turn::Turn; 0]);
-    assert_eq!(
-        snapshot::list(&session).unwrap(),
-        [] as [snapshot::Snapshot; 0]
-    );
 }
 
 #[test]
@@ -57,28 +51,11 @@ fn tip_and_modified_at_follow_committed_turn() {
 }
 
 #[test]
-fn commit_does_not_create_snapshot_until_capture() {
-    let (_dir, _, session, _) = support::session("session-a");
-
-    let turn = session::commit(&session, &support::turn_message("session-a")).unwrap();
-
-    assert!(snapshot::get(&session, turn.oid).is_err());
-    assert_eq!(
-        snapshot::list(&session).unwrap(),
-        [] as [snapshot::Snapshot; 0]
-    );
-}
-
-#[test]
-fn amend_rewrites_tip_turn_without_touching_snapshot_ref() {
+fn amend_rewrites_tip_turn() {
     let (_dir, _, session, _) = support::session("session-a");
 
     let message = support::turn_message("session-a").with_entry(TurnEntry::prompt_now("prompt"));
     let turn = session::commit(&session, &message).unwrap();
-    assert!(snapshot::get(&session, turn.oid).is_err());
-    let initial_snapshot = snapshot::capture(&session, turn.oid, SnapshotReason::TurnCommit)
-        .unwrap()
-        .unwrap();
 
     let amended = turn
         .message()
@@ -89,118 +66,12 @@ fn amend_rewrites_tip_turn_without_touching_snapshot_ref() {
     assert_ne!(updated.oid, turn.oid);
     assert_eq!(session::tip(&session).unwrap(), updated.oid);
     assert_eq!(
-        snapshot::get(&session, turn.oid).unwrap().oid,
-        initial_snapshot.oid
-    );
-    assert!(snapshot::get(&session, updated.oid).is_err());
-    assert_eq!(
         updated.entries(),
         [
             TurnEntry::prompt_now("prompt"),
             TurnEntry::response_now("done")
         ]
     );
-}
-
-#[test]
-fn capture_after_amend_creates_new_snapshot_even_when_tree_is_unchanged() {
-    let (_dir, _, session, _) = support::session("session-a");
-
-    let message = support::turn_message("session-a").with_entry(TurnEntry::prompt_now("prompt"));
-    let turn = session::commit(&session, &message).unwrap();
-    let initial_snapshot = snapshot::capture(&session, turn.oid, SnapshotReason::TurnCommit)
-        .unwrap()
-        .unwrap();
-
-    let amended = turn
-        .message()
-        .clone()
-        .with_entry(TurnEntry::response_now("done"));
-    let updated = session::amend(&session, &amended).unwrap();
-    let updated_snapshot = snapshot::capture(&session, updated.oid, SnapshotReason::TurnAmend)
-        .unwrap()
-        .unwrap();
-
-    assert_ne!(updated_snapshot.oid, initial_snapshot.oid);
-    assert_eq!(
-        snapshot::get(&session, updated.oid).unwrap().oid,
-        updated_snapshot.oid
-    );
-    assert_eq!(snapshot::list(&session).unwrap().len(), 2);
-}
-
-#[test]
-fn capture_skips_same_turn_noop_refresh() {
-    let (_dir, _, session, _) = support::session("session-a");
-
-    let turn = session::commit(&session, &support::turn_message("session-a")).unwrap();
-    let snapshot = snapshot::capture(&session, turn.oid, SnapshotReason::TurnCommit)
-        .unwrap()
-        .unwrap();
-
-    assert!(
-        snapshot::capture(&session, turn.oid, SnapshotReason::FilesChanged)
-            .unwrap()
-            .is_none()
-    );
-    assert_eq!(snapshot::get(&session, turn.oid).unwrap().oid, snapshot.oid);
-    assert_eq!(snapshot::list(&session).unwrap().len(), 1);
-}
-
-#[test]
-fn get_returns_latest_snapshot_for_turn() {
-    let (dir, _, session, _) = support::session("session-a");
-
-    let turn = session::commit(&session, &support::turn_message("session-a")).unwrap();
-    let first = snapshot::capture(&session, turn.oid, SnapshotReason::TurnCommit)
-        .unwrap()
-        .unwrap();
-
-    std::fs::write(dir.path().join("next.txt"), "next").unwrap();
-    let latest = snapshot::capture(&session, turn.oid, SnapshotReason::FilesChanged)
-        .unwrap()
-        .unwrap();
-
-    assert_ne!(first.oid, latest.oid);
-    assert_eq!(snapshot::get(&session, turn.oid).unwrap().oid, latest.oid);
-    assert_eq!(snapshot::list(&session).unwrap().len(), 2);
-}
-
-#[test]
-fn older_snapshots_without_reason_still_parse() {
-    let (_dir, repo, session, _) = support::session("session-a");
-
-    let turn = session::commit(&session, &support::turn_message("session-a")).unwrap();
-    let turn_commit = repo.find_commit(turn.oid).unwrap();
-    let sig = gix::actor::Signature {
-        name: "test".into(),
-        email: "test@test".into(),
-        time: gix::date::Time {
-            seconds: 0,
-            offset: 0,
-        },
-    };
-    let commit = gix::objs::Commit {
-        tree: repo.head_commit().unwrap().tree_id().unwrap().detach(),
-        parents: [turn_commit.id].into_iter().collect(),
-        author: sig.clone(),
-        committer: sig,
-        encoding: None,
-        message: "snapshot\n\nSession: session-a".into(),
-        extra_headers: Vec::new(),
-    };
-    let oid = repo.write_object(&commit).unwrap().detach();
-    repo.reference(
-        support::snapshot_ref_name("session-a").as_str(),
-        oid,
-        gix::refs::transaction::PreviousValue::Any,
-        "snapshot",
-    )
-    .unwrap();
-
-    let snapshot = snapshot::get(&session, turn.oid).unwrap();
-
-    assert_eq!(snapshot.reason(), None);
 }
 
 #[test]

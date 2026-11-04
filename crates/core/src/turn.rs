@@ -6,7 +6,6 @@ use crate::{
     error::{Error, Result},
     git,
     session::Session,
-    snapshot,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -110,22 +109,4 @@ pub fn get(session: &Session, oid: gix::ObjectId) -> Result<Turn> {
     }
 
     Ok(turn)
-}
-
-/// Restore the turn snapshot into the repository working tree.
-///
-/// When `force` is false, conflicting paths are collected and returned as a
-/// [`RestoreConflict`](Error::RestoreConflict) error. When true, local changes
-/// are discarded.
-///
-/// # Errors
-///
-/// Returns an error if the turn snapshot cannot be loaded, the checkout
-/// would overwrite local changes (safe mode), or the checkout fails.
-pub fn restore(session: &Session, turn: &Turn, force: bool) -> Result<()> {
-    let repo = session.repo();
-    let snapshot = snapshot::get(session, turn.oid)?;
-    let commit = repo.find_commit(snapshot.oid).map_err(Error::git)?;
-    let tree_id = commit.tree_id().map_err(Error::git)?.detach();
-    git::checkout_tree(repo, tree_id, force)
 }

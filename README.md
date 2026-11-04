@@ -19,7 +19,7 @@ If you're already using [Claude Code](https://docs.anthropic.com/en/docs/claude-
 concats hooks install
 ```
 
-This registers Concats with Claude Code's hook system. From here on, every session is recorded automatically — prompts, responses, and repository snapshots at each step. Just use Claude Code as you normally would.
+This registers Concats with Claude Code's hook system. From here on, every session is recorded automatically: the prompt and the response at each step. Just use Claude Code as you normally would.
 
 > **Note:** This currently overrides existing hook settings in `.claude/settings.json`.
 
@@ -29,10 +29,9 @@ This registers Concats with Claude Code's hook system. From here on, every sessi
 concats hooks install codex --global
 ```
 
-This installs three lifecycle hooks in `$CODEX_HOME/config.toml`
-(default: `~/.codex/config.toml`): `UserPromptSubmit` records the prompt,
-`PostToolUse` captures a working-tree snapshot after each supported tool call,
-and `Stop` records the final assistant response. Sessions use Codex's session ID,
+This installs two lifecycle hooks in `$CODEX_HOME/config.toml`
+(default: `~/.codex/config.toml`): `UserPromptSubmit` records the prompt and
+`Stop` records the final assistant response. Sessions use Codex's session ID,
 so separate agents keep separate conversations even when they share a worktree.
 Existing hooks and notification commands, including Computer Use's `notify`, are
 preserved. Older Concats notification entries are removed when installing.
@@ -43,12 +42,9 @@ terminal would otherwise get a bare bell.
 Restart Codex after installing and review and trust the new definitions in
 `/hooks`, as described in the [Codex hook documentation](https://learn.chatgpt.com/docs/hooks#review-and-trust-hooks).
 
-In the app, open `HEAD...WORKTREE` for all uncommitted changes or
-`INDEX...WORKTREE` for unstaged changes. The Sessions tab shows recorded turns
-whose snapshots match the changed file contents, including multiple sessions and
-sessions recorded in linked Git worktrees. New recordings refresh the working-tree
-review automatically. The CLI exposes the same matches with
-`concats turns --base HEAD --head WORKTREE` when built with `--features review`.
+In the app, the Sessions tab shows the turns recorded with one of the range's
+commits checked out, each followed by that commit. The CLI lists them with
+`concats turns --base <BASE> --head <HEAD>` when built with `--features review`.
 
 ### Terminal Interface (ACP)
 
@@ -62,11 +58,16 @@ This gives you an interactive session with an agent while recording everything i
 
 ## How Recording Works
 
-At each turn, Concats records the transcript as a lightweight session commit and stores the full repository state as a separate snapshot commit (respecting `.gitignore`).
+At each turn, Concats records the transcript as a lightweight session commit.
 
-Turns live under `refs/agent/sessions/<session-id>`. Snapshots live under `refs/agent/snapshots/<session-id>`. The two histories are parent-linked so normal Git graph tooling can traverse from user commits to turns to snapshots. Concats **never touches your working branch**. It doesn't stage files, it doesn't commit to your branch. Your branches, your PRs, your commits — all yours.
+Turns live under `refs/agent/sessions/<session-id>`, parent-linked to the commit that was checked out, so normal Git graph tooling can traverse from user commits to turns. Concats **never touches your working branch**. It doesn't stage files, it doesn't commit to your branch. Your branches, your PRs, your commits — all yours.
 
-When you fork from a turn, Concats restores the working directory from that turn's snapshot, starts a new session, and appends a short note linking back to the original when you prompt the agent. That's enough for an agent to look up what happened before, so you can say "continue, but watch out for X" and it picks up where things left off.
+Concats no longer keeps worktree snapshots. Older versions stored them under `refs/agent/snapshots/`, which can grow to gigabytes; delete them and reclaim the space with:
+
+```sh
+git for-each-ref --format='delete %(refname)' refs/agent/snapshots | git update-ref --stdin
+git gc --prune=now
+```
 
 ## Status
 

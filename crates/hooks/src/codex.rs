@@ -12,7 +12,9 @@ const AGENT: &str = "codex";
 const PROMPT_EVENT: &str = "UserPromptSubmit";
 const TOOL_EVENT: &str = "PostToolUse";
 const STOP_EVENT: &str = "Stop";
-const EVENTS: [&str; 3] = [PROMPT_EVENT, TOOL_EVENT, STOP_EVENT];
+/// What is installed; `TOOL_EVENT` took snapshots, and an older install still
+/// sends it, so it is still read and removed.
+const EVENTS: [&str; 2] = [PROMPT_EVENT, STOP_EVENT];
 /// How Codex should send its notifications. Its `auto` picks OSC 9 only in
 /// terminals it recognises, and Concats isn't one, so they would arrive as a
 /// bare bell without the message.
@@ -35,6 +37,9 @@ impl crate::Agent for CodexAgent {
         let event = event
             .or(payload.hook_event_name.as_deref())
             .ok_or_else(|| Error::session("Codex requires a hook event name"))?;
+        if event == TOOL_EVENT {
+            return Ok(());
+        }
         if !EVENTS.contains(&event) {
             return Err(Error::session(format!("unknown Codex hook event: {event}")));
         }
@@ -42,24 +47,19 @@ impl crate::Agent for CodexAgent {
         // NOTE: Opened after the prompt check, so a bad payload creates no
         // session.
         let session = || handler::load_or_create_session(repo, &payload.session_id);
-        match event {
-            PROMPT_EVENT => {
-                let prompt = payload
-                    .prompt
-                    .as_deref()
-                    .ok_or_else(|| Error::session("Codex UserPromptSubmit is missing prompt"))?;
-                handler::on_prompt_submitted(&session()?, "Codex", prompt)
-            }
-            TOOL_EVENT => handler::on_files_changed(&session()?, "Codex"),
-            _ => {
-                let entries: Vec<_> = payload
-                    .last_assistant_message
-                    .map(TurnEntry::response_now)
-                    .into_iter()
-                    .collect();
-                handler::on_stop(&session()?, "Codex", &entries)
-            }
+        if event == PROMPT_EVENT {
+            let prompt = payload
+                .prompt
+                .as_deref()
+                .ok_or_else(|| Error::session("Codex UserPromptSubmit is missing prompt"))?;
+            return handler::on_prompt_submitted(&session()?, "Codex", prompt);
         }
+        let entries: Vec<_> = payload
+            .last_assistant_message
+            .map(TurnEntry::response_now)
+            .into_iter()
+            .collect();
+        handler::on_stop(&session()?, "Codex", &entries)
     }
 
     fn install(&self, binary: &Path, _scope: &InstallScope) -> Result<()> {
@@ -180,7 +180,7 @@ fn remove_hooks(mut value: ::toml::Value) -> ::toml::Value {
         remove_notify(table);
         if let Some(hooks) = table.get_mut("hooks").and_then(::toml::Value::as_table_mut) {
             remove_notify(hooks);
-            for event in EVENTS {
+            for event in EVENTS.into_iter().chain([TOOL_EVENT]) {
                 if let Some(groups) = hooks.get_mut(event).and_then(::toml::Value::as_array_mut) {
                     groups.retain_mut(|group| {
                         if let Some(handlers) =

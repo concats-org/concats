@@ -72,9 +72,7 @@ use std::{
 };
 
 use concats_fixture::git;
-use concats_message::{
-    SESSION_REF_PREFIX, SNAPSHOT_REF_PREFIX, SessionId, Snapshot, SnapshotReason, Turn, TurnEntry,
-};
+use concats_message::{SESSION_REF_PREFIX, SessionId, Turn, TurnEntry};
 
 /// Logical window size. Fixed, because the layout responds to width — a capture
 /// at another size is a different picture, not the same one scaled.
@@ -2537,8 +2535,8 @@ const EMPTY_TREE: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 /// written as Markdown.
 fn markdown_session(repo: &Path) {
     markdown_commit(repo);
-    // The turn sits on the commit before; its snapshot holds the commit's
-    // tree, so the same bytes at the same path link the two.
+    // The turn sits on the commit before and was recorded with the commit
+    // checked out, which links the two.
     let session = SessionId::from_str("md-session").expect("a session id");
     let turn = Turn::new(session.clone())
         .with_subject("Make the fallback explicit")
@@ -2552,7 +2550,16 @@ fn markdown_session(repo: &Path) {
         .to_string();
     let turn = git(
         repo,
-        &["commit-tree", EMPTY_TREE, "-p", "HEAD~1", "-m", &turn],
+        &[
+            "commit-tree",
+            EMPTY_TREE,
+            "-p",
+            "HEAD~1",
+            "-p",
+            "HEAD",
+            "-m",
+            &turn,
+        ],
     );
     git(
         repo,
@@ -2560,19 +2567,6 @@ fn markdown_session(repo: &Path) {
             "update-ref",
             &format!("{SESSION_REF_PREFIX}{session}"),
             &turn,
-        ],
-    );
-    let snapshot = Snapshot::new(session.clone(), SnapshotReason::TurnCommit).to_string();
-    let snapshot = git(
-        repo,
-        &["commit-tree", "HEAD^{tree}", "-p", &turn, "-m", &snapshot],
-    );
-    git(
-        repo,
-        &[
-            "update-ref",
-            &format!("{SNAPSHOT_REF_PREFIX}{session}"),
-            &snapshot,
         ],
     );
 }

@@ -1,7 +1,6 @@
 import { execFileSync } from "child_process";
 
 const BINARY = "{{BINARY_PATH}}";
-const FILE_TOOLS = ["write", "edit", "create", "patch", "apply_patch"];
 
 function fire(event: string, payload: Record<string, unknown>) {
   try {
@@ -35,19 +34,6 @@ export default {
   }) {
     fire("agent.end", {
       status: event.status,
-      cwd: process.cwd(),
-    });
-  },
-
-  onToolResult(event: {
-    sessionId: string;
-    tool: string;
-    output: unknown;
-  }) {
-    if (!FILE_TOOLS.includes(event.tool.toLowerCase())) return;
-    fire("tool.result", {
-      session_id: event.sessionId,
-      tool: event.tool,
       cwd: process.cwd(),
     });
   },

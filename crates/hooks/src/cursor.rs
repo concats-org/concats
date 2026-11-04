@@ -26,7 +26,7 @@ impl crate::Agent for CursorAgent {
             event,
             payload_json,
             |event| match event {
-                "afterFileEdit" => Ok(HandlerAction::FilesChanged),
+                "afterFileEdit" => Ok(HandlerAction::Ignore),
                 "beforeSubmitPrompt" => Ok(HandlerAction::PromptSubmitted),
                 _ => Err(Error::session(format!(
                     "unknown Cursor hook event: {event}"
@@ -61,7 +61,7 @@ fn install_hooks(mut value: serde_json::Value, binary: &Path) -> Result<serde_js
     json_config::install_hooks(
         value,
         AGENT,
-        &["beforeSubmitPrompt", "afterFileEdit"],
+        &["beforeSubmitPrompt"],
         |_, command| serde_json::json!({ "command": command }),
         binary,
     )
@@ -91,8 +91,10 @@ mod tests {
             let config = install_hooks(config, Path::new("concats")).unwrap();
 
             let data = serde_json::to_string(&config).unwrap();
+            // The file-write hook took snapshots: a reinstall drops it.
             assert!(data.contains("other-tool hook"));
-            assert!(data.contains("concats hook cursor afterFileEdit"));
+            assert!(!data.contains("concats hook cursor afterFileEdit"));
+            assert!(data.contains("concats hook cursor beforeSubmitPrompt"));
         }
     }
 }

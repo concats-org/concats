@@ -5,7 +5,7 @@ use std::{
     rc::Rc,
 };
 
-use concats_core::{session, snapshot, turn};
+use concats_core::{session, turn};
 use concats_fixture::git;
 
 fn hook(root: &Path, payload: &serde_json::Value) {
@@ -108,41 +108,18 @@ fn records_codex_turns_from_a_linked_worktree() {
         assert_eq!(turns[0].subject(), "change the file");
         assert_eq!(turns[0].entries().len(), if id == "first" { 2 } else { 1 });
         assert_eq!(turns[0].has_response(), id == "first");
-        assert_eq!(
-            snapshot::list(&session).unwrap().len(),
-            if id == "first" { count * 3 } else { 2 }
-        );
     }
+    let snapshots = repo
+        .references()
+        .unwrap()
+        .prefixed("refs/agent/snapshots/")
+        .unwrap()
+        .count();
+    assert_eq!(snapshots, 0);
     assert_eq!(
         std::fs::read_to_string(root.join("file.txt")).unwrap(),
         "base\n"
     );
-}
-
-#[test]
-#[cfg(feature = "review")]
-fn links_multiple_sessions_to_worktree_changes() {
-    let tmp = recorded_worktree();
-    let worktree = tmp.path().join("linked");
-    for base in ["HEAD", "INDEX"] {
-        let mut loaded = concats_diff::load::load(&worktree, base, "WORKTREE").unwrap();
-        let mined = concats_review::sessions::mine(&mut loaded);
-        for id in ["first", "second"] {
-            assert!(mined.sessions.iter().any(|row| matches!(row,
-                concats_diff::Row::Title { text } if text == &format!("## Session `{id}`"))));
-        }
-        assert!(mined.commits.is_empty());
-    }
-
-    {
-        std::fs::write(worktree.join("file.txt"), "unrelated\n").unwrap();
-        let mut loaded = concats_diff::load::load(&worktree, "HEAD", "WORKTREE").unwrap();
-        assert!(
-            concats_review::sessions::mine(&mut loaded)
-                .sessions
-                .is_empty()
-        );
-    }
 }
 
 #[test]
@@ -168,9 +145,10 @@ fn installs_and_removes_lifecycle_hooks_without_replacing_notify() {
     }
     let installed = concats_hooks::toml_config::read(&path).unwrap();
     assert_eq!(installed["notify"][0].as_str(), Some("computer-use"));
-    for event in ["UserPromptSubmit", "PostToolUse", "Stop"] {
+    for event in ["UserPromptSubmit", "Stop"] {
         assert_eq!(installed["hooks"][event].as_array().unwrap().len(), 1);
     }
+    assert!(installed["hooks"].get("PostToolUse").is_none());
     assert_eq!(
         installed["tui"]["notification_method"].as_str(),
         Some("osc9")

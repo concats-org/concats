@@ -45,15 +45,8 @@ impl crate::Agent for ClaudeAgent {
                 let session = handler::load_or_create_session(repo, &payload.session_id)?;
                 handler::on_prompt_submitted(&session, "Claude", &payload.prompt)
             }
-            "PostToolUse" => {
-                let payload: PostToolUsePayload =
-                    serde_json::from_str(payload_json).map_err(|error| {
-                        Error::session(format!("invalid PostToolUse payload: {error}"))
-                    })?;
-                let repo = open_repo(payload.cwd.as_deref())?;
-                let session = handler::load_or_create_session(repo, &payload.session_id)?;
-                handler::on_files_changed(&session, "Claude")
-            }
+            // NOTE: no longer installed; an older install still sends it.
+            "PostToolUse" => Ok(()),
             "Stop" => {
                 let payload: StopPayload = serde_json::from_str(payload_json)
                     .map_err(|error| Error::session(format!("invalid Stop payload: {error}")))?;
@@ -104,13 +97,6 @@ pub struct UserPromptSubmitPayload {
 }
 
 #[derive(Debug, Deserialize)]
-pub struct PostToolUsePayload {
-    pub session_id: String,
-    #[serde(default)]
-    pub cwd: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
 pub struct StopPayload {
     pub session_id: String,
     #[serde(default)]
@@ -134,15 +120,10 @@ fn install_hooks(value: serde_json::Value, binary: &Path) -> Result<serde_json::
     json_config::install_hooks(
         value,
         AGENT,
-        &["SessionStart", "UserPromptSubmit", "PostToolUse", "Stop"],
-        |event, command| {
-            let matcher = if event == "PostToolUse" {
-                "Write|Edit"
-            } else {
-                ""
-            };
+        &["SessionStart", "UserPromptSubmit", "Stop"],
+        |_, command| {
             serde_json::json!({
-                "matcher": matcher,
+                "matcher": "",
                 "hooks": [{ "type": "command", "command": command }],
             })
         },
@@ -441,7 +422,7 @@ mod tests {
             assert!(settings.exists());
             let data = std::fs::read_to_string(&settings).unwrap();
             assert!(data.contains("concats hook claude SessionStart"));
-            assert!(data.contains("concats hook claude PostToolUse"));
+            assert!(!data.contains("concats hook claude PostToolUse"));
         }
 
         #[test]
@@ -460,7 +441,7 @@ mod tests {
 
             let data = std::fs::read_to_string(settings_dir.join("settings.json")).unwrap();
             assert!(data.contains("other-tool hook"));
-            assert!(data.contains("concats hook claude PostToolUse"));
+            assert!(data.contains("concats hook claude Stop"));
         }
     }
 

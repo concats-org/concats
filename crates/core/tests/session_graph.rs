@@ -1,9 +1,6 @@
 pub mod support;
 
-use concats_core::{
-    session,
-    snapshot::{self, SnapshotReason},
-};
+use concats_core::session;
 
 #[test]
 fn first_turn_omits_duplicate_head_parent_and_uses_empty_tree() {
@@ -79,47 +76,6 @@ fn forked_first_turn_uses_source_turn_as_first_parent() {
 }
 
 #[test]
-fn first_snapshot_points_only_to_corresponding_turn() {
-    let (_dir, repo, session, _) = support::session("session-a");
-
-    let turn = session::commit(&session, &support::turn_message("session-a")).unwrap();
-    let _ = snapshot::capture(&session, turn.oid, SnapshotReason::TurnCommit).unwrap();
-    let snapshot = snapshot::get(&session, turn.oid).unwrap();
-    let snapshot_commit = repo.find_commit(snapshot.oid).unwrap();
-
-    assert_eq!(snapshot_commit.parent_ids().count(), 1);
-    assert_eq!(
-        snapshot_commit.parent_ids().next().unwrap().detach(),
-        turn.oid
-    );
-}
-
-#[test]
-fn later_snapshot_links_previous_snapshot_and_current_turn() {
-    let (dir, repo, session, _) = support::session("session-a");
-
-    let first_turn = session::commit(&session, &support::turn_message("session-a")).unwrap();
-    let _ = snapshot::capture(&session, first_turn.oid, SnapshotReason::TurnCommit).unwrap();
-    let first_snapshot = snapshot::get(&session, first_turn.oid).unwrap();
-
-    std::fs::write(dir.path().join("changed.txt"), "changed").unwrap();
-    let second_turn = session::commit(&session, &support::turn_message("session-a")).unwrap();
-    let _ = snapshot::capture(&session, second_turn.oid, SnapshotReason::TurnCommit).unwrap();
-    let second_snapshot = snapshot::get(&session, second_turn.oid).unwrap();
-    let snapshot_commit = repo.find_commit(second_snapshot.oid).unwrap();
-
-    assert_eq!(snapshot_commit.parent_ids().count(), 2);
-    assert_eq!(
-        snapshot_commit.parent_ids().next().unwrap().detach(),
-        first_snapshot.oid
-    );
-    assert_eq!(
-        snapshot_commit.parent_ids().nth(1).unwrap().detach(),
-        second_turn.oid
-    );
-}
-
-#[test]
 fn git_for_each_ref_contains_finds_session_refs() {
     let (dir, _, session, head) = support::session("session-a");
     let expected_ref = support::session_ref_name("session-a");
@@ -136,39 +92,6 @@ fn git_for_each_ref_contains_finds_session_refs() {
     );
 
     assert!(output.lines().any(|line| line == expected_ref));
-}
-
-#[test]
-fn git_log_ancestry_path_walks_snapshot_history() {
-    let (dir, _, session, _) = support::session("session-a");
-
-    let first_turn = session::commit(&session, &support::turn_message("session-a")).unwrap();
-    let _ = snapshot::capture(&session, first_turn.oid, SnapshotReason::TurnCommit).unwrap();
-    let first_snapshot = snapshot::get(&session, first_turn.oid).unwrap();
-    std::fs::write(dir.path().join("src.txt"), "hello").unwrap();
-    let second_turn = session::commit(&session, &support::turn_message("session-a")).unwrap();
-    let _ = snapshot::capture(&session, second_turn.oid, SnapshotReason::TurnCommit).unwrap();
-    let second_snapshot = snapshot::get(&session, second_turn.oid).unwrap();
-
-    let output = concats_fixture::git(
-        dir.path(),
-        &[
-            "log",
-            "--ancestry-path",
-            &format!(
-                "{}..{}",
-                first_turn.oid,
-                support::snapshot_ref_name("session-a")
-            ),
-            "--format=%H",
-        ],
-    );
-    let commits = output.lines().collect::<Vec<_>>();
-    let first_snapshot_oid = first_snapshot.oid.to_string();
-    let second_snapshot_oid = second_snapshot.oid.to_string();
-
-    assert!(commits.contains(&second_snapshot_oid.as_str()));
-    assert!(commits.contains(&first_snapshot_oid.as_str()));
 }
 
 #[test]

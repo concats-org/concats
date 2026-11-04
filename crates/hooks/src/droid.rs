@@ -27,8 +27,7 @@ impl crate::Agent for DroidAgent {
             event,
             payload_json,
             |event| match event {
-                "PostToolUse" => Ok(HandlerAction::FilesChanged),
-                "PreToolUse" => Ok(HandlerAction::Ignore),
+                "PostToolUse" | "PreToolUse" => Ok(HandlerAction::Ignore),
                 _ => Err(Error::session(format!("unknown Droid hook event: {event}"))),
             },
         )

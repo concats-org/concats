@@ -4,7 +4,7 @@
 
 Concats is a Git-native session recording system for AI coding agents. It records the back-and-forth between humans and agents — prompts, responses, and tool calls — as structured Git commits on dedicated refs. Sessions are stored in the repository itself using standard Git objects, transportable with `git push`/`git fetch`, and inspectable with normal Git tooling.
 
-The core concepts are **sessions** (identified by a ref under `refs/agent/sessions/`), **turns** (lightweight session commits carrying a structured transcript in their message), **snapshots** (full repository state commits under `refs/agent/snapshots/`), and **entries** (prompt, response, and tool-call records within a turn).
+The core concepts are **sessions** (identified by a ref under `refs/agent/sessions/`), **turns** (lightweight session commits carrying a structured transcript in their message), and **entries** (prompt, response, and tool-call records within a turn).
 
 ## Required Checks
 
@@ -36,7 +36,7 @@ Transitioning from proof-of-concept to product. Breaking changes are acceptable 
 - Do NOT add error handling, fallbacks, or validation for scenarios that cannot occur in practice.
 - Do NOT suppress dead code with `#[allow(dead_code)]` or rename unused items with `_` prefixes. Delete them!
 - Do NOT add comments, docstrings, or type annotations to code you did not change.
-- Do NOT invent vocabulary. Use Git-native terms (`commit`, `tree`, `ref`, `parent`) and project terms (`session`, `turn`, `snapshot`, `entry`) consistently.
+- Do NOT invent vocabulary. Use Git-native terms (`commit`, `tree`, `ref`, `parent`) and project terms (`session`, `turn`, `entry`) consistently.
 
 ## Design Principles
 

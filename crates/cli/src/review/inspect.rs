@@ -21,7 +21,7 @@ pub(crate) fn turns(range: &RangeArgs) -> Outcome {
     };
 
     let diff = sessions::review_diff(&repo, &loaded);
-    let turns = sessions::load_turns(&repo, &diff);
+    let turns = sessions::load_turns(&repo);
     if turns.is_empty() {
         println!(
             "no agent sessions (refs/agent/sessions/*) in {}",
@@ -38,24 +38,18 @@ pub(crate) fn turns(range: &RangeArgs) -> Outcome {
             session = &turn.session_id;
             println!("\n── session {session}");
         }
-        let mark = match via.get(&i) {
-            Some((true, _)) => "◆ linked (content)",
-            Some((_, true)) => "◇ linked (recorded at commit)",
-            _ => "·",
+        let mark = if via.contains(&i) {
+            "◇ linked (recorded at commit)"
+        } else {
+            "·"
         };
         let entries = turn.message.entries().len();
         println!(
-            "  {}  {}  [{entries} entr{}, {} file(s) touched]  {mark}",
+            "  {}  {}  [{entries} entr{}]  {mark}",
             &turn.oid.to_string()[..10],
             turn.message.subject(),
             if entries == 1 { "y" } else { "ies" },
-            turn.touched.len(),
         );
-        if via.contains_key(&i) {
-            for c in &turn.touched {
-                println!("        {}", c.path());
-            }
-        }
     }
     println!(
         "\n{} of {} turn(s) linked to {}...{}",

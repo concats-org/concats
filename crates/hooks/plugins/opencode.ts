@@ -2,7 +2,6 @@ import type { Plugin } from "@opencode-ai/plugin";
 import { execFileSync } from "child_process";
 
 const BINARY = "{{BINARY_PATH}}";
-const FILE_TOOLS = ["edit", "write", "patch", "multiedit"];
 
 function fire(event: string, payload: Record<string, unknown>) {
   try {
@@ -30,15 +29,6 @@ const plugin: Plugin = async (input) => ({
         });
         break;
     }
-  },
-
-  "tool.execute.after": async (inp, _out) => {
-    if (!FILE_TOOLS.includes(inp.tool.toLowerCase())) return;
-    fire("tool.execute.after", {
-      session_id: inp.sessionID,
-      tool: inp.tool,
-      cwd: input.worktree,
-    });
   },
 });
 

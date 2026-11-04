@@ -30,8 +30,7 @@ impl crate::Agent for AmpAgent {
                 "session.start" => Ok(HandlerAction::SessionStarted),
                 "agent.start" => Ok(HandlerAction::PromptSubmitted),
                 "agent.end" => Ok(HandlerAction::Stop),
-                "tool.result" => Ok(HandlerAction::FilesChanged),
-                "tool.call" => Ok(HandlerAction::Ignore),
+                "tool.result" | "tool.call" => Ok(HandlerAction::Ignore),
                 _ => Err(Error::session(format!("unknown Amp hook event: {event}"))),
             },
         )

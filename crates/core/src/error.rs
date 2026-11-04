@@ -20,12 +20,6 @@ pub enum Error {
 
     #[error("turn error: {message}")]
     Turn { message: String },
-
-    #[error("snapshot error: {message}")]
-    Snapshot { message: String },
-
-    #[error("checkout would overwrite local changes")]
-    RestoreConflict { paths: Vec<String> },
 }
 
 impl Error {
@@ -39,12 +33,6 @@ impl Error {
 
     pub fn session(message: impl Into<String>) -> Self {
         Self::Session {
-            message: message.into(),
-        }
-    }
-
-    pub fn snapshot(message: impl Into<String>) -> Self {
-        Self::Snapshot {
             message: message.into(),
         }
     }

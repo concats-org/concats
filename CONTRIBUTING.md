@@ -34,8 +34,7 @@ Concats is built around a core-plus-interfaces model:
 
 Session/code coupling rule:
 
-- Code snapshots and session context SHOULD be linkable as one artifact.
-- Contributors SHOULD preserve the ability to fork from turns instead of forcing linear histories.
+- Session context SHOULD be linkable to the commits it was recorded on.
 
 ## Setup
 

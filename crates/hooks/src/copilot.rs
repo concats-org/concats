@@ -22,8 +22,7 @@ impl crate::Agent for CopilotAgent {
             event.ok_or_else(|| Error::session(format!("{AGENT} requires an event name")))?;
         crate::dispatch_simple("Copilot", "copilot-default", event, payload_json, |event| {
             match event {
-                "PostToolUse" => Ok(HandlerAction::FilesChanged),
-                "PreToolUse" => Ok(HandlerAction::Ignore),
+                "PostToolUse" | "PreToolUse" => Ok(HandlerAction::Ignore),
                 _ => Err(Error::session(format!(
                     "unknown Copilot hook event: {event}"
                 ))),

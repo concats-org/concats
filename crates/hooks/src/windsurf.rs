@@ -26,7 +26,7 @@ impl crate::Agent for WindsurfAgent {
             event,
             payload_json,
             |event| match event {
-                "pre_write_code" | "post_write_code" => Ok(HandlerAction::FilesChanged),
+                "pre_write_code" | "post_write_code" => Ok(HandlerAction::Ignore),
                 "post_cascade_response_with_transcript" => Ok(HandlerAction::Stop),
                 _ => Err(Error::session(format!(
                     "unknown Windsurf hook event: {event}"
@@ -60,11 +60,7 @@ fn install_hooks(value: serde_json::Value, binary: &Path) -> Result<serde_json::
     json_config::install_hooks(
         value,
         AGENT,
-        &[
-            "pre_write_code",
-            "post_write_code",
-            "post_cascade_response_with_transcript",
-        ],
+        &["post_cascade_response_with_transcript"],
         |_, command| serde_json::json!({ "command": command, "show_output": false }),
         binary,
     )
@@ -94,9 +90,11 @@ mod tests {
             let config = install_hooks(config, Path::new("concats")).unwrap();
 
             let data = serde_json::to_string(&config).unwrap();
+            // The file-write hooks took snapshots: a reinstall drops them.
             assert!(data.contains("other-tool hook"));
-            assert!(data.contains("concats hook windsurf post_write_code"));
-            assert!(data.contains("concats hook windsurf pre_write_code"));
+            assert!(!data.contains("concats hook windsurf post_write_code"));
+            assert!(!data.contains("concats hook windsurf pre_write_code"));
+            assert!(data.contains("concats hook windsurf post_cascade_response_with_transcript"));
         }
     }
 }
