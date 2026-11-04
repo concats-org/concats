@@ -304,7 +304,11 @@ pub(crate) fn load_layout(git_dir: &Path) -> Option<DockLayoutRon> {
                 tabs.retain(|t| !dropped.contains(t));
                 *selected = (*selected).min(tabs.len().saturating_sub(1));
             }
-            // A dot is a moment's state, not layout.
+            // A terminal's title is what its program said in the window that
+            // saved the layout, not this one's; a dot is a moment's state.
+            DockItem::Tab { name, kind, .. } if *kind == terminal_tab_spec().kind => {
+                terminal_tab_spec().title.clone_into(name);
+            }
             DockItem::Tab { name, .. } => *name = attention_title(name, false),
             DockItem::Splitter { .. } => {}
         }
@@ -360,8 +364,9 @@ mod tests {
         assert!(layout.dock_items.contains_key(&spec.id));
     }
 
-    /// The dot comes and goes without touching the title, and a saved layout
-    /// comes back without it.
+    /// The dot comes and goes without touching the title. A saved layout
+    /// comes back with neither the dot nor what the program called itself in
+    /// the window that saved it.
     #[test]
     fn a_terminal_title_wears_its_attention_dot_and_loses_it_on_load() {
         assert_eq!(attention_title("claude", true), "● claude");
@@ -399,7 +404,7 @@ mod tests {
         let loaded = load_layout(dir.path()).expect("the saved layout loads");
         assert!(matches!(
             &loaded.dock_items[&spec.id],
-            DockItem::Tab { name, .. } if name == "claude"
+            DockItem::Tab { name, .. } if name == "Terminal"
         ));
     }
 

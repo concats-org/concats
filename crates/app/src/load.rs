@@ -67,15 +67,20 @@ pub(crate) fn spawn_load(
     });
 }
 
+/// The one spelling of a checkout's path a document keeps, so two spellings
+/// of one directory compare equal.
+pub(crate) fn checkout_path(repo: &str) -> String {
+    std::fs::canonicalize(repo)
+        .unwrap_or_else(|_| std::path::PathBuf::from(repo))
+        .to_string_lossy()
+        .into_owned()
+}
+
 // NOTE: build_review fills the rows from a load; the error arm fills them from its failure.
 // coland-ignore: @coland/mixed_abstraction_levels
 fn load_document(target: &Target, guide: Option<String>) -> ReviewDoc {
-    let repo = std::fs::canonicalize(&target.repo)
-        .unwrap_or_else(|_| std::path::PathBuf::from(&target.repo))
-        .to_string_lossy()
-        .into_owned();
     let mut next = ReviewDoc {
-        repo,
+        repo: checkout_path(&target.repo),
         base: target.base.clone(),
         head: target.head.clone(),
         guide_path: guide,
@@ -569,6 +574,18 @@ mod tests {
     use gix::ObjectId;
 
     use super::*;
+
+    #[test]
+    fn two_spellings_of_a_checkout_are_one_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("repo");
+        std::fs::create_dir(&real).unwrap();
+        let link = dir.path().join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let spelled = |path: &std::path::Path| checkout_path(path.to_str().unwrap());
+        assert_eq!(spelled(&link), spelled(&real));
+        assert_eq!(spelled(&real.join("..").join("repo")), spelled(&real));
+    }
 
     fn oid(n: u8) -> ObjectId {
         ObjectId::from_hex(format!("{n:040x}").as_bytes()).expect("valid hex")

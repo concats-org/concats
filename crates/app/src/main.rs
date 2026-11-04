@@ -835,8 +835,9 @@ impl App {
     fn retire_window(&mut self, window_id: WindowId) {
         let closed = |w: &AppWindow| w.window.as_window().window_id() == Some(window_id);
         if let Some(window) = self.windows.iter().find(|w| closed(w)) {
-            // NOTE: The pane may outlive the window; its pipe must not.
+            // NOTE: The pane may outlive the window; its pipe and shells must not.
             window.state.pipe.lock().unwrap().take();
+            terminal::close_window(window.state.id, &[]);
         }
         self.windows.retain(|w| !closed(w));
     }
@@ -935,6 +936,10 @@ impl AppWindow {
                             }
                         }
                     }
+                    // The shells of tabs the layout doesn't have would run on
+                    // with nothing showing them.
+                    let tabs: Vec<LiveId> = layout.dock_items.keys().copied().collect();
+                    terminal::close_window(self.state.id, &tabs);
                     dock.load_state(cx, layout.dock_items);
                     if terminal_open && let Some(mut p) = pane.borrow_mut::<ReviewPane>() {
                         // A restored-open panel needs its shell running;
@@ -1018,6 +1023,11 @@ impl AppWindow {
         let Some(git_dir) = snap.git_dir.clone() else {
             return;
         };
+        // A window that switched away from this checkout let go of its pipe;
+        // one still on it answers from now on.
+        if snap.error.is_none() && self.state.pipe.lock().unwrap().is_none() {
+            crate::pipe::serve(&self.state, &snap.repo);
+        }
 
         // A WORKTREE review's diff moves under it as the user edits or
         // stages. The probe reads the index and stats the tree, so the

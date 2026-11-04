@@ -1434,7 +1434,10 @@ impl ReviewPane {
         guide: Option<String>,
         status: Option<&str>,
     ) {
-        if self.state().read(|document| document.repo != target.repo) {
+        // NOTE: the document keeps the checkout's canonical path; a target
+        // spelled another way is still the same checkout, and its shells stay.
+        let target_repo = crate::load::checkout_path(&target.repo);
+        if self.state().read(|document| document.repo != target_repo) {
             let window = self.state().id;
             let tabs = self
                 .view

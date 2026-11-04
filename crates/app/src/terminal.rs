@@ -348,6 +348,21 @@ pub fn close(session: Session) {
     shell.sender.send(Msg::Shutdown);
 }
 
+/// End every shell of `window` but those under `keep`: a window that went
+/// away, or a layout that no longer has their tabs, leaves none running.
+pub fn close_window(window: LiveId, keep: &[LiveId]) {
+    let ended: Vec<Session> = sessions()
+        .lock()
+        .unwrap()
+        .keys()
+        .filter(|session| session.window == window && !keep.contains(&session.tab))
+        .copied()
+        .collect();
+    for session in ended {
+        close(session);
+    }
+}
+
 /// Keystrokes/paste from the view, already encoded to terminal bytes.
 // NOTE: every byte the view sends a shell goes through it.
 // coland-ignore: @coland/high_call_degree
