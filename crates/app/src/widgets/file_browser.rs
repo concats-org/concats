@@ -56,7 +56,7 @@ script_mod! {
 
         tree := FileTree {
             width: Fill height: Fill
-            node_height: 22.0
+            node_height: 22.0 * mod.app_font.scale
 
             // The stock node templates read makepad's own theme — a different
             // grey, and a zebra stripe this app doesn't use. Flatten both rows
@@ -71,7 +71,7 @@ script_mod! {
                 draw_text +: {
                     color: C_DIM
                     color_active: C_TEXT
-                    text_style: FONT{font_size: 8.25}
+                    text_style: FONT{font_size: 8.25 * mod.app_font.scale}
                 }
             }
             folder_node +: {
@@ -84,7 +84,7 @@ script_mod! {
                 draw_text +: {
                     color: C_TEXT
                     color_active: C_TEXT
-                    text_style: FONT{font_size: 8.25}
+                    text_style: FONT{font_size: 8.25 * mod.app_font.scale}
                 }
                 draw_icon +: { color: C_FAINT  color_active: C_DIM }
             }

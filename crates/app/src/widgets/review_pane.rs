@@ -592,7 +592,7 @@ script_mod! {
         SolidView { width: Fill height: 1 draw_bg.color: C_BORDER }
         status := SolidView {
             width: Fill
-            height: 27
+            height: 27 * mod.app_font.scale
             draw_bg.color: C_CHROME
             flow: Right
             spacing: 1
@@ -609,7 +609,7 @@ script_mod! {
                 text: ""
                 margin: Inset{left: 4}
                 draw_text.color: C_FAINT
-                draw_text.text_style: FONT{font_size: 8.25}
+                draw_text.text_style: FONT{font_size: 8.25 * mod.app_font.scale}
             }
             // One button per view: reopen (or jump to) its tab. Buttons for
             // streams this range doesn't have are hidden, like the tabs.

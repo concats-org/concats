@@ -2081,6 +2081,21 @@ fn a_comment_under_the_code_clamps_and_its_thread_folds() {
     }
 }
 
+/// One font size scales the text and the rows sized to it, everywhere but the
+/// window header and the tab bars.
+#[test]
+#[ignore = "spawns a GPU process; run with --ignored on a desktop"]
+fn the_font_size_scales_the_review() {
+    for (name, size) in [("font-size-12", "12"), ("font-size-7", "7")] {
+        let home = home_with_config(&format!("[app]\nfont_size = {size}\n"));
+        let home_path = home.path().to_str().expect("utf-8 temp path").to_owned();
+        let shot = capture(name, &[("HOME", home_path.as_str())], |repo| {
+            comment_on(repo, &["rev-parse", "HEAD:editor.rs"], LONG_COMMENT);
+        });
+        assert_matches(name, &shot, EXACT);
+    }
+}
+
 /// A thread from before the window loaded its range draws its bar washed
 /// out; one posted since keeps the comment blue.
 #[test]

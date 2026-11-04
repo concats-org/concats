@@ -95,18 +95,29 @@ fn row_spans(blob: &Blob, line: usize) -> Option<Vec<concats_syntax::Span>> {
 /// The air between the end of a selection and the chip offering to comment on
 /// it.
 const CHIP_GAP: f64 = 8.0;
-/// What the chip measures, near enough to know whether it fits above the
-/// selection. It is one line of 8.25pt text in 4pt of padding.
+/// What the chip measures at the default size, near enough to know whether
+/// it fits above the selection. It is one line of 8.25pt text in 4pt of
+/// padding.
 const CHIP_HEIGHT: f64 = 24.0;
+/// The pinned header's height at the default size: its 30pt row and a border
+/// above and below.
 const STICKY_HEIGHT: f64 = 32.0;
 const FILE_HEADER_TOP_PADDING: f64 = 16.0;
 /// The pinned header rests this far below the top of the scroll area. The gap
 /// is filled by the tab strip's shadow, not by bare page — see the design's
 /// `02-header-pinned`, where the strip's falloff is cut short by the header.
 const STICKY_TOP_GAP: f64 = 8.0;
+/// The pinned header's height at the current text size: its row grows with
+/// the text, its borders don't.
+fn sticky_height() -> f64 {
+    (STICKY_HEIGHT - 2.0) * crate::theme::text_scale(crate::theme::active_font().size) + 2.0
+}
+
 /// Where a row lands when the list scrolls to it: just below the pinned
 /// header, which would otherwise cover it.
-const BELOW_STICKY: f64 = STICKY_TOP_GAP + STICKY_HEIGHT;
+fn below_sticky() -> f64 {
+    STICKY_TOP_GAP + sticky_height()
+}
 /// Lines kept above the one a file opens at, so it reads in context.
 const REVEAL_CONTEXT: usize = 3;
 /// Height of the pinned header's shadow, above it and below it alike.
@@ -159,7 +170,7 @@ fn anchor_entry(bands: &[Band]) -> Option<usize> {
 /// slide out with the card's bottom edge, and ramp the shadow continuously.
 // NOTE: (push, lift), as the doc names them: the tested pure half of place_sticky.
 // coland-ignore: @coland/same_typed_tuple_return
-fn sticky_offsets(header_top: Option<f64>, end_top: Option<f64>) -> (f64, f64) {
+fn sticky_offsets(header_top: Option<f64>, end_top: Option<f64>, height: f64) -> (f64, f64) {
     // Where the real header sits right now, unclamped.
     let natural = header_top.map(|top| top + FILE_HEADER_TOP_PADDING);
     // Riding up: sit on the real header until it reaches the rest.
@@ -168,7 +179,7 @@ fn sticky_offsets(header_top: Option<f64>, end_top: Option<f64>) -> (f64, f64) {
     // with it instead of covering the next card — the handoff CSS `position:
     // sticky` gives you for free.
     let leave = end_top.map_or(STICKY_TOP_GAP, |top| {
-        (top + CARD_END_EDGE - STICKY_HEIGHT).clamp(-STICKY_HEIGHT, STICKY_TOP_GAP)
+        (top + CARD_END_EDGE - height).clamp(-height, STICKY_TOP_GAP)
     });
     let push = if arrive > STICKY_TOP_GAP {
         arrive
@@ -293,7 +304,7 @@ script_mod! {
     // hit-tests its background box), so the field has to be the box it looks
     // like.
     let FlatInput = DarkInput {
-        height: 60
+        height: 60 * mod.app_font.scale
         padding: 0
         // Room for a paragraph, and a comment that outgrows the box scrolls
         // inside it. Enter still posts, per `submit_on_enter`; Shift+Enter is
@@ -314,7 +325,7 @@ script_mod! {
             color_empty: mod.app_theme.color_dim
             color_empty_hover: mod.app_theme.color_dim
             color_empty_focus: mod.app_theme.color_dim
-            text_style: FONT{font_size: 9}
+            text_style: FONT{font_size: mod.app_font.size}
         }
     }
 
@@ -334,14 +345,14 @@ script_mod! {
         width: Fill height: Fit
         selectable: true
         draw_selection.color: mod.app_theme.color_sel_focus
-        font_size: 9
+        font_size: mod.app_font.size
         font_color: C_TEXT
         draw_text +: { color: C_TEXT }
-        text_style_normal: FONT{font_size: 9 line_spacing: 1.5}
-        text_style_italic: FONT_ITALIC{font_size: 9 line_spacing: 1.5}
-        text_style_bold: FONT_BOLD{font_size: 9 line_spacing: 1.5}
-        text_style_bold_italic: FONT_BOLD_ITALIC{font_size: 9 line_spacing: 1.5}
-        text_style_fixed: FONT{font_size: 9 line_spacing: 1.5}
+        text_style_normal: FONT{font_size: mod.app_font.size line_spacing: 1.5}
+        text_style_italic: FONT_ITALIC{font_size: mod.app_font.size line_spacing: 1.5}
+        text_style_bold: FONT_BOLD{font_size: mod.app_font.size line_spacing: 1.5}
+        text_style_bold_italic: FONT_BOLD_ITALIC{font_size: mod.app_font.size line_spacing: 1.5}
+        text_style_fixed: FONT{font_size: mod.app_font.size line_spacing: 1.5}
         link := TextFlowLink {
             color: C_ACCENT
             color_hover: C_TEXT
@@ -371,7 +382,7 @@ script_mod! {
             color_down: C_TEXT
             color_focus: C_FAINT
             color_disabled: C_FAINT
-            text_style: FONT{font_size: 8.25}
+            text_style: FONT{font_size: 8.25 * mod.app_font.scale}
         }
     }
 
@@ -441,7 +452,7 @@ script_mod! {
                 cm_meta := Prose {
                     width: Fill
                     draw_text.color: C_FAINT
-                    draw_text.text_style: FONT{font_size: 8}
+                    draw_text.text_style: FONT{font_size: 8 * mod.app_font.scale}
                 }
                 // What the comment is about, when it was left on a
                 // selection rather than on whole lines. Quoted from
@@ -451,7 +462,7 @@ script_mod! {
                     visible: false
                     width: Fill
                     draw_text.color: C_DIM
-                    draw_text.text_style: FONT{font_size: 8.5}
+                    draw_text.text_style: FONT{font_size: 8.5 * mod.app_font.scale}
                 }
                 // Inset as a `Label` is, so it lines up under the byline.
                 cm_body := MarkdownFlow {
@@ -520,7 +531,7 @@ script_mod! {
                 flow: Down
 
                 fh_row := View {
-                    width: Fill height: 30
+                    width: Fill height: 30 * mod.app_font.scale
                     flow: Right
                     spacing: 8
                     align: Align{x: 0.0, y: 0.5}
@@ -550,7 +561,7 @@ script_mod! {
                         fh_path := Prose {
                             padding: Inset{top: 3 bottom: 3}
                             draw_text.color: C_TEXT
-                            draw_text.text_style: FONT{font_size: 9}
+                            draw_text.text_style: FONT{font_size: mod.app_font.size}
                         }
                     }
                     // Hidden for a file the head no longer has.
@@ -564,7 +575,7 @@ script_mod! {
                     fh_stat := Label {
                         width: Fit
                         draw_text.color: C_FAINT
-                        draw_text.text_style: FONT{font_size: 9}
+                        draw_text.text_style: FONT{font_size: mod.app_font.size}
                     }
                 }
                 // The hairline under the title, dropped while the card is
@@ -710,7 +721,7 @@ script_mod! {
                     warn_label := Prose {
                         width: Fill
                         draw_text.color: C_YELLOW
-                        draw_text.text_style: FONT{font_size: 9}
+                        draw_text.text_style: FONT{font_size: mod.app_font.size}
                     }
                 }
 
@@ -724,7 +735,7 @@ script_mod! {
                 // row leaves the list, everything shunts up, the scroll resets. 16
                 // lead-in + 1 border + 30 row + 1 rule.
                 FileHeader := View {
-                    width: Fill height: 48
+                    width: Fill height: 18 + 30 * mod.app_font.scale
                     padding: Inset{top: 16 bottom: 0 left: 16 right: 16}
                     flow: Overlay
                     fh_body := HeaderCard {}
@@ -767,7 +778,7 @@ script_mod! {
                                     color_down: C_TEXT
                                     color_focus: C_DELETED
                                     color_disabled: C_DELETED
-                                    text_style: FONT{font_size: 8.25}
+                                    text_style: FONT{font_size: 8.25 * mod.app_font.scale}
                                 }
                             }
                         }
@@ -961,7 +972,7 @@ script_mod! {
                         color_down: C_ON_ACCENT
                         color_focus: C_ON_ACCENT
                         color_disabled: C_ON_ACCENT
-                        text_style: FONT{font_size: 8.25}
+                        text_style: FONT{font_size: 8.25 * mod.app_font.scale}
                     }
                 }
             }
@@ -1367,7 +1378,7 @@ impl ReviewList {
             return;
         }
         if let Some(row) = self.next_row(forward, is_hunk) {
-            self.seek_row = Some((row, BELOW_STICKY));
+            self.seek_row = Some((row, below_sticky()));
             self.redraw(cx);
         }
     }
@@ -1395,8 +1406,12 @@ impl ReviewList {
     /// matches while find is open, and Collapse seen.
     pub(crate) fn review_step(&mut self, cx: &mut Cx, command: Command) {
         let seek = match command {
-            Command::NextHunk => self.next_row(true, is_hunk).map(|row| (row, BELOW_STICKY)),
-            Command::PreviousHunk => self.next_row(false, is_hunk).map(|row| (row, BELOW_STICKY)),
+            Command::NextHunk => self
+                .next_row(true, is_hunk)
+                .map(|row| (row, below_sticky())),
+            Command::PreviousHunk => self
+                .next_row(false, is_hunk)
+                .map(|row| (row, below_sticky())),
             // A header at the very top: its card is the one pinned there.
             Command::NextFile => self.next_row(true, is_card).map(|row| (row, 0.0)),
             Command::PreviousFile => self.next_row(false, is_card).map(|row| (row, 0.0)),
@@ -1766,7 +1781,7 @@ impl Widget for ReviewList {
                             .position(|row| matches!(row, Row::Composer))
                     })
                     .flatten();
-                let composer = composer.map(|row| (row, BELOW_STICKY));
+                let composer = composer.map(|row| (row, below_sticky()));
                 for (row, below) in [composer, self.seek_row.take()].into_iter().flatten() {
                     if let Some(entry) = self.entry_of(row) {
                         list.set_first_id_and_scroll(entry, below);
@@ -1784,7 +1799,7 @@ impl Widget for ReviewList {
                         Some(Band { entry, top, height })
                     })
                     .collect();
-                self.arrow_pivots = arrow_pivots(&bands, BELOW_STICKY);
+                self.arrow_pivots = arrow_pivots(&bands, below_sticky());
                 self.place_sticky(&list, &bands, &range, &pass)
             };
             pinned = self.draw_sticky(cx, &pass, push, lift);
@@ -2710,7 +2725,8 @@ impl ReviewList {
         // then. Under it instead when the selection ends at the top of the
         // list, where there is nothing above to sit in.
         let top = self.view.portal_list(cx, ids!(list)).area().rect(cx).pos.y;
-        let above = rect.pos.y - CHIP_HEIGHT - CHIP_GAP;
+        let scale = crate::theme::text_scale(crate::theme::active_font().size);
+        let above = rect.pos.y - CHIP_HEIGHT * scale - CHIP_GAP;
         let y = if above >= top {
             above
         } else {
@@ -2774,7 +2790,7 @@ impl ReviewList {
             .and_then(|card| self.entry_of(card.end))
             .and_then(item_rect)
             .map(|(top, _)| top);
-        sticky_offsets(header_top, end_top)
+        sticky_offsets(header_top, end_top, sticky_height())
     }
 
     /// The pinned header's widgets, written with the list no longer borrowed:
@@ -3156,29 +3172,38 @@ mod tests {
 
     #[test]
     fn the_pinned_copy_rides_the_real_header_while_it_is_on_screen() {
-        let (push, lift) = sticky_offsets(Some(100.0), None);
+        let (push, lift) = sticky_offsets(Some(100.0), None, STICKY_HEIGHT);
         assert_eq!(push, 100.0 + FILE_HEADER_TOP_PADDING);
         assert_eq!(lift, 0.0, "resting on the real header casts no shadow");
     }
 
     #[test]
     fn an_off_screen_header_rests_the_copy_at_the_gap_under_full_shadow() {
-        assert_eq!(sticky_offsets(None, None), (STICKY_TOP_GAP, 1.0));
+        assert_eq!(
+            sticky_offsets(None, None, STICKY_HEIGHT),
+            (STICKY_TOP_GAP, 1.0)
+        );
     }
 
     #[test]
     fn the_cards_bottom_edge_pushes_the_copy_out_instead_of_over_the_next_card() {
         // The card's end just above the top edge: the copy slides out with it…
         let end_top = STICKY_HEIGHT - CARD_END_EDGE - 20.0;
-        assert_eq!(sticky_offsets(None, Some(end_top)).0, -20.0);
+        assert_eq!(sticky_offsets(None, Some(end_top), STICKY_HEIGHT).0, -20.0);
         // …but never past its own height, and never below its resting gap.
-        assert_eq!(sticky_offsets(None, Some(-1000.0)).0, -STICKY_HEIGHT);
-        assert_eq!(sticky_offsets(None, Some(1000.0)).0, STICKY_TOP_GAP);
+        assert_eq!(
+            sticky_offsets(None, Some(-1000.0), STICKY_HEIGHT).0,
+            -STICKY_HEIGHT
+        );
+        assert_eq!(
+            sticky_offsets(None, Some(1000.0), STICKY_HEIGHT).0,
+            STICKY_TOP_GAP
+        );
     }
 
     #[test]
     fn the_shadow_ramps_continuously_as_the_header_lifts_away() {
-        let lift_at = |top: f64| sticky_offsets(Some(top), None).1;
+        let lift_at = |top: f64| sticky_offsets(Some(top), None, STICKY_HEIGHT).1;
         let start = STICKY_TOP_GAP - FILE_HEADER_TOP_PADDING;
         assert_eq!(lift_at(start), 0.0);
         assert_eq!(lift_at(start - STICKY_FADE / 2.0), 0.5);

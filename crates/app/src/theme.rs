@@ -119,7 +119,6 @@ pub fn apply_settings_text(text: &str) -> Result<String, SettingsError> {
         });
     }
     let size = font_size("font_size", settings.font_size)?;
-    let terminal_size = font_size("terminal_font_size", settings.terminal_font_size)?;
     let keymap = crate::keymap::Keymap::new(&settings.keys).map_err(SettingsError::Keys)?;
     concats_config::save_config(&config)
         .map_err(|error| SettingsError::Persist(error.to_string()))?;
@@ -130,7 +129,7 @@ pub fn apply_settings_text(text: &str) -> Result<String, SettingsError> {
     set_active_font(FontSetting {
         paths,
         size,
-        terminal_size,
+        terminal_size: terminal_size(size),
         wrap: settings.wrap,
     });
     Ok(settings.theme.clone())
@@ -203,23 +202,28 @@ pub fn set_active_theme(theme: Theme) {
 // ---------------------------------------------------------------------------
 
 /// The resolved app font: the files to try in order (empty = the embedded
-/// fonts alone), plus the base size and the terminal's.
-///
-/// TODO: one size does not fit the UI and the editor either. The shape to
-/// grow into is `ui_font_size` and `editor_font_size` beside the global
-/// `font_size`, each falling back to it when unset, and the same layering
-/// for anything else worth varying per surface, line height first.
+/// fonts alone), plus the base size every text size follows.
 #[derive(Clone)]
 pub struct FontSetting {
     pub paths: Vec<String>,
     pub size: f64,
-    /// The terminal's own size, so its cell grid stays put when the base size
-    /// changes.
+    /// The terminal's size, [`terminal_size`] of the base.
     pub terminal_size: f64,
     /// Whether a line too long for its row wraps onto the next instead of
     /// running off the edge. It rides with the font because it is a layout
     /// property, and it re-bakes through the same live edit.
     pub wrap: bool,
+}
+
+/// How much `size` scales text and the rows sized to it: 1 at the default.
+pub fn text_scale(size: f64) -> f64 {
+    size / concats_config::AppConfig::default().font_size
+}
+
+/// The terminal's size for base size `size`: 13 px at the default 9, the size
+/// Ghostty draws its terminal at on macOS, and the same ratio at any other.
+fn terminal_size(size: f64) -> f64 {
+    size * 9.75 / 9.0
 }
 
 /// Split a `font` setting the way CSS splits `font-family`: a comma-separated
@@ -336,14 +340,11 @@ fn font_slot() -> &'static RwLock<Arc<FontSetting>> {
                 default
             })
         };
+        let size = size("font_size", config.font_size, defaults.font_size);
         RwLock::new(Arc::new(FontSetting {
             paths: resolve_font_paths(&config.font),
-            size: size("font_size", config.font_size, defaults.font_size),
-            terminal_size: size(
-                "terminal_font_size",
-                config.terminal_font_size,
-                defaults.terminal_font_size,
-            ),
+            size,
+            terminal_size: terminal_size(size),
             wrap: config.wrap,
         }))
     })
@@ -384,7 +385,6 @@ mod tests {
             "[app]\nfont = 'No Such Font 9Z'",
             "[app]\nfont_size = -3",
             "[app]\nfont_size = 'big'",
-            "[app]\nterminal_font_size = 0",
             "[app]\nwrap = 'yes'",
         ] {
             assert!(apply_settings_text(text).is_err(), "{text}");
